@@ -16,11 +16,11 @@
   --warn:    #ff9f0a;
   /* 프로젝트 사이드바 (다크 고정) */
   --sb:        #111113;
-  --sb-fg:     rgba(255,255,255,0.75);
-  --sb-muted:  rgba(255,255,255,0.30);
-  --sb-hover:  rgba(255,255,255,0.06);
-  --sb-active: rgba(255,255,255,0.10);
-  --sb-border: rgba(255,255,255,0.08);
+  --sb-fg:     rgba(255,255,255,0.85);
+  --sb-muted:  rgba(255,255,255,0.52);
+  --sb-hover:  rgba(255,255,255,0.07);
+  --sb-active: rgba(255,255,255,0.12);
+  --sb-border: rgba(255,255,255,0.09);
 }
 
 /* ── 라이트 모드 (Apple-style) ──────────────────────────────── */
@@ -30,18 +30,18 @@
   --bg3:     #f0f0f2;
   --border:  rgba(0,0,0,0.08);
   --fg:      #1d1d1f;
-  --muted:   #6e6e73;
+  --muted:   #515154;   /* 라이트 모드: #6e6e73→#515154 (대비↑) */
   --accent:  #0066cc;
   --accent2: #30d158;
   --danger:  #ff453a;
   --warn:    #ff9f0a;
   /* 사이드바는 라이트 모드에서도 다크 유지 (Apple sidebar) */
   --sb:        #1c1c1e;
-  --sb-fg:     rgba(255,255,255,0.78);
-  --sb-muted:  rgba(255,255,255,0.33);
-  --sb-hover:  rgba(255,255,255,0.07);
-  --sb-active: rgba(255,255,255,0.12);
-  --sb-border: rgba(255,255,255,0.09);
+  --sb-fg:     rgba(255,255,255,0.88);
+  --sb-muted:  rgba(255,255,255,0.55);
+  --sb-hover:  rgba(255,255,255,0.08);
+  --sb-active: rgba(255,255,255,0.14);
+  --sb-border: rgba(255,255,255,0.10);
 }
 
 /* ── 라이트 모드 — 표면 입체감 ─────────────────────────────── */
@@ -124,17 +124,27 @@
 html, body, #app {
   margin: 0;
   height: 100%;
-  background: var(--bg);
-  color: var(--fg);
+  /* 기본값 — .app 클래스가 올바른 테마 색상을 재정의함 */
+  background: #17181c;
+  color: #e6e8ec;
   font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
   font-size: 13px;
 }
 
+/* ─────────────────────────────────────────────────────────────
+   .app : 모든 테마 색상의 실제 적용 루트.
+   여기에 color/background를 명시해야 data-theme 스코프의
+   CSS 변수가 자식 요소에 올바르게 전파된다.
+   ───────────────────────────────────────────────────────────── */
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  /* 이 두 줄이 없으면 자식 요소들이 #app에서 다크 모드 색상을 상속 */
+  color:      var(--fg);   /* 다크: #e6e8ec / 라이트: #1d1d1f */
+  background: var(--bg);   /* 다크: #17181c / 라이트: #fafafa */
+  -webkit-font-smoothing: antialiased;
 }
 
 .mono { font-family: 'Cascadia Mono', 'Consolas', 'Malgun Gothic', monospace; }
@@ -508,6 +518,10 @@ html, body, #app {
 /* ── 프로젝트 사이드바 (항상 다크) ────────────────────────── */
 .proj-sidebar {
   background: var(--sb);
+  /* 반드시 명시 — .app이 이제 color: var(--fg)를 설정하므로
+     라이트 모드에서 #1d1d1f(검은색)가 상속되어 어두운 배경에
+     검은 글씨가 되는 문제를 방지 */
+  color: var(--sb-fg);
   border-bottom: 1px solid var(--sb-border);
   padding: 10px 6px 8px;
   flex-shrink: 0;

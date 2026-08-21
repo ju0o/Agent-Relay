@@ -89,10 +89,10 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { err: stri
   static getDerivedStateFromError(e: unknown): { err: string } { return { err: e instanceof Error ? e.message : String(e) }; }
   render(): React.ReactNode {
     if (this.state.err) return (
-      <div style={{ padding: 40, color: '#e06c5f', fontFamily: 'monospace' }}>
-        <strong>렌더 오류</strong>
-        <pre style={{ whiteSpace: 'pre-wrap', marginTop: 12 }}>{this.state.err}</pre>
-        <p style={{ color: '#8b8fa0', fontSize: 12 }}>DevTools → Console에서 자세한 내용을 확인하세요.</p>
+      <div style={{ padding: 40, color: 'var(--danger)', fontFamily: 'monospace', background: 'var(--bg)', minHeight: '100vh' }}>
+        <strong style={{ color: 'var(--fg)' }}>렌더 오류</strong>
+        <pre style={{ whiteSpace: 'pre-wrap', marginTop: 12, color: 'var(--danger)' }}>{this.state.err}</pre>
+        <p style={{ color: 'var(--muted)', fontSize: 12 }}>DevTools → Console에서 자세한 내용을 확인하세요.</p>
       </div>
     );
     return this.props.children;
@@ -492,7 +492,7 @@ function AppInner(): React.ReactElement {
 
   // ── 로딩 / 오류 화면 ──────────────────────────────────────────────────────────
   if (loading) return (
-    <div className="app splash">
+    <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
         <div className="splash-logo">Agent Relay Log · V0</div>
         <div className="splash-spin" />
@@ -501,11 +501,11 @@ function AppInner(): React.ReactElement {
     </div>
   );
   if (initError) return (
-    <div className="app splash">
+    <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
         <div className="splash-logo">Agent Relay Log · V0</div>
         <div className="splash-err">{initError}</div>
-        <p style={{ color: '#8b8fa0', fontSize: 12, marginTop: 8 }}>DevTools (F12) → Console에서 자세한 내용을 확인하세요.</p>
+        <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>DevTools (F12) → Console에서 자세한 내용을 확인하세요.</p>
       </div>
     </div>
   );
