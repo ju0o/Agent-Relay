@@ -1,5 +1,6 @@
 appId: com.agentrelaylog.v0
 productName: AgentRelayLog
+asar: false
 directories:
   output: dist
   buildResources: build

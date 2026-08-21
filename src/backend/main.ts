@@ -181,12 +181,44 @@ function createWindow(): void {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      // contextIsolation defaults to true in Electron 28 — keep default
     },
   });
 
+  // ── F12 / Ctrl+Shift+I → DevTools (even in production builds) ──
+  mainWindow.webContents.on('before-input-event', (_e, input) => {
+    if (
+      input.type === 'keyDown' &&
+      ((input.key === 'F12') ||
+        (input.control && input.shift && input.key === 'I'))
+    ) {
+      mainWindow?.webContents.openDevTools();
+    }
+  });
+
+  // DEBUG: auto-open DevTools so renderer errors are always visible
+  mainWindow.webContents.openDevTools();
+
+  // ── Detect page-load failure and show a diagnostic dialog ──
   const clientPath = path.join(__dirname, '..', '..', 'client', 'index.html');
-  fs.mkdirSync(path.dirname(clientPath), { recursive: true });
-  mainWindow.loadFile(clientPath);
+
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
+    dialog.showErrorBox(
+      'Agent Relay Log — 페이지 로드 실패',
+      `오류 코드: ${code}\n설명: ${desc}\n\n시도한 경로:\n${clientPath}\n\n경로가 존재하는지 확인하세요.`,
+    );
+  });
+
+  // ── Load UI ──
+  if (!fs.existsSync(clientPath)) {
+    dialog.showErrorBox(
+      'Agent Relay Log — index.html 없음',
+      `다음 경로에 index.html이 없습니다:\n${clientPath}\n\n앱을 다시 빌드하거나 재설치하세요.`,
+    );
+    return;
+  }
+
+  void mainWindow.loadFile(clientPath);
 }
 
 app.whenReady().then(() => {
