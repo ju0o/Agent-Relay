@@ -14,6 +14,13 @@
   --accent2: #6cc26c;
   --danger:  #e06c5f;
   --warn:    #ff9f0a;
+  /* 프로젝트 사이드바 (다크 고정) */
+  --sb:        #111113;
+  --sb-fg:     rgba(255,255,255,0.75);
+  --sb-muted:  rgba(255,255,255,0.30);
+  --sb-hover:  rgba(255,255,255,0.06);
+  --sb-active: rgba(255,255,255,0.10);
+  --sb-border: rgba(255,255,255,0.08);
 }
 
 /* ── 라이트 모드 (Apple-style) ──────────────────────────────── */
@@ -28,6 +35,13 @@
   --accent2: #30d158;
   --danger:  #ff453a;
   --warn:    #ff9f0a;
+  /* 사이드바는 라이트 모드에서도 다크 유지 (Apple sidebar) */
+  --sb:        #1c1c1e;
+  --sb-fg:     rgba(255,255,255,0.78);
+  --sb-muted:  rgba(255,255,255,0.33);
+  --sb-hover:  rgba(255,255,255,0.07);
+  --sb-active: rgba(255,255,255,0.12);
+  --sb-border: rgba(255,255,255,0.09);
 }
 
 /* ── 라이트 모드 — 표면 입체감 ─────────────────────────────── */
@@ -490,3 +504,90 @@ html, body, #app {
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .dot.on  { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
 .dot.off { background: var(--danger); }
+
+/* ── 프로젝트 사이드바 (항상 다크) ────────────────────────── */
+.proj-sidebar {
+  background: var(--sb);
+  border-bottom: 1px solid var(--sb-border);
+  padding: 10px 6px 8px;
+  flex-shrink: 0;
+}
+.proj-sidebar-label {
+  display: block;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.7px;
+  text-transform: uppercase; color: var(--sb-muted);
+  padding: 0 8px 6px;
+}
+.proj-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 6px; margin: 1px 0;
+  font-size: 12px; font-weight: 500; color: var(--sb-fg);
+  cursor: pointer; border: none; background: transparent;
+  width: 100%; text-align: left;
+  transition: background 0.1s;
+}
+.proj-item:hover  { background: var(--sb-hover); }
+.proj-item.active { background: var(--sb-active); }
+.proj-item-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.proj-item-dot.on  { background: #30D158; }
+.proj-item-dot.off { background: var(--sb-muted); }
+.proj-add {
+  display: block; width: calc(100% - 12px); margin: 6px 6px 0;
+  font-size: 11px; font-weight: 500; color: var(--sb-muted);
+  background: rgba(255,255,255,0.04); border: 1px solid var(--sb-border);
+  border-radius: 6px; padding: 5px 0; cursor: pointer; text-align: center;
+  transition: color 0.1s, background 0.1s;
+}
+.proj-add:hover { color: var(--sb-fg); background: var(--sb-hover); }
+
+/* ── 런 상태 도트 ──────────────────────────────────────────── */
+.run-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+}
+.run-dot.full  { background: #30D158; }
+.run-dot.half  { background: #FF9F0A; }
+.run-dot.empty { background: var(--muted); opacity: 0.45; }
+
+/* ── 에이전트 pill 세그먼트 ────────────────────────────────── */
+.agent-pills-wrap { display: flex; flex-direction: column; gap: 4px; }
+.agent-pills-wrap .flabel { margin-bottom: 0; }
+.agent-pills-row { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.agent-pills {
+  display: flex; gap: 2px; flex-wrap: wrap;
+  background: var(--bg3); border-radius: 8px; padding: 3px;
+}
+.agent-pill {
+  font-size: 11px; font-weight: 500;
+  padding: 4px 10px; border-radius: 6px;
+  border: none; cursor: pointer; background: transparent;
+  color: var(--muted); white-space: nowrap; line-height: 1.4;
+  transition: background 0.1s, color 0.1s;
+}
+.agent-pill:hover { color: var(--fg); }
+.agent-pill.active {
+  background: var(--bg2); color: var(--fg);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.14), 0 0 0 0.5px rgba(0,0,0,0.07);
+}
+.agent-pill-add {
+  font-size: 13px; font-weight: 700;
+  width: 26px; height: 26px; border-radius: 6px;
+  border: 1px dashed var(--border);
+  cursor: pointer; background: transparent;
+  color: var(--muted); line-height: 1; display: flex; align-items: center; justify-content: center;
+  flex: none;
+}
+.agent-pill-add:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── 탭 라벨 개선 ──────────────────────────────────────────── */
+.tab-label { font-size: 12px; font-weight: 500; }
+.tab-label .tab-runnum { font-size: 11px; color: var(--accent); margin-left: 3px; font-variant-numeric: tabular-nums; }
+.tab-btn.active .tab-label .tab-runnum { color: var(--accent); }
+
+/* ── 라이트 모드 추가 세밀 조정 ────────────────────────────── */
+.app[data-theme="light"] .agent-pill.active {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06);
+}
+.app[data-theme="light"] .tree-run-row { border: 1px solid transparent; }
+.app[data-theme="light"] .tree-date { color: var(--accent); }
+/* 선택된 프로젝트 하이라이트 in dark sidebar */
+.proj-item.active .proj-item-dot.on { box-shadow: 0 0 5px #30D158; }

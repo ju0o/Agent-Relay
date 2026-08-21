@@ -5,7 +5,7 @@
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { must, hasBridge } from './bridge.js';
-import { DataRootWidget, FieldSelect, FieldText } from './components.js';
+import { DataRootWidget, FieldText } from './components.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
@@ -41,8 +41,10 @@ function buildTree(items: HistoryItem[]): TreeDate[] {
     });
 }
 
-function runStatusIcon(r: { hasPrompt: boolean; hasResult: boolean }): string {
-  return r.hasPrompt && r.hasResult ? '◉' : r.hasPrompt || r.hasResult ? '◐' : '○';
+function RunDot({ hasPrompt, hasResult }: { hasPrompt: boolean; hasResult: boolean }): React.ReactElement {
+  const cls = hasPrompt && hasResult ? 'full' : hasPrompt || hasResult ? 'half' : 'empty';
+  const title = hasPrompt && hasResult ? 'prompt + result 있음' : hasPrompt ? 'prompt만 있음' : hasResult ? 'result만 있음' : '없음';
+  return <span className={`run-dot ${cls}`} title={title} />;
 }
 
 // ── 탭 타입 ──────────────────────────────────────────────────────────────────
@@ -546,30 +548,15 @@ function AppInner(): React.ReactElement {
             <DataRootWidget settings={settings} onChanged={applySettings} onPick={() => void changeDataRoot()} />
           </header>
 
-          {/* 글로벌 필드 (프로젝트, 날짜) */}
+          {/* 글로벌 필드 (날짜 + 저장위치) */}
           <section className="fields">
-            <FieldSelect
-              label="프로젝트"
-              value={project}
-              options={projects.map(p => ({ value: p.name, label: projectLabel(p.name) }))}
-              onChange={v => void pickProject(v)}
-              onAdd={() => setModal({
-                title: '새 프로젝트',
-                placeholder: '프로젝트 이름 (예: HERMESS)',
-                onOk: async v => {
-                  const created = await must<ProjectInfo>({ op: 'projects:create', dataRoot, name: v });
-                  await pickProject(created.name);
-                  notify('ok', `프로젝트 '${created.name}' 생성됨`);
-                },
-              })}
-            />
             <FieldText label="날짜 (YYYY-MM-DD)" value={date} onChange={v => void editDate(v)} />
             <div className="field breadcrumb-field">
               <span className="flabel">저장 위치</span>
               <span className="fvalue breadcrumb mono">
                 {project
                   ? `${project === ROOT_PROJECT ? '📂' : '📁'} ${projectLabel(project)} / 📅 ${date} / 🤖 ${activeTab?.agent ?? '?'} / 런 #${activeTab?.run || '?'}`
-                  : '← 프로젝트를 선택하거나, 폴더를 새로 고르세요'}
+                  : '← 왼쪽 사이드바에서 프로젝트를 선택하세요'}
               </span>
             </div>
           </section>
@@ -587,6 +574,18 @@ function AppInner(): React.ReactElement {
             {/* ── 파일 트리 패널 ── */}
             <FileTree
               project={project}
+              projects={projects}
+              dataRoot={dataRoot}
+              onPickProject={name => void pickProject(name)}
+              onAddProject={() => setModal({
+                title: '새 프로젝트',
+                placeholder: '프로젝트 이름 (예: HERMESS)',
+                onOk: async v => {
+                  const created = await must<ProjectInfo>({ op: 'projects:create', dataRoot, name: v });
+                  await pickProject(created.name);
+                  notify('ok', `프로젝트 '${created.name}' 생성됨`);
+                },
+              })}
               tree={tree}
               search={treeSearch}
               onSearchChange={setTreeSearch}
@@ -616,8 +615,10 @@ function AppInner(): React.ReactElement {
                     onClick={() => setActiveTabId(tab.id)}
                     title={tab.folder || `${tab.agent} — 아직 저장 안 됨`}
                   >
-                    <span className="tab-agent">{tab.agent}</span>
-                    {tab.run && <span className="tab-run mono">#{tab.run}</span>}
+                    <span className="tab-label">
+                      {tab.agent}
+                      {tab.run && <span className="tab-runnum"> #{tab.run}</span>}
+                    </span>
                     {(tab.prompt || tab.result) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
                     <button
                       className="tab-close"
@@ -639,17 +640,21 @@ function AppInner(): React.ReactElement {
               {activeTab && (
                 <div className="tab-header">
                   <div className="tab-header-row">
-                    <div className="field" style={{ minWidth: 0 }}>
-                      <span className="flabel">에이전트</span>
-                      <span className="fgrow">
-                        <select
-                          value={activeTab.agent}
-                          onChange={e => void changeTabAgent(activeTab.id, e.target.value)}
-                        >
-                          {agents.map(a => <option key={a} value={a}>{a}</option>)}
-                        </select>
+                    <div className="agent-pills-wrap">
+                      <span className="flabel">에이전트 {activeTab.run && <span style={{ color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>— 런 #{activeTab.run}</span>}</span>
+                      <div className="agent-pills-row">
+                        <div className="agent-pills">
+                          {agents.map(a => (
+                            <button
+                              key={a}
+                              className={`agent-pill${activeTab.agent === a ? ' active' : ''}`}
+                              title={a}
+                              onClick={() => void changeTabAgent(activeTab.id, a)}
+                            >{a}</button>
+                          ))}
+                        </div>
                         <button
-                          className="mini add"
+                          className="agent-pill-add"
                           title="에이전트 추가"
                           onClick={() => setModal({
                             title: '새 에이전트',
@@ -665,11 +670,7 @@ function AppInner(): React.ReactElement {
                             },
                           })}
                         >+</button>
-                      </span>
-                    </div>
-                    <div className="field readonly" style={{ minWidth: 60 }}>
-                      <span className="flabel">런</span>
-                      <span className="fvalue mono">{activeTab.run || '—'}</span>
+                      </div>
                     </div>
 
                     {/* 태그 */}
@@ -810,6 +811,10 @@ function AppInner(): React.ReactElement {
 // ── 파일 트리 컴포넌트 ─────────────────────────────────────────────────────────
 interface FileTreeProps {
   project: string;
+  projects: ProjectInfo[];
+  dataRoot: string;
+  onPickProject: (name: string) => void;
+  onAddProject: () => void;
   tree: TreeDate[];
   search: string;
   onSearchChange: (v: string) => void;
@@ -829,7 +834,8 @@ interface FileTreeProps {
 }
 
 function FileTree({
-  project, tree, search, onSearchChange, expandedKeys, onToggleKey,
+  project, projects, dataRoot, onPickProject, onAddProject,
+  tree, search, onSearchChange, expandedKeys, onToggleKey,
   activeFolder, dragRun, dropTarget,
   onDragStart, onDragEnd, onDropOnAgent, onSetDropTarget,
   onOpenRun, onOpenInNewTab, onDeleteRun, noProject,
@@ -837,8 +843,41 @@ function FileTree({
 
   const totalRuns = tree.reduce((s, d) => s + d.totalRuns, 0);
 
+  /** 프로젝트 표시 이름 (ROOT_PROJECT → 폴더명) */
+  function projLabel(name: string): string {
+    if (name === ROOT_PROJECT) {
+      const parts = dataRoot.replace(/\\/g, '/').split('/');
+      return parts[parts.length - 1] ?? dataRoot;
+    }
+    return name;
+  }
+
   return (
     <div className="filetree">
+      {/* ── 프로젝트 사이드바 (다크) ── */}
+      <div className="proj-sidebar">
+        <span className="proj-sidebar-label">Projects</span>
+        {projects.length === 0 && (
+          <div style={{ fontSize: 11, color: 'var(--sb-muted)', padding: '4px 8px' }}>
+            폴더를 선택하면<br />프로젝트가 표시됩니다
+          </div>
+        )}
+        {projects.map(p => (
+          <button
+            key={p.name}
+            className={`proj-item${p.name === project ? ' active' : ''}`}
+            onClick={() => onPickProject(p.name)}
+            title={p.path}
+          >
+            <span className={`proj-item-dot${p.name === project ? ' on' : ' off'}`} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {projLabel(p.name)}
+            </span>
+          </button>
+        ))}
+        <button className="proj-add" onClick={onAddProject}>+ 새 프로젝트</button>
+      </div>
+
       {/* 헤더 */}
       <div className="filetree-head">
         <span>📁 파일 트리</span>
@@ -934,7 +973,7 @@ function FileTree({
                             onClick={() => onOpenRun(histItem)}
                             onDoubleClick={() => onOpenInNewTab(histItem)}
                           >
-                            <span className="tree-run-status">{runStatusIcon(run)}</span>
+                            <RunDot hasPrompt={run.hasPrompt} hasResult={run.hasResult} />
                             <span className="mono tree-run-num">#{run.run}</span>
                             {run.tags.length > 0 && (
                               <span className="tree-run-tags">
