@@ -255,11 +255,28 @@ function AppInner(): React.ReactElement {
 
   // ── 탭에서 런 열기 ────────────────────────────────────────────────────────────
   async function openRunInTab(h: HistoryItem, tabId?: string): Promise<void> {
-    const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: h.folder });
     const tid = tabId ?? activeTabId;
-    updateTab(tid, { agent: h.agent, run: h.run, folder: h.folder, prompt: rec.prompt, result: rec.result, tags: rec.tags ?? [], promptPreview: false, resultPreview: false });
-    setExpandedKeys(prev => { const n = new Set(prev); n.add(`d:${h.date}`); n.add(`a:${h.date}:${h.agent}`); return n; });
-    notify('info', `런 #${h.run} (${h.agent}) 불러옴`);
+    const tab = tabs.find(t => t.id === tid);
+
+    const doLoad = async (): Promise<void> => {
+      const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: h.folder });
+      updateTab(tid, { agent: h.agent, run: h.run, folder: h.folder, prompt: rec.prompt, result: rec.result, tags: rec.tags ?? [], promptPreview: false, resultPreview: false });
+      setExpandedKeys(prev => { const n = new Set(prev); n.add(`d:${h.date}`); n.add(`a:${h.date}:${h.agent}`); return n; });
+      notify('info', `런 #${h.run} (${h.agent}) 불러옴`);
+    };
+
+    // 현재 탭에 내용이 있고 다른 런이면 확인
+    const hasContent = !!(tab?.prompt || tab?.result);
+    const isDifferentRun = tab?.folder !== h.folder;
+    if (hasContent && isDifferentRun) {
+      setConfirm({
+        text: `현재 탭에 저장되지 않은 내용이 있습니다.\n런 #${h.run} (${h.agent})을 불러오면 현재 내용이 사라집니다.`,
+        confirmBtn: '불러오기',
+        onOk: doLoad,
+      });
+      return;
+    }
+    await doLoad();
   }
 
   // ── 탭에서 새 런 ──────────────────────────────────────────────────────────────
@@ -368,6 +385,64 @@ function AppInner(): React.ReactElement {
         setTabs(prev => prev.map(t => t.folder === h.folder ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t));
         await refreshHistory();
         notify('ok', `런 #${h.run} 삭제됨`);
+      },
+    });
+  }
+
+  // ── 날짜 폴더 삭제 ────────────────────────────────────────────────────────────
+  async function deleteDate(dateStr: string): Promise<void> {
+    const runsCount = history.filter(h => h.date === dateStr).length;
+    setConfirm({
+      text: `📅 ${dateStr} 전체를 삭제하시겠습니까?\n(런 ${runsCount}개 포함 모든 파일이 삭제됩니다)\n이 작업은 되돌릴 수 없습니다.`,
+      confirmBtn: '삭제',
+      onOk: async () => {
+        await must({ op: 'date:delete', dataRoot, project, date: dateStr });
+        // 해당 날짜 런을 사용하는 탭 초기화
+        setTabs(prev => prev.map(t => {
+          const match = history.find(h => h.date === dateStr && h.folder === t.folder);
+          return match ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t;
+        }));
+        await refreshHistory();
+        notify('ok', `📅 ${dateStr} 삭제됨`);
+      },
+    });
+  }
+
+  // ── 에이전트 폴더 삭제 ────────────────────────────────────────────────────────
+  async function deleteAgent(dateStr: string, agentName: string): Promise<void> {
+    const runsCount = history.filter(h => h.date === dateStr && h.agent === agentName).length;
+    setConfirm({
+      text: `🤖 ${agentName} (${dateStr}) 폴더를 삭제하시겠습니까?\n(런 ${runsCount}개 포함 모든 파일이 삭제됩니다)\n이 작업은 되돌릴 수 없습니다.`,
+      confirmBtn: '삭제',
+      onOk: async () => {
+        await must({ op: 'agent:delete', dataRoot, project, date: dateStr, agent: agentName });
+        setTabs(prev => prev.map(t => {
+          const match = history.find(h => h.date === dateStr && h.agent === agentName && h.folder === t.folder);
+          return match ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t;
+        }));
+        await refreshHistory();
+        notify('ok', `🤖 ${agentName} (${dateStr}) 삭제됨`);
+      },
+    });
+  }
+
+  // ── 프로젝트 삭제 ─────────────────────────────────────────────────────────────
+  async function deleteProject(projectName: string): Promise<void> {
+    if (!projectName || projectName === ROOT_PROJECT) { notify('err', '루트 프로젝트는 삭제할 수 없습니다.'); return; }
+    const runsCount = history.length;
+    setConfirm({
+      text: `⚠️ 프로젝트 "${projectName}" 전체를 삭제하시겠습니까?\n(런 ${runsCount}개 포함 모든 파일이 영구 삭제됩니다)\n이 작업은 절대 되돌릴 수 없습니다!`,
+      confirmBtn: '영구 삭제',
+      onOk: async () => {
+        await must({ op: 'project:delete', dataRoot, project: projectName });
+        // 모든 탭 초기화
+        setTabs(prev => prev.map(t => ({ ...t, folder: '', run: '', prompt: '', result: '', tags: [] })));
+        setProject('');
+        setHistory([]);
+        // 프로젝트 목록 새로고침
+        const view = await must<{ projects: ProjectInfo[]; history: HistoryItem[] }>({ op: 'project:view', dataRoot, project: ROOT_PROJECT });
+        setProjects(view.projects);
+        notify('ok', `프로젝트 "${projectName}" 삭제됨`);
       },
     });
   }
@@ -601,6 +676,9 @@ function AppInner(): React.ReactElement {
               onOpenRun={h => void openRunInTab(h)}
               onOpenInNewTab={h => { void addTab(h.agent).then(() => void openRunInTab(h, tabs[tabs.length]?.id)); }}
               onDeleteRun={h => void deleteHistoryRun(h)}
+              onDeleteDate={d => void deleteDate(d)}
+              onDeleteAgent={(d, a) => void deleteAgent(d, a)}
+              onDeleteProject={p => void deleteProject(p)}
               noProject={!project}
             />
 
@@ -830,6 +908,9 @@ interface FileTreeProps {
   onOpenRun: (h: HistoryItem) => void;
   onOpenInNewTab: (h: HistoryItem) => void;
   onDeleteRun: (h: HistoryItem) => void;
+  onDeleteDate: (date: string) => void;
+  onDeleteAgent: (date: string, agent: string) => void;
+  onDeleteProject: (project: string) => void;
   noProject: boolean;
 }
 
@@ -838,7 +919,8 @@ function FileTree({
   tree, search, onSearchChange, expandedKeys, onToggleKey,
   activeFolder, dragRun, dropTarget,
   onDragStart, onDragEnd, onDropOnAgent, onSetDropTarget,
-  onOpenRun, onOpenInNewTab, onDeleteRun, noProject,
+  onOpenRun, onOpenInNewTab, onDeleteRun,
+  onDeleteDate, onDeleteAgent, onDeleteProject, noProject,
 }: FileTreeProps): React.ReactElement {
 
   const totalRuns = tree.reduce((s, d) => s + d.totalRuns, 0);
@@ -863,17 +945,29 @@ function FileTree({
           </div>
         )}
         {projects.map(p => (
-          <button
+          <div
             key={p.name}
             className={`proj-item${p.name === project ? ' active' : ''}`}
-            onClick={() => onPickProject(p.name)}
+            style={{ display: 'flex', alignItems: 'center' }}
             title={p.path}
           >
-            <span className={`proj-item-dot${p.name === project ? ' on' : ' off'}`} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {projLabel(p.name)}
-            </span>
-          </button>
+            <button
+              style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: '0', minWidth: 0, textAlign: 'left' }}
+              onClick={() => onPickProject(p.name)}
+            >
+              <span className={`proj-item-dot${p.name === project ? ' on' : ' off'}`} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, fontWeight: 500, color: 'inherit' }}>
+                {projLabel(p.name)}
+              </span>
+            </button>
+            {p.name !== ROOT_PROJECT && (
+              <button
+                className="row-del"
+                title={`프로젝트 "${projLabel(p.name)}" 삭제`}
+                onClick={e => { e.stopPropagation(); onDeleteProject(p.name); }}
+              >✕</button>
+            )}
+          </div>
         ))}
         <button className="proj-add" onClick={onAddProject}>+ 새 프로젝트</button>
       </div>
@@ -923,6 +1017,11 @@ function FileTree({
                 <span className="tree-chevron">{dateOpen ? '▾' : '▸'}</span>
                 <span>📅 {dateNode.date}</span>
                 <span className="tree-badge">{dateNode.totalRuns}개</span>
+                <button
+                  className="row-del"
+                  title={`${dateNode.date} 날짜 전체 삭제 (런 ${dateNode.totalRuns}개)`}
+                  onClick={e => { e.stopPropagation(); onDeleteDate(dateNode.date); }}
+                >🗑</button>
               </div>
 
               {dateOpen && dateNode.agents.map(agentNode => {
@@ -944,6 +1043,11 @@ function FileTree({
                       <span className="tree-chevron">{agentOpen ? '▾' : '▸'}</span>
                       <span>🤖 {agentNode.name}</span>
                       <span className="tree-badge">{agentNode.runs.length}</span>
+                      <button
+                        className="row-del"
+                        title={`${agentNode.name} (${dateNode.date}) 폴더 삭제 (런 ${agentNode.runs.length}개)`}
+                        onClick={e => { e.stopPropagation(); onDeleteAgent(dateNode.date, agentNode.name); }}
+                      >🗑</button>
                     </div>
 
                     {agentOpen && agentNode.runs.map(run => {

@@ -61,6 +61,9 @@ export type RelayRequest =
   | { op: 'run:export'; folder: string }
   | { op: 'run:tagUpdate'; folder: string; tags: string[] }
   | { op: 'run:move'; fromFolder: string; dataRoot: string; project: string; toDate: string; toAgent: string }
+  | { op: 'date:delete'; dataRoot: string; project: string; date: string }
+  | { op: 'agent:delete'; dataRoot: string; project: string; date: string; agent: string }
+  | { op: 'project:delete'; dataRoot: string; project: string }
   | { op: 'prompt:save'; folder: string; content: string; overwrite: boolean }
   | { op: 'result:save'; folder: string; content: string; overwrite: boolean }
   | { op: 'folder:open'; folder: string }

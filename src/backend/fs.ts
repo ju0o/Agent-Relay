@@ -244,6 +244,28 @@ export function deleteRun(folder: string): void {
   fs.rmSync(folder, { recursive: true, force: true });
 }
 
+/** Delete an entire date folder (all agents + runs within that date). */
+export function deleteDateFolder(dataRoot: string, project: string, date: string): void {
+  const dir = dateDir(dataRoot, project, date);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/** Delete an agent folder under a date (all runs for that agent on that date). */
+export function deleteAgentFolder(dataRoot: string, project: string, date: string, agent: string): void {
+  const dir = agentDir(dataRoot, project, date, agent);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * Delete a project folder entirely (all dates/agents/runs).
+ * ROOT_PROJECT ('.') cannot be deleted — that is the data root itself.
+ */
+export function deleteProject(dataRoot: string, project: string): void {
+  if (!project || project === '.') throw new Error('루트 프로젝트는 삭제할 수 없습니다.');
+  const dir = projectDir(dataRoot, project);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 /**
  * Build a merged markdown export of a run (prompt + result in one file).
  * Returns the markdown string; does not write anything.

@@ -319,6 +319,17 @@ html, body, #app {
 .tree-run-row:hover .tree-del { opacity: 1; }
 .tree-del:hover { color: var(--danger); }
 
+/* 날짜/에이전트/프로젝트 행의 호버 삭제 버튼 */
+.row-del {
+  opacity: 0; background: transparent; border: none;
+  color: var(--muted); cursor: pointer; padding: 2px 5px;
+  font-size: 11px; line-height: 1; transition: opacity 0.12s;
+  flex-shrink: 0; border-radius: 4px; margin-left: auto;
+}
+.tree-row:hover .row-del         { opacity: 1; }
+.proj-item:hover .row-del        { opacity: 1; color: var(--sb-muted); }
+.row-del:hover                   { color: var(--danger) !important; opacity: 1; background: rgba(255,69,58,0.10); }
+
 /* ── 편집 영역 ─────────────────────────────────────────────── */
 .editor-area {
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;

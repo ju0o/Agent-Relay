@@ -146,6 +146,23 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return { folder: newFolder };
     }
 
+    case 'date:delete': {
+      if (!req.date) throw new Error('date가 필요합니다.');
+      relay.deleteDateFolder(req.dataRoot, req.project, req.date);
+      return true;
+    }
+
+    case 'agent:delete': {
+      if (!req.agent) throw new Error('agent가 필요합니다.');
+      relay.deleteAgentFolder(req.dataRoot, req.project, req.date, req.agent);
+      return true;
+    }
+
+    case 'project:delete': {
+      relay.deleteProject(req.dataRoot, req.project);
+      return true;
+    }
+
     case 'prompt:save':
       return relay.writeMarkdown(req.folder, 'prompt.md', req.content, req.overwrite);
 
