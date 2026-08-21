@@ -289,3 +289,25 @@ export function allAgents(settings: AppSettings): string[] {
   const merged = [...DEFAULT_AGENTS, ...settings.customAgents];
   return [...new Set(merged)];
 }
+
+/**
+ * Move a run folder to a new project/date/agent location.
+ * Copies all files, deletes the source, returns the new folder path.
+ */
+export function moveRun(
+  fromFolder: string,
+  dataRoot: string,
+  project: string,
+  toDate: string,
+  toAgent: string,
+): string {
+  const nextRun = nextRunNumber(dataRoot, project, toDate, toAgent);
+  const destFolder = ensureRunFolder(dataRoot, project, toDate, toAgent, nextRun);
+  for (const entry of fs.readdirSync(fromFolder, { withFileTypes: true })) {
+    if (entry.isFile()) {
+      fs.copyFileSync(path.join(fromFolder, entry.name), path.join(destFolder, entry.name));
+    }
+  }
+  fs.rmSync(fromFolder, { recursive: true, force: true });
+  return destFolder;
+}

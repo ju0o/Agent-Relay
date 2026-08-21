@@ -140,6 +140,12 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return req.tags;
     }
 
+    case 'run:move': {
+      if (!req.fromFolder) throw new Error('fromFolder가 필요합니다.');
+      const newFolder = relay.moveRun(req.fromFolder, req.dataRoot, req.project, req.toDate, req.toAgent);
+      return { folder: newFolder };
+    }
+
     case 'prompt:save':
       return relay.writeMarkdown(req.folder, 'prompt.md', req.content, req.overwrite);
 
@@ -196,8 +202,7 @@ function createWindow(): void {
     }
   });
 
-  // DEBUG: auto-open DevTools so renderer errors are always visible
-  mainWindow.webContents.openDevTools();
+  // DevTools는 F12 또는 Ctrl+Shift+I로 열 수 있습니다 (위에 등록됨)
 
   // ── Detect page-load failure and show a diagnostic dialog ──
   const clientPath = path.join(__dirname, '..', '..', 'client', 'index.html');
