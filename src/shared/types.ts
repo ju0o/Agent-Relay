@@ -74,6 +74,12 @@ export type RelayError = { ok: false; error: string };
 
 export type RelayResponse<T = unknown> = RelayResult<T> | RelayError;
 
+/**
+ * Special project value meaning "use DATA_ROOT directly as the project root".
+ * Directory structure: DATA_ROOT / [Date] / [Agent] / [NN] /
+ */
+export const ROOT_PROJECT = '.';
+
 /** Default agent names shipped with the app. */
 export const DEFAULT_AGENTS = [
   'Claude Code',

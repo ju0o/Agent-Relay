@@ -47,12 +47,18 @@ export function todayString(): string {
   return `${y}-${m}-${day}`;
 }
 
+/** No longer adds a 'Projects/' layer — DATA_ROOT itself is the projects container. */
 export function projectsDir(dataRoot: string): string {
-  return path.join(dataRoot, 'Projects');
+  return dataRoot;
 }
 
+/**
+ * '.' = use DATA_ROOT directly (no project subfolder).
+ * Any other name = DATA_ROOT/[slugified name]/.
+ */
 export function projectDir(dataRoot: string, project: string): string {
-  return path.join(projectsDir(dataRoot), slugify(project));
+  if (!project || project === '.') return dataRoot;
+  return path.join(dataRoot, slugify(project));
 }
 
 export function dateDir(dataRoot: string, project: string, date: string): string {
@@ -86,28 +92,45 @@ export function ensureRunFolder(
   return dir;
 }
 
-/** Ensure DATA_ROOT and its Projects child exist. Throws a friendly message on failure. */
+/** Ensure DATA_ROOT exists. Throws a friendly message on failure. */
 export function ensureDataRoot(dataRoot: string): void {
   if (!dataRoot) throw new Error('DATA_ROOT가 선택되지 않았습니다.');
-  fs.mkdirSync(projectsDir(dataRoot), { recursive: true });
+  fs.mkdirSync(dataRoot, { recursive: true });
 }
 
-/** List projects sorted alphabetically. Each is directly under Projects/. */
+/**
+ * List projects — the subfolders of DATA_ROOT that look like project containers
+ * (i.e. they contain date-formatted subfolders, or are just plain directories).
+ * Hidden folders and system folders are excluded.
+ * '.' (root project) is always included as the first item if DATA_ROOT itself
+ * contains date-formatted subfolders directly.
+ */
 export function listProjects(dataRoot: string): ProjectInfo[] {
   ensureDataRoot(dataRoot);
-  const root = projectsDir(dataRoot);
-  const entries = fs.readdirSync(root, { withFileTypes: true });
-  return entries
-    .filter((e) => e.isDirectory())
-    .map((e) => ({ name: e.name, path: path.join(root, e.name) }))
+  const entries = fs.readdirSync(dataRoot, { withFileTypes: true });
+
+  // Check if DATA_ROOT itself has date folders (YYYY-MM-DD) → ROOT_PROJECT mode available
+  const hasDateDirsAtRoot = entries.some(
+    (e) => e.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(e.name),
+  );
+
+  const subProjects: ProjectInfo[] = entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !/^\d{4}-\d{2}-\d{2}$/.test(e.name))
+    .map((e) => ({ name: e.name, path: path.join(dataRoot, e.name) }))
     .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (hasDateDirsAtRoot) {
+    // Put the root-mode option first
+    return [{ name: '.', path: dataRoot }, ...subProjects];
+  }
+  return subProjects;
 }
 
 /** Create a project folder (never deletes anything). Returns the project info. */
 export function createProject(dataRoot: string, name: string): ProjectInfo {
   ensureDataRoot(dataRoot);
   const slug = slugify(name);
-  const dir = path.join(projectsDir(dataRoot), slug);
+  const dir = path.join(dataRoot, slug);
   fs.mkdirSync(dir, { recursive: true });
   return { name: slug, path: dir };
 }

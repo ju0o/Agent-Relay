@@ -16,6 +16,20 @@
   --warn:    #ff9f0a;
 }
 
+/* ── 라이트 모드 ────────────────────────────────────────────── */
+.app[data-theme="light"] {
+  --bg:      #f5f5f7;
+  --bg2:     #ffffff;
+  --bg3:     #e8e8ed;
+  --border:  #c7c7cc;
+  --fg:      #1d1d1f;
+  --muted:   #6e6e73;
+  --accent:  #0066cc;
+  --accent2: #28a745;
+  --danger:  #d93025;
+  --warn:    #c8780a;
+}
+
 * { box-sizing: border-box; }
 
 html, body, #app {
@@ -82,6 +96,8 @@ html, body, #app {
   display: flex; gap: 12px; align-items: center;
   font-size: 11px; color: var(--muted);
 }
+.theme-toggle { font-size: 14px; padding: 2px 6px; border-radius: 6px; }
+
 .topbar-shortcuts kbd {
   display: inline-block;
   background: var(--bg3); border: 1px solid var(--border);

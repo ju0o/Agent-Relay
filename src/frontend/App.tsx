@@ -12,6 +12,7 @@ import {
   HistoryItem,
   ProjectInfo,
   ProjectViewData,
+  ROOT_PROJECT,
   RunFolderResult,
   SettingsView,
   TAG_PRESETS,
@@ -103,6 +104,16 @@ export function App(): React.ReactElement {
 
 // ── 메인 컴포넌트 ─────────────────────────────────────────────────────────────
 function AppInner(): React.ReactElement {
+  // 테마 (light / dark)
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('theme') as 'dark' | 'light') ?? 'dark';
+  });
+  function toggleTheme(): void {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    localStorage.setItem('theme', next);
+  }
+
   // 글로벌 상태
   const [loading, setLoading]       = useState(true);
   const [initError, setInitError]   = useState('');
@@ -130,6 +141,15 @@ function AppInner(): React.ReactElement {
 
   const dataRoot   = settings?.dataRoot ?? '';
   const activeTab  = tabs.find(t => t.id === activeTabId) ?? tabs[0];
+
+  /** 프로젝트 이름 표시용 — '.' → 현재 폴더 이름 */
+  function projectLabel(name: string): string {
+    if (name === ROOT_PROJECT) {
+      const parts = dataRoot.replace(/\\/g, '/').split('/');
+      return `📂 현재 폴더 (${parts[parts.length - 1] ?? dataRoot})`;
+    }
+    return name;
+  }
 
   // 필터된 히스토리 → 트리
   const filteredHistory = useMemo(() => {
@@ -445,6 +465,21 @@ function AppInner(): React.ReactElement {
     await applySettings(s);
     setProject(''); setHistory([]);
     notify('ok', `데이터 폴더 설정됨: ${s.dataRoot}`);
+    // 설정 후 프로젝트 목록 로드하여 자동 선택
+    try {
+      const view = await must<ProjectViewData>({ op: 'project:view', dataRoot: s.dataRoot, project: ROOT_PROJECT });
+      setProjects(view.projects);
+      // 루트 폴더에 기존 데이터가 있으면 자동으로 루트 프로젝트 선택
+      if (view.projects.some(p => p.name === ROOT_PROJECT) && view.history.length > 0) {
+        setProject(ROOT_PROJECT);
+        setHistory(view.history);
+        for (const tab of tabs) {
+          const res = await getNextRun(s.dataRoot, tab.agent, date);
+          if (res) updateTab(tab.id, res);
+        }
+        notify('ok', `기존 런 ${view.history.length}개를 발견했습니다.`);
+      }
+    } catch { /* 오류 무시 */ }
   }
 
   function modalOk(): void {
@@ -475,7 +510,7 @@ function AppInner(): React.ReactElement {
 
   // ── 렌더 ──────────────────────────────────────────────────────────────────────
   return (
-    <div className="app">
+    <div className="app" data-theme={theme}>
       {/* 데이터폴더 미설정 화면 */}
       {!dataRoot && settings && (
         <div className="setup">
@@ -503,6 +538,11 @@ function AppInner(): React.ReactElement {
               <span title="현재 탭 새 런"><kbd>Ctrl+N</kbd> 새 런</span>
               <span title="병렬 탭 추가"><kbd>Ctrl+T</kbd> 새 탭</span>
             </div>
+            <button
+              className="mini theme-toggle"
+              title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
+              onClick={toggleTheme}
+            >{theme === 'dark' ? '☀️' : '🌙'}</button>
             <DataRootWidget settings={settings} onChanged={applySettings} onPick={() => void changeDataRoot()} />
           </header>
 
@@ -511,7 +551,7 @@ function AppInner(): React.ReactElement {
             <FieldSelect
               label="프로젝트"
               value={project}
-              options={projects.map(p => ({ value: p.name, label: p.name }))}
+              options={projects.map(p => ({ value: p.name, label: projectLabel(p.name) }))}
               onChange={v => void pickProject(v)}
               onAdd={() => setModal({
                 title: '새 프로젝트',
@@ -528,8 +568,8 @@ function AppInner(): React.ReactElement {
               <span className="flabel">저장 위치</span>
               <span className="fvalue breadcrumb mono">
                 {project
-                  ? `📁 ${project} / 📅 ${date} / 🤖 ${activeTab?.agent ?? '?'} / 런 #${activeTab?.run || '?'}`
-                  : '← 프로젝트를 먼저 선택하세요'}
+                  ? `${project === ROOT_PROJECT ? '📂' : '📁'} ${projectLabel(project)} / 📅 ${date} / 🤖 ${activeTab?.agent ?? '?'} / 런 #${activeTab?.run || '?'}`
+                  : '← 프로젝트를 선택하거나, 폴더를 새로 고르세요'}
               </span>
             </div>
           </section>
