@@ -1,0 +1,22 @@
+appId: com.agentrelaylog.v0
+productName: AgentRelayLog
+directories:
+  output: dist
+  buildResources: build
+files:
+  - dist/client/**/*
+  - dist/server/**/*
+extraMetadata:
+  main: dist/server/backend/main.js
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+    - target: dir
+      arch:
+        - x64
+  artifactName: AgentRelayLog.exe
+portable:
+  artifactName: AgentRelayLog.exe
+npmRebuild: false

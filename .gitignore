@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.test-data-root/
+*.log
+.DS_Store
+Thumbs.db
