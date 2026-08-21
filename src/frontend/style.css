@@ -16,19 +16,94 @@
   --warn:    #ff9f0a;
 }
 
-/* ── 라이트 모드 ────────────────────────────────────────────── */
+/* ── 라이트 모드 (Apple-style) ──────────────────────────────── */
 .app[data-theme="light"] {
-  --bg:      #f5f5f7;
+  --bg:      #fafafa;
   --bg2:     #ffffff;
-  --bg3:     #e8e8ed;
-  --border:  #c7c7cc;
+  --bg3:     #f0f0f2;
+  --border:  rgba(0,0,0,0.08);
   --fg:      #1d1d1f;
   --muted:   #6e6e73;
   --accent:  #0066cc;
-  --accent2: #28a745;
-  --danger:  #d93025;
-  --warn:    #c8780a;
+  --accent2: #30d158;
+  --danger:  #ff453a;
+  --warn:    #ff9f0a;
 }
+
+/* ── 라이트 모드 — 표면 입체감 ─────────────────────────────── */
+/* 카드에 부드러운 그림자 추가 */
+.app[data-theme="light"] .setupcard,
+.app[data-theme="light"] .modcard {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04);
+}
+/* 파일트리 우측 구분선을 반투명으로 */
+.app[data-theme="light"] .filetree {
+  background: #f5f5f7;
+  border-right-color: rgba(0,0,0,0.08);
+}
+/* 탭바 배경 */
+.app[data-theme="light"] .tab-bar {
+  background: #f5f5f7;
+}
+/* 탭 헤더 */
+.app[data-theme="light"] .tab-header {
+  background: #f5f5f7;
+}
+/* 패널 헤더 */
+.app[data-theme="light"] .panehead {
+  background: #f5f5f7;
+}
+/* 텍스트 에디터 배경 — 순백보다 살짝 따뜻하게 */
+.app[data-theme="light"] .pane textarea {
+  background: #ffffff;
+}
+/* 활성 런 행 — 파란 배경 연하게 */
+.app[data-theme="light"] .tree-run-row.active {
+  background: rgba(0,102,204,0.09);
+  border: 1px solid rgba(0,102,204,0.20);
+}
+/* 드래그 드롭 타겟 */
+.app[data-theme="light"] .tree-drop-target {
+  box-shadow: inset 0 0 0 2px #0066cc;
+  background: rgba(0,102,204,0.06) !important;
+}
+.app[data-theme="light"] .pane.drag-over {
+  box-shadow: inset 0 0 0 2px #0066cc;
+  background: rgba(0,102,204,0.04);
+}
+/* 플래시 배경 — Apple 컬러 기준 */
+.app[data-theme="light"] .flash.ok  { background: rgba(48,209,88,0.10); }
+.app[data-theme="light"] .flash.err { background: rgba(255,69,58,0.10); }
+.app[data-theme="light"] .splash-err { background: rgba(255,69,58,0.07); }
+/* 기본 버튼 */
+.app[data-theme="light"] .btn { background: #f0f0f2; border-color: rgba(0,0,0,0.1); }
+.app[data-theme="light"] .btn:hover { background: #e8e8ed; border-color: rgba(0,102,204,0.35); }
+/* 프라이머리 버튼 — 흰 글씨 */
+.app[data-theme="light"] .btn.primary { color: #fff; }
+/* 미니 버튼 */
+.app[data-theme="light"] .mini { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.09); }
+/* kbd 키캡 */
+.app[data-theme="light"] .topbar-shortcuts kbd {
+  background: rgba(0,0,0,0.05); border-color: rgba(0,0,0,0.12); color: #3a3a3c;
+}
+/* 검색 입력 */
+.app[data-theme="light"] .hist-search { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.09); }
+/* fvalue */
+.app[data-theme="light"] .fvalue { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.09); }
+/* field select / input */
+.app[data-theme="light"] .field select,
+.app[data-theme="light"] .field input[type="text"] {
+  background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.09);
+}
+/* 스크롤바 (webkit) */
+.app[data-theme="light"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+.app[data-theme="light"] ::-webkit-scrollbar-track { background: transparent; }
+.app[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 4px; }
+.app[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.28); }
+/* 모달 오버레이 */
+.app[data-theme="light"] .modal { background: rgba(0,0,0,0.35); }
+/* 탑바 */
+.app[data-theme="light"] .topbar { background: #f5f5f7; border-bottom-color: rgba(0,0,0,0.08); }
 
 * { box-sizing: border-box; }
 
