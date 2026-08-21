@@ -1,4 +1,29 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
+
+/** Catches any render error and shows a readable message instead of a blank screen. */
+class ErrorBoundary extends Component<{ children: React.ReactNode }, { err: string | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { err: null };
+  }
+  static getDerivedStateFromError(e: unknown): { err: string } {
+    return { err: e instanceof Error ? e.message : String(e) };
+  }
+  render(): React.ReactNode {
+    if (this.state.err) {
+      return (
+        <div style={{ padding: 40, color: '#e06c5f', fontFamily: 'monospace' }}>
+          <strong>렌더 오류</strong>
+          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 12 }}>{this.state.err}</pre>
+          <p style={{ color: '#8b8fa0', fontSize: 12 }}>
+            DevTools → Console 탭에서 자세한 오류를 확인하세요.
+          </p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import { must, hasBridge } from './bridge.js';
 import { DataRootWidget, FieldSelect, FieldText } from './components.js';
 import { renderMd } from './md.js';
@@ -37,7 +62,17 @@ interface ConfirmState {
 }
 
 export function App(): React.ReactElement {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
+  );
+}
+
+function AppInner(): React.ReactElement {
   // ── core state ──────────────────────────────────────────────────────────────
+  const [loading, setLoading] = useState(true);
+  const [initError, setInitError] = useState('');
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [project, setProject] = useState('');
@@ -337,12 +372,19 @@ export function App(): React.ReactElement {
   // ── lifecycle ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     void (async () => {
-      if (!hasBridge()) {
-        notify('err', 'Electron IPC 브리지를 사용할 수 없습니다. 로컬 앱이 아닙니다.');
-        return;
+      try {
+        if (!hasBridge()) {
+          setInitError('Electron IPC 브리지를 사용할 수 없습니다.\n앱(exe)을 직접 실행하세요.');
+          setLoading(false);
+          return;
+        }
+        const s = await must<SettingsView>({ op: 'settings:get' });
+        await applySettings(s);
+      } catch (e) {
+        setInitError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
       }
-      const s = await must<SettingsView>({ op: 'settings:get' });
-      await applySettings(s);
     })();
   }, []);
 
@@ -365,6 +407,31 @@ export function App(): React.ReactElement {
   }
 
   // ── render ────────────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="app splash">
+        <div className="splash-inner">
+          <div className="splash-logo">Agent Relay Log · V0</div>
+          <div className="splash-spin" />
+        </div>
+      </div>
+    );
+  }
+
+  if (initError) {
+    return (
+      <div className="app splash">
+        <div className="splash-inner">
+          <div className="splash-logo">Agent Relay Log · V0</div>
+          <div className="splash-err">{initError}</div>
+          <p style={{ color: '#8b8fa0', fontSize: 12, marginTop: 8 }}>
+            DevTools (Ctrl+Shift+I) → Console 탭에서 자세한 내용을 확인하세요.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       {!dataRoot && settings && (
