@@ -616,3 +616,100 @@ html, body, #app {
 .app[data-theme="light"] .tree-date { color: var(--accent); }
 /* 선택된 프로젝트 하이라이트 in dark sidebar */
 .proj-item.active .proj-item-dot.on { box-shadow: 0 0 5px #30D158; }
+/* 다른 세션에서 열려있는 프로젝트 표시 */
+.proj-item-dot.open {
+  background: rgba(255,255,255,0.40);
+  box-shadow: 0 0 4px rgba(255,255,255,0.30);
+}
+
+/* ── 프로젝트 세션 탭 바 ────────────────────────────────── */
+.proj-tab-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px 10px 0;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+  /* 스크롤바 숨기기 */
+  scrollbar-width: none;
+}
+.proj-tab-bar::-webkit-scrollbar { display: none; }
+
+.proj-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  background: var(--bg3);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+  position: relative;
+  bottom: -1px;   /* border-bottom 의 gap 없애기 */
+  min-height: 30px;
+}
+.proj-tab:hover:not(.active) {
+  background: var(--bg2);
+  color: var(--fg);
+}
+.proj-tab.active {
+  background: var(--bg);
+  color: var(--fg);
+  border-bottom-color: var(--bg);  /* body 배경과 연결 */
+}
+.proj-tab-icon { font-size: 13px; flex: none; }
+.proj-tab-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proj-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px; height: 16px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+  flex: none;
+}
+.proj-tab:hover .proj-tab-close,
+.proj-tab.active .proj-tab-close { opacity: 1; }
+.proj-tab-close:hover { color: var(--danger); background: rgba(255,69,58,0.12); }
+
+.proj-tab-add {
+  padding: 4px 10px;
+  background: none;
+  border: 1px dashed var(--border);
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  min-height: 30px;
+  position: relative;
+  bottom: -1px;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.proj-tab-add:hover {
+  color: var(--fg);
+  background: var(--bg3);
+  border-color: var(--accent);
+}
+
+/* 라이트 모드 조정 */
+.app[data-theme="light"] .proj-tab { background: #ebebed; }
+.app[data-theme="light"] .proj-tab.active { background: var(--bg); }
+.app[data-theme="light"] .proj-tab:hover:not(.active) { background: #e0e0e3; }

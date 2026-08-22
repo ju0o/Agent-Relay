@@ -1,7 +1,7 @@
 /**
  * Agent Relay Log V0 — 메인 UI
  *
- * 탭 기반 병렬 편집 + 파일 트리 + 한국어 UI
+ * 프로젝트 세션 탭 + 에디터 탭 기반 병렬 편집 + 파일 트리 + 한국어 UI
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { must, hasBridge } from './bridge.js';
@@ -47,7 +47,7 @@ function RunDot({ hasPrompt, hasResult }: { hasPrompt: boolean; hasResult: boole
   return <span className={`run-dot ${cls}`} title={title} />;
 }
 
-// ── 탭 타입 ──────────────────────────────────────────────────────────────────
+// ── 에디터 탭 타입 ───────────────────────────────────────────────────────────
 interface EditorTab {
   id: string;
   agent: string;
@@ -71,6 +71,34 @@ function makeTab(agent = 'Claude Code'): EditorTab {
     promptPreview: false, resultPreview: false, promptDrag: false, resultDrag: false,
   };
 }
+
+// ── 프로젝트 세션 타입 ────────────────────────────────────────────────────────
+interface ProjectSession {
+  id: string;
+  project: string;         // '' = 아직 프로젝트 선택 안 됨
+  history: HistoryItem[];
+  tabs: EditorTab[];
+  activeTabId: string;
+  expandedKeys: Set<string>;
+  treeSearch: string;
+}
+
+let _sessionCounter = 0;
+function makeSession(project = ''): ProjectSession {
+  const tab = makeTab();
+  return {
+    id: `sess-${++_sessionCounter}`,
+    project,
+    history: [],
+    tabs: [tab],
+    activeTabId: tab.id,
+    expandedKeys: new Set(),
+    treeSearch: '',
+  };
+}
+
+// 초기 세션 — 모듈 로드 시 단 한 번 생성
+const _initSess = makeSession();
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 function todayLocal(): string {
@@ -107,9 +135,9 @@ export function App(): React.ReactElement {
 // ── 메인 컴포넌트 ─────────────────────────────────────────────────────────────
 function AppInner(): React.ReactElement {
   // 테마 (light / dark)
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-    return (localStorage.getItem('theme') as 'dark' | 'light') ?? 'dark';
-  });
+  const [theme, setTheme] = useState<'dark' | 'light'>(() =>
+    (localStorage.getItem('theme') as 'dark' | 'light') ?? 'dark'
+  );
   function toggleTheme(): void {
     const next = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
@@ -117,32 +145,36 @@ function AppInner(): React.ReactElement {
   }
 
   // 글로벌 상태
-  const [loading, setLoading]       = useState(true);
-  const [initError, setInitError]   = useState('');
-  const [settings, setSettings]     = useState<SettingsView | null>(null);
-  const [projects, setProjects]      = useState<ProjectInfo[]>([]);
-  const [project, setProject]       = useState('');
-  const [agents, setAgents]         = useState<string[]>([...DEFAULT_AGENTS]);
-  const [date, setDate]             = useState(todayLocal());
-  const [history, setHistory]       = useState<HistoryItem[]>([]);
-  const [msg, setMsg]               = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
+  const [loading, setLoading]     = useState(true);
+  const [initError, setInitError] = useState('');
+  const [settings, setSettings]   = useState<SettingsView | null>(null);
+  const [projects, setProjects]   = useState<ProjectInfo[]>([]);
+  const [agents, setAgents]       = useState<string[]>([...DEFAULT_AGENTS]);
+  const [date, setDate]           = useState(todayLocal());
+  const [msg, setMsg]             = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
   const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [modal, setModal]           = useState<ModalState | null>(null);
-  const [confirm, setConfirm]       = useState<ConfirmState | null>(null);
-  const [inputVal, setInputVal]     = useState('');
+  const [modal, setModal]         = useState<ModalState | null>(null);
+  const [confirm, setConfirm]     = useState<ConfirmState | null>(null);
+  const [inputVal, setInputVal]   = useState('');
 
-  // 탭 상태
-  const [tabs, setTabs]             = useState<EditorTab[]>([makeTab()]);
-  const [activeTabId, setActiveTabId] = useState<string>('tab-1');
+  // 프로젝트 세션 상태 (멀티 프로젝트 탭)
+  const [sessions, setSessions]           = useState<ProjectSession[]>([_initSess]);
+  const [activeSessionId, setActiveSessionId] = useState<string>(_initSess.id);
 
-  // 트리 상태
-  const [treeSearch, setTreeSearch] = useState('');
-  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
-  const [dragRun, setDragRun]       = useState<HistoryItem | null>(null);
+  // 드래그 앤 드롭 (글로벌)
+  const [dragRun, setDragRun]     = useState<HistoryItem | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
-  const dataRoot   = settings?.dataRoot ?? '';
-  const activeTab  = tabs.find(t => t.id === activeTabId) ?? tabs[0];
+  // ── 활성 세션 파생값 ──────────────────────────────────────────────────────────
+  const activeSession = sessions.find(s => s.id === activeSessionId) ?? sessions[0]!;
+  const project       = activeSession.project;
+  const history       = activeSession.history;
+  const tabs          = activeSession.tabs;
+  const activeTabId   = activeSession.activeTabId;
+  const treeSearch    = activeSession.treeSearch;
+  const expandedKeys  = activeSession.expandedKeys;
+  const dataRoot      = settings?.dataRoot ?? '';
+  const activeTab     = tabs.find(t => t.id === activeTabId) ?? tabs[0];
 
   /** 프로젝트 이름 표시용 — '.' → 현재 폴더 이름 */
   function projectLabel(name: string): string {
@@ -167,22 +199,38 @@ function AppInner(): React.ReactElement {
 
   const tree = useMemo(() => buildTree(filteredHistory), [filteredHistory]);
 
-  // 가장 최근 날짜 자동 펼침
+  // 가장 최근 날짜 자동 펼침 (세션 전환 또는 새 날짜 추가 시)
   useEffect(() => {
     if (tree.length > 0) {
-      const newest = tree[0];
-      setExpandedKeys(prev => {
-        const next = new Set(prev);
-        next.add(`d:${newest.date}`);
+      const newest = tree[0]!;
+      const dateKey = `d:${newest.date}`;
+      setSessions(prev => prev.map(s => {
+        if (s.id !== activeSessionId) return s;
+        if (s.expandedKeys.has(dateKey)) return s;
+        const next = new Set(s.expandedKeys);
+        next.add(dateKey);
         newest.agents.forEach(a => next.add(`a:${newest.date}:${a.name}`));
-        return next;
-      });
+        return { ...s, expandedKeys: next };
+      }));
     }
-  }, [tree.length > 0 ? tree[0].date : '']);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId, tree.length > 0 ? tree[0]?.date ?? '' : '']);
+
+  // ── 세션 헬퍼 ────────────────────────────────────────────────────────────────
+  function updateSession(id: string, patch: Partial<Omit<ProjectSession, 'id'>>): void {
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+  }
+  function updateActiveSession(patch: Partial<Omit<ProjectSession, 'id'>>): void {
+    updateSession(activeSessionId, patch);
+  }
 
   // ── 탭 헬퍼 ─────────────────────────────────────────────────────────────────
-  function updateTab(id: string, patch: Partial<EditorTab>): void {
-    setTabs(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
+  function updateTab(tabId: string, patch: Partial<EditorTab>): void {
+    setSessions(prev => prev.map(s =>
+      s.id === activeSessionId
+        ? { ...s, tabs: s.tabs.map(t => t.id === tabId ? { ...t, ...patch } : t) }
+        : s
+    ));
   }
 
   // ── 알림 ─────────────────────────────────────────────────────────────────────
@@ -203,13 +251,16 @@ function AppInner(): React.ReactElement {
   }
 
   // ── 데이터 로드 ───────────────────────────────────────────────────────────────
-  async function loadView(projectName: string): Promise<void> {
+  async function loadView(projectName: string, sessId?: string): Promise<void> {
+    const sid = sessId ?? activeSessionId;
     if (!projectName || !dataRoot) return;
     const view = await must<ProjectViewData>({ op: 'project:view', dataRoot, project: projectName });
     setProjects(view.projects);
-    setHistory(view.history);
+    setSessions(prev => prev.map(s => s.id === sid ? { ...s, history: view.history } : s));
   }
-  async function refreshHistory(): Promise<void> { if (project) await loadView(project); }
+  async function refreshHistory(): Promise<void> {
+    if (project) await loadView(project);
+  }
 
   // ── 런 폴더 준비 ──────────────────────────────────────────────────────────────
   async function getNextRun(p: string, a: string, d: string): Promise<RunFolderResult | null> {
@@ -222,11 +273,14 @@ function AppInner(): React.ReactElement {
   async function addTab(agentName?: string): Promise<void> {
     const agent = agentName ?? (activeTab?.agent ?? DEFAULT_AGENTS[0]);
     const tab = makeTab(agent);
-    setTabs(prev => [...prev, tab]);
-    setActiveTabId(tab.id);
+    setSessions(prev => prev.map(s =>
+      s.id === activeSessionId
+        ? { ...s, tabs: [...s.tabs, tab], activeTabId: tab.id }
+        : s
+    ));
     if (project && date) {
       const res = await getNextRun(project, agent, date);
-      if (res) setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, ...res } : t));
+      if (res) updateTab(tab.id, res);
     }
     notify('info', `새 탭 — ${agent}`);
   }
@@ -235,16 +289,21 @@ function AppInner(): React.ReactElement {
   function removeTab(id: string): void {
     const tab = tabs.find(t => t.id === id);
     if (!tab) return;
+    const sessId = activeSessionId;
     const doRemove = (): void => {
-      const next = tabs.filter(t => t.id !== id);
-      if (next.length === 0) {
-        const fresh = makeTab(tab.agent);
-        setTabs([fresh]);
-        setActiveTabId(fresh.id);
-      } else {
-        setTabs(next);
-        if (activeTabId === id) setActiveTabId(next[next.length - 1].id);
-      }
+      setSessions(prev => prev.map(s => {
+        if (s.id !== sessId) return s;
+        const next = s.tabs.filter(t => t.id !== id);
+        if (next.length === 0) {
+          const fresh = makeTab(tab.agent);
+          return { ...s, tabs: [fresh], activeTabId: fresh.id };
+        }
+        return {
+          ...s,
+          tabs: next,
+          activeTabId: s.activeTabId === id ? next[next.length - 1]!.id : s.activeTabId,
+        };
+      }));
     };
     if (tab.prompt || tab.result) {
       setConfirm({ text: `탭 "${tab.agent} #${tab.run || '?'}"을 닫을까요?\n저장되지 않은 내용은 사라집니다.`, confirmBtn: '닫기', onOk: doRemove });
@@ -261,11 +320,16 @@ function AppInner(): React.ReactElement {
     const doLoad = async (): Promise<void> => {
       const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: h.folder });
       updateTab(tid, { agent: h.agent, run: h.run, folder: h.folder, prompt: rec.prompt, result: rec.result, tags: rec.tags ?? [], promptPreview: false, resultPreview: false });
-      setExpandedKeys(prev => { const n = new Set(prev); n.add(`d:${h.date}`); n.add(`a:${h.date}:${h.agent}`); return n; });
+      setSessions(prev => prev.map(s => {
+        if (s.id !== activeSessionId) return s;
+        const next = new Set(s.expandedKeys);
+        next.add(`d:${h.date}`);
+        next.add(`a:${h.date}:${h.agent}`);
+        return { ...s, expandedKeys: next };
+      }));
       notify('info', `런 #${h.run} (${h.agent}) 불러옴`);
     };
 
-    // 현재 탭에 내용이 있고 다른 런이면 확인
     const hasContent = !!(tab?.prompt || tab?.result);
     const isDifferentRun = tab?.folder !== h.folder;
     if (hasContent && isDifferentRun) {
@@ -358,11 +422,11 @@ function AppInner(): React.ReactElement {
   }
 
   // ── 태그 ─────────────────────────────────────────────────────────────────────
-  async function updateTabTags(tabId: string, tags: string[]): Promise<void> {
+  async function updateTabTags(tabId: string, newTags: string[]): Promise<void> {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab?.folder) return;
-    await must({ op: 'run:tagUpdate', folder: tab.folder, tags });
-    updateTab(tabId, { tags });
+    await must({ op: 'run:tagUpdate', folder: tab.folder, tags: newTags });
+    updateTab(tabId, { tags: newTags });
     await refreshHistory();
   }
 
@@ -381,8 +445,14 @@ function AppInner(): React.ReactElement {
       confirmBtn: '삭제',
       onOk: async () => {
         await must({ op: 'run:delete', folder: h.folder });
-        // 열려있는 탭에서 이 런을 사용 중이면 초기화
-        setTabs(prev => prev.map(t => t.folder === h.folder ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t));
+        setSessions(prev => prev.map(s =>
+          s.id !== activeSessionId ? s : {
+            ...s,
+            tabs: s.tabs.map(t => t.folder === h.folder
+              ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] }
+              : t),
+          }
+        ));
         await refreshHistory();
         notify('ok', `런 #${h.run} 삭제됨`);
       },
@@ -397,10 +467,10 @@ function AppInner(): React.ReactElement {
       confirmBtn: '삭제',
       onOk: async () => {
         await must({ op: 'date:delete', dataRoot, project, date: dateStr });
-        // 해당 날짜 런을 사용하는 탭 초기화
-        setTabs(prev => prev.map(t => {
-          const match = history.find(h => h.date === dateStr && h.folder === t.folder);
-          return match ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t;
+        setSessions(prev => prev.map(s => {
+          if (s.id !== activeSessionId) return s;
+          const affected = new Set(s.history.filter(h => h.date === dateStr).map(h => h.folder));
+          return { ...s, tabs: s.tabs.map(t => affected.has(t.folder) ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t) };
         }));
         await refreshHistory();
         notify('ok', `📅 ${dateStr} 삭제됨`);
@@ -416,9 +486,10 @@ function AppInner(): React.ReactElement {
       confirmBtn: '삭제',
       onOk: async () => {
         await must({ op: 'agent:delete', dataRoot, project, date: dateStr, agent: agentName });
-        setTabs(prev => prev.map(t => {
-          const match = history.find(h => h.date === dateStr && h.agent === agentName && h.folder === t.folder);
-          return match ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t;
+        setSessions(prev => prev.map(s => {
+          if (s.id !== activeSessionId) return s;
+          const affected = new Set(s.history.filter(h => h.date === dateStr && h.agent === agentName).map(h => h.folder));
+          return { ...s, tabs: s.tabs.map(t => affected.has(t.folder) ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t) };
         }));
         await refreshHistory();
         notify('ok', `🤖 ${agentName} (${dateStr}) 삭제됨`);
@@ -435,12 +506,19 @@ function AppInner(): React.ReactElement {
       confirmBtn: '영구 삭제',
       onOk: async () => {
         await must({ op: 'project:delete', dataRoot, project: projectName });
-        // 모든 탭 초기화
-        setTabs(prev => prev.map(t => ({ ...t, folder: '', run: '', prompt: '', result: '', tags: [] })));
-        setProject('');
-        setHistory([]);
-        // 프로젝트 목록 새로고침
-        const view = await must<{ projects: ProjectInfo[]; history: HistoryItem[] }>({ op: 'project:view', dataRoot, project: ROOT_PROJECT });
+        const deletingId = sessions.find(s => s.project === projectName)?.id;
+        const remaining = sessions.filter(s => s.project !== projectName);
+        if (remaining.length === 0) {
+          const fresh = makeSession();
+          setSessions([fresh]);
+          setActiveSessionId(fresh.id);
+        } else {
+          setSessions(remaining);
+          if (deletingId === activeSessionId) {
+            setActiveSessionId(remaining[remaining.length - 1]!.id);
+          }
+        }
+        const view = await must<ProjectViewData>({ op: 'project:view', dataRoot, project: ROOT_PROJECT });
         setProjects(view.projects);
         notify('ok', `프로젝트 "${projectName}" 삭제됨`);
       },
@@ -452,10 +530,14 @@ function AppInner(): React.ReactElement {
     if (!dataRoot || !project) return;
     if (h.date === toDate && h.agent === toAgent) return;
     const res = await must<{ folder: string }>({ op: 'run:move', fromFolder: h.folder, dataRoot, project, toDate, toAgent });
-    // 탭에서 해당 런이 열려있으면 업데이트
     const parts = res.folder.replace(/\\/g, '/').split('/');
     const newRun = parts[parts.length - 1] ?? '';
-    setTabs(prev => prev.map(t => t.folder === h.folder ? { ...t, folder: res.folder, run: newRun, agent: toAgent } : t));
+    setSessions(prev => prev.map(s =>
+      s.id !== activeSessionId ? s : {
+        ...s,
+        tabs: s.tabs.map(t => t.folder === h.folder ? { ...t, folder: res.folder, run: newRun, agent: toAgent } : t),
+      }
+    ));
     await refreshHistory();
     notify('ok', `런을 ${toAgent} (${toDate})으로 이동했습니다.`);
   }
@@ -511,49 +593,117 @@ function AppInner(): React.ReactElement {
     })();
   }, []);
 
-  // ── 프로젝트 선택 ─────────────────────────────────────────────────────────────
-  async function pickProject(name: string): Promise<void> {
+  // ── 프로젝트 세션 열기 ────────────────────────────────────────────────────────
+  // 이미 열려있는 세션 → 전환. 현재 세션이 비어있으면 → 재사용. 그 외 → 새 세션 생성.
+  async function openProjectSession(name: string): Promise<void> {
     if (!name) return;
-    setProject(name);
-    await loadView(name);
-    // 모든 탭에 대해 런 폴더 준비
-    for (const tab of tabs) {
-      const res = await getNextRun(name, tab.agent, date);
-      if (res) updateTab(tab.id, res);
+
+    // 이미 같은 프로젝트가 열려있으면 해당 세션으로 전환
+    const existing = sessions.find(s => s.project === name);
+    if (existing) {
+      setActiveSessionId(existing.id);
+      return;
+    }
+
+    // 현재 세션에 프로젝트가 없으면 현재 세션을 이 프로젝트로 설정
+    const currSess = sessions.find(s => s.id === activeSessionId) ?? sessions[0]!;
+    const useExisting = !currSess.project;
+    const targetId = useExisting ? currSess.id : null;
+
+    let newSessId: string;
+    if (useExisting) {
+      newSessId = currSess.id;
+      setSessions(prev => prev.map(s => s.id === currSess.id ? { ...s, project: name } : s));
+      setActiveSessionId(currSess.id);
+    } else {
+      const newSess = makeSession(name);
+      newSessId = newSess.id;
+      setSessions(prev => [...prev, newSess]);
+      setActiveSessionId(newSess.id);
+    }
+
+    // 히스토리 로드
+    const view = await must<ProjectViewData>({ op: 'project:view', dataRoot, project: name });
+    setProjects(view.projects);
+
+    // 초기 탭 런 폴더 준비
+    const sessNow = useExisting ? currSess : sessions.find(s => s.id === newSessId);
+    const initTab = sessNow?.tabs[0] ?? { id: '', agent: DEFAULT_AGENTS[0] };
+    const res = initTab.id ? await getNextRun(name, initTab.agent, date) : null;
+
+    setSessions(prev => prev.map(s => {
+      if (s.id !== newSessId) return s;
+      return {
+        ...s,
+        project: name,
+        history: view.history,
+        tabs: res ? s.tabs.map(t => t.id === initTab.id ? { ...t, ...res } : t) : s.tabs,
+      };
+    }));
+
+    void targetId; // suppress unused warning
+  }
+
+  // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
+  function closeSession(id: string): void {
+    const remaining = sessions.filter(s => s.id !== id);
+    if (remaining.length === 0) {
+      const fresh = makeSession();
+      setSessions([fresh]);
+      setActiveSessionId(fresh.id);
+    } else {
+      setSessions(remaining);
+      if (activeSessionId === id) {
+        setActiveSessionId(remaining[remaining.length - 1]!.id);
+      }
     }
   }
 
+  // ── 빈 세션 추가 ─────────────────────────────────────────────────────────────
+  function addSession(): void {
+    const fresh = makeSession();
+    setSessions(prev => [...prev, fresh]);
+    setActiveSessionId(fresh.id);
+  }
+
+  // ── 날짜 변경 ─────────────────────────────────────────────────────────────────
   async function editDate(d: string): Promise<void> {
     if (!d) return;
     setDate(d);
-    for (const tab of tabs) {
-      updateTab(tab.id, { run: '', folder: '', prompt: '', result: '', tags: [] });
-      if (project) {
+    // 현재 세션 탭들 초기화
+    const currTabs = activeSession.tabs;
+    setSessions(prev => prev.map(s =>
+      s.id !== activeSessionId ? s : {
+        ...s,
+        tabs: s.tabs.map(t => ({ ...t, run: '', folder: '', prompt: '', result: '', tags: [] })),
+      }
+    ));
+    if (project) {
+      for (const tab of currTabs) {
         const res = await getNextRun(project, tab.agent, d);
         if (res) updateTab(tab.id, res);
       }
     }
   }
 
+  // ── 데이터 루트 변경 ──────────────────────────────────────────────────────────
   async function changeDataRoot(): Promise<void> {
     const pick = await must<{ selected: string | null }>({ op: 'folder:pick' });
     if (!pick.selected) return;
     const s = await must<SettingsView>({ op: 'settings:setDataRoot', path: pick.selected });
     await applySettings(s);
-    setProject(''); setHistory([]);
+    // 모든 세션 초기화
+    const fresh = makeSession();
+    setSessions([fresh]);
+    setActiveSessionId(fresh.id);
     notify('ok', `데이터 폴더 설정됨: ${s.dataRoot}`);
-    // 설정 후 프로젝트 목록 로드하여 자동 선택
     try {
       const view = await must<ProjectViewData>({ op: 'project:view', dataRoot: s.dataRoot, project: ROOT_PROJECT });
       setProjects(view.projects);
-      // 루트 폴더에 기존 데이터가 있으면 자동으로 루트 프로젝트 선택
       if (view.projects.some(p => p.name === ROOT_PROJECT) && view.history.length > 0) {
-        setProject(ROOT_PROJECT);
-        setHistory(view.history);
-        for (const tab of tabs) {
-          const res = await getNextRun(s.dataRoot, tab.agent, date);
-          if (res) updateTab(tab.id, res);
-        }
+        const rootSess = makeSession(ROOT_PROJECT);
+        setSessions([{ ...rootSess, history: view.history }]);
+        setActiveSessionId(rootSess.id);
         notify('ok', `기존 런 ${view.history.length}개를 발견했습니다.`);
       }
     } catch { /* 오류 무시 */ }
@@ -584,6 +734,9 @@ function AppInner(): React.ReactElement {
       </div>
     </div>
   );
+
+  // 열려있는 프로젝트 이름 집합 (FileTree 사이드바에서 '이미 열림' 표시용)
+  const openProjectNames = new Set(sessions.map(s => s.project).filter(Boolean));
 
   // ── 렌더 ──────────────────────────────────────────────────────────────────────
   return (
@@ -623,6 +776,47 @@ function AppInner(): React.ReactElement {
             <DataRootWidget settings={settings} onChanged={applySettings} onPick={() => void changeDataRoot()} />
           </header>
 
+          {/* ── 프로젝트 세션 탭 바 ── */}
+          <div className="proj-tab-bar">
+            {sessions.map(sess => {
+              const isActive = sess.id === activeSessionId;
+              const parts = dataRoot.replace(/\\/g, '/').split('/');
+              const pLabel = !sess.project
+                ? '새 세션'
+                : sess.project === ROOT_PROJECT
+                  ? (parts[parts.length - 1] ?? dataRoot)
+                  : sess.project;
+              return (
+                <button
+                  key={sess.id}
+                  className={`proj-tab${isActive ? ' active' : ''}`}
+                  onClick={() => setActiveSessionId(sess.id)}
+                  title={sess.project || '왼쪽 사이드바에서 프로젝트를 선택하세요'}
+                >
+                  <span className="proj-tab-icon">
+                    {!sess.project ? '🔲' : sess.project === ROOT_PROJECT ? '📂' : '📁'}
+                  </span>
+                  <span className="proj-tab-name">{pLabel}</span>
+                  {sessions.length > 1 && (
+                    <span
+                      className="proj-tab-close"
+                      role="button"
+                      tabIndex={0}
+                      onClick={e => { e.stopPropagation(); closeSession(sess.id); }}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); closeSession(sess.id); } }}
+                      title="이 프로젝트 탭 닫기"
+                    >✕</span>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              className="proj-tab-add"
+              onClick={addSession}
+              title="새 프로젝트 탭 추가"
+            >+</button>
+          </div>
+
           {/* 글로벌 필드 (날짜 + 저장위치) */}
           <section className="fields">
             <FieldText label="날짜 (YYYY-MM-DD)" value={date} onChange={v => void editDate(v)} />
@@ -651,27 +845,33 @@ function AppInner(): React.ReactElement {
               project={project}
               projects={projects}
               dataRoot={dataRoot}
-              onPickProject={name => void pickProject(name)}
+              openProjectNames={openProjectNames}
+              onPickProject={name => void openProjectSession(name)}
               onAddProject={() => setModal({
                 title: '새 프로젝트',
                 placeholder: '프로젝트 이름 (예: HERMESS)',
                 onOk: async v => {
                   const created = await must<ProjectInfo>({ op: 'projects:create', dataRoot, name: v });
-                  await pickProject(created.name);
+                  await openProjectSession(created.name);
                   notify('ok', `프로젝트 '${created.name}' 생성됨`);
                 },
               })}
               tree={tree}
               search={treeSearch}
-              onSearchChange={setTreeSearch}
+              onSearchChange={v => updateActiveSession({ treeSearch: v })}
               expandedKeys={expandedKeys}
-              onToggleKey={key => setExpandedKeys(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; })}
+              onToggleKey={key => setSessions(prev => prev.map(s => {
+                if (s.id !== activeSessionId) return s;
+                const next = new Set(s.expandedKeys);
+                next.has(key) ? next.delete(key) : next.add(key);
+                return { ...s, expandedKeys: next };
+              }))}
               activeFolder={activeTab?.folder ?? ''}
               dragRun={dragRun}
               dropTarget={dropTarget}
               onDragStart={h => setDragRun(h)}
               onDragEnd={() => { setDragRun(null); setDropTarget(null); }}
-              onDropOnAgent={(date, agent) => { if (dragRun) void moveRunToAgent(dragRun, date, agent); setDragRun(null); setDropTarget(null); }}
+              onDropOnAgent={(d, agent) => { if (dragRun) void moveRunToAgent(dragRun, d, agent); setDragRun(null); setDropTarget(null); }}
               onSetDropTarget={setDropTarget}
               onOpenRun={h => void openRunInTab(h)}
               onOpenInNewTab={h => { void addTab(h.agent).then(() => void openRunInTab(h, tabs[tabs.length]?.id)); }}
@@ -690,7 +890,7 @@ function AppInner(): React.ReactElement {
                   <button
                     key={tab.id}
                     className={`tab-btn${tab.id === activeTabId ? ' active' : ''}`}
-                    onClick={() => setActiveTabId(tab.id)}
+                    onClick={() => updateActiveSession({ activeTabId: tab.id })}
                     title={tab.folder || `${tab.agent} — 아직 저장 안 됨`}
                   >
                     <span className="tab-label">
@@ -709,9 +909,7 @@ function AppInner(): React.ReactElement {
                   className="tab-btn add"
                   onClick={() => void addTab()}
                   title="새 병렬 탭 추가 (Ctrl+T)"
-                >
-                  + 새 탭
-                </button>
+                >+ 새 탭</button>
               </div>
 
               {/* 탭 헤더: 에이전트 선택 + 태그 + 액션 */}
@@ -891,6 +1089,7 @@ interface FileTreeProps {
   project: string;
   projects: ProjectInfo[];
   dataRoot: string;
+  openProjectNames: Set<string>;
   onPickProject: (name: string) => void;
   onAddProject: () => void;
   tree: TreeDate[];
@@ -915,7 +1114,8 @@ interface FileTreeProps {
 }
 
 function FileTree({
-  project, projects, dataRoot, onPickProject, onAddProject,
+  project, projects, dataRoot, openProjectNames,
+  onPickProject, onAddProject,
   tree, search, onSearchChange, expandedKeys, onToggleKey,
   activeFolder, dragRun, dropTarget,
   onDragStart, onDragEnd, onDropOnAgent, onSetDropTarget,
@@ -925,7 +1125,6 @@ function FileTree({
 
   const totalRuns = tree.reduce((s, d) => s + d.totalRuns, 0);
 
-  /** 프로젝트 표시 이름 (ROOT_PROJECT → 폴더명) */
   function projLabel(name: string): string {
     if (name === ROOT_PROJECT) {
       const parts = dataRoot.replace(/\\/g, '/').split('/');
@@ -944,31 +1143,35 @@ function FileTree({
             폴더를 선택하면<br />프로젝트가 표시됩니다
           </div>
         )}
-        {projects.map(p => (
-          <div
-            key={p.name}
-            className={`proj-item${p.name === project ? ' active' : ''}`}
-            style={{ display: 'flex', alignItems: 'center' }}
-            title={p.path}
-          >
-            <button
-              style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: '0', minWidth: 0, textAlign: 'left' }}
-              onClick={() => onPickProject(p.name)}
+        {projects.map(p => {
+          const isActive = p.name === project;
+          const isOpen = openProjectNames.has(p.name);
+          return (
+            <div
+              key={p.name}
+              className={`proj-item${isActive ? ' active' : ''}`}
+              style={{ display: 'flex', alignItems: 'center' }}
+              title={isOpen && !isActive ? `이미 열림 — 클릭하면 해당 탭으로 이동` : p.path}
             >
-              <span className={`proj-item-dot${p.name === project ? ' on' : ' off'}`} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, fontWeight: 500, color: 'inherit' }}>
-                {projLabel(p.name)}
-              </span>
-            </button>
-            {p.name !== ROOT_PROJECT && (
               <button
-                className="row-del"
-                title={`프로젝트 "${projLabel(p.name)}" 삭제`}
-                onClick={e => { e.stopPropagation(); onDeleteProject(p.name); }}
-              >✕</button>
-            )}
-          </div>
-        ))}
+                style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: '0', minWidth: 0, textAlign: 'left' }}
+                onClick={() => onPickProject(p.name)}
+              >
+                <span className={`proj-item-dot${isActive ? ' on' : isOpen ? ' open' : ' off'}`} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, fontWeight: 500, color: 'inherit' }}>
+                  {projLabel(p.name)}
+                </span>
+              </button>
+              {p.name !== ROOT_PROJECT && (
+                <button
+                  className="row-del"
+                  title={`프로젝트 "${projLabel(p.name)}" 삭제`}
+                  onClick={e => { e.stopPropagation(); onDeleteProject(p.name); }}
+                >✕</button>
+              )}
+            </div>
+          );
+        })}
         <button className="proj-add" onClick={onAddProject}>+ 새 프로젝트</button>
       </div>
 
@@ -1010,10 +1213,7 @@ function FileTree({
           return (
             <div key={dateNode.date} className="tree-section">
               {/* 날짜 행 */}
-              <div
-                className="tree-row tree-date"
-                onClick={() => onToggleKey(dateKey)}
-              >
+              <div className="tree-row tree-date" onClick={() => onToggleKey(dateKey)}>
                 <span className="tree-chevron">{dateOpen ? '▾' : '▸'}</span>
                 <span>📅 {dateNode.date}</span>
                 <span className="tree-badge">{dateNode.totalRuns}개</span>
@@ -1031,7 +1231,7 @@ function FileTree({
 
                 return (
                   <div key={agentNode.name}>
-                    {/* 에이전트 행 (드롭 대상) */}
+                    {/* 에이전트 행 */}
                     <div
                       className={`tree-row tree-agent${isDropTarget ? ' tree-drop-target' : ''}`}
                       onClick={() => onToggleKey(agentKey)}
@@ -1052,7 +1252,6 @@ function FileTree({
 
                     {agentOpen && agentNode.runs.map(run => {
                       const isActive = run.folder === activeFolder;
-                      // HistoryItem 형태로 변환
                       const histItem: HistoryItem = {
                         agent: agentNode.name,
                         date: dateNode.date,
