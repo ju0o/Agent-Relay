@@ -4,11 +4,13 @@
  * 프로젝트 세션 탭 + 에디터 탭 기반 병렬 편집 + 파일 트리 + 한국어 UI
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
-import { must, hasBridge } from './bridge.js';
-import { DataRootWidget, FieldText } from './components.js';
+import { must, hasBridge, dragLocalFile } from './bridge.js';
+import { FieldText } from './components.js';
+import { DogfoodPanel } from './dogfooding.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
+  DfContext,
   HistoryItem,
   ProjectInfo,
   ProjectViewData,
@@ -60,6 +62,9 @@ interface EditorTab {
   resultPreview: boolean;
   promptDrag: boolean;
   resultDrag: boolean;
+  /** prompt.md / result.md가 실제로 디스크에 저장된 상태인지 */
+  promptSaved: boolean;
+  resultSaved: boolean;
 }
 
 let _tabCounter = 0;
@@ -69,6 +74,7 @@ function makeTab(agent = 'Claude Code'): EditorTab {
     agent,
     run: '', folder: '', prompt: '', result: '', tags: [],
     promptPreview: false, resultPreview: false, promptDrag: false, resultDrag: false,
+    promptSaved: false, resultSaved: false,
   };
 }
 
@@ -156,6 +162,11 @@ function AppInner(): React.ReactElement {
   const [modal, setModal]         = useState<ModalState | null>(null);
   const [confirm, setConfirm]     = useState<ConfirmState | null>(null);
   const [inputVal, setInputVal]   = useState('');
+
+  // 설정 모달 / Dogfooding 모드 / 저장공간 유실 상태
+  const [showSettings, setShowSettings] = useState(false);
+  const [dfMode, setDfMode]             = useState(false);
+  const [missingRoot, setMissingRoot]   = useState(false);
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
   const [sessions, setSessions]           = useState<ProjectSession[]>([_initSess]);
@@ -263,10 +274,37 @@ function AppInner(): React.ReactElement {
   }
 
   // ── 런 폴더 준비 ──────────────────────────────────────────────────────────────
+  /**
+   * 다음 런 번호 조회 (읽기 전용).
+   * 파일시스템에 아무 것도 생성하지 않는다 — 폴더 생성은 실제 저장 시점에만.
+   */
+  async function peekNextRun(p: string, a: string, d: string, root?: string): Promise<string | null> {
+    const rootPath = root ?? dataRoot;
+    if (!p || !a || !d || !rootPath) return null;
+    return await must<string>({ op: 'run:next', dataRoot: rootPath, project: p, date: d, agent: a });
+  }
+
+  /** 실제 저장 시점에만 호출 — 런 번호를 확정하고 폴더를 생성한다. */
   async function getNextRun(p: string, a: string, d: string): Promise<RunFolderResult | null> {
     if (!p || !a || !d || !dataRoot) return null;
     const next = await must<string>({ op: 'run:next', dataRoot, project: p, date: d, agent: a });
     return await must<RunFolderResult>({ op: 'run:ensureFolder', dataRoot, project: p, date: d, agent: a, run: next });
+  }
+
+  // ── Result → GPT 전달 ───────────────────────────────────────────────────────
+  function mdFilePath(folder: string, file: string): string {
+    const sep = folder.includes('\\') ? '\\' : '/';
+    return folder.replace(/[\\/]+$/, '') + sep + file;
+  }
+  function dragResultToGpt(tab: EditorTab): void {
+    if (!tab.folder) { notify('err', 'result.md를 먼저 저장하세요.'); return; }
+    dragLocalFile(mdFilePath(tab.folder, 'result.md'));
+    notify('info', '마우스를 놓지 말고 ChatGPT 입력창 위에서 놓으세요.');
+  }
+  async function revealResult(tab: EditorTab): Promise<void> {
+    if (!tab.folder) { notify('err', 'result.md를 먼저 저장하세요.'); return; }
+    await must({ op: 'file:reveal', path: mdFilePath(tab.folder, 'result.md') });
+    notify('ok', '탐색기에서 result.md가 선택되었습니다.');
   }
 
   // ── 탭 추가 ─────────────────────────────────────────────────────────────────
@@ -279,8 +317,8 @@ function AppInner(): React.ReactElement {
         : s
     ));
     if (project && date) {
-      const res = await getNextRun(project, agent, date);
-      if (res) updateTab(tab.id, res);
+      const n = await peekNextRun(project, agent, date);
+      if (n !== null) updateTab(tab.id, { run: n });
     }
     notify('info', `새 탭 — ${agent}`);
   }
@@ -319,7 +357,7 @@ function AppInner(): React.ReactElement {
 
     const doLoad = async (): Promise<void> => {
       const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: h.folder });
-      updateTab(tid, { agent: h.agent, run: h.run, folder: h.folder, prompt: rec.prompt, result: rec.result, tags: rec.tags ?? [], promptPreview: false, resultPreview: false });
+      updateTab(tid, { agent: h.agent, run: h.run, folder: h.folder, prompt: rec.prompt, result: rec.result, tags: rec.tags ?? [], promptPreview: false, resultPreview: false, promptSaved: true, resultSaved: true });
       setSessions(prev => prev.map(s => {
         if (s.id !== activeSessionId) return s;
         const next = new Set(s.expandedKeys);
@@ -348,18 +386,18 @@ function AppInner(): React.ReactElement {
     const tid = tabId ?? activeTabId;
     const tab = tabs.find(t => t.id === tid);
     if (!tab) return;
-    updateTab(tid, { prompt: '', result: '', tags: [], promptPreview: false, resultPreview: false, folder: '', run: '' });
+    updateTab(tid, { prompt: '', result: '', tags: [], promptPreview: false, resultPreview: false, folder: '', run: '', promptSaved: false, resultSaved: false });
     await refreshHistory();
-    const res = await getNextRun(project, tab.agent, date);
-    if (res) updateTab(tid, res);
+    const n = await peekNextRun(project, tab.agent, date);
+    if (n !== null) updateTab(tid, { run: n });
     notify('info', `${tab.agent} — 새 런 준비됨`);
   }
 
   // ── 에이전트 변경 (탭 내) ─────────────────────────────────────────────────────
   async function changeTabAgent(tabId: string, agent: string): Promise<void> {
-    updateTab(tabId, { agent, run: '', folder: '', prompt: '', result: '', tags: [] });
-    const res = await getNextRun(project, agent, date);
-    if (res) updateTab(tabId, res);
+    updateTab(tabId, { agent, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false });
+    const n = await peekNextRun(project, agent, date);
+    if (n !== null) updateTab(tabId, { run: n });
   }
 
   // ── 프롬프트 저장 ─────────────────────────────────────────────────────────────
@@ -377,6 +415,7 @@ function AppInner(): React.ReactElement {
     }
     try {
       await must({ op: 'prompt:save', folder, content: tab.prompt, overwrite });
+      updateTab(tabId, { promptSaved: true });
       notify('ok', `프롬프트 저장됨 ← ${tab.agent} #${tab.run}`);
       await refreshHistory();
     } catch (e) {
@@ -404,6 +443,7 @@ function AppInner(): React.ReactElement {
     }
     try {
       await must({ op: 'result:save', folder, content: tab.result, overwrite });
+      updateTab(tabId, { resultSaved: true });
       notify('ok', `결과 저장됨 ← ${tab.agent} #${tab.run}`);
       await refreshHistory();
     } catch (e) {
@@ -449,7 +489,7 @@ function AppInner(): React.ReactElement {
           s.id !== activeSessionId ? s : {
             ...s,
             tabs: s.tabs.map(t => t.folder === h.folder
-              ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] }
+              ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false }
               : t),
           }
         ));
@@ -467,11 +507,11 @@ function AppInner(): React.ReactElement {
       confirmBtn: '삭제',
       onOk: async () => {
         await must({ op: 'date:delete', dataRoot, project, date: dateStr });
-        setSessions(prev => prev.map(s => {
-          if (s.id !== activeSessionId) return s;
-          const affected = new Set(s.history.filter(h => h.date === dateStr).map(h => h.folder));
-          return { ...s, tabs: s.tabs.map(t => affected.has(t.folder) ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t) };
-        }));
+          setSessions(prev => prev.map(s => {
+            if (s.id !== activeSessionId) return s;
+            const affected = new Set(s.history.filter(h => h.date === dateStr).map(h => h.folder));
+            return { ...s, tabs: s.tabs.map(t => affected.has(t.folder) ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false } : t) };
+          }));
         await refreshHistory();
         notify('ok', `📅 ${dateStr} 삭제됨`);
       },
@@ -486,11 +526,11 @@ function AppInner(): React.ReactElement {
       confirmBtn: '삭제',
       onOk: async () => {
         await must({ op: 'agent:delete', dataRoot, project, date: dateStr, agent: agentName });
-        setSessions(prev => prev.map(s => {
-          if (s.id !== activeSessionId) return s;
-          const affected = new Set(s.history.filter(h => h.date === dateStr && h.agent === agentName).map(h => h.folder));
-          return { ...s, tabs: s.tabs.map(t => affected.has(t.folder) ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [] } : t) };
-        }));
+          setSessions(prev => prev.map(s => {
+            if (s.id !== activeSessionId) return s;
+            const affected = new Set(s.history.filter(h => h.date === dateStr && h.agent === agentName).map(h => h.folder));
+            return { ...s, tabs: s.tabs.map(t => affected.has(t.folder) ? { ...t, folder: '', run: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false } : t) };
+          }));
         await refreshHistory();
         notify('ok', `🤖 ${agentName} (${dateStr}) 삭제됨`);
       },
@@ -579,12 +619,24 @@ function AppInner(): React.ReactElement {
   }, []);
 
   // ── 초기화 ────────────────────────────────────────────────────────────────────
+  // settings.json의 DATA_ROOT/lastProject를 자동 복원한다.
+  //  - 경로 존재 → 자동 사용 + 마지막 프로젝트 세션 복원
+  //  - 경로 유실 → "저장공간을 찾을 수 없습니다" 화면
   useEffect(() => {
     void (async () => {
       try {
         if (!hasBridge()) { setInitError('Electron IPC 브리지를 사용할 수 없습니다.\nexe 파일을 직접 실행하세요.'); setLoading(false); return; }
         const s = await must<SettingsView>({ op: 'settings:get' });
         await applySettings(s);
+        if (s.dataRoot && s.dataRootExists) {
+          const projects = await must<ProjectInfo[]>({ op: 'projects:list', dataRoot: s.dataRoot });
+          setProjects(projects);
+          if (s.lastProject && projects.some(p => p.name === s.lastProject)) {
+            await openProjectSession(s.lastProject, s.dataRoot);
+          }
+        } else if (s.dataRoot && !s.dataRootExists) {
+          setMissingRoot(true);
+        }
       } catch (e) {
         setInitError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -595,8 +647,10 @@ function AppInner(): React.ReactElement {
 
   // ── 프로젝트 세션 열기 ────────────────────────────────────────────────────────
   // 이미 열려있는 세션 → 전환. 현재 세션이 비어있으면 → 재사용. 그 외 → 새 세션 생성.
-  async function openProjectSession(name: string): Promise<void> {
+  async function openProjectSession(name: string, root?: string): Promise<void> {
     if (!name) return;
+    const rootPath = root ?? dataRoot;
+    if (!rootPath) return;
 
     // 이미 같은 프로젝트가 열려있으면 해당 세션으로 전환
     const existing = sessions.find(s => s.project === name);
@@ -608,7 +662,6 @@ function AppInner(): React.ReactElement {
     // 현재 세션에 프로젝트가 없으면 현재 세션을 이 프로젝트로 설정
     const currSess = sessions.find(s => s.id === activeSessionId) ?? sessions[0]!;
     const useExisting = !currSess.project;
-    const targetId = useExisting ? currSess.id : null;
 
     let newSessId: string;
     if (useExisting) {
@@ -623,13 +676,16 @@ function AppInner(): React.ReactElement {
     }
 
     // 히스토리 로드
-    const view = await must<ProjectViewData>({ op: 'project:view', dataRoot, project: name });
+    const view = await must<ProjectViewData>({ op: 'project:view', dataRoot: rootPath, project: name });
     setProjects(view.projects);
 
-    // 초기 탭 런 폴더 준비
+    // 마지막 프로젝트 기억 — 다음 실행 시 자동 복원용
+    try { await must({ op: 'settings:setLastProject', project: name }); } catch { /* 무시 */ }
+
+    // 다음 런 번호만 미리보기 — 폴더는 실제 저장 시점에 생성된다
     const sessNow = useExisting ? currSess : sessions.find(s => s.id === newSessId);
     const initTab = sessNow?.tabs[0] ?? { id: '', agent: DEFAULT_AGENTS[0] };
-    const res = initTab.id ? await getNextRun(name, initTab.agent, date) : null;
+    const nextNum = initTab.id ? await peekNextRun(name, initTab.agent, date, rootPath) : null;
 
     setSessions(prev => prev.map(s => {
       if (s.id !== newSessId) return s;
@@ -637,11 +693,11 @@ function AppInner(): React.ReactElement {
         ...s,
         project: name,
         history: view.history,
-        tabs: res ? s.tabs.map(t => t.id === initTab.id ? { ...t, ...res } : t) : s.tabs,
+        tabs: nextNum !== null
+          ? s.tabs.map(t => t.id === initTab.id ? { ...t, run: nextNum, folder: '' } : t)
+          : s.tabs,
       };
     }));
-
-    void targetId; // suppress unused warning
   }
 
   // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
@@ -675,13 +731,13 @@ function AppInner(): React.ReactElement {
     setSessions(prev => prev.map(s =>
       s.id !== activeSessionId ? s : {
         ...s,
-        tabs: s.tabs.map(t => ({ ...t, run: '', folder: '', prompt: '', result: '', tags: [] })),
+        tabs: s.tabs.map(t => ({ ...t, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false })),
       }
     ));
     if (project) {
       for (const tab of currTabs) {
-        const res = await getNextRun(project, tab.agent, d);
-        if (res) updateTab(tab.id, res);
+        const n = await peekNextRun(project, tab.agent, d);
+        if (n !== null) updateTab(tab.id, { run: n });
       }
     }
   }
@@ -692,6 +748,8 @@ function AppInner(): React.ReactElement {
     if (!pick.selected) return;
     const s = await must<SettingsView>({ op: 'settings:setDataRoot', path: pick.selected });
     await applySettings(s);
+    setMissingRoot(false);
+    setShowSettings(false);
     // 모든 세션 초기화
     const fresh = makeSession();
     setSessions([fresh]);
@@ -735,8 +793,33 @@ function AppInner(): React.ReactElement {
     </div>
   );
 
+  // ── 저장공간 유실 화면 (외장 드라이브 제거, 폴더 삭제 등) ──
+  if (missingRoot && settings) return (
+    <div className="app splash" data-theme={theme}>
+      <div className="splash-inner">
+        <div className="splash-logo">Agent Relay Log · V0</div>
+        <div className="splash-err" style={{ whiteSpace: 'pre-line' }}>
+          {'기존 저장공간을 찾을 수 없습니다.\n\n'}
+          {settings.dataRoot}
+          {'\n\n새 저장공간을 선택하세요.'}
+        </div>
+        <button className="btn primary" onClick={() => void changeDataRoot()}>📁 새 저장공간 선택</button>
+      </div>
+    </div>
+  );
+
   // 열려있는 프로젝트 이름 집합 (FileTree 사이드바에서 '이미 열림' 표시용)
   const openProjectNames = new Set(sessions.map(s => s.project).filter(Boolean));
+
+  // ── Dogfooding 피드백에 자동 첨부할 현재 작업 Context ──
+  function dfContext(): DfContext {
+    return {
+      project: project || undefined,
+      date,
+      agent: activeTab?.agent || undefined,
+      run: activeTab?.run || undefined,
+    };
+  }
 
   // ── 렌더 ──────────────────────────────────────────────────────────────────────
   return (
@@ -773,9 +856,35 @@ function AppInner(): React.ReactElement {
               title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
               onClick={toggleTheme}
             >{theme === 'dark' ? '☀️' : '🌙'}</button>
-            <DataRootWidget settings={settings} onChanged={applySettings} onPick={() => void changeDataRoot()} />
+            <button
+              className={`mini df-toggle${dfMode ? ' on' : ''}`}
+              title="앱 자체 개선 기록 (Dogfooding)"
+              onClick={() => setDfMode(m => !m)}
+            >🐾 Dogfooding</button>
+            <button
+              className="mini"
+              title="설정 — 저장공간(Storage)"
+              onClick={() => setShowSettings(true)}
+            >⚙ 설정</button>
           </header>
 
+          {msg && (
+            <div className={`flash ${msg.kind}`}>
+              <span>{msg.text}</span>
+              <button className="flash-close" onClick={dismissMsg} title="닫기">✕</button>
+            </div>
+          )}
+
+          {dfMode ? (
+            /* ── Dogfooding 패널 (프로젝트 작업과 분리된 앱 개선 기록) ── */
+            <DogfoodPanel
+              dataRoot={dataRoot}
+              context={dfContext()}
+              notify={notify}
+              onClose={() => setDfMode(false)}
+            />
+          ) : (
+            <>
           {/* ── 프로젝트 세션 탭 바 ── */}
           <div className="proj-tab-bar">
             {sessions.map(sess => {
@@ -829,14 +938,6 @@ function AppInner(): React.ReactElement {
               </span>
             </div>
           </section>
-
-          {/* 알림 플래시 */}
-          {msg && (
-            <div className={`flash ${msg.kind}`}>
-              <span>{msg.text}</span>
-              <button className="flash-close" onClick={dismissMsg} title="닫기">✕</button>
-            </div>
-          )}
 
           {/* 메인 바디: 트리 | 편집 영역 */}
           <main className="body">
@@ -1022,6 +1123,21 @@ function AppInner(): React.ReactElement {
                     <div className="panehead">
                       <span>📊 결과 보고서</span>
                       <div className="paneacts">
+                        {activeTab.resultSaved && activeTab.folder && (
+                          <button
+                            className="mini drag-chip"
+                            draggable={false}
+                            title="이 버튼을 누른 채 ChatGPT 입력창으로 끌어다 놓으세요 (result.md 첨부)"
+                            onMouseDown={e => { e.preventDefault(); dragResultToGpt(activeTab); }}
+                          >📤 GPT로 드래그</button>
+                        )}
+                        {activeTab.resultSaved && activeTab.folder && (
+                          <button
+                            className="mini"
+                            title="탐색기에서 result.md를 선택한 상태로 열기"
+                            onClick={() => void revealResult(activeTab)}
+                          >위치 열기</button>
+                        )}
                         <button
                           className={`mini${activeTab.resultPreview ? ' preview-on' : ''}`}
                           title={activeTab.resultPreview ? '원문으로 전환' : '마크다운 미리보기'}
@@ -1045,7 +1161,37 @@ function AppInner(): React.ReactElement {
               )}
             </div>
           </main>
+            </>
+          )}
         </>
+      )}
+
+      {/* 설정 모달 — Storage */}
+      {showSettings && settings && (
+        <div className="modal" onClick={() => setShowSettings(false)}>
+          <div className="modcard settings-card" onClick={e => e.stopPropagation()}>
+            <h3>설정</h3>
+            <div className="field">
+              <span className="flabel">Storage — Current Data Root</span>
+              <span className={`fvalue mono${settings.dataRoot ? '' : ' muted'}`} title={settings.dataRoot}>
+                {settings.dataRoot || '(저장공간이 선택되지 않았습니다)'}
+              </span>
+            </div>
+            <div className="modalbtns">
+              <button className="btn primary" onClick={() => void changeDataRoot()}>변경</button>
+              <button
+                className="btn"
+                disabled={!settings.dataRoot}
+                title="저장공간 폴더를 탐색기로 열기"
+                onClick={() => { void must({ op: 'folder:open', folder: settings.dataRoot }); }}
+              >폴더 열기</button>
+              <button className="btn subtle" onClick={() => setShowSettings(false)}>닫기</button>
+            </div>
+            <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>
+              Agent Relay v{settings.appVersion} · 설정 파일: {settings.baseDir}\settings.json
+            </p>
+          </div>
+        </div>
       )}
 
       {/* 모달 */}

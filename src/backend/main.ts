@@ -6,12 +6,17 @@
  *   - answers single 'relay' IPC operations that read/write Markdown under
  *     the user-chosen DATA_ROOT.
  */
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
 import {
   AppSettings,
+  DfContext,
+  DfItem,
+  DfPriority,
+  DfStatus,
+  DfType,
   ProjectViewData,
   RelayRequest,
   RelayResponse,
@@ -51,8 +56,20 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
   switch (req.op) {
     case 'settings:get': {
       const s = currentSettings();
-      const view: SettingsView = { ...s, baseDir };
+      const view: SettingsView = {
+        ...s,
+        baseDir,
+        appVersion: app.getVersion(),
+        dataRootExists: relay.dataRootExists(s.dataRoot),
+      };
       return view;
+    }
+
+    case 'settings:setLastProject': {
+      const s = currentSettings();
+      s.lastProject = req.project || '';
+      saveSettings(s);
+      return true;
     }
 
     case 'settings:setDataRoot': {
@@ -174,9 +191,53 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return true;
     }
 
+    case 'file:reveal': {
+      // Opens Explorer (platform file manager) with the file selected.
+      if (!req.path) throw new Error('path가 필요합니다.');
+      shell.showItemInFolder(req.path);
+      return true;
+    }
+
+    case 'df:list':
+      return relay.listFeedbacks(req.dataRoot);
+
+    case 'df:create': {
+      const item: DfItem = relay.createFeedback(
+        req.dataRoot,
+        {
+          type: req.type,
+          priority: req.priority,
+          feedback: req.feedback,
+          desired: req.desired,
+          context: sanitizeDfContext(req.context),
+        },
+        app.getVersion(),
+      );
+      return item;
+    }
+
+    case 'df:setStatus': {
+      const statuses: DfStatus[] = ['OPEN', 'FIXED', 'HOLD'];
+      if (!statuses.includes(req.status)) throw new Error('알 수 없는 상태입니다.');
+      return relay.setFeedbackStatus(req.dataRoot, req.id, req.status);
+    }
+
+    case 'df:read':
+      return relay.readFeedbackRaw(req.dataRoot, req.id);
+
     default:
       throw new Error('알 수 없는 요청입니다.');
   }
+}
+
+/** Keep only the known string fields of a feedback context. */
+function sanitizeDfContext(ctx: DfContext): DfContext {
+  return {
+    project: typeof ctx?.project === 'string' ? ctx.project : undefined,
+    date: typeof ctx?.date === 'string' ? ctx.date : undefined,
+    agent: typeof ctx?.agent === 'string' ? ctx.agent : undefined,
+    run: typeof ctx?.run === 'string' ? ctx.run : undefined,
+  };
 }
 
 function registerIpc(): void {
@@ -189,6 +250,35 @@ function registerIpc(): void {
       return { ok: false, error: message };
     }
   });
+
+  // ── Native file drag-out (result.md → ChatGPT input 등) ──
+  // Renderer calls window.relayApi.dragFile(path); we enter the OS drag loop
+  // with the real file so dropping on another app attaches it like a normal
+  // file drag from Explorer.
+  ipcMain.on('relay-drag-file', (event, filePath: unknown) => {
+    try {
+      if (typeof filePath !== 'string' || !filePath) return;
+      if (!fs.existsSync(filePath)) return;
+      event.sender.startDrag({ file: filePath, icon: dragIcon() });
+    } catch {
+      // Drag-out is best-effort; never crash the app here.
+    }
+  });
+}
+
+/** 1x1 transparent PNG — fallback when the drag icon asset is missing. */
+const DRAG_ICON_FALLBACK =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+let _dragIcon: Electron.NativeImage | null = null;
+function dragIcon(): Electron.NativeImage {
+  if (!_dragIcon) {
+    // vite copies public/ → dist/client; main.js sits in dist/server/backend.
+    const p = path.join(__dirname, '..', '..', 'client', 'drag-md.png');
+    const img = nativeImage.createFromPath(p);
+    _dragIcon = img.isEmpty() ? nativeImage.createFromDataURL(DRAG_ICON_FALLBACK) : img;
+  }
+  return _dragIcon;
 }
 
 let mainWindow: BrowserWindow | null = null;

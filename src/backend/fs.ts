@@ -7,7 +7,17 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { AppSettings, DEFAULT_AGENTS, HistoryItem, ProjectInfo } from '../shared/types.js';
+import {
+  AppSettings,
+  DfContext,
+  DfItem,
+  DfPriority,
+  DfStatus,
+  DfType,
+  DEFAULT_AGENTS,
+  HistoryItem,
+  ProjectInfo,
+} from '../shared/types.js';
 
 /** Settings file lives next to the app so it travels with the portable build. */
 export function settingsPath(baseDir: string): string {
@@ -96,6 +106,16 @@ export function ensureRunFolder(
 export function ensureDataRoot(dataRoot: string): void {
   if (!dataRoot) throw new Error('DATA_ROOT가 선택되지 않았습니다.');
   fs.mkdirSync(dataRoot, { recursive: true });
+}
+
+/** True when the path exists and is a directory — used to detect a vanished DATA_ROOT. */
+export function dataRootExists(dataRoot: string): boolean {
+  if (!dataRoot) return false;
+  try {
+    return fs.statSync(dataRoot).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -335,6 +355,11 @@ export function allAgents(settings: AppSettings): string[] {
   return [...new Set(merged)];
 }
 
+/** The exact file that gets dragged to GPT / revealed in Explorer for a run. */
+export function resolveResultPath(folder: string): string {
+  return path.join(folder, 'result.md');
+}
+
 /**
  * Move a run folder to a new project/date/agent location.
  * Copies all files, deletes the source, returns the new folder path.
@@ -355,4 +380,187 @@ export function moveRun(
   }
   fs.rmSync(fromFolder, { recursive: true, force: true });
   return destFolder;
+}
+
+// ── dogfooding feedback ─────────────────────────────────────────────────────
+//
+// App-self feedback lives OUTSIDE the project run tree so it never mixes with
+// real work records:
+//   DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md
+// The markdown file itself is the single source of truth (no index.json to
+// keep in sync). `listProjects` already ignores dot-folders, so `.agent-relay`
+// never shows up as a project.
+
+export function dogfoodingDir(dataRoot: string): string {
+  return path.join(dataRoot, '.agent-relay', 'dogfooding');
+}
+
+interface DfHeader {
+  status: DfStatus;
+  type: DfType;
+  priority: DfPriority;
+  created: string;
+  version: string;
+}
+
+/** Render the canonical markdown for a feedback record. */
+export function renderFeedbackMarkdown(
+  id: string,
+  header: DfHeader,
+  context: DfContext,
+  feedback: string,
+  desired: string,
+): string {
+  const lines: string[] = [
+    `# ${id}`,
+    '',
+    `Status: ${header.status}`,
+    `Type: ${header.type}`,
+    `Priority: ${header.priority}`,
+    `Created: ${header.created}`,
+    `Version: ${header.version}`,
+    '',
+    '## Context',
+    '',
+  ];
+  if (context.project) lines.push(`Project: ${context.project}`);
+  if (context.date) lines.push(`Date: ${context.date}`);
+  if (context.agent) lines.push(`Agent: ${context.agent}`);
+  if (context.run) lines.push(`Run: ${context.run}`);
+  if (!context.project && !context.date && !context.agent && !context.run) lines.push('(none)');
+  lines.push('', '## Feedback', '', feedback.trim(), '');
+  if (desired.trim()) lines.push('## Desired', '', desired.trim(), '');
+  return lines.join('\n');
+}
+
+/** Parse one DF-*.md file back into a DfItem. Returns null for unparsable files. */
+export function parseFeedbackFile(folder: string, file: string): DfItem | null {
+  const idMatch = /^DF-(\d+)\.md$/.exec(file);
+  if (!idMatch) return null;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.join(folder, file), 'utf8');
+  } catch {
+    return null;
+  }
+  const id = `DF-${idMatch[1]!.padStart(4, '0')}`;
+
+  // Header block: "Key: value" lines between the title and '## Context'.
+  const headerEnd = raw.indexOf('## Context');
+  const headerBlock = headerEnd >= 0 ? raw.slice(0, headerEnd) : raw;
+  const readKey = (key: string): string => {
+    const m = new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(headerBlock);
+    return (m?.[1] ?? '').trim();
+  };
+
+  const section = (name: string): string => {
+    const start = raw.indexOf(`## ${name}`);
+    if (start < 0) return '';
+    const after = raw.indexOf('\n', start);
+    if (after < 0) return '';
+    const next = raw.slice(after + 1).search(/^## /m);
+    const body = next >= 0 ? raw.slice(after + 1, after + 1 + next) : raw.slice(after + 1);
+    return body.trim();
+  };
+
+  const context: DfContext = {};
+  const ctxBody = section('Context');
+  for (const line of ctxBody.split('\n')) {
+    const m = /^(Project|Date|Agent|Run):\s*(.+)$/.exec(line.trim());
+    if (!m) continue;
+    const key = m[1]!.toLowerCase() as 'project' | 'date' | 'agent' | 'run';
+    context[key] = m[2]!.trim();
+  }
+
+  const statuses: DfStatus[] = ['OPEN', 'FIXED', 'HOLD'];
+  const types: DfType[] = ['BUG', 'UX', 'IMPROVEMENT', 'GOOD', 'OTHER'];
+  const priorities: DfPriority[] = ['LOW', 'MEDIUM', 'HIGH'];
+  const status = readKey('Status') as DfStatus;
+  const type = readKey('Type') as DfType;
+  const priority = readKey('Priority') as DfPriority;
+  if (!statuses.includes(status) || !types.includes(type) || !priorities.includes(priority)) {
+    return null;
+  }
+
+  return {
+    id,
+    folder: path.join(folder, file),
+    status,
+    type,
+    priority,
+    created: readKey('Created'),
+    version: readKey('Version'),
+    feedback: section('Feedback'),
+    desired: section('Desired'),
+    context,
+  };
+}
+
+/** Next feedback id (zero-padded 4 digits). Gaps are not reused. */
+export function nextFeedbackId(dataRoot: string): string {
+  const dir = dogfoodingDir(dataRoot);
+  const nums: number[] = [];
+  if (fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir)) {
+      const m = /^DF-(\d+)\.md$/.exec(f);
+      if (m) nums.push(parseInt(m[1]!, 10));
+    }
+  }
+  const next = nums.length ? Math.max(...nums) + 1 : 1;
+  return `DF-${String(next).padStart(4, '0')}`;
+}
+
+/** Create a feedback record and return it. */
+export function createFeedback(
+  dataRoot: string,
+  input: { type: DfType; priority: DfPriority; feedback: string; desired: string; context: DfContext },
+  version: string,
+): DfItem {
+  const dir = dogfoodingDir(dataRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  const id = nextFeedbackId(dataRoot);
+  const header: DfHeader = {
+    status: 'OPEN',
+    type: input.type,
+    priority: input.priority,
+    created: todayString(),
+    version,
+  };
+  const md = renderFeedbackMarkdown(id, header, input.context, input.feedback, input.desired);
+  const folder = path.join(dir, `${id}.md`);
+  fs.writeFileSync(folder, md, 'utf8');
+  const item = parseFeedbackFile(dir, `${id}.md`);
+  if (!item) throw new Error('피드백 파일을 다시 읽지 못했습니다.');
+  return item;
+}
+
+/** All feedback records, newest id first. */
+export function listFeedbacks(dataRoot: string): DfItem[] {
+  const dir = dogfoodingDir(dataRoot);
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => /^DF-\d+\.md$/.test(f))
+    .map((f) => parseFeedbackFile(dir, f))
+    .filter((x): x is DfItem => x !== null)
+    .sort((a, b) => b.id.localeCompare(a.id));
+}
+
+/** Change a record's Status line (in the markdown — the SSOT). Returns the updated item. */
+export function setFeedbackStatus(dataRoot: string, id: string, status: DfStatus): DfItem {
+  const safeId = slugify(id);
+  const file = path.join(dogfoodingDir(dataRoot), `${safeId}.md`);
+  const raw = fs.readFileSync(file, 'utf8');
+  if (!/^Status:/m.test(raw)) throw new Error(`${id} 기록에서 Status를 찾을 수 없습니다.`);
+  const updated = raw.replace(/^Status:\s*.*$/m, `Status: ${status}`);
+  fs.writeFileSync(file, updated, 'utf8');
+  const item = parseFeedbackFile(path.dirname(file), path.basename(file));
+  if (!item) throw new Error(`${id} 기록을 다시 읽지 못했습니다.`);
+  return item;
+}
+
+/** Raw markdown content of one feedback record (for copy/export). */
+export function readFeedbackRaw(dataRoot: string, id: string): string {
+  const safeId = slugify(id);
+  return readMarkdown(dogfoodingDir(dataRoot), `${safeId}.md`);
 }

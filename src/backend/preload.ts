@@ -12,6 +12,13 @@ const api = {
   call<T>(req: RelayRequest): Promise<RelayResponse<T>> {
     return ipcRenderer.invoke('relay', req) as Promise<RelayResponse<T>>;
   },
+  /**
+   * Start an OS-native drag of a local file (used to drag result.md onto
+   * ChatGPT's input). Fire-and-forget; must be called from a user gesture.
+   */
+  dragFile(filePath: string): void {
+    ipcRenderer.send('relay-drag-file', filePath);
+  },
 };
 
 contextBridge.exposeInMainWorld('relayApi', api);

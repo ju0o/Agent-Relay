@@ -6,6 +6,7 @@ import { RelayRequest, RelayResponse } from '../shared/types.js';
 
 export interface RelayApi {
   call<T>(req: RelayRequest): Promise<RelayResponse<T>>;
+  dragFile?(filePath: string): void;
 }
 
 declare global {
@@ -30,4 +31,9 @@ export async function must<T>(req: RelayRequest): Promise<T> {
   const res = await relay<T>(req);
   if (!res.ok) throw new Error(res.error);
   return res.value;
+}
+
+/** Begin a native OS drag of a local file (result.md → ChatGPT). No-op if unsupported. */
+export function dragLocalFile(filePath: string): void {
+  window.relayApi?.dragFile?.(filePath);
 }

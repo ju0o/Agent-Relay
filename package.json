@@ -1,6 +1,6 @@
 {
   "name": "agent-relay-log",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local portable tool that saves Prompt/Result between GPT and coding agents as Markdown.",
   "author": "Agent Relay Log",
@@ -12,6 +12,8 @@
     "build": "tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json",
     "test:fs": "node test/fs.test.mjs",
+    "test:vnext": "node test/vnext.test.mjs",
+    "test": "npm run test:fs && npm run test:vnext",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml"
   },
   "main": "dist/server/backend/main.js",
