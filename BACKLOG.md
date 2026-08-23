@@ -19,3 +19,8 @@
 - [x] 마지막 프로젝트 자동 복원
 - [x] Result → ChatGPT 1-제스처 전달 (native drag-out) + Explorer reveal fallback
 - [x] Dogfooding 기록 기능
+
+## 완료된 것 (v0.2.1)
+
+- [x] Project Dogfooding — 프로젝트별 `{project}/_dogfooding/` 사용성 기록
+      (프로젝트별 독립 ID, Agent/Run optional Context, App 스트림과 완전 분리)

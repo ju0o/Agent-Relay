@@ -11,12 +11,17 @@ import {
   AppSettings,
   DfContext,
   DfItem,
+  DfKind,
   DfPriority,
   DfStatus,
   DfType,
   DEFAULT_AGENTS,
   HistoryItem,
+  PROJECT_DF_TYPE_LABELS,
   ProjectInfo,
+  ROOT_PROJECT,
+  dfTypeFromText,
+  dfTypeLabel,
 } from '../shared/types.js';
 
 /** Settings file lives next to the app so it travels with the portable build. */
@@ -155,13 +160,13 @@ export function createProject(dataRoot: string, name: string): ProjectInfo {
   return { name: slug, path: dir };
 }
 
-/** List YYYY-MM-DD sub-folders for a project, newest first. */
+/** List YYYY-MM-DD sub-folders for a project, newest first. `_dogfooding` 등 내부 폴더는 제외. */
 export function listDates(dataRoot: string, project: string): string[] {
   const root = projectDir(dataRoot, project);
   if (!fs.existsSync(root)) return [];
   return fs
     .readdirSync(root, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter((e) => e.isDirectory() && !e.name.startsWith('_'))
     .map((e) => e.name)
     .sort()
     .reverse();
@@ -384,56 +389,89 @@ export function moveRun(
 
 // ── dogfooding feedback ─────────────────────────────────────────────────────
 //
-// App-self feedback lives OUTSIDE the project run tree so it never mixes with
-// real work records:
-//   DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md
-// The markdown file itself is the single source of truth (no index.json to
-// keep in sync). `listProjects` already ignores dot-folders, so `.agent-relay`
-// never shows up as a project.
+// 서로 절대 섞이지 않는 두 종류의 기록이 있다:
+//   app     : DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md  — Agent Relay 앱 자체 개선 기록
+//   project : DATA_ROOT/{project}/_dogfooding/DF-NNNN.md    — 해당 프로젝트 사용성 피드백
+// markdown 파일 자체가 SSOT다 (index.json 없음 — 동기화 실패 지점을 만들지 않는다).
+// `listProjects`는 dot-folder를 무시하고 `listDates`는 '_' 시작 폴더를 무시하므로
+// 두 기록 모두 Work Log(프로젝트/날짜 트리)에 나타나지 않는다.
+// ID는 스트림마다(그리고 프로젝트마다) 독립적으로 증가한다.
 
 export function dogfoodingDir(dataRoot: string): string {
   return path.join(dataRoot, '.agent-relay', 'dogfooding');
 }
 
+/** Project Dogfooding 디렉터리 — 항상 {project}/_dogfooding/ 하위 (Run 하위가 아니다). */
+export function projectDogfoodingDir(dataRoot: string, project: string): string {
+  return path.join(projectDir(dataRoot, project), '_dogfooding');
+}
+
 interface DfHeader {
   status: DfStatus;
-  type: DfType;
+  typeLabel: string;
   priority: DfPriority;
   created: string;
   version: string;
 }
 
-/** Render the canonical markdown for a feedback record. */
-export function renderFeedbackMarkdown(
-  id: string,
-  header: DfHeader,
-  context: DfContext,
-  feedback: string,
-  desired: string,
-): string {
+interface DfRenderInput extends DfHeader {
+  id: string;
+  kind: DfKind;
+  /** project kind — 기록 대상 프로젝트 이름. */
+  project?: string;
+  date?: string;
+  agent?: string;
+  run?: string;
+  feedback: string;
+  desired: string;
+}
+
+/**
+ * Render the canonical markdown for a feedback record.
+ * app flavor는 v0.2.0 형식을 그대로 유지하고, project flavor는 스펙 형식
+ * (## Project / ## Context / ## 발견 내용 / ## 기대했던 동작 / 원하는 방향)을 쓴다.
+ */
+export function renderFeedbackMarkdown(input: DfRenderInput): string {
   const lines: string[] = [
-    `# ${id}`,
+    `# ${input.id}`,
     '',
-    `Status: ${header.status}`,
-    `Type: ${header.type}`,
-    `Priority: ${header.priority}`,
-    `Created: ${header.created}`,
-    `Version: ${header.version}`,
-    '',
-    '## Context',
+    `Status: ${input.status}`,
+    `Type: ${input.typeLabel}`,
+    `Priority: ${input.priority}`,
+    `Created: ${input.created}`,
+    `Version: ${input.version}`,
     '',
   ];
-  if (context.project) lines.push(`Project: ${context.project}`);
-  if (context.date) lines.push(`Date: ${context.date}`);
-  if (context.agent) lines.push(`Agent: ${context.agent}`);
-  if (context.run) lines.push(`Run: ${context.run}`);
-  if (!context.project && !context.date && !context.agent && !context.run) lines.push('(none)');
-  lines.push('', '## Feedback', '', feedback.trim(), '');
-  if (desired.trim()) lines.push('## Desired', '', desired.trim(), '');
+
+  if (input.kind === 'project') {
+    lines.push('## Project', '', input.project || '(unknown)', '');
+
+    lines.push('## Context', '');
+    let ctxWrote = false;
+    if (input.date) { lines.push(`Date: ${input.date}`); ctxWrote = true; }
+    if (input.agent) { lines.push(`Agent: ${input.agent}`); ctxWrote = true; }
+    if (input.run) { lines.push(`Run: ${input.run}`); ctxWrote = true; }
+    if (!ctxWrote) lines.push('(none)');
+
+    lines.push('', '## 발견 내용', '', input.feedback.trim(), '');
+    if (input.desired.trim()) lines.push('## 기대했던 동작 / 원하는 방향', '', input.desired.trim(), '');
+    return lines.join('\n');
+  }
+
+  // app flavor — v0.2.0과 동일한 출력
+  lines.push('## Context', '');
+  let wrote = false;
+  if (input.project) { lines.push(`Project: ${input.project}`); wrote = true; }
+  if (input.date) { lines.push(`Date: ${input.date}`); wrote = true; }
+  if (input.agent) { lines.push(`Agent: ${input.agent}`); wrote = true; }
+  if (input.run) { lines.push(`Run: ${input.run}`); wrote = true; }
+  if (!wrote) lines.push('(none)');
+  lines.push('', '## Feedback', '', input.feedback.trim(), '');
+  if (input.desired.trim()) lines.push('## Desired', '', input.desired.trim(), '');
   return lines.join('\n');
 }
 
-/** Parse one DF-*.md file back into a DfItem. Returns null for unparsable files. */
+/** Parse one DF-*.md file back into a DfItem (app/project 양쪽 형식 허용). Returns null for unparsable files. */
 export function parseFeedbackFile(folder: string, file: string): DfItem | null {
   const idMatch = /^DF-(\d+)\.md$/.exec(file);
   if (!idMatch) return null;
@@ -445,9 +483,9 @@ export function parseFeedbackFile(folder: string, file: string): DfItem | null {
   }
   const id = `DF-${idMatch[1]!.padStart(4, '0')}`;
 
-  // Header block: "Key: value" lines between the title and '## Context'.
-  const headerEnd = raw.indexOf('## Context');
-  const headerBlock = headerEnd >= 0 ? raw.slice(0, headerEnd) : raw;
+  // Header block: "Key: value" lines between the title and the first '## ' section.
+  const bodyStart = /^## /m.exec(raw);
+  const headerBlock = bodyStart ? raw.slice(0, bodyStart.index) : raw;
   const readKey = (key: string): string => {
     const m = new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(headerBlock);
     return (m?.[1] ?? '').trim();
@@ -463,6 +501,8 @@ export function parseFeedbackFile(folder: string, file: string): DfItem | null {
     return body.trim();
   };
 
+  const kind: DfKind = raw.includes('## 발견 내용') ? 'project' : 'app';
+
   const context: DfContext = {};
   const ctxBody = section('Context');
   for (const line of ctxBody.split('\n')) {
@@ -473,14 +513,17 @@ export function parseFeedbackFile(folder: string, file: string): DfItem | null {
   }
 
   const statuses: DfStatus[] = ['OPEN', 'FIXED', 'HOLD'];
-  const types: DfType[] = ['BUG', 'UX', 'IMPROVEMENT', 'GOOD', 'OTHER'];
   const priorities: DfPriority[] = ['LOW', 'MEDIUM', 'HIGH'];
   const status = readKey('Status') as DfStatus;
-  const type = readKey('Type') as DfType;
+  const type = dfTypeFromText(readKey('Type'));
   const priority = readKey('Priority') as DfPriority;
-  if (!statuses.includes(status) || !types.includes(type) || !priorities.includes(priority)) {
+  if (!statuses.includes(status) || !type || !priorities.includes(priority)) {
     return null;
   }
+
+  const projectName = kind === 'project'
+    ? (section('Project').split('\n').map((s) => s.trim()).find(Boolean) || undefined)
+    : undefined;
 
   return {
     id,
@@ -490,15 +533,15 @@ export function parseFeedbackFile(folder: string, file: string): DfItem | null {
     priority,
     created: readKey('Created'),
     version: readKey('Version'),
-    feedback: section('Feedback'),
-    desired: section('Desired'),
+    feedback: section('Feedback') || section('발견 내용'),
+    desired: section('Desired') || section('기대했던 동작 / 원하는 방향'),
     context,
+    kind,
+    project: projectName ?? context.project,
   };
 }
 
-/** Next feedback id (zero-padded 4 digits). Gaps are not reused. */
-export function nextFeedbackId(dataRoot: string): string {
-  const dir = dogfoodingDir(dataRoot);
+function nextIdInDir(dir: string): string {
   const nums: number[] = [];
   if (fs.existsSync(dir)) {
     for (const f of fs.readdirSync(dir)) {
@@ -510,33 +553,102 @@ export function nextFeedbackId(dataRoot: string): string {
   return `DF-${String(next).padStart(4, '0')}`;
 }
 
-/** Create a feedback record and return it. */
-export function createFeedback(
-  dataRoot: string,
-  input: { type: DfType; priority: DfPriority; feedback: string; desired: string; context: DfContext },
-  version: string,
-): DfItem {
-  const dir = dogfoodingDir(dataRoot);
+/** Next App Dogfooding id (zero-padded 4 digits). Gaps are not reused. */
+export function nextFeedbackId(dataRoot: string): string {
+  return nextIdInDir(dogfoodingDir(dataRoot));
+}
+
+/** Next Project Dogfooding id — 프로젝트마다 독립적인 번호 체계다. */
+export function nextProjectFeedbackId(dataRoot: string, project: string): string {
+  return nextIdInDir(projectDogfoodingDir(dataRoot, project));
+}
+
+interface DfWriteInput {
+  kind: DfKind;
+  project?: string;
+  type: DfType;
+  priority: DfPriority;
+  feedback: string;
+  desired: string;
+  date?: string;
+  agent?: string;
+  run?: string;
+}
+
+/** Shared writer — app/project 모두 이 함수 하나로 파일을 만든다. */
+function writeFeedbackFile(dir: string, payload: DfWriteInput, version: string): DfItem {
   fs.mkdirSync(dir, { recursive: true });
-  const id = nextFeedbackId(dataRoot);
-  const header: DfHeader = {
+  const id = nextIdInDir(dir);
+  // project md는 스펙 예시대로 사람이 읽는 라벨(UX / Friction 등)을 적고,
+  // app md는 v0.2.0 호환을 위해 enum 토큰(UX 등)을 유지한다. 파서는 둘 다 받는다.
+  const typeToken = payload.kind === 'project' ? dfTypeLabel(payload.type, 'project') : payload.type;
+  const md = renderFeedbackMarkdown({
+    id,
+    kind: payload.kind,
     status: 'OPEN',
-    type: input.type,
-    priority: input.priority,
+    typeLabel: typeToken,
+    priority: payload.priority,
     created: todayString(),
     version,
-  };
-  const md = renderFeedbackMarkdown(id, header, input.context, input.feedback, input.desired);
-  const folder = path.join(dir, `${id}.md`);
-  fs.writeFileSync(folder, md, 'utf8');
+    project: payload.project,
+    date: payload.date,
+    agent: payload.agent,
+    run: payload.run,
+    feedback: payload.feedback,
+    desired: payload.desired,
+  });
+  fs.writeFileSync(path.join(dir, `${id}.md`), md, 'utf8');
   const item = parseFeedbackFile(dir, `${id}.md`);
   if (!item) throw new Error('피드백 파일을 다시 읽지 못했습니다.');
   return item;
 }
 
-/** All feedback records, newest id first. */
-export function listFeedbacks(dataRoot: string): DfItem[] {
-  const dir = dogfoodingDir(dataRoot);
+/** Create an App Dogfooding record and return it. */
+export function createFeedback(
+  dataRoot: string,
+  input: { type: DfType; priority: DfPriority; feedback: string; desired: string; context: DfContext },
+  version: string,
+): DfItem {
+  const c = input.context;
+  return writeFeedbackFile(dogfoodingDir(dataRoot), {
+    kind: 'app',
+    type: input.type,
+    priority: input.priority,
+    feedback: input.feedback,
+    desired: input.desired,
+    project: c?.project,
+    date: c?.date,
+    agent: c?.agent,
+    run: c?.run,
+  }, version);
+}
+
+/**
+ * Create a Project Dogfooding record.
+ * Project는 필수 Context, Agent/Run은 optional — 프로그램 사용 중 발견한 문제는
+ * Run 없이도 기록할 수 있어야 하기 때문이다. 저장 위치는 항상 {project}/_dogfooding/.
+ */
+export function createProjectFeedback(
+  dataRoot: string,
+  project: string,
+  input: { type: DfType; priority: DfPriority; feedback: string; desired: string; agent?: string; run?: string },
+  version: string,
+): DfItem {
+  const projName = project === ROOT_PROJECT ? path.basename(dataRoot) : project;
+  return writeFeedbackFile(projectDogfoodingDir(dataRoot, project), {
+    kind: 'project',
+    project: projName,
+    type: input.type,
+    priority: input.priority,
+    feedback: input.feedback,
+    desired: input.desired,
+    date: todayString(),
+    agent: input.agent || undefined,
+    run: input.run || undefined,
+  }, version);
+}
+
+function listInDir(dir: string): DfItem[] {
   if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir)
@@ -546,21 +658,54 @@ export function listFeedbacks(dataRoot: string): DfItem[] {
     .sort((a, b) => b.id.localeCompare(a.id));
 }
 
-/** Change a record's Status line (in the markdown — the SSOT). Returns the updated item. */
-export function setFeedbackStatus(dataRoot: string, id: string, status: DfStatus): DfItem {
+/** All App Dogfooding records, newest id first. */
+export function listFeedbacks(dataRoot: string): DfItem[] {
+  return listInDir(dogfoodingDir(dataRoot));
+}
+
+/** 현재 프로젝트의 Dogfooding만 반환한다 — 다른 프로젝트/App 기록과 절대 섞이지 않는다. */
+export function listProjectFeedbacks(dataRoot: string, project: string): DfItem[] {
+  return listInDir(projectDogfoodingDir(dataRoot, project));
+}
+
+function setStatusInDir(dir: string, id: string, status: DfStatus): DfItem {
   const safeId = slugify(id);
-  const file = path.join(dogfoodingDir(dataRoot), `${safeId}.md`);
+  const file = path.join(dir, `${safeId}.md`);
   const raw = fs.readFileSync(file, 'utf8');
   if (!/^Status:/m.test(raw)) throw new Error(`${id} 기록에서 Status를 찾을 수 없습니다.`);
   const updated = raw.replace(/^Status:\s*.*$/m, `Status: ${status}`);
   fs.writeFileSync(file, updated, 'utf8');
-  const item = parseFeedbackFile(path.dirname(file), path.basename(file));
+  const item = parseFeedbackFile(dir, `${safeId}.md`);
   if (!item) throw new Error(`${id} 기록을 다시 읽지 못했습니다.`);
   return item;
 }
 
-/** Raw markdown content of one feedback record (for copy/export). */
-export function readFeedbackRaw(dataRoot: string, id: string): string {
+/** Change an App record's Status line (in the markdown — the SSOT). Returns the updated item. */
+export function setFeedbackStatus(dataRoot: string, id: string, status: DfStatus): DfItem {
+  return setStatusInDir(dogfoodingDir(dataRoot), id, status);
+}
+
+/** Change a Project record's Status line. Returns the updated item. */
+export function setProjectFeedbackStatus(
+  dataRoot: string,
+  project: string,
+  id: string,
+  status: DfStatus,
+): DfItem {
+  return setStatusInDir(projectDogfoodingDir(dataRoot, project), id, status);
+}
+
+function readRawInDir(dir: string, id: string): string {
   const safeId = slugify(id);
-  return readMarkdown(dogfoodingDir(dataRoot), `${safeId}.md`);
+  return readMarkdown(dir, `${safeId}.md`);
+}
+
+/** Raw markdown content of one App feedback record (for copy/export). */
+export function readFeedbackRaw(dataRoot: string, id: string): string {
+  return readRawInDir(dogfoodingDir(dataRoot), id);
+}
+
+/** Raw markdown content of one Project feedback record (for copy/export). */
+export function readProjectFeedbackRaw(dataRoot: string, project: string, id: string): string {
+  return readRawInDir(projectDogfoodingDir(dataRoot, project), id);
 }

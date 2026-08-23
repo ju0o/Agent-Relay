@@ -225,6 +225,35 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'df:read':
       return relay.readFeedbackRaw(req.dataRoot, req.id);
 
+    case 'pdf:list':
+      return relay.listProjectFeedbacks(req.dataRoot, req.project);
+
+    case 'pdf:create': {
+      const item: DfItem = relay.createProjectFeedback(
+        req.dataRoot,
+        req.project,
+        {
+          type: req.type,
+          priority: req.priority,
+          feedback: req.feedback,
+          desired: req.desired,
+          agent: typeof req.agent === 'string' && req.agent ? req.agent : undefined,
+          run: typeof req.run === 'string' && req.run ? req.run : undefined,
+        },
+        app.getVersion(),
+      );
+      return item;
+    }
+
+    case 'pdf:setStatus': {
+      const statuses: DfStatus[] = ['OPEN', 'FIXED', 'HOLD'];
+      if (!statuses.includes(req.status)) throw new Error('알 수 없는 상태입니다.');
+      return relay.setProjectFeedbackStatus(req.dataRoot, req.project, req.id, req.status);
+    }
+
+    case 'pdf:read':
+      return relay.readProjectFeedbackRaw(req.dataRoot, req.project, req.id);
+
     default:
       throw new Error('알 수 없는 요청입니다.');
   }

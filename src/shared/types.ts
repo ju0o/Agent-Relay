@@ -79,7 +79,11 @@ export type RelayRequest =
  | { op: 'df:list'; dataRoot: string }
  | { op: 'df:create'; dataRoot: string; type: DfType; priority: DfPriority; feedback: string; desired: string; context: DfContext }
  | { op: 'df:setStatus'; dataRoot: string; id: string; status: DfStatus }
- | { op: 'df:read'; dataRoot: string; id: string };
+ | { op: 'df:read'; dataRoot: string; id: string }
+ | { op: 'pdf:list'; dataRoot: string; project: string }
+ | { op: 'pdf:create'; dataRoot: string; project: string; type: DfType; priority: DfPriority; feedback: string; desired: string; agent?: string; run?: string }
+ | { op: 'pdf:setStatus'; dataRoot: string; project: string; id: string; status: DfStatus }
+ | { op: 'pdf:read'; dataRoot: string; project: string; id: string };
 
 /** Standard successful response envelope. */
 export type RelayResult<T = unknown> = { ok: true; value: T };
@@ -118,6 +122,10 @@ export const TAG_PRESETS: { label: string; color: string }[] = [
 ];
 
 // ── Dogfooding feedback ─────────────────────────────────────────────────────
+//
+// 두 종류가 있으며 절대 섞이지 않는다:
+//   app     (DF-*.md under DATA_ROOT/.agent-relay/dogfooding/) — Agent Relay 앱 자체 개선 기록
+//   project (DF-*.md under DATA_ROOT/{project}/_dogfooding/)  — 해당 프로젝트 사용성 피드백
 
 /** Lifecycle state of a dogfooding feedback record. */
 export type DfStatus = 'OPEN' | 'FIXED' | 'HOLD';
@@ -126,10 +134,13 @@ export type DfStatus = 'OPEN' | 'FIXED' | 'HOLD';
 export type DfPriority = 'LOW' | 'MEDIUM' | 'HIGH';
 
 /**
- * Feedback category. UI labels:
- * BUG=Bug, UX=UX / 불편, IMPROVEMENT=Improvement, GOOD=Good, OTHER=Other.
+ * Feedback category. App UI labels: UX=UX / 불편 등.
+ * Project UI labels: UX=UX / Friction, IDEA=Idea 등.
  */
-export type DfType = 'BUG' | 'UX' | 'IMPROVEMENT' | 'GOOD' | 'OTHER';
+export type DfType = 'BUG' | 'UX' | 'IMPROVEMENT' | 'IDEA' | 'GOOD' | 'OTHER';
+
+/** Which dogfooding stream a record belongs to. */
+export type DfKind = 'app' | 'project';
 
 /** Workspace context captured automatically when a feedback is created. */
 export interface DfContext {
@@ -139,7 +150,7 @@ export interface DfContext {
   run?: string;
 }
 
-/** A parsed dogfooding feedback record (DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md). */
+/** A parsed dogfooding feedback record. */
 export interface DfItem {
   id: string;            // "DF-0007"
   folder: string;        // full path of the .md file
@@ -151,9 +162,13 @@ export interface DfItem {
   feedback: string;
   desired: string;
   context: DfContext;
+  /** Which stream this record belongs to. */
+  kind: DfKind;
+  /** project kind 전용 — 기록 대상 프로젝트 이름 (app kind는 undefined). */
+  project?: string;
 }
 
-/** Selectable values for the feedback form. */
+/** App Dogfooding 유형 라벨. */
 export const DF_TYPE_LABELS: { value: DfType; label: string }[] = [
   { value: 'BUG', label: 'Bug' },
   { value: 'UX', label: 'UX / 불편' },
@@ -161,6 +176,35 @@ export const DF_TYPE_LABELS: { value: DfType; label: string }[] = [
   { value: 'GOOD', label: 'Good' },
   { value: 'OTHER', label: 'Other' },
 ];
+
+/** Project Dogfooding 유형 라벨 (Bug / UX·Friction / Improvement / Idea / Good / Other). */
+export const PROJECT_DF_TYPE_LABELS: { value: DfType; label: string }[] = [
+  { value: 'BUG', label: 'Bug' },
+  { value: 'UX', label: 'UX / Friction' },
+  { value: 'IMPROVEMENT', label: 'Improvement' },
+  { value: 'IDEA', label: 'Idea' },
+  { value: 'GOOD', label: 'Good' },
+  { value: 'OTHER', label: 'Other' },
+];
+
+/** markdown의 Type 토큰(enum 이름 또는 표시 라벨)을 enum으로 환원한다. */
+export function dfTypeFromText(text: string): DfType | null {
+  const raw = text.trim();
+  const upper = raw.toUpperCase();
+  const all: DfType[] = ['BUG', 'UX', 'IMPROVEMENT', 'IDEA', 'GOOD', 'OTHER'];
+  if ((all as string[]).includes(upper)) return upper as DfType;
+  for (const map of [DF_TYPE_LABELS, PROJECT_DF_TYPE_LABELS]) {
+    const hit = map.find((m) => m.label.toUpperCase() === raw.toUpperCase());
+    if (hit) return hit.value;
+  }
+  return null;
+}
+
+/** enum → 해당 스트림의 표시 라벨. */
+export function dfTypeLabel(type: DfType, kind: DfKind): string {
+  const map = kind === 'project' ? PROJECT_DF_TYPE_LABELS : DF_TYPE_LABELS;
+  return map.find((m) => m.value === type)?.label ?? type;
+}
 
 export const DF_PRIORITIES: DfPriority[] = ['LOW', 'MEDIUM', 'HIGH'];
 export const DF_STATUSES: DfStatus[] = ['OPEN', 'FIXED', 'HOLD'];

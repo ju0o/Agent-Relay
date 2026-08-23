@@ -1,6 +1,6 @@
 {
   "name": "agent-relay-log",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Local portable tool that saves Prompt/Result between GPT and coding agents as Markdown.",
   "author": "Agent Relay Log",

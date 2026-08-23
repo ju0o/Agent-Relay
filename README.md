@@ -6,7 +6,7 @@
 Windows용 Electron 앱. Claude Code, Codex, OpenCode 등 에이전트에게 전달한 프롬프트와
 그 결과를 날짜/에이전트/런(run) 단위로 자동 정리해준다.
 
-## 현재 기능 (v0.2.0)
+## 현재 기능 (v0.2.1)
 
 - **프로젝트 세션 탭** — 여러 프로젝트를 동시에 열고 전환
 - **런(run) 관리** — `Project/Date/Agent/NN` 런 폴더 자동 생성·번호 관리(빈 번호 재사용 없음)
@@ -20,7 +20,7 @@ Windows용 Electron 앱. Claude Code, Codex, OpenCode 등 에이전트에게 전
   - 📤 `GPT로 드래그` 칩을 누른 채 ChatGPT 입력창에 놓으면 result.md가 파일 첨부처럼 전달됨 (OS 네이티브 drag-out)
   - `위치 열기` — 탐색기에서 result.md가 **선택된 상태**로 열림 (fallback)
   - `.md 내보내기` — prompt+result를 합쳐 단일 파일 저장
-- **Dogfooding** 🐾 — 앱 자체 개선 기록 (아래 별도 섹션)
+- **Dogfooding 🐾** — App / Project 두 종류 (아래 별도 섹션)
 - **저장공간 자동 복원** — 마지막 DATA_ROOT/프로젝트 자동 복원, 경로 유실 시 안내 화면
 
 ## Windows 실행 방법
@@ -63,18 +63,19 @@ npm run build:win
 ```text
 DATA_ROOT/                          ← 설정에서 지정 (settings.json에 저장)
 ├─ {project}/                       ← 프로젝트 폴더
-│  └─ YYYY-MM-DD/
-│     └─ {agent}/                   ← 예: "Claude Code", "OpenCode"
-│        ├─ 01/
-│        │  ├─ prompt.md            ← GPT가 에이전트에게 준 프롬프트
-│        │  ├─ result.md            ← 에이전트의 결과 보고
-│        │  └─ meta.json            ← {"tags": [...]}
-│        └─ 02/
+│  ├─ YYYY-MM-DD/
+│  │  └─ {agent}/                   ← 예: "Claude Code", "OpenCode"
+│  │     ├─ 01/
+│  │     │  ├─ prompt.md            ← GPT가 에이전트에게 준 프롬프트
+│  │     │  ├─ result.md            ← 에이전트의 결과 보고
+│  │     │  └─ meta.json            ← {"tags": [...]}
+│  │     └─ 02/
+│  └─ _dogfooding/                  ← 이 프로젝트의 사용성 피드백 (Work Log와 분리)
+│     ├─ DF-0001.md
+│     └─ DF-0002.md
 └─ .agent-relay/                    ← 앱 내부 데이터 (프로젝트 목록에 나타나지 않음)
    └─ dogfooding/
-      ├─ DF-0001.md                 ← 앱 자체 피드백 기록
-      ├─ DF-0002.md
-      └─ ...
+      └─ DF-NNNN.md                 ← Agent Relay 앱 자체 피드백
 ```
 
 - 특수 프로젝트 `'.'`: 프로젝트 하위 폴더 없이 `DATA_ROOT/{date}/{agent}/{NN}` 구조
@@ -89,17 +90,32 @@ DATA_ROOT/                          ← 설정에서 지정 (settings.json에 �
 
 ## Dogfooding 🐾
 
-앱을 실제로 쓰면서 발견한 불편/개선점을 앱 안에서 바로 기록한다.
+두 종류가 있으며 **데이터가 절대 섞이지 않는다**.
 
-- 상단 `🐾 Dogfooding` 버튼 → 패널 전환
-- `[+ Feedback]`: Type(Bug / UX·불편 / Improvement / Good / Other), Priority(LOW/MEDIUM/HIGH),
-  내용, 원하는 동작(선택)
-- 현재 작업 Context(Project/Date/Agent/Run)와 앱 버전이 자동 첨부된다
-- 기록은 일반 프로젝트 데이터와 분리되어 `DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md`에 저장
-  (markdown 파일이 SSOT)
-- Status 클릭으로 순환 변경: `OPEN → FIXED → HOLD`
-- 필터: ALL / OPEN / FIXED / HOLD
-- 행별 `[복사]`(마크다운 전문 복사) / `[파일 열기]`(탐색기에서 해당 md 선택)
+### App Dogfooding (앱 자체 개선)
+
+Agent Relay 프로그램 자체를 쓰면서 발견한 Bug/UX/Improvement 기록.
+
+- 상단 `🐾 App Dogfooding` 버튼
+- 저장: `DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md`
+- Type: Bug / UX·불편 / Improvement / Good / Other
+
+### Project Dogfooding (프로젝트 사용성)
+
+관리 중인 실제 프로젝트(HERMESS, JuTell 등)를 **직접 사용하면서** 발견한 문제/불편/아이디어를
+프로젝트별로 기록. Work Log(prompt/result)와는 목적이 다른 Product Feedback Log다.
+
+- 프로젝트 선택 후 상단 `📋 Project Dogfooding` 버튼 (프로젝트 미선택 시 비활성)
+- 저장: `DATA_ROOT/{project}/_dogfooding/DF-NNNN.md` — **프로젝트마다 독립적인 ID 체계**
+- Type: Bug / UX·Friction / Improvement / Idea / Good / Other
+- Context: Project 필수 자동 기록 + Date/Agent/Run은 있을 때만 자동 첨부 (Run 없이 기록 가능)
+- Status 클릭 순환 변경: `OPEN → FIXED → HOLD`, 필터 ALL/OPEN/FIXED/HOLD, 상태별 개수 표시
+- 행의 ▸ 클릭으로 전체 내용 보기, `[복사]`(md 전문) / `[파일 열기]`(탐색기 reveal)
+- markdown 하나만 읽어도 어느 프로젝트의, 어떤 상황에서 발견한, 어떤 심각도의, 지금 어떤 상태인지
+  기록이 모두 이해되도록 작성된다 — 나중에 GPT에 그대로 전달해 우선순위 정리를 맡길 수 있다
+
+공통: `[+ Feedback]` 폼(Type/Priority/내용/원하는 동작), 현재 작업 Context 자동 첨부,
+markdown 파일이 SSOT (index.json 없음).
 
 ## Privacy / Local-first
 

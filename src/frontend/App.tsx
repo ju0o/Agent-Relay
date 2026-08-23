@@ -166,6 +166,7 @@ function AppInner(): React.ReactElement {
   // 설정 모달 / Dogfooding 모드 / 저장공간 유실 상태
   const [showSettings, setShowSettings] = useState(false);
   const [dfMode, setDfMode]             = useState(false);
+  const [pdMode, setPdMode]             = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
@@ -401,22 +402,26 @@ function AppInner(): React.ReactElement {
   }
 
   // ── 프롬프트 저장 ─────────────────────────────────────────────────────────────
-  async function saveTabPrompt(tabId: string, overwrite = false): Promise<void> {
+  /**
+   * resolved: 호출부(모두 저장)가 이미 폴더를 확정해 넘겨줄 때 사용한다.
+   * 각 저장이 폴더를 따로 만들면 한 번의 저장으로 런 2개가 생기는 회귀가 발생한다.
+   */
+  async function saveTabPrompt(tabId: string, overwrite = false, resolved?: RunFolderResult): Promise<void> {
     let tab = tabs.find(t => t.id === tabId);
     if (!tab || !dataRoot) return;
-    let folder = tab.folder;
+    let folder = resolved?.folder ?? tab.folder;
     if (!folder) {
       if (!project) { notify('err', '프로젝트를 먼저 선택하세요.'); return; }
       const res = await getNextRun(project, tab.agent, date);
       if (!res) { notify('err', '런 폴더를 생성할 수 없습니다.'); return; }
-      updateTab(tabId, res);
+      resolved = res;
       folder = res.folder;
-      tab = { ...tab, ...res };
     }
+    const runNo = resolved?.run ?? tab.run;
     try {
       await must({ op: 'prompt:save', folder, content: tab.prompt, overwrite });
-      updateTab(tabId, { promptSaved: true });
-      notify('ok', `프롬프트 저장됨 ← ${tab.agent} #${tab.run}`);
+      updateTab(tabId, { ...(resolved ?? {}), promptSaved: true });
+      notify('ok', `프롬프트 저장됨 ← ${tab.agent} #${runNo}`);
       await refreshHistory();
     } catch (e) {
       const text = e instanceof Error ? e.message : String(e);
@@ -429,22 +434,22 @@ function AppInner(): React.ReactElement {
   }
 
   // ── 결과 저장 ─────────────────────────────────────────────────────────────────
-  async function saveTabResult(tabId: string, overwrite = false): Promise<void> {
+  async function saveTabResult(tabId: string, overwrite = false, resolved?: RunFolderResult): Promise<void> {
     let tab = tabs.find(t => t.id === tabId);
     if (!tab || !dataRoot) return;
-    let folder = tab.folder;
+    let folder = resolved?.folder ?? tab.folder;
     if (!folder) {
       if (!project) { notify('err', '프로젝트를 먼저 선택하세요.'); return; }
       const res = await getNextRun(project, tab.agent, date);
       if (!res) { notify('err', '런 폴더를 생성할 수 없습니다.'); return; }
-      updateTab(tabId, res);
+      resolved = res;
       folder = res.folder;
-      tab = { ...tab, ...res };
     }
+    const runNo = resolved?.run ?? tab.run;
     try {
       await must({ op: 'result:save', folder, content: tab.result, overwrite });
-      updateTab(tabId, { resultSaved: true });
-      notify('ok', `결과 저장됨 ← ${tab.agent} #${tab.run}`);
+      updateTab(tabId, { ...(resolved ?? {}), resultSaved: true });
+      notify('ok', `결과 저장됨 ← ${tab.agent} #${runNo}`);
       await refreshHistory();
     } catch (e) {
       const text = e instanceof Error ? e.message : String(e);
@@ -457,8 +462,21 @@ function AppInner(): React.ReactElement {
   }
 
   async function saveTabBoth(tabId: string): Promise<void> {
-    await saveTabPrompt(tabId);
-    await saveTabResult(tabId);
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab || !dataRoot) return;
+
+    // 런 폴더가 없으면 딱 한 번만 생성하고 두 저장에 같은 폴더를 넘긴다.
+    // (stale closure로 인해 prompt/result가 서로 다른 런에 저장되는 문제 방지)
+    let resolved: RunFolderResult | undefined;
+    if (!tab.folder) {
+      if (!project) { notify('err', '프로젝트를 먼저 선택하세요.'); return; }
+      const res = await getNextRun(project, tab.agent, date);
+      if (!res) { notify('err', '런 폴더를 생성할 수 없습니다.'); return; }
+      resolved = res;
+      updateTab(tabId, res);
+    }
+    await saveTabPrompt(tabId, false, resolved);
+    await saveTabResult(tabId, false, resolved);
   }
 
   // ── 태그 ─────────────────────────────────────────────────────────────────────
@@ -544,8 +562,9 @@ function AppInner(): React.ReactElement {
     setConfirm({
       text: `⚠️ 프로젝트 "${projectName}" 전체를 삭제하시겠습니까?\n(런 ${runsCount}개 포함 모든 파일이 영구 삭제됩니다)\n이 작업은 절대 되돌릴 수 없습니다!`,
       confirmBtn: '영구 삭제',
-      onOk: async () => {
-        await must({ op: 'project:delete', dataRoot, project: projectName });
+        onOk: async () => {
+          setPdMode(false);
+          await must({ op: 'project:delete', dataRoot, project: projectName });
         const deletingId = sessions.find(s => s.project === projectName)?.id;
         const remaining = sessions.filter(s => s.project !== projectName);
         if (remaining.length === 0) {
@@ -703,6 +722,7 @@ function AppInner(): React.ReactElement {
   // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
   function closeSession(id: string): void {
     const remaining = sessions.filter(s => s.id !== id);
+    if (!remaining.some(s => s.project === project)) setPdMode(false);
     if (remaining.length === 0) {
       const fresh = makeSession();
       setSessions([fresh]);
@@ -858,9 +878,15 @@ function AppInner(): React.ReactElement {
             >{theme === 'dark' ? '☀️' : '🌙'}</button>
             <button
               className={`mini df-toggle${dfMode ? ' on' : ''}`}
-              title="앱 자체 개선 기록 (Dogfooding)"
-              onClick={() => setDfMode(m => !m)}
-            >🐾 Dogfooding</button>
+              title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
+              onClick={() => { setDfMode(m => !m); setPdMode(false); }}
+            >🐾 App Dogfooding</button>
+            <button
+              className={`mini df-toggle${pdMode ? ' on' : ''}`}
+              disabled={!project}
+              title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
+              onClick={() => { setPdMode(m => !m); setDfMode(false); }}
+            >📋 Project Dogfooding</button>
             <button
               className="mini"
               title="설정 — 저장공간(Storage)"
@@ -876,12 +902,25 @@ function AppInner(): React.ReactElement {
           )}
 
           {dfMode ? (
-            /* ── Dogfooding 패널 (프로젝트 작업과 분리된 앱 개선 기록) ── */
+            /* ── App Dogfooding 패널 — Agent Relay 앱 자체 개선 기록 ── */
             <DogfoodPanel
+              key="df-app"
+              kind="app"
               dataRoot={dataRoot}
               context={dfContext()}
               notify={notify}
               onClose={() => setDfMode(false)}
+            />
+          ) : pdMode && project ? (
+            /* ── Project Dogfooding 패널 — 현재 프로젝트 사용성 기록 ({project}/_dogfooding) ── */
+            <DogfoodPanel
+              key={`df-pd:${project}`}
+              kind="project"
+              dataRoot={dataRoot}
+              project={project}
+              context={dfContext()}
+              notify={notify}
+              onClose={() => setPdMode(false)}
             />
           ) : (
             <>

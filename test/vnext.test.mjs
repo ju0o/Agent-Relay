@@ -133,6 +133,88 @@ async function main() {
     return `records under ${path.join('.agent-relay', 'dogfooding')}`;
   }
 
+  // ── 5. Project Dogfooding ─────────────────────────────────────────────────
+  const appDfCount = relay.listFeedbacks(TEST_ROOT).length; // App 스트림 스냅샷
+
+  console.log('P1) 프로젝트별 분리 — 프로젝트마다 독립 ID');
+  const p1 = relay.createProjectFeedback(TEST_ROOT, 'HERMES', {
+    type: 'UX', priority: 'HIGH',
+    feedback: 'Diff 설명을 읽었지만 비개발자인 사용자가 판단하기 어렵다.',
+    desired: '신경 써야 하는 변경인지 먼저 알려준다.',
+    agent: 'OpenCode', run: '07',
+  }, '0.2.1');
+  if (p1.id === 'DF-0001' && p1.kind === 'project' && p1.project === 'HERMES') PASS(`HERMES ${p1.id}`);
+  else FAIL(`HERMES first id wrong: ${JSON.stringify(p1)}`);
+
+  const p2 = relay.createProjectFeedback(TEST_ROOT, 'JuTell', {
+    type: 'IDEA', priority: 'LOW', feedback: 'F2', desired: '',
+  }, '0.2.1');
+  if (p2.id === 'DF-0001' && p2.project === 'JuTell') PASS('JuTell DF-0001 (독립 번호 체계)');
+  else FAIL(`JuTell id wrong: ${JSON.stringify(p2)}`);
+
+  const p3 = relay.createProjectFeedback(TEST_ROOT, 'HERMES', {
+    type: 'BUG', priority: 'MEDIUM', feedback: 'F3', desired: '', agent: 'Claude Code',
+  }, '0.2.1');
+  if (p3.id === 'DF-0002') PASS('HERMES second = DF-0002');
+  else FAIL(`HERMES second id wrong: ${p3.id}`);
+
+  const lh = relay.listProjectFeedbacks(TEST_ROOT, 'HERMES');
+  const lj = relay.listProjectFeedbacks(TEST_ROOT, 'JuTell');
+  if (lh.length === 2 && lj.length === 1
+    && path.dirname(lh[0].folder).includes(path.join('HERMES', '_dogfooding'))
+    && path.dirname(lj[0].folder).includes(path.join('JuTell', '_dogfooding'))
+    && lh.every(x => x.kind === 'project')) {
+    PASS('목록이 프로젝트별로 완전 분리됨');
+  } else FAIL(`lists mixed: HERMES=${lh.length} JuTell=${lj.length}`);
+
+  console.log('P2) App Dogfooding과 Project Dogfooding 분리');
+  const appAfter = relay.listFeedbacks(TEST_ROOT);
+  if (appAfter.length === appDfCount
+    && !lh.concat(lj).some(x => x.folder.includes('.agent-relay'))
+    && !appAfter.some(x => x.folder.includes('_dogfooding'))) {
+    PASS('두 스트림이 서로 오염시키지 않음');
+  } else FAIL('stream separation broken');
+
+  console.log('P3) Context 자동 기록 + Agent/Run optional');
+  if (p1.context.project === undefined /* Context 섹션에는 Project 없음 */
+    && p1.context.agent === 'OpenCode' && p1.context.run === '07'
+    && !!p1.context.date) {
+    PASS('Agent/Run/Date 자동 저장 (+Project는 별도 섹션)');
+  } else FAIL(`ctx wrong: ${JSON.stringify(p1.context)}`);
+  if (p2.context.agent === undefined && p2.context.run === undefined) PASS('Agent/Run 없이 생성 가능');
+  else FAIL('optional ctx not optional');
+
+  console.log('P4) Status 변경 및 유지 (OPEN → FIXED → HOLD)');
+  relay.setProjectFeedbackStatus(TEST_ROOT, 'HERMES', 'DF-0001', 'FIXED');
+  relay.setProjectFeedbackStatus(TEST_ROOT, 'HERMES', 'DF-0002', 'HOLD');
+  const relisted = relay.listProjectFeedbacks(TEST_ROOT, 'HERMES'); // 재로딩 = 앱 재실행 시뮬레이션
+  const st = Object.fromEntries(relisted.map(x => [x.id, x.status]));
+  if (st['DF-0001'] === 'FIXED' && st['DF-0002'] === 'HOLD') PASS('status persisted across reload');
+  else FAIL(`status lost: ${JSON.stringify(st)}`);
+
+  console.log('P5) Markdown 자체만으로 이해 가능 (스펙 형식)');
+  const rawP = relay.readProjectFeedbackRaw(TEST_ROOT, 'HERMES', 'DF-0001');
+  let p5ok = true;
+  for (const token of ['# DF-0001', 'Status: FIXED', 'Type: UX / Friction', 'Priority: HIGH', '## Project', 'HERMES', '## 발견 내용', '## 기대했던 동작 / 원하는 방향']) {
+    if (!rawP.includes(token)) { FAIL(`md missing "${token}"`); p5ok = false; }
+  }
+  if (p5ok) PASS('필수 토큰 전부 포함');
+
+  console.log('P6) Work Log와 분리 — buildHistory 오염 없음');
+  const hist = relay.buildHistory(TEST_ROOT, 'HERMES');
+  if (!hist.some(h => h.date === '_dogfooding') && !hist.some(h => h.folder.includes('_dogfooding'))) {
+    PASS('_dogfooding은 런 히스토리에 나타나지 않음');
+  } else FAIL('_dogfooding leaked into history');
+
+  console.log('P7) listDates가 _dogfooding을 날짜로 취급하지 않음');
+  if (!relay.listDates(TEST_ROOT, 'HERMES').includes('_dogfooding')) PASS('listDates excludes _dogfooding');
+  else FAIL('listDates includes _dogfooding');
+
+  console.log('P8) 루트 프로젝트(.)에도 생성 가능');
+  const pr = relay.createProjectFeedback(TEST_ROOT, '.', { type: 'GOOD', priority: 'LOW', feedback: 'root ok', desired: '' }, '0.2.1');
+  if (pr.id === 'DF-0001' && pr.project === path.basename(TEST_ROOT)) PASS(`root project → ${path.basename(TEST_ROOT)}/_dogfooding`);
+  else FAIL(`root project failed: ${JSON.stringify(pr)}`);
+
   fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   const ok = process.exitCode === undefined;
   console.log('\n결과:', ok ? 'ALL PASS' : 'SOME FAILED');
