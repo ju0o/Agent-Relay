@@ -4,9 +4,10 @@
  * 프로젝트 세션 탭 + 에디터 탭 기반 병렬 편집 + 파일 트리 + 한국어 UI
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
-import { must, hasBridge, dragLocalFile } from './bridge.js';
+import { must, hasBridge, dragLocalFile, onUpdateStatus } from './bridge.js';
 import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
+import { QuickDogfood } from './quickdf.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
@@ -18,6 +19,9 @@ import {
   RunFolderResult,
   SettingsView,
   TAG_PRESETS,
+  UpdateStatus,
+  applyOrderByKeys,
+  reorderArray,
 } from '../shared/types.js';
 
 // ── 트리 타입 ─────────────────────────────────────────────────────────────────
@@ -168,6 +172,13 @@ function AppInner(): React.ReactElement {
   const [dfMode, setDfMode]             = useState(false);
   const [pdMode, setPdMode]             = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
+  // Quick Dogfooding Capture (작은 Popover)
+  const [showQuickDf, setShowQuickDf]   = useState(false);
+  // 저장 후 열려있는 Project Dogfooding 목록을 즉시 새로고침하기 위한 신호
+  const [pdRefreshSignal, setPdRefreshSignal] = useState(0);
+
+  // In-app updater 상태 (main이 relay-update-status로 푸시)
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
   const [sessions, setSessions]           = useState<ProjectSession[]>([_initSess]);
@@ -211,6 +222,12 @@ function AppInner(): React.ReactElement {
 
   const tree = useMemo(() => buildTree(filteredHistory), [filteredHistory]);
 
+  // 사이드바 프로젝트 목록 — 저장된 projectOrder 순서를 반영해 표시 (UI 전용)
+  const sortedProjects = useMemo(
+    () => applyOrderByKeys(projects, p => p.name, settings?.projectOrder ?? []),
+    [projects, settings?.projectOrder],
+  );
+
   // 가장 최근 날짜 자동 펼침 (세션 전환 또는 새 날짜 추가 시)
   useEffect(() => {
     if (tree.length > 0) {
@@ -245,6 +262,73 @@ function AppInner(): React.ReactElement {
     ));
   }
 
+  // ── Drag Reorder (v0.3) ─────────────────────────────────────────────────────
+  // HTML5 drag events만 사용 — 외부 DnD 라이브러리 없음.
+  // 런 이동 DnD(파일 트리)와 별개 영역이라 충돌하지 않는다.
+  const projDragFrom = useRef<number | null>(null);
+  const [projDragOver, setProjDragOver] = useState<number | null>(null);
+  const tabDragFrom  = useRef<number | null>(null);
+  const [tabDragOver, setTabDragOver]   = useState<number | null>(null);
+  const agentDragFrom = useRef<number | null>(null);
+  const [agentDragOver, setAgentDragOver] = useState<number | null>(null);
+
+  /** 세션 탭 순서를 settings.projectOrder에 저장한다 (UI 순서 전용 — 폴더 불변). */
+  function persistProjectOrder(sess: ProjectSession[]): void {
+    const names = [...new Set(sess.map(s => s.project).filter((p): p is string => !!p))];
+    if (!names.length) return;
+    must<string[]>({ op: 'settings:setProjectOrder', order: names })
+      .then(order => {
+        if (Array.isArray(order)) setSettings(prev => prev ? { ...prev, projectOrder: order } : prev);
+      })
+      .catch(() => undefined);
+  }
+
+  function onProjectTabDrop(toIndex: number): void {
+    const from = projDragFrom.current;
+    projDragFrom.current = null;
+    setProjDragOver(null);
+    if (from === null || from === toIndex || from >= sessions.length) return;
+    const next = reorderArray(sessions, from, toIndex);
+    setSessions(next);
+    persistProjectOrder(next);
+  }
+
+  function onWorkTabDrop(toIndex: number): void {
+    const from = tabDragFrom.current;
+    tabDragFrom.current = null;
+    setTabDragOver(null);
+    if (from === null || from === toIndex || from >= tabs.length) return;
+    // Work Tab 순서는 현재 세션 동안만 유지 (영구 저장은 BACKLOG)
+    updateActiveSession({ tabs: reorderArray(tabs, from, toIndex) });
+  }
+
+  function onAgentPillDrop(toIndex: number): void {
+    const from = agentDragFrom.current;
+    agentDragFrom.current = null;
+    setAgentDragOver(null);
+    if (from === null || from === toIndex || from >= agents.length) return;
+    const next = reorderArray(agents, from, toIndex);
+    setAgents(next);
+    // 에이전트 순서 영구 저장 (재실행 후 유지)
+    must<string[]>({ op: 'settings:setAgentOrder', order: next })
+      .then(order => {
+        if (Array.isArray(order)) setSettings(prev => prev ? { ...prev, agentOrder: order } : prev);
+      })
+      .catch(() => undefined);
+  }
+
+  // ── Updater 구독 + 백그라운드 새 버전 알림 (정책: 자동 설치 없음) ────────────
+  useEffect(() => onUpdateStatus(s => setUpdateStatus({ ...s })), []);
+  const noticedVersion = useRef<string | null>(null);
+  useEffect(() => {
+    if (updateStatus?.phase === 'available' && updateStatus.nextVersion
+      && noticedVersion.current !== updateStatus.nextVersion) {
+      noticedVersion.current = updateStatus.nextVersion;
+      notify('info', `새 버전 ${updateStatus.nextVersion}이 있습니다. ⚙ 설정 → 업데이트에서 설치할 수 있습니다.`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateStatus?.phase, updateStatus?.nextVersion]);
+
   // ── 알림 ─────────────────────────────────────────────────────────────────────
   function notify(kind: 'ok' | 'err' | 'info', text: string): void {
     if (msgTimer.current) clearTimeout(msgTimer.current);
@@ -259,7 +343,8 @@ function AppInner(): React.ReactElement {
   // ── 설정 ─────────────────────────────────────────────────────────────────────
   async function applySettings(s: SettingsView): Promise<void> {
     setSettings(s);
-    setAgents([...DEFAULT_AGENTS, ...(s.customAgents ?? [])]);
+    // 에이전트 순서 — 저장된 agentOrder를 반영해 표시 (신규 항목은 뒤에 추가)
+    setAgents(applyOrderByKeys([...DEFAULT_AGENTS, ...(s.customAgents ?? [])], a => a, s.agentOrder ?? []));
   }
 
   // ── 데이터 로드 ───────────────────────────────────────────────────────────────
@@ -852,7 +937,7 @@ function AppInner(): React.ReactElement {
             <p>
               GPT → 에이전트 작업 결과를 체계적으로 기록하는 툴입니다.<br /><br />
               기록을 저장할 <code>데이터 폴더</code>를 먼저 선택하세요.<br />
-              예: <code>D:\AgentRelayLogs</code> — 안에 <code>Projects/</code> 폴더가 자동 생성됩니다.
+              예: <code>D:\AgentRelayLogs</code> — 이 선택은 저장되어 다음 실행부터 자동 복원됩니다.
             </p>
             <button className="btn primary" onClick={() => void changeDataRoot()}>
               📁 데이터 폴더 선택
@@ -888,6 +973,12 @@ function AppInner(): React.ReactElement {
               onClick={() => { setPdMode(m => !m); setDfMode(false); }}
             >📋 Project Dogfooding</button>
             <button
+              className="mini qdf-toggle"
+              disabled={!project}
+              title={project ? '불편한 순간 한 줄 기록 — 현재 프로젝트에 즉시 저장' : '프로젝트를 먼저 선택하세요'}
+              onClick={() => setShowQuickDf(true)}
+            >＋ 피드백</button>
+            <button
               className="mini"
               title="설정 — 저장공간(Storage)"
               onClick={() => setShowSettings(true)}
@@ -920,13 +1011,14 @@ function AppInner(): React.ReactElement {
               project={project}
               context={dfContext()}
               notify={notify}
+              refreshSignal={pdRefreshSignal}
               onClose={() => setPdMode(false)}
             />
           ) : (
             <>
-          {/* ── 프로젝트 세션 탭 바 ── */}
+          {/* ── 프로젝트 세션 탭 바 (Drag Reorder — 순서는 settings에 저장) ── */}
           <div className="proj-tab-bar">
-            {sessions.map(sess => {
+            {sessions.map((sess, i) => {
               const isActive = sess.id === activeSessionId;
               const parts = dataRoot.replace(/\\/g, '/').split('/');
               const pLabel = !sess.project
@@ -937,9 +1029,19 @@ function AppInner(): React.ReactElement {
               return (
                 <button
                   key={sess.id}
-                  className={`proj-tab${isActive ? ' active' : ''}`}
+                  className={`proj-tab${isActive ? ' active' : ''}${projDragOver === i ? ' reorder-over' : ''}`}
                   onClick={() => setActiveSessionId(sess.id)}
                   title={sess.project || '왼쪽 사이드바에서 프로젝트를 선택하세요'}
+                  draggable
+                  onDragStart={e => {
+                    projDragFrom.current = i;
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', String(i));
+                  }}
+                  onDragOver={e => { if (projDragFrom.current !== null) { e.preventDefault(); setProjDragOver(i); } }}
+                  onDragLeave={() => setProjDragOver(prev => prev === i ? null : prev)}
+                  onDrop={e => { e.preventDefault(); e.stopPropagation(); onProjectTabDrop(i); }}
+                  onDragEnd={() => { projDragFrom.current = null; setProjDragOver(null); }}
                 >
                   <span className="proj-tab-icon">
                     {!sess.project ? '🔲' : sess.project === ROOT_PROJECT ? '📂' : '📁'}
@@ -983,7 +1085,7 @@ function AppInner(): React.ReactElement {
             {/* ── 파일 트리 패널 ── */}
             <FileTree
               project={project}
-              projects={projects}
+              projects={sortedProjects}
               dataRoot={dataRoot}
               openProjectNames={openProjectNames}
               onPickProject={name => void openProjectSession(name)}
@@ -1024,14 +1126,24 @@ function AppInner(): React.ReactElement {
 
             {/* ── 편집 영역 ── */}
             <div className="editor-area">
-              {/* 탭 바 */}
+              {/* 탭 바 (Drag Reorder — 세션 동안 유지) */}
               <div className="tab-bar">
-                {tabs.map(tab => (
+                {tabs.map((tab, i) => (
                   <button
                     key={tab.id}
-                    className={`tab-btn${tab.id === activeTabId ? ' active' : ''}`}
+                    className={`tab-btn${tab.id === activeTabId ? ' active' : ''}${tabDragOver === i ? ' reorder-over' : ''}`}
                     onClick={() => updateActiveSession({ activeTabId: tab.id })}
                     title={tab.folder || `${tab.agent} — 아직 저장 안 됨`}
+                    draggable
+                    onDragStart={e => {
+                      tabDragFrom.current = i;
+                      e.dataTransfer.effectAllowed = 'move';
+                      e.dataTransfer.setData('text/plain', String(i));
+                    }}
+                    onDragOver={e => { if (tabDragFrom.current !== null) { e.preventDefault(); setTabDragOver(i); } }}
+                    onDragLeave={() => setTabDragOver(prev => prev === i ? null : prev)}
+                    onDrop={e => { e.preventDefault(); e.stopPropagation(); onWorkTabDrop(i); }}
+                    onDragEnd={() => { tabDragFrom.current = null; setTabDragOver(null); }}
                   >
                     <span className="tab-label">
                       {tab.agent}
@@ -1060,11 +1172,21 @@ function AppInner(): React.ReactElement {
                       <span className="flabel">에이전트 {activeTab.run && <span style={{ color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>— 런 #{activeTab.run}</span>}</span>
                       <div className="agent-pills-row">
                         <div className="agent-pills">
-                          {agents.map(a => (
+                          {agents.map((a, i) => (
                             <button
                               key={a}
-                              className={`agent-pill${activeTab.agent === a ? ' active' : ''}`}
-                              title={a}
+                              className={`agent-pill${activeTab.agent === a ? ' active' : ''}${agentDragOver === i ? ' reorder-over' : ''}`}
+                              title={`${a} — 드래그로 순서 변경 (설정에 저장됨)`}
+                              draggable
+                              onDragStart={e => {
+                                agentDragFrom.current = i;
+                                e.dataTransfer.effectAllowed = 'move';
+                                e.dataTransfer.setData('text/plain', String(i));
+                              }}
+                              onDragOver={e => { if (agentDragFrom.current !== null) { e.preventDefault(); setAgentDragOver(i); } }}
+                              onDragLeave={() => setAgentDragOver(prev => prev === i ? null : prev)}
+                              onDrop={e => { e.preventDefault(); e.stopPropagation(); onAgentPillDrop(i); }}
+                              onDragEnd={() => { agentDragFrom.current = null; setAgentDragOver(null); }}
                               onClick={() => void changeTabAgent(activeTab.id, a)}
                             >{a}</button>
                           ))}
@@ -1205,30 +1327,56 @@ function AppInner(): React.ReactElement {
         </>
       )}
 
-      {/* 설정 모달 — Storage */}
+      {showQuickDf && project && settings && (
+        <QuickDogfood
+          project={project}
+          dataRoot={dataRoot}
+          context={dfContext()}
+          notify={notify}
+          onClose={() => setShowQuickDf(false)}
+          onSaved={() => setPdRefreshSignal(n => n + 1)}
+        />
+      )}
+
+      {/* 설정 모달 — Storage / About(업데이트) */}
       {showSettings && settings && (
         <div className="modal" onClick={() => setShowSettings(false)}>
           <div className="modcard settings-card" onClick={e => e.stopPropagation()}>
             <h3>설정</h3>
-            <div className="field">
+
+            <div className="settings-section">
               <span className="flabel">Storage — Current Data Root</span>
-              <span className={`fvalue mono${settings.dataRoot ? '' : ' muted'}`} title={settings.dataRoot}>
-                {settings.dataRoot || '(저장공간이 선택되지 않았습니다)'}
-              </span>
+              <div className="field" style={{ marginTop: 4 }}>
+                <span className={`fvalue mono${settings.dataRoot ? '' : ' muted'}`} title={settings.dataRoot}>
+                  {settings.dataRoot || '(저장공간이 선택되지 않았습니다)'}
+                </span>
+              </div>
+              <div className="modalbtns" style={{ justifyContent: 'flex-start' }}>
+                <button className="btn primary" onClick={() => void changeDataRoot()}>변경</button>
+                <button
+                  className="btn"
+                  disabled={!settings.dataRoot}
+                  title="저장공간 폴더를 탐색기로 열기"
+                  onClick={() => { void must({ op: 'folder:open', folder: settings.dataRoot }); }}
+                >폴더 열기</button>
+              </div>
+              <p className="muted" style={{ fontSize: 11, margin: '4px 0 0' }}>
+                설정 파일: {settings.baseDir}\settings.json
+              </p>
             </div>
+
+            <div className="settings-section">
+              <span className="flabel">About — Agent Relay v{updateStatus?.version ?? settings.appVersion}</span>
+              <UpdateSection
+                status={updateStatus ?? { phase: 'idle', version: settings.appVersion }}
+                notify={notify}
+                onOpen={() => undefined}
+              />
+            </div>
+
             <div className="modalbtns">
-              <button className="btn primary" onClick={() => void changeDataRoot()}>변경</button>
-              <button
-                className="btn"
-                disabled={!settings.dataRoot}
-                title="저장공간 폴더를 탐색기로 열기"
-                onClick={() => { void must({ op: 'folder:open', folder: settings.dataRoot }); }}
-              >폴더 열기</button>
               <button className="btn subtle" onClick={() => setShowSettings(false)}>닫기</button>
             </div>
-            <p className="muted" style={{ fontSize: 11, marginTop: 12 }}>
-              Agent Relay v{settings.appVersion} · 설정 파일: {settings.baseDir}\settings.json
-            </p>
           </div>
         </div>
       )}
@@ -1502,6 +1650,81 @@ function FileTree({
           <div>드래그: 에이전트 행에 놓으면 이동</div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── 업데이트 섹션 (설정 → About) ───────────────────────────────────────────────
+// 정책: 확인/다운로드/설치 모두 사용자 클릭 기반. 자동 종료·자동 설치 없음.
+function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind: 'ok' | 'err' | 'info', text: string) => void; onOpen?: () => void }): React.ReactElement {
+  async function run(op: 'update:check' | 'update:download' | 'update:install', okMsg?: string): Promise<void> {
+    try {
+      await must({ op });
+      if (okMsg) notify('info', okMsg);
+    } catch (e) {
+      notify('err', e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const line = ((): React.ReactNode => {
+    switch (status.phase) {
+      case 'idle':
+        return <span className="muted">GitHub Releases에서 최신 버전을 확인할 수 있습니다.</span>;
+      case 'checking':
+        return <span className="muted">확인 중...</span>;
+      case 'none':
+        return (
+          <span className="update-latest">
+            ✔ 현재 최신 버전입니다. <span className="muted">(현재: v{status.version})</span>
+          </span>
+        );
+      case 'available':
+        return <span className="update-avail">새 버전 {status.nextVersion}이 있습니다.</span>;
+      case 'downloading':
+        return <span className="update-dl">다운로드 중... {status.percent ?? 0}%</span>;
+      case 'ready':
+        return <span className="update-ready">업데이트가 준비되었습니다.</span>;
+      case 'error':
+        return (
+          <span className="update-err" title={status.errorMessage}>
+            업데이트 확인 실패
+            <span className="muted" style={{ display: 'block', fontSize: 11 }}>
+              {(status.errorMessage ?? '').slice(0, 160)}
+              {status.errorMessage && status.errorMessage.match(/40[134]|ENOTFOUND|ETIMEDOUT/) &&
+                ' — Private 저장소는 공개 전환 전까지 앱 내 업데이트 확인이 제한될 수 있습니다.'}
+            </span>
+          </span>
+        );
+      default:
+        return null;
+    }
+  })();
+
+  return (
+    <div className="update-row">
+      {line}
+      <div className="modalbtns" style={{ justifyContent: 'flex-start', marginTop: 8 }}>
+        {(status.phase === 'idle' || status.phase === 'none' || status.phase === 'error') && (
+          <button className="btn" onClick={() => void run('update:check')}>
+            업데이트 확인
+          </button>
+        )}
+        {status.phase === 'available' && (
+          <button className="btn primary" onClick={() => void run('update:download', '다운로드를 시작합니다.')}>
+            다운로드 및 업데이트
+          </button>
+        )}
+        {status.phase === 'downloading' && (
+          <button className="btn" disabled>
+            {status.percent ?? 0}%
+          </button>
+        )}
+        {status.phase === 'ready' && (
+          <button className="btn primary" onClick={() => void run('update:install')}>
+            재시작하여 설치
+          </button>
+        )}
+      </div>
     </div>
   );
 }

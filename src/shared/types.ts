@@ -20,6 +20,13 @@ export interface AppSettings {
   customAgents: string[];
   /** Last project session opened — auto-restored on next launch ('' = none). */
   lastProject?: string;
+  /**
+   * 사용자가 지정한 프로젝트 표시 순서 (프로젝트 이름 배열).
+   * UI 정렬 전용 — 실제 폴더 위치는 변경하지 않는다. 없는 이름은 무시됨.
+   */
+  projectOrder?: string[];
+  /** 사용자가 지정한 에이전트 표시 순서 (에이전트 이름 배열). UI 정렬 전용. */
+  agentOrder?: string[];
 }
 
 /** A selectable project (a folder under DATA_ROOT/Projects). */
@@ -83,7 +90,12 @@ export type RelayRequest =
  | { op: 'pdf:list'; dataRoot: string; project: string }
  | { op: 'pdf:create'; dataRoot: string; project: string; type: DfType; priority: DfPriority; feedback: string; desired: string; agent?: string; run?: string }
  | { op: 'pdf:setStatus'; dataRoot: string; project: string; id: string; status: DfStatus }
- | { op: 'pdf:read'; dataRoot: string; project: string; id: string };
+ | { op: 'pdf:read'; dataRoot: string; project: string; id: string }
+ | { op: 'settings:setProjectOrder'; order: string[] }
+ | { op: 'settings:setAgentOrder'; order: string[] }
+ | { op: 'update:check' }
+ | { op: 'update:download' }
+ | { op: 'update:install' };
 
 /** Standard successful response envelope. */
 export type RelayResult<T = unknown> = { ok: true; value: T };
@@ -208,3 +220,87 @@ export function dfTypeLabel(type: DfType, kind: DfKind): string {
 
 export const DF_PRIORITIES: DfPriority[] = ['LOW', 'MEDIUM', 'HIGH'];
 export const DF_STATUSES: DfStatus[] = ['OPEN', 'FIXED', 'HOLD'];
+
+// ── In-app updater ──────────────────────────────────────────────────────────
+//
+// 업데이트는 사용자 통제 하에 진행된다 (v0.3 정책):
+//   앱 시작 시 silent check 가능 → 새 버전 알림만, 자동 설치 없음.
+//   다운로드/설치는 항상 사용자가 명시적으로 눌렀을 때만.
+
+/** Updater lifecycle phase — pure state machine input/output (unit-testable). */
+export type UpdatePhase = 'idle' | 'checking' | 'available' | 'none' | 'downloading' | 'ready' | 'error';
+
+/** One updater event, produced by electron-updater listeners in the main process. */
+export type UpdateEvent =
+  | { type: 'check-started'; manual: boolean }
+  | { type: 'not-available' }
+  | { type: 'available'; nextVersion: string }
+  | { type: 'download-progress'; percent: number }
+  | { type: 'downloaded' }
+  | { type: 'error'; message: string; manual: boolean };
+
+/** Snapshot the renderer polls/observes for the Settings → About UI. */
+export interface UpdateStatus {
+  phase: UpdatePhase;
+  /** Current app version. */
+  version: string;
+  /** Version offered by the release feed (when phase = available/downloading/ready). */
+  nextVersion?: string;
+  percent?: number;
+  errorMessage?: string;
+}
+
+/**
+ * Pure updater state reducer — shared by main process wiring and tests.
+ * Errors from background (non-manual) checks are swallowed into `idle`
+ * so a private/unreachable repo never nags the user on launch.
+ */
+export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus {
+  switch (e.type) {
+    case 'check-started':
+      return { ...s, phase: 'checking', errorMessage: undefined };
+    case 'not-available':
+      return { ...s, phase: 'none', nextVersion: undefined, percent: undefined };
+    case 'available':
+      return { ...s, phase: 'available', nextVersion: e.nextVersion, percent: undefined };
+    case 'download-progress':
+      return s.phase === 'downloading' || s.phase === 'available'
+        ? { ...s, phase: 'downloading', percent: Math.max(0, Math.min(100, Math.round(e.percent))) }
+        : s;
+    case 'downloaded':
+      return { ...s, phase: 'ready', percent: undefined };
+    case 'error':
+      return e.manual
+        ? { ...s, phase: 'error', errorMessage: e.message }
+        // background-check failure → 조용히 idle 복귀 (알림 없음)
+        : { ...s, phase: 'idle' };
+    default:
+      return s;
+  }
+}
+
+// ── Drag reorder helpers ────────────────────────────────────────────────────
+
+/** Return a new array with the element at `from` moved to index `to`. */
+export function reorderArray<T>(arr: readonly T[], from: number, to: number): T[] {
+  const out = [...arr];
+  if (from < 0 || from >= out.length || to < 0 || to >= out.length || from === to) return out;
+  const [moved] = out.splice(from, 1);
+  out.splice(to, 0, moved!);
+  return out;
+}
+
+/**
+ * Sort items by a saved order list of keys. Known keys keep their saved
+ * relative order first; unknown/new items are appended in their natural order.
+ * Used for projectOrder / agentOrder — UI display only.
+ */
+export function applyOrderByKeys<T>(items: readonly T[], keyOf: (x: T) => string, order: readonly string[]): T[] {
+  const rank = new Map<string, number>();
+  order.forEach((k, i) => { if (!rank.has(k)) rank.set(k, i); });
+  const known: T[] = [];
+  const unknown: T[] = [];
+  for (const item of items) (rank.has(keyOf(item)) ? known : unknown).push(item);
+  known.sort((a, b) => rank.get(keyOf(a))! - rank.get(keyOf(b))!);
+  return [...known, ...unknown];
+}

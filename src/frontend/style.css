@@ -879,3 +879,89 @@ html, body, #app {
   color: var(--fg);
 }
 .df-detail-block.muted pre { color: var(--muted); font-size: 11px; }
+
+/* ── v0.3 Drag Reorder 공통 ─────────────────────────────────────────────── */
+.proj-tab[draggable="true"],
+.tab-btn[draggable="true"],
+.agent-pill[draggable="true"] {
+  cursor: grab;
+}
+.reorder-over {
+  outline: 2px dashed var(--accent) !important;
+  outline-offset: -2px;
+}
+
+/* ── v0.3 Quick Dogfooding Capture ─────────────────────────────────────── */
+.qdf-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 96px;
+}
+.qdf-card {
+  width: min(560px, calc(100vw - 48px));
+  background: var(--bg2, #202228);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qdf-head { display: flex; align-items: center; justify-content: space-between; }
+.qdf-title { font-weight: 700; font-size: 13px; }
+.qdf-card textarea {
+  resize: vertical;
+  min-height: 52px;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.qdf-card textarea:focus { outline: none; border-color: var(--accent); }
+.qdf-foot { display: flex; align-items: center; gap: 8px; }
+.qdf-ctx {
+  flex: 1;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qdf-save { white-space: nowrap; }
+.qdf-detail {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+.qdf-detail select,
+.qdf-detail input[type="text"] {
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+/* ── v0.3 설정 모달 — Storage / About ──────────────────────────────────── */
+.settings-section {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.settings-section:first-of-type { border-top: none; padding-top: 0; }
+
+/* ── v0.3 Updater 상태 표시 ────────────────────────────────────────────── */
+.update-row { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; font-size: 12.5px; }
+.update-latest { color: var(--accent2, #6cc26c); font-weight: 600; }
+.update-avail  { color: var(--accent); font-weight: 700; }
+.update-dl     { color: var(--accent); font-variant-numeric: tabular-nums; }
+.update-ready  { color: var(--accent2, #6cc26c); font-weight: 700; }
+.update-err    { color: var(--danger); }

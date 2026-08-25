@@ -10,6 +10,8 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electro
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
+import { migrateSettings } from './migrate.js';
+import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
   AppSettings,
   DfContext,
@@ -22,6 +24,9 @@ import {
   RelayResponse,
   RunFolderResult,
   SettingsView,
+  UpdateEvent,
+  UpdateStatus,
+  nextUpdateStatus,
 } from '../shared/types.js';
 
 /** Mutable runtime state. */
@@ -35,19 +40,45 @@ function saveSettings(s: AppSettings): void {
 
 /**
  * Choose where settings.json lives.
- *  - Dev / co-located builds: next to main.js (or a writable exe folder).
- *  - Portable single-exe (extracted to a temp dir): fall back to %APPDATA% so
- *    the chosen DATA_ROOT survives.
+ *
+ * v0.3 — 설치형/포터블이 뚜렷이 갈린다:
+ *  - Portable exe: electron-builder portable이 설정하는 PORTABLE_EXECUTABLE_DIR
+ *    (= exe 위치)에 그대로 저장 — USB 휴대 시 설정이 함께 이동.
+ *  - Installed (NSIS): Program Files는 절대 쓰지 않고 Electron userData
+ *    (%APPDATA%/agent-relay-log)를 사용한다.
+ *  - Dev: 컴파일 출력 옆(__dirname).
  */
 function resolveBaseDir(): string {
-  const exeDir = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  if (!app.isPackaged) return __dirname;
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
+  if (portableDir) {
+    try {
+      const probe = path.join(portableDir, '.agent-relay-log-write-test');
+      fs.writeFileSync(probe, 'ok');
+      fs.unlinkSync(probe);
+      return portableDir;
+    } catch {
+      // fall through to userData
+    }
+  }
+  return app.getPath('userData');
+}
+
+/**
+ * 최초 실행 시 포터블 시절 settings.json을 userData로 조용히 복사한다.
+ * - 원본은 절대 삭제하지 않는다 (destructive migration 금지).
+ * - 실패해도 앱 시작을 막지 않는다.
+ */
+function migrateLegacySettings(): void {
   try {
-    const probe = path.join(exeDir, '.agent-relay-log-write-test');
-    fs.writeFileSync(probe, 'ok');
-    fs.unlinkSync(probe);
-    return exeDir;
+    if (baseDir !== app.getPath('userData')) return; // installed 전용
+    const candidates = [
+      // 예전 portable 폴백 위치: %APPDATA%/agent-relay-log/AgentRelayLog
+      path.join(app.getPath('userData'), 'AgentRelayLog'),
+    ];
+    migrateSettings(baseDir, candidates);
   } catch {
-    return path.join(app.getPath('userData'), 'AgentRelayLog');
+    // 마이그레이션 실패는 치명적이지 않다 — 기본값으로 시작.
   }
 }
 
@@ -70,6 +101,22 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       s.lastProject = req.project || '';
       saveSettings(s);
       return true;
+    }
+
+    case 'settings:setProjectOrder': {
+      if (!Array.isArray(req.order)) throw new Error('order 배열이 필요합니다.');
+      const s = currentSettings();
+      s.projectOrder = req.order.map((x) => String(x));
+      saveSettings(s);
+      return s.projectOrder;
+    }
+
+    case 'settings:setAgentOrder': {
+      if (!Array.isArray(req.order)) throw new Error('order 배열이 필요합니다.');
+      const s = currentSettings();
+      s.agentOrder = req.order.map((x) => String(x));
+      saveSettings(s);
+      return s.agentOrder;
     }
 
     case 'settings:setDataRoot': {
@@ -254,6 +301,23 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'pdf:read':
       return relay.readProjectFeedbackRaw(req.dataRoot, req.project, req.id);
 
+    case 'update:check': {
+      if (!updaterSupported(app.isPackaged)) {
+        throw new Error('개발 모드에서는 업데이트를 확인할 수 없습니다. (설치된 앱에서만 동작)');
+      }
+      manualCheck = true;
+      void checkForUpdates().catch(() => undefined); // errors arrive via 'error' event
+      return true;
+    }
+
+    case 'update:download':
+      downloadUpdate();
+      return true;
+
+    case 'update:install':
+      installUpdate();
+      return true;
+
     default:
       throw new Error('알 수 없는 요청입니다.');
   }
@@ -267,6 +331,28 @@ function sanitizeDfContext(ctx: DfContext): DfContext {
     agent: typeof ctx?.agent === 'string' ? ctx.agent : undefined,
     run: typeof ctx?.run === 'string' ? ctx.run : undefined,
   };
+}
+
+// ── In-app updater state ────────────────────────────────────────────────────
+// electron-updater 이벤트 → 순수 상태 머신(nextUpdateStatus) → 렌더러 푸시.
+let manualCheck = false;
+const initialUpdateStatus: UpdateStatus = { phase: 'idle', version: app.getVersion() };
+let updateStatusState: UpdateStatus = initialUpdateStatus;
+
+function pushUpdateStatus(): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('relay-update-status', updateStatusState);
+  }
+}
+
+function handleUpdateEvent(e: UpdateEvent): void {
+  // 한 사이클(확인 결과/에러)이 끝나면 manual 플래그를 되돌린다.
+  // (updater는 이벤트 발생 시점에 isManual()으로 플래그를 읽어 간다)
+  if (e.type === 'not-available' || e.type === 'available' || e.type === 'error') {
+    manualCheck = false;
+  }
+  updateStatusState = nextUpdateStatus(updateStatusState, e);
+  pushUpdateStatus();
 }
 
 function registerIpc(): void {
@@ -366,8 +452,19 @@ app.whenReady().then(() => {
   app.setAppUserModelId('com.agentrelaylog.v0');
   baseDir = resolveBaseDir();
   fs.mkdirSync(baseDir, { recursive: true });
+  migrateLegacySettings();
   registerIpc();
   createWindow();
+
+  // ── Updater ──
+  // 시작 후 조용히 1회 확인(정책상 자동 다운로드/설치 없음). 새 버전이 있으면
+  // 렌더러가 작은 알림을 띄우고, 설치는 사용자가 설정에서 진행한다.
+  if (updaterSupported(app.isPackaged)) {
+    initUpdater({ emit: handleUpdateEvent, isManual: () => manualCheck });
+    setTimeout(() => {
+      void checkForUpdates().catch(() => undefined);
+    }, 4000);
+  }
 
   app.on('window-all-closed', () => {
     app.quit();

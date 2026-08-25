@@ -79,12 +79,12 @@ async function main() {
   else FAIL('slugify failed');
 
   console.log('11) 앱 재시작 시뮬레이션 (DATA_ROOT 유지)');
-  const settings = relay.loadSettings(path.dirname(process.cwd()));
-  relay.saveSettings(path.dirname(process.cwd()), { dataRoot: TEST_ROOT, customAgents: ['TestAgent'] });
-  const reloaded = relay.loadSettings(path.dirname(process.cwd()));
+  const settingsDir = path.join(TEST_ROOT, '_settings-fs');
+  fs.mkdirSync(settingsDir, { recursive: true });
+  relay.saveSettings(settingsDir, { dataRoot: TEST_ROOT, customAgents: ['TestAgent'] });
+  const reloaded = relay.loadSettings(settingsDir);
   if (reloaded.dataRoot === TEST_ROOT && reloaded.customAgents.includes('TestAgent')) PASS('settings persisted');
   else FAIL('settings not persisted');
-  fs.rmSync(path.join(path.dirname(process.cwd()), 'settings.json'), { force: true });
 
   console.log('12) 프로젝트 List');
   const list = relay.listProjects(base);

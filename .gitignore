@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .test-data-root/
+.test-data-root-vnext/
+.test-data-root-v03/
 *.log
 .DS_Store
 Thumbs.db

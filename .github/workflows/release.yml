@@ -1,0 +1,44 @@
+# Agent Relay — GitHub Release 자동화
+# 태그(v*) push → typecheck/test/build → Windows NSIS + Portable 패키징
+# → electron-builder가 GitHub Release에 다음을 업로드한다:
+#     AgentRelay-Setup-x.y.z.exe / AgentRelay-Portable-x.y.z.exe
+#     latest.yml (electron-updater metadata) / *.blockmap
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (client + server)
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Package + Publish to GitHub Releases
+        run: npx electron-builder --win --publish always --config electron.builder.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

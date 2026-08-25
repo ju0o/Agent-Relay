@@ -48,6 +48,11 @@ export interface DogfoodPanelProps {
   context: DfContext;
   notify: (kind: 'ok' | 'err' | 'info', text: string) => void;
   onClose: () => void;
+  /**
+   * 값이 바뀔 때마다 목록을 다시 읽는다 — Quick Capture로 저장 직후
+   * 열려있는 목록에도 즉시 표시하기 위한 신호.
+   */
+  refreshSignal?: number;
 }
 
 export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
@@ -84,6 +89,13 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
   }
 
   useEffect(() => { void refresh(); /* eslint-disable react-hooks/exhaustive-deps */ }, [props.dataRoot, project]);
+
+  // Quick Capture 등 외부에서 저장되었을 때 즉시 반영
+  const signal = props.refreshSignal ?? 0;
+  useEffect(() => {
+    if (signal > 0) void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signal]);
 
   function contextLine(): string {
     if (isProject) {

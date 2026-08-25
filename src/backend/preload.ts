@@ -6,7 +6,7 @@
  * Security: this is the ONLY thing we intentionally expose to the renderer.
  */
 import { contextBridge, ipcRenderer } from 'electron';
-import { RelayRequest, RelayResponse } from '../shared/types.js';
+import { RelayRequest, RelayResponse, UpdateStatus } from '../shared/types.js';
 
 const api = {
   call<T>(req: RelayRequest): Promise<RelayResponse<T>> {
@@ -18,6 +18,15 @@ const api = {
    */
   dragFile(filePath: string): void {
     ipcRenderer.send('relay-drag-file', filePath);
+  },
+  /**
+   * In-app updater 상태 푸시 구독 (main이 relay-update-status로 방송한다).
+   * Returns an unsubscribe function.
+   */
+  onUpdateStatus(cb: (s: UpdateStatus) => void): () => void {
+    const listener = (_e: unknown, s: UpdateStatus): void => cb(s);
+    ipcRenderer.on('relay-update-status', listener as never);
+    return () => ipcRenderer.removeListener('relay-update-status', listener as never);
   },
 };
 

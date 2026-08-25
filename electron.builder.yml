@@ -7,17 +7,32 @@ directories:
 files:
   - dist/client/**/*
   - dist/server/**/*
+  # electron-updater(런타임 의존성)는 electron-builder가 package.json의
+  # production dependencies에서 자동 수집한다 — files 화이트리스트에 넣지 않는다.
 extraMetadata:
   main: dist/server/backend/main.js
+# electron-updater GitHub Release provider — used by the in-app updater.
+publish:
+  provider: github
+  owner: ju0o
+  repo: Agent-Relay
+  releaseType: release
 win:
   target:
+    - target: nsis
+      arch:
+        - x64
     - target: portable
       arch:
         - x64
-    - target: dir
-      arch:
-        - x64
-  artifactName: AgentRelayLog.exe
+nsis:
+  # 설치형 — 사용자가 설치 경로를 고르고 시작 메뉴/바탕화면 바로가기를 만든다.
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Agent Relay
+  artifactName: AgentRelay-Setup-${version}.exe
 portable:
-  artifactName: AgentRelayLog.exe
+  artifactName: AgentRelay-Portable-${version}.exe
 npmRebuild: false
