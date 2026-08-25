@@ -9,10 +9,17 @@ Windows용 Electron 앱. Claude Code, Codex, OpenCode 등 에이전트에게 전
 ## 설치 (권장 방식)
 
 1. [Releases](https://github.com/ju0o/Agent-Relay/releases) 페이지에서 최신 `AgentRelay-Setup-x.y.z.exe` 다운로드
-2. 실행해서 설치 (설치 위치 직접 선택 가능)
-3. 시작 메뉴 / 바탕화면 바로가기 **"Agent Relay"** 실행
+2. 실행하면 자동으로 설치된다 — 설치 경로 선택 등 별도 과정 없음
+   (프로그램 본체: `%LOCALAPPDATA%\Programs\Agent Relay\`)
+3. 설치 직후 앱이 바로 실행되며, 이후에는 아래에서 실행
+   - 바탕화면 **Agent Relay** 바로가기
+   - 시작 메뉴 **Agent Relay**
+   - Windows 설정 > 설치된 앱 > **Agent Relay** (제거는 여기서)
 4. 최초 1회만 데이터 폴더(DATA_ROOT) 선택 — 이후 앱이 자동 복원
 5. 새 버전은 앱 안에서 업데이트 (⚙ 설정 → About → [업데이트 확인])
+
+프로그램 본체와 사용자 데이터는 완전히 분리되어 있다. 제거/업데이트해도
+DATA_ROOT의 기록과 설정은 절대 삭제되지 않는다.
 
 Portable 버전(`AgentRelay-Portable-x.y.z.exe`)은 설치 없이 바로 실행하는 보조 배포판이다.
 설정 파일을 exe 옆에 두므로 USB 휴대에 적합하다.
@@ -91,9 +98,10 @@ DATA_ROOT/                          ← 최초 1회 선택 (settings.json에 저
 - 경로가 사라지면(외장 드라이브 제거 등) "저장공간을 찾을 수 없습니다" 화면이 뜨고 새 위치만 다시 선택하면 된다.
 - 변경은 ⚙ 설정 → Storage 에서만 ([변경] / [폴더 열기]).
 - 설정 파일 위치:
-  - 설치형: `%APPDATA%\agent-relay-log\` (Electron userData)
-  - Portable: exe 옆 (`settings.json`이 함께 이동)
-  - 포터블에서 설치형으로 옮길 때 최초 실행 시 기존 설정을 **복사** 이관한다(원본 유지).
+  - 설치형/Portable 공통: `%APPDATA%\agent-relay-log\settings.json` (Electron userData)
+  - Portable은 exe 옆에 `settings.json`이 있으면 우선 사용 (USB 휴대용)
+  - ~v0.2.x 포터블 폴백 위치(`%APPDATA%\agent-relay-log\AgentRelayLog`)의 설정은
+    최초 실행 시 자동 **복사** 이관된다(원본 유지, 비파괴).
 
 ## Dogfooding 🐾
 

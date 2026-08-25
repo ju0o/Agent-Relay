@@ -65,7 +65,13 @@ function resolveBaseDir(): string {
 }
 
 /**
- * 최초 실행 시 포터블 시절 settings.json을 userData로 조용히 복사한다.
+ * 최초 실행 시 과거 버전의 settings.json을 현재 baseDir(userData)로 조용히 복사한다.
+ *
+ * 커버 범위:
+ *  - v0.3.0 설치형: userData가 package.json name 기준이라 동일 위치 → 이관 불필요
+ *  - ~v0.2.x portable 폴백: %APPDATA%/agent-relay-log/AgentRelayLog → 후보로 복사
+ *  - portable exe 옆 settings.json: 위치를 알 수 없어 자동 이관 대상 아님 (문서화됨)
+ *
  * - 원본은 절대 삭제하지 않는다 (destructive migration 금지).
  * - 실패해도 앱 시작을 막지 않는다.
  */
@@ -73,7 +79,6 @@ function migrateLegacySettings(): void {
   try {
     if (baseDir !== app.getPath('userData')) return; // installed 전용
     const candidates = [
-      // 예전 portable 폴백 위치: %APPDATA%/agent-relay-log/AgentRelayLog
       path.join(app.getPath('userData'), 'AgentRelayLog'),
     ];
     migrateSettings(baseDir, candidates);

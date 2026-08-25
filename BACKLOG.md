@@ -40,3 +40,17 @@
 - [x] GitHub Actions tag(v*) push → build/test/packaging/Release 자동화
 - [x] Quick Dogfooding Capture (`＋ 피드백` Popover — 한 줄 기록, UX/MEDIUM/OPEN 기본값)
 - [x] Drag Reorder — 프로젝트 탭(영구), 작업 탭(session), 에이전트 목록(영구)
+
+## 완료된 것 (v0.3.1)
+
+- [x] NSIS one-click 전환 — 설치 경로 선택 UI 제거 (Setup → 자동 설치 → 실행)
+- [x] 프로그램 본체를 `%LOCALAPPDATA%\Programs\Agent Relay\`에 설치
+      (build/installer.nsh customInit — 신규 설치만 리다이렉트, 업그레이드는 레지스트리 InstallLocation 존중)
+- [x] 제거 시 사용자 데이터 미삭제 확인 (`deleteAppDataOnUninstall: false` + DATA_ROOT는 설치 디렉터리 외부)
+- [x] 실제 Windows E2E: 설치→단축키→설치된 앱 등록→실행→복원→제거→데이터 보존→재설치 재연결
+
+## 알려진 사항
+
+- v0.3.0 NSIS로 설치한 적이 있는 환경은 업그레이드 시 구 위치(`%LOCALAPPDATA%\Programs\agent-relay-log`)에
+  그대로 설치된다(업그레이드는 항상 기존 위치 존중). 새 위치를 원하면 구버전 제거 후 재설치.
+- NSIS 언인스톨러는 빈 폴더 껍데기를 남길 수 있다(파일 없음, 무해).

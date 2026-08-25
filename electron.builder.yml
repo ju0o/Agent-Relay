@@ -1,5 +1,8 @@
 appId: com.agentrelaylog.v0
-productName: AgentRelayLog
+# productName = 설치 디렉터리(%LOCALAPPDATA%\Programs\Agent Relay)·exe·단축키 이름의 기준.
+# 주의: Electron userData는 package.json "name"(agent-relay-log)을 따르므로
+# 이 값을 바꿔도 사용자 settings 위치는 변하지 않는다 (마이그레이션 불필요).
+productName: Agent Relay
 asar: false
 directories:
   output: dist
@@ -26,12 +29,16 @@ win:
       arch:
         - x64
 nsis:
-  # 설치형 — 사용자가 설치 경로를 고르고 시작 메뉴/바탕화면 바로가기를 만든다.
-  oneClick: false
-  allowToChangeInstallationDirectory: true
+  # 일반 Windows Desktop App 설치 UX — 경로 선택 없이 Setup → 설치 → 실행.
+  oneClick: true
+  perMachine: false
+  # 신규 설치 경로를 %LOCALAPPDATA%\Programs\Agent Relay 로 지정 (업그레이드는 기존 위치 존중).
+  include: build/installer.nsh
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Agent Relay
+  # 제거해도 사용자 데이터(%APPDATA% settings + DATA_ROOT)는 절대 삭제하지 않는다.
+  deleteAppDataOnUninstall: false
   artifactName: AgentRelay-Setup-${version}.exe
 portable:
   artifactName: AgentRelay-Portable-${version}.exe
