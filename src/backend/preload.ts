@@ -6,7 +6,7 @@
  * Security: this is the ONLY thing we intentionally expose to the renderer.
  */
 import { contextBridge, ipcRenderer } from 'electron';
-import { RelayRequest, RelayResponse, UpdateStatus } from '../shared/types.js';
+import { CaptureStatusView, RelayRequest, RelayResponse, UpdateStatus } from '../shared/types.js';
 
 const api = {
   call<T>(req: RelayRequest): Promise<RelayResponse<T>> {
@@ -27,6 +27,12 @@ const api = {
     const listener = (_e: unknown, s: UpdateStatus): void => cb(s);
     ipcRenderer.on('relay-update-status', listener as never);
     return () => ipcRenderer.removeListener('relay-update-status', listener as never);
+  },
+  /** Agent adapter 자동 수신 상태 푸시 구독 (main이 relay-capture-status로 방송한다). */
+  onCaptureStatus(cb: (s: CaptureStatusView) => void): () => void {
+    const listener = (_e: unknown, s: CaptureStatusView): void => cb(s);
+    ipcRenderer.on('relay-capture-status', listener as never);
+    return () => ipcRenderer.removeListener('relay-capture-status', listener as never);
   },
 };
 

@@ -1,0 +1,16 @@
+[
+  {
+    "info": { "id": "msg_u02", "role": "user", "sessionID": "ses_fix02", "time": { "created": 1787700100000 } },
+    "parts": [ { "type": "text", "text": "테스트 계획을 세워줘" } ]
+  },
+  {
+    "info": {
+      "id": "msg_a03", "parentID": "msg_u02", "role": "assistant", "sessionID": "ses_fix02",
+      "time": { "created": 1787700101000 }
+    },
+    "parts": [
+      { "type": "step-start" },
+      { "type": "text", "text": "아직 생성 중인 응답입니다...", "synthetic": false }
+    ]
+  }
+]

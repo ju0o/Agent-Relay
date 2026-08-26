@@ -965,3 +965,6 @@ html, body, #app {
 .update-dl     { color: var(--accent); font-variant-numeric: tabular-nums; }
 .update-ready  { color: var(--accent2, #6cc26c); font-weight: 700; }
 .update-err    { color: var(--danger); }
+
+/* Agent adapter auto-capture status (vNext) */
+.paneacts .cap-live, .paneacts .cap-done { color: #30D158; font-size: 11px; cursor: default; white-space: nowrap; }

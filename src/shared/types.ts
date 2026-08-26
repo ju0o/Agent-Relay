@@ -93,6 +93,9 @@ export type RelayRequest =
  | { op: 'pdf:read'; dataRoot: string; project: string; id: string }
  | { op: 'settings:setProjectOrder'; order: string[] }
  | { op: 'settings:setAgentOrder'; order: string[] }
+ | { op: 'adapters:list' }
+ | { op: 'capture:arm'; folder: string }
+ | { op: 'capture:disarm' }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -277,6 +280,25 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
     default:
       return s;
   }
+}
+
+// ── Agent adapter auto-capture (vNext foundation) ───────────────────────────
+//
+// 어댑터가 에이전트 응답 완료를 관찰하면 main이 이 상태를 렌더러로 방송한다.
+// RESPONSE_COMPLETE는 제품 과제(Task) 성공을 의미하지 않는다 — "에이전트가
+// 응답 생성을 끝냈다"는 사실만 전달한다.
+
+export type CapturePhase = 'watching' | 'captured' | 'error' | 'stopped';
+
+/** Push payload for 'relay-capture-status'. */
+export interface CaptureStatusView {
+  phase: CapturePhase;
+  /** Run folder the watch is bound to. */
+  folder?: string;
+  adapterId?: string;
+  /** captured — files written inside the run folder. */
+  files?: string[];
+  message?: string;
 }
 
 // ── Drag reorder helpers ────────────────────────────────────────────────────

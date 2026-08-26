@@ -10,6 +10,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electro
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
+import { CaptureManager } from './capture-manager.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
@@ -26,11 +27,19 @@ import {
   SettingsView,
   UpdateEvent,
   UpdateStatus,
+  CaptureStatusView,
   nextUpdateStatus,
 } from '../shared/types.js';
 
 /** Mutable runtime state. */
 let baseDir = '';
+let captureManager: CaptureManager | null = null;
+
+function pushCaptureStatus(s: CaptureStatusView): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('relay-capture-status', s);
+  }
+}
 function currentSettings(): AppSettings {
   return relay.loadSettings(baseDir);
 }
@@ -306,6 +315,23 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'pdf:read':
       return relay.readProjectFeedbackRaw(req.dataRoot, req.project, req.id);
 
+    case 'adapters:list': {
+      if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
+      return captureManager.listAdapters();
+    }
+
+    case 'capture:arm': {
+      if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
+      await captureManager.arm(req.folder);
+      return { armed: true, folder: req.folder };
+    }
+
+    case 'capture:disarm': {
+      if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
+      await captureManager.disarm();
+      return true;
+    }
+
     case 'update:check': {
       if (!updaterSupported(app.isPackaged)) {
         throw new Error('개발 모드에서는 업데이트를 확인할 수 없습니다. (설치된 앱에서만 동작)');
@@ -461,6 +487,9 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
 
+  // ── Agent adapter auto-capture ──
+  captureManager = new CaptureManager(pushCaptureStatus);
+
   // ── Updater ──
   // 시작 후 조용히 1회 확인(정책상 자동 다운로드/설치 없음). 새 버전이 있으면
   // 렌더러가 작은 알림을 띄우고, 설치는 사용자가 설정에서 진행한다.
@@ -472,6 +501,7 @@ app.whenReady().then(() => {
   }
 
   app.on('window-all-closed', () => {
+    void captureManager?.dispose();
     app.quit();
   });
 });

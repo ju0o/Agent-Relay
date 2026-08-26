@@ -4,13 +4,14 @@
  * 프로젝트 세션 탭 + 에디터 탭 기반 병렬 편집 + 파일 트리 + 한국어 UI
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
-import { must, hasBridge, dragLocalFile, onUpdateStatus } from './bridge.js';
+import { must, hasBridge, dragLocalFile, onUpdateStatus, onCaptureStatus } from './bridge.js';
 import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
+  CaptureStatusView,
   DfContext,
   HistoryItem,
   ProjectInfo,
@@ -179,6 +180,7 @@ function AppInner(): React.ReactElement {
 
   // In-app updater 상태 (main이 relay-update-status로 푸시)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [capture, setCapture] = useState<CaptureStatusView | null>(null);
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
   const [sessions, setSessions]           = useState<ProjectSession[]>([_initSess]);
@@ -319,6 +321,10 @@ function AppInner(): React.ReactElement {
 
   // ── Updater 구독 + 백그라운드 새 버전 알림 (정책: 자동 설치 없음) ────────────
   useEffect(() => onUpdateStatus(s => setUpdateStatus({ ...s })), []);
+
+  // ── Agent 어댑터 자동 수신 상태 구독 ─────────────────────────────────────────
+  const captureHandlerRef = useRef<(s: CaptureStatusView) => void>(() => undefined);
+  useEffect(() => onCaptureStatus(s => { setCapture({ ...s }); captureHandlerRef.current(s); }), []);
   const noticedVersion = useRef<string | null>(null);
   useEffect(() => {
     if (updateStatus?.phase === 'available' && updateStatus.nextVersion
@@ -563,6 +569,56 @@ function AppInner(): React.ReactElement {
     await saveTabPrompt(tabId, false, resolved);
     await saveTabResult(tabId, false, resolved);
   }
+
+  // ── Agent 어댑터 자동 수신 (OpenCode) ────────────────────────────────────────
+  async function armAutoCapture(): Promise<void> {
+    if (!activeTab?.folder) { notify('err', '런 폴더가 필요합니다. 먼저 저장하세요.'); return; }
+    try {
+      await must({ op: 'capture:arm', folder: activeTab.folder });
+      notify('info', 'OpenCode 응답 완료를 감시합니다. OpenCode에서 작업을 마치면 결과가 자동으로 채워집니다.');
+    } catch (e) {
+      notify('err', e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function disarmAutoCapture(): Promise<void> {
+    try {
+      await must({ op: 'capture:disarm' });
+      notify('info', '자동 수신을 해제했습니다.');
+    } catch (e) {
+      notify('err', e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function handleCapturedStatus(s: CaptureStatusView): void {
+    if (s.phase === 'error' && s.folder && s.message) {
+      notify('err', `자동 수신 오류: ${s.message}`);
+      return;
+    }
+    if (s.phase !== 'captured' || !s.folder) return;
+    const files = s.files ?? [];
+    void (async () => {
+      try {
+        const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: s.folder! });
+        if (files.includes('result.md')) {
+          setSessions(prev => prev.map(sess => {
+            const idx = sess.tabs.findIndex(t => t.folder === s.folder);
+            if (idx < 0) return sess;
+            const nextTabs = [...sess.tabs];
+            nextTabs[idx] = { ...nextTabs[idx], result: rec.result, tags: rec.tags, resultSaved: true };
+            return { ...sess, tabs: nextTabs };
+          }));
+          notify('ok', 'OpenCode 결과 자동 수신 완료 — 결과 패널을 확인하세요.');
+        } else {
+          notify('info', `OpenCode 결과가 agent-result.md로 수신되었습니다. (${files.join(', ')}) result.md의 기존 내용은 유지됩니다.`);
+        }
+        await refreshHistory();
+      } catch (e) {
+        notify('err', e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }
+  captureHandlerRef.current = handleCapturedStatus;
 
   // ── 태그 ─────────────────────────────────────────────────────────────────────
   async function updateTabTags(tabId: string, newTags: string[]): Promise<void> {
@@ -1299,6 +1355,22 @@ function AppInner(): React.ReactElement {
                             onClick={() => void revealResult(activeTab)}
                           >위치 열기</button>
                         )}
+                        {capture?.phase === 'watching' && capture.folder === activeTab.folder && (
+                          <span className="mini cap-live" title="OpenCode 응답 완료를 감시하는 중입니다">● OpenCode 수신 대기</span>
+                        )}
+                        {capture?.phase === 'captured' && capture.folder === activeTab.folder && (
+                          <span className="mini cap-done" title="OpenCode 결과가 자동 수신되었습니다">✓ 자동수신됨</span>
+                        )}
+                        <button
+                          className={`mini${capture?.phase === 'watching' && capture.folder === activeTab.folder ? ' preview-on' : ''}`}
+                          title={capture?.phase === 'watching' && capture.folder === activeTab.folder
+                            ? '감시 중입니다 — 눌러서 해제'
+                            : 'OpenCode가 응답을 마치면 이 런에 결과를 자동으로 받습니다'}
+                          disabled={!activeTab.folder}
+                          onClick={() => void (capture?.phase === 'watching' && capture.folder === activeTab.folder
+                            ? disarmAutoCapture()
+                            : armAutoCapture())}
+                        >{capture?.phase === 'watching' && capture.folder === activeTab.folder ? '수신 해제' : '🤖 자동수신'}</button>
                         <button
                           className={`mini${activeTab.resultPreview ? ' preview-on' : ''}`}
                           title={activeTab.resultPreview ? '원문으로 전환' : '마크다운 미리보기'}

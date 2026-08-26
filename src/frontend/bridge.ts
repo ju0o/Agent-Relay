@@ -2,12 +2,13 @@
  * Thin IPC client — wraps the bridge that the Electron preload script exposes
  * on window.relayApi. The rest of the UI never talks to Electron directly.
  */
-import { RelayRequest, RelayResponse, UpdateStatus } from '../shared/types.js';
+import { CaptureStatusView, RelayRequest, RelayResponse, UpdateStatus } from '../shared/types.js';
 
 export interface RelayApi {
   call<T>(req: RelayRequest): Promise<RelayResponse<T>>;
   dragFile?(filePath: string): void;
   onUpdateStatus?(cb: (s: UpdateStatus) => void): () => void;
+  onCaptureStatus?(cb: (s: CaptureStatusView) => void): () => void;
 }
 
 declare global {
@@ -42,4 +43,9 @@ export function dragLocalFile(filePath: string): void {
 /** Subscribe to updater status pushes. Returns an unsubscribe function. */
 export function onUpdateStatus(cb: (s: UpdateStatus) => void): () => void {
   return window.relayApi?.onUpdateStatus?.(cb) ?? (() => undefined);
+}
+
+/** Subscribe to agent adapter auto-capture status pushes. */
+export function onCaptureStatus(cb: (s: CaptureStatusView) => void): () => void {
+  return window.relayApi?.onCaptureStatus?.(cb) ?? (() => undefined);
 }

@@ -1,0 +1,33 @@
+[
+  {
+    "info": { "id": "msg_u01", "role": "user", "sessionID": "ses_fix01", "time": { "created": 1787700000000 } },
+    "parts": [ { "type": "text", "text": "README에 사용 방법을 요약해줘", "synthetic": false } ]
+  },
+  {
+    "info": {
+      "id": "msg_a01", "parentID": "msg_u01", "role": "assistant", "sessionID": "ses_fix01",
+      "providerID": "opencode", "modelID": "x-preview-f-free",
+      "time": { "created": 1787700001000, "completed": 1787700010000 }
+    },
+    "parts": [
+      { "type": "step-start" },
+      { "type": "reasoning", "text": "내부 추론 (수집 대상 아님)" },
+      { "type": "text", "text": "파일을 확인하는 중입니다.", "synthetic": false },
+      { "type": "tool", "tool": "read", "state": { "status": "completed" } },
+      { "type": "step-finish" }
+    ]
+  },
+  {
+    "info": {
+      "id": "msg_a02", "parentID": "msg_u01", "role": "assistant", "sessionID": "ses_fix01",
+      "providerID": "opencode", "modelID": "x-preview-f-free",
+      "time": { "created": 1787700011000, "completed": 1787700025000 }
+    },
+    "parts": [
+      { "type": "step-start" },
+      { "type": "text", "text": "## 사용 방법\n\n1. `npm run dev`\n2. DATA_ROOT 선택\n3. 프롬프트 저장 → 결과 드래그", "synthetic": false },
+      { "type": "text", "text": "추가 질문이 있으면 알려주세요.", "synthetic": false },
+      { "type": "step-finish" }
+    ]
+  }
+]

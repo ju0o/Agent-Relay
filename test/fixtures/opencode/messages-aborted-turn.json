@@ -1,0 +1,17 @@
+[
+  {
+    "info": { "id": "msg_u03", "role": "user", "sessionID": "ses_fix03", "time": { "created": 1787700200000 } },
+    "parts": [ { "type": "text", "text": "리팩터링 진행해줘" } ]
+  },
+  {
+    "info": {
+      "id": "msg_a04", "parentID": "msg_u03", "role": "assistant", "sessionID": "ses_fix03",
+      "error": { "name": "MessageAbortedError", "data": { "message": "Aborted" } },
+      "time": { "created": 1787700201000, "completed": 1787700215000 }
+    },
+    "parts": [
+      { "type": "step-start" },
+      { "type": "text", "text": "작업을 시작했다가 중단되었습니다.", "synthetic": false }
+    ]
+  }
+]
