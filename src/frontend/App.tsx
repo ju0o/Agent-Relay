@@ -181,6 +181,7 @@ function AppInner(): React.ReactElement {
   // In-app updater 상태 (main이 relay-update-status로 푸시)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [capture, setCapture] = useState<CaptureStatusView | null>(null);
+  const [pickSession, setPickSession] = useState('');
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
   const [sessions, setSessions]           = useState<ProjectSession[]>([_initSess]);
@@ -575,6 +576,7 @@ function AppInner(): React.ReactElement {
     if (!activeTab?.folder) { notify('err', '런 폴더가 필요합니다. 먼저 저장하세요.'); return; }
     try {
       await must({ op: 'capture:arm', folder: activeTab.folder });
+      setPickSession('');
       notify('info', 'OpenCode 응답 완료를 감시합니다. OpenCode에서 작업을 마치면 결과가 자동으로 채워집니다.');
     } catch (e) {
       notify('err', e instanceof Error ? e.message : String(e));
@@ -584,7 +586,17 @@ function AppInner(): React.ReactElement {
   async function disarmAutoCapture(): Promise<void> {
     try {
       await must({ op: 'capture:disarm' });
+      setPickSession('');
       notify('info', '자동 수신을 해제했습니다.');
+    } catch (e) {
+      notify('err', e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function selectCaptureSession(sessionId: string): Promise<void> {
+    try {
+      await must({ op: 'capture:select', sessionId });
+      notify('info', `세션이 바인딩되었습니다: ${sessionId.slice(0, 12)}…`);
     } catch (e) {
       notify('err', e instanceof Error ? e.message : String(e));
     }
@@ -593,6 +605,9 @@ function AppInner(): React.ReactElement {
   function handleCapturedStatus(s: CaptureStatusView): void {
     if (s.phase === 'error' && s.folder && s.message) {
       notify('err', `자동 수신 오류: ${s.message}`);
+      return;
+    }
+    if (s.phase === 'ambiguous') {
       return;
     }
     if (s.phase !== 'captured' || !s.folder) return;
@@ -1356,10 +1371,36 @@ function AppInner(): React.ReactElement {
                           >위치 열기</button>
                         )}
                         {capture?.phase === 'watching' && capture.folder === activeTab.folder && (
-                          <span className="mini cap-live" title="OpenCode 응답 완료를 감시하는 중입니다">● OpenCode 수신 대기</span>
+                          <span className="mini cap-live" title={capture.boundSessionId
+                            ? `바인딩된 세션: ${capture.boundSessionId}`
+                            : 'OpenCode 응답 완료를 감시하는 중입니다'}>
+                            ● OpenCode 수신 대기{capture.boundSessionId ? ` (${capture.boundSessionId.slice(0, 12)}…)` : ''}
+                          </span>
                         )}
                         {capture?.phase === 'captured' && capture.folder === activeTab.folder && (
                           <span className="mini cap-done" title="OpenCode 결과가 자동 수신되었습니다">✓ 자동수신됨</span>
+                        )}
+                        {capture?.phase === 'ambiguous' && capture.folder === activeTab.folder && (
+                          <span className="cap-pick">
+                            <select
+                              className="mini"
+                              value={pickSession}
+                              onChange={e => setPickSession(e.target.value)}
+                              title="결과를 받아올 OpenCode 세션을 선택하세요"
+                            >
+                              <option value="">세션 선택…</option>
+                              {(capture.candidates ?? []).map(c => (
+                                <option key={c.sessionId} value={c.sessionId}>
+                                  {(c.title || c.directory || c.sessionId).slice(0, 40)} · {c.sessionId.slice(0, 12)}…
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              className="mini"
+                              disabled={!pickSession}
+                              onClick={() => void selectCaptureSession(pickSession)}
+                            >이 세션으로 수신</button>
+                          </span>
                         )}
                         <button
                           className={`mini${capture?.phase === 'watching' && capture.folder === activeTab.folder ? ' preview-on' : ''}`}

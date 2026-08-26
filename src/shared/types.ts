@@ -96,6 +96,7 @@ export type RelayRequest =
  | { op: 'adapters:list' }
  | { op: 'capture:arm'; folder: string }
  | { op: 'capture:disarm' }
+ | { op: 'capture:select'; sessionId: string }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -288,7 +289,14 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
 // RESPONSE_COMPLETE는 제품 과제(Task) 성공을 의미하지 않는다 — "에이전트가
 // 응답 생성을 끝냈다"는 사실만 전달한다.
 
-export type CapturePhase = 'watching' | 'captured' | 'error' | 'stopped';
+export type CapturePhase = 'watching' | 'ambiguous' | 'captured' | 'error' | 'stopped';
+
+/** One selectable OpenCode session shown in the minimal ambiguity picker. */
+export interface CaptureCandidateView {
+  sessionId: string;
+  title?: string;
+  directory?: string;
+}
 
 /** Push payload for 'relay-capture-status'. */
 export interface CaptureStatusView {
@@ -299,6 +307,10 @@ export interface CaptureStatusView {
   /** captured — files written inside the run folder. */
   files?: string[];
   message?: string;
+  /** The ONE session allowed to supply this Run's result (once bound). */
+  boundSessionId?: string;
+  /** ambiguous — selectable source sessions for explicit binding. */
+  candidates?: CaptureCandidateView[];
 }
 
 // ── Drag reorder helpers ────────────────────────────────────────────────────

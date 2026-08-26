@@ -45,10 +45,27 @@ export interface AgentCompletion {
 
 export type AdapterPhase = 'connecting' | 'watching' | 'captured' | 'error' | 'stopped';
 
+/** One observed agent session, enriched with binding-relevant evidence. */
+export interface SessionObservation {
+  sessionId: string;
+  directory?: string;
+  title?: string;
+  updatedMs?: number;
+  /** Session was created at/after the watch arm timestamp (exact identity evidence). */
+  isNew: boolean;
+  /** The session's last turn is started but not completed (streaming right now). */
+  inFlight: boolean;
+}
+
 export type AdapterEvent =
   | { type: 'status'; phase: AdapterPhase; detail?: string }
   | { type: 'completion'; completion: AgentCompletion }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  /**
+   * Emitted after each poll pass. `armPass` marks the FIRST successful pass —
+   * its `inFlight` flags constitute the arm-time snapshot used by binding.
+   */
+  | { type: 'sessions'; sessions: SessionObservation[]; armPass: boolean };
 
 export interface WatchTarget {
   /** Optional workspace directory hint for scoping observation. */

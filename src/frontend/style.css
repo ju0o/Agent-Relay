@@ -968,3 +968,4 @@ html, body, #app {
 
 /* Agent adapter auto-capture status (vNext) */
 .paneacts .cap-live, .paneacts .cap-done { color: #30D158; font-size: 11px; cursor: default; white-space: nowrap; }
+.paneacts .cap-pick { display: inline-flex; align-items: center; gap: 4px; }

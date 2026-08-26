@@ -332,6 +332,13 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return true;
     }
 
+    case 'capture:select': {
+      if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
+      const ok = captureManager.selectSession(req.sessionId);
+      if (!ok) throw new Error('세션을 선택할 수 없습니다. 감시가 활성 상태인지 확인하세요.');
+      return { selected: req.sessionId };
+    }
+
     case 'update:check': {
       if (!updaterSupported(app.isPackaged)) {
         throw new Error('개발 모드에서는 업데이트를 확인할 수 없습니다. (설치된 앱에서만 동작)');

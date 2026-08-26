@@ -20,6 +20,8 @@ interface EvidenceFile {
   capturedAt: string;
   adapter: { id: string; agentName: string };
   completion: Omit<AgentCompletion, 'rawFinalText'>;
+  /** How the source session was bound to this Run (Correction Pass 01). */
+  binding?: { reason: string };
 }
 
 function readEvidence(folder: string): EvidenceFile | null {
@@ -36,11 +38,15 @@ function readEvidence(folder: string): EvidenceFile | null {
  * Persist an AgentCompletion into a run folder:
  *   agent-result.md      — raw agent output, written once, immutable in meaning
  *   result.md            — only when absent (manual/GPT-drag compatibility)
- *   evidence/adapter.json — completion metadata + dedupe key
+ *   evidence/adapter.json — completion metadata + dedupe key + binding provenance
  *
  * Never throws. Existing manual data is never overwritten.
  */
-export function captureCompletion(folder: string, input: unknown): CaptureOutcome {
+export function captureCompletion(
+  folder: string,
+  input: unknown,
+  meta?: { bindingReason?: string },
+): CaptureOutcome {
   try {
     if (!folder || typeof folder !== 'string') {
       return { ok: false, written: [], skipped: [], duplicate: false, reason: 'run folder가 지정되지 않았습니다.' };
@@ -90,6 +96,7 @@ export function captureCompletion(folder: string, input: unknown): CaptureOutcom
         adapter: { id: c.adapterId, agentName: c.agentName },
         completion: rest,
       };
+      if (meta?.bindingReason) evidence.binding = { reason: meta.bindingReason };
       fs.mkdirSync(evidenceDir, { recursive: true });
       fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), 'utf8');
       written.push(path.join('evidence', 'adapter.json'));

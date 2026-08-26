@@ -13,6 +13,8 @@ export type ExtractKind = 'RESPONSE_COMPLETE' | 'PROCESS_FAILED' | 'INTERRUPTED'
 export interface ExtractResult {
   /** True when the turn reached a terminal state and text can be captured. */
   ready: boolean;
+  /** True when the last user turn has at least one assistant message. */
+  hasTurn: boolean;
   kind: ExtractKind;
   /** Verbatim response narration (non-synthetic text parts of the whole turn). */
   text: string;
@@ -25,6 +27,7 @@ export interface ExtractResult {
 
 const NOT_READY: ExtractResult = {
   ready: false,
+  hasTurn: false,
   kind: 'UNKNOWN',
   text: '',
   messageId: null,
@@ -116,6 +119,8 @@ export function summarizeLastTurn(messages: unknown): ExtractResult {
     const assistants = turn.map((m) => ({ raw: m, info: readInfo(m) })).filter((x) => x.info?.role === 'assistant');
     if (assistants.length === 0) return { ...NOT_READY, sessionId };
 
+    const hasTurn = true;
+
     const last = assistants[assistants.length - 1]!;
     const info = last.info!;
     const completedAtIso = toIso(info.time?.completed);
@@ -149,6 +154,7 @@ export function summarizeLastTurn(messages: unknown): ExtractResult {
 
     return {
       ready,
+      hasTurn,
       kind,
       text,
       messageId: typeof info.id === 'string' ? info.id : null,

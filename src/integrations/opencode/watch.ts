@@ -1,6 +1,6 @@
-import { AgentAdapter, AgentCompletion, AdapterEvent, WatchHandle, WatchTarget } from '../core/types.js';
+import { AgentAdapter, AgentCompletion, AdapterEvent, SessionObservation, WatchHandle, WatchTarget } from '../core/types.js';
 import { discoverRunningServers, OpenCodeServerClient, OcSessionInfo } from './client.js';
-import { summarizeLastTurn } from './extract.js';
+import { ExtractResult, summarizeLastTurn } from './extract.js';
 
 const POLL_MS = 2_000;
 const WATCH_TIMEOUT_MS = 120 * 60 * 1000;
@@ -120,9 +120,10 @@ export class OpenCodeAdapter implements AgentAdapter {
     endpoints.push(server);
 
     const emittedTurns = new Set<string>();
-    /** `${port}:${sessionId}` → session.time.updated at last fetch. Unchanged ⇒ skip refetch. */
-    const fetchedAtUpdated = new Map<string, number | undefined>();
+    /** `${port}:${sessionId}` → last fetch state. Unchanged ⇒ reuse cached summary. */
+    const fetchedAtUpdated = new Map<string, { updated?: number; summary: ExtractResult }>();
     let lastErrorMessage = '';
+    let successfulPasses = 0;
 
     const reportOnce = (message: string): void => {
       if (message === lastErrorMessage) return;
@@ -130,84 +131,106 @@ export class OpenCodeAdapter implements AgentAdapter {
       sink({ type: 'error', message });
     };
 
-    /** One poll pass over one endpoint. Returns the emitted completion, if any. */
-    const pollEndpoint = async (
+    /** One poll pass over one endpoint. */
+    const pollEndpoint = (
       client: OpenCodeServerClient,
-      workspaceRoot?: string,
-    ): Promise<AgentCompletion | null> => {
-      let sessions: OcSessionInfo[];
-      try {
-        sessions = await client.listSessions();
-      } catch (err) {
-        reportOnce(`OpenCode 서버(${client.endpointPort}) 조회 실패: ${err instanceof Error ? err.message : String(err)}`);
-        return null;
-      }
-
-      const candidates = selectCandidateSessions(sessions, { sinceMs, workspaceRoot }).sort(
-        (a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0),
-      );
-
-      for (const s of candidates) {
-        if (handle.isStopped()) return null;
-        const cacheKey = `${client.endpointPort}:${s.id}`;
-        const updated = s.time?.updated;
-        if (fetchedAtUpdated.has(cacheKey) && fetchedAtUpdated.get(cacheKey) === updated) continue;
-
-        let summary;
-        try {
-          summary = summarizeLastTurn(await client.listMessages(s.id));
-          fetchedAtUpdated.set(cacheKey, updated);
-        } catch (err) {
-          reportOnce(
-            `세션 ${s.id} 조회 실패: ${err instanceof Error ? err.message : String(err)}`,
+      workspaceRoot: string | undefined,
+      observations: Map<string, SessionObservation>,
+      completions: AgentCompletion[],
+    ): Promise<void> =>
+      client
+        .listSessions()
+        .then(async (sessions) => {
+          const candidates = selectCandidateSessions(sessions, { sinceMs, workspaceRoot }).sort(
+            (a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0),
           );
-          continue;
-        }
-        if (!summary.ready || !summary.messageId) continue;
-        const key = `${summary.sessionId ?? s.id}:${summary.messageId}`;
-        if (emittedTurns.has(key)) continue;
 
-        emittedTurns.add(key);
-        return {
-          adapterId: this.id,
-          agentName: this.agentName,
-          sessionId: summary.sessionId ?? s.id,
-          workspace: s.directory ?? '',
-          startedAt: summary.startedAtIso ?? undefined,
-          observedAt: new Date().toISOString(),
-          terminalSignal: summary.terminalSignal,
-          rawFinalText: summary.text,
-          rawProtocolRef: `opencode://session/${summary.sessionId ?? s.id}/message/${summary.messageId}`,
-          completionKind:
-            summary.kind === 'RESPONSE_COMPLETE' || summary.kind === 'INTERRUPTED' || summary.kind === 'PROCESS_FAILED'
-              ? summary.kind
-              : 'UNKNOWN',
-        };
-      }
-      return null;
-    };
+          for (const s of candidates) {
+            if (handle.isStopped()) return;
+            const cacheKey = `${client.endpointPort}:${s.id}`;
+            const updated = s.time?.updated;
+            const cached = fetchedAtUpdated.get(cacheKey);
+            let summary: ExtractResult;
+            if (cached && cached.updated === updated) {
+              summary = cached.summary;
+            } else {
+              try {
+                summary = summarizeLastTurn(await client.listMessages(s.id));
+              } catch (err) {
+                reportOnce(`세션 ${s.id} 조회 실패: ${err instanceof Error ? err.message : String(err)}`);
+                continue;
+              }
+              fetchedAtUpdated.set(cacheKey, { updated, summary });
+            }
+
+            const isNew =
+              typeof s.time?.created === 'number' ? s.time.created >= sinceMs - ARM_SKEW_MS : false;
+            const observation: SessionObservation = {
+              sessionId: s.id,
+              directory: s.directory,
+              title: s.title,
+              updatedMs: updated,
+              isNew,
+              inFlight: summary.hasTurn && !summary.ready,
+            };
+            const prev = observations.get(s.id);
+            if (!prev || (prev.updatedMs ?? 0) <= (observation.updatedMs ?? 0)) {
+              observations.set(s.id, observation);
+            }
+
+            if (!summary.ready || !summary.messageId) continue;
+            const key = `${summary.sessionId ?? s.id}:${summary.messageId}`;
+            if (emittedTurns.has(key)) continue;
+            emittedTurns.add(key);
+            completions.push({
+              adapterId: this.id,
+              agentName: this.agentName,
+              sessionId: summary.sessionId ?? s.id,
+              workspace: s.directory ?? '',
+              startedAt: summary.startedAtIso ?? undefined,
+              observedAt: new Date().toISOString(),
+              terminalSignal: summary.terminalSignal,
+              rawFinalText: summary.text,
+              rawProtocolRef: `opencode://session/${summary.sessionId ?? s.id}/message/${summary.messageId}`,
+              completionKind:
+                summary.kind === 'RESPONSE_COMPLETE' || summary.kind === 'INTERRUPTED' || summary.kind === 'PROCESS_FAILED'
+                  ? summary.kind
+                  : 'UNKNOWN',
+            });
+          }
+        })
+        .catch((err) => {
+          reportOnce(`OpenCode 서버(${client.endpointPort}) 조회 실패: ${err instanceof Error ? err.message : String(err)}`);
+        });
 
     const tick = async (): Promise<void> => {
       if (handle.isStopped()) return;
       try {
         let failures = 0;
-        for (const client of endpoints) {
-          if (handle.isStopped()) return;
-          let completion: AgentCompletion | null = null;
-          try {
-            completion = await pollEndpoint(client, target.workspaceRoot);
-          } catch {
-            failures++;
-            continue;
-          }
-          if (completion) {
-            sink({ type: 'completion', completion });
-            return;
-          }
+        const observations = new Map<string, SessionObservation>();
+        const completions: AgentCompletion[] = [];
+        await Promise.all(
+          endpoints.map((client) =>
+            pollEndpoint(client, target.workspaceRoot, observations, completions).then(
+              () => undefined,
+              () => {
+                failures++;
+              },
+            ),
+          ),
+        );
+        if (handle.isStopped()) return;
+
+        if (endpoints.length - failures > 0) {
+          successfulPasses++;
+          // Completions are emitted BEFORE the session snapshot so the manager
+          // can seed its binding snapshot and then evaluate each turn.
+          for (const c of completions) sink({ type: 'completion', completion: c });
+          sink({ type: 'sessions', sessions: [...observations.values()], armPass: successfulPasses === 1 });
         }
         if (debug && !handle.isStopped()) {
           console.error(
-            `[opencode-adapter] poll: endpoints=${endpoints.length} failures=${failures} emitted=${emittedTurns.size}`,
+            `[opencode-adapter] poll: endpoints=${endpoints.length} failures=${failures} obs=${observations.size} emitted=${emittedTurns.size}`,
           );
         }
         if (!handle.isStopped()) sink({ type: 'status', phase: 'watching' });
