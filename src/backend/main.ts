@@ -322,8 +322,9 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
 
     case 'capture:arm': {
       if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
-      await captureManager.arm(req.folder);
-      return { armed: true, folder: req.folder };
+      const adapterId = typeof req.adapterId === 'string' && req.adapterId ? req.adapterId : 'opencode';
+      await captureManager.arm(req.folder, adapterId);
+      return { armed: true, folder: req.folder, adapterId };
     }
 
     case 'capture:disarm': {

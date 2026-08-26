@@ -3,30 +3,41 @@ import { SessionBindingPolicy } from '../integrations/core/binding.js';
 import { captureCompletion } from '../integrations/core/capture.js';
 import { getAdapter, listAdapters, registerAdapter } from '../integrations/core/registry.js';
 import { createOpenCodeAdapter } from '../integrations/opencode/watch.js';
+import { createClaudeCodeAdapter } from '../integrations/claude/watch.js';
 import { CaptureCandidateView, CaptureStatusView } from '../shared/types.js';
 
 /**
- * Binds one adapter watch to one run folder and funnels completions into
- * the Core capture service. A deterministic session binding policy decides
- * WHICH OpenCode session may supply the Run's result; anything else is
- * ignored. Auto-capture is strictly additive: any failure here is observable
- * (status push) but can never block or corrupt a Run.
+ * Binds one registered adapter to one run folder and funnels completions
+ * into the Core capture service. A deterministic session binding policy
+ * decides WHICH agent session may supply the Run's result; anything else is
+ * ignored. A short settle window guards each acceptance: if a rival session
+ * appears before the result is written, the binding is revoked into the
+ * explicit-selection flow — files are never written on a guess.
  */
 export class CaptureManager {
+  private static SETTLE_MS = 6_000;
+
   private handle: WatchHandle | null = null;
   private folder: string | null = null;
   private lastPhase: CaptureStatusView['phase'] | null = null;
   private policy: SessionBindingPolicy | null = null;
   private armSnapshotSeeded = false;
+  private currentAdapterId: string | null = null;
   /** Dedupe of pushed binding/ambiguity state so the UI is not spammed. */
   private lastPushKey = '';
+  private pending: { completion: AgentCompletion; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(private readonly push: (s: CaptureStatusView) => void) {
-    if (!getAdapter('opencode')) {
-      try {
-        registerAdapter(createOpenCodeAdapter());
-      } catch {
-        // duplicate registration — another manager instance already owns it
+    for (const [id, factory] of [
+      ['opencode', createOpenCodeAdapter],
+      ['claude-code', createClaudeCodeAdapter],
+    ] as const) {
+      if (!getAdapter(id)) {
+        try {
+          registerAdapter(factory());
+        } catch {
+          // duplicate registration — another manager instance already owns it
+        }
       }
     }
   }
@@ -40,24 +51,26 @@ export class CaptureManager {
     return folder ? this.folder === folder : true;
   }
 
-  /** Bind the OpenCode adapter to a run folder. Replaces any active watch. */
-  async arm(folder: string): Promise<void> {
+  /** Bind ONE registered adapter to a run folder. Replaces any active watch. */
+  async arm(folder: string, adapterId = 'opencode'): Promise<void> {
     if (typeof folder !== 'string' || !folder.trim()) throw new Error('run folder 경로가 필요합니다.');
     await this.stopInternal(false);
 
-    const adapter = getAdapter('opencode');
+    const adapter = getAdapter(adapterId);
     if (!adapter) {
-      this.emit({ phase: 'error', folder, message: 'OpenCode 어댑터를 찾을 수 없습니다.' });
-      throw new Error('OpenCode 어댑터를 찾을 수 없습니다.');
+      this.emit({ phase: 'error', folder, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
+      throw new Error(`어댑터를 찾을 수 없습니다: ${adapterId}`);
     }
 
     this.folder = folder;
     this.policy = new SessionBindingPolicy();
     this.armSnapshotSeeded = false;
     this.lastPushKey = '';
+    this.currentAdapterId = adapter.id;
+    this.clearPending();
     try {
       this.handle = await adapter.startWatch({}, (e) => this.onEvent(e));
-      this.emit({ phase: 'watching', folder, adapterId: 'opencode' });
+      this.emit({ phase: 'watching', folder, adapterId: adapter.id });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.handle = null;
@@ -80,7 +93,7 @@ export class CaptureManager {
       this.emit({
         phase: 'watching',
         folder: this.folder ?? undefined,
-        adapterId: 'opencode',
+        ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
         boundSessionId: sessionId,
       });
     }
@@ -98,6 +111,7 @@ export class CaptureManager {
     this.folder = null;
     this.lastPhase = null;
     this.policy = null;
+    this.clearPending();
     if (h) await h.stop().catch(() => undefined);
   }
 
@@ -107,6 +121,7 @@ export class CaptureManager {
     this.handle = null;
     this.folder = null;
     this.policy = null;
+    this.clearPending();
     if (h && !withStatus) {
       // suppress the handle's own 'stopped' event for silent internal stops
       this.lastPhase = null;
@@ -130,7 +145,7 @@ export class CaptureManager {
           this.emit({
             phase: 'watching',
             folder: this.folder ?? undefined,
-            adapterId: 'opencode',
+            ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
             ...(bound ? { boundSessionId: bound } : {}),
           });
         } else if (e.phase === 'stopped') {
@@ -164,6 +179,19 @@ export class CaptureManager {
     }
     this.policy.note(sessions);
 
+    if (this.pending && this.policy.binding) {
+      // Settle window: any rival plausible source revokes the pending binding.
+      const boundId = this.policy.binding.sessionId;
+      const rival =
+        this.policy.newSessionIds.some((id) => id !== boundId) ||
+        this.policy.armInFlightSnapshot.some((id) => id !== boundId) ||
+        this.policy.candidatesNeedSelection();
+      if (rival) {
+        this.cancelPendingAndAmbiguate();
+        return;
+      }
+    }
+
     if (!this.policy.binding) {
       const ambiguousNow =
         this.armSnapshotSeeded && (this.policy.isAmbiguous || this.policy.candidatesNeedSelection());
@@ -185,8 +213,49 @@ export class CaptureManager {
       return;
     }
 
+    // accept — but do NOT write yet: hold a settle window so a rival session
+    // appearing moments later can still revoke the binding pre-write.
+    if (this.pending) {
+      if (this.pending.completion.sessionId === completion.sessionId) return; // dup while settling
+      this.cancelPendingAndAmbiguate();
+      return;
+    }
     const binding = policy.binding!;
+    const timer = setTimeout(() => void this.settleCapture(), CaptureManager.SETTLE_MS);
+    this.pending = { completion, timer };
+    void binding;
+  }
+
+  private async settleCapture(): Promise<void> {
+    const p = this.pending;
+    if (!p || !this.folder || !this.policy) return;
+    this.pending = null;
+    await this.persist(p.completion);
+  }
+
+  private cancelPendingAndAmbiguate(): void {
+    const p = this.pending;
+    if (!p) return;
+    clearTimeout(p.timer);
+    this.pending = null;
+    this.policy?.revoke();
+    this.emitAmbiguous();
+  }
+
+  private clearPending(): void {
+    if (this.pending) clearTimeout(this.pending.timer);
+    this.pending = null;
+  }
+
+  private async persist(completion: AgentCompletion): Promise<void> {
+    const folder = this.folder;
+    const policy = this.policy;
+    if (!folder || !policy) return;
+    const binding = policy.binding;
+    if (!binding || binding.sessionId !== completion.sessionId) return;
+
     const outcome = captureCompletion(folder, completion, { bindingReason: binding.reason });
+    policy.markPersisted();
     if (!outcome.ok) {
       this.emit({ phase: 'error', folder, message: outcome.reason ?? '결과 저장에 실패했습니다.' });
       return;
@@ -215,10 +284,10 @@ export class CaptureManager {
     this.emit({
       phase: 'ambiguous',
       folder: this.folder ?? undefined,
-      adapterId: 'opencode',
+      ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
       candidates,
       message:
-        'OpenCode 세션이 여러 개여서 자동 확정할 수 없습니다. 결과를 받을 세션을 선택하세요.',
+        '에이전트 세션이 여러 개 후보가 되어 자동 확정할 수 없습니다. 결과를 받을 세션을 선택하세요.',
     });
   }
 

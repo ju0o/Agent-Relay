@@ -1,4 +1,5 @@
 import { AgentAdapter, AgentCompletion, AdapterEvent, SessionObservation, WatchHandle, WatchTarget } from '../core/types.js';
+import { turnStartedAfterArm, turnCompletedAfterArm } from '../core/binding.js';
 import { discoverRunningServers, OpenCodeServerClient, OcSessionInfo } from './client.js';
 import { ExtractResult, summarizeLastTurn } from './extract.js';
 
@@ -171,7 +172,11 @@ export class OpenCodeAdapter implements AgentAdapter {
               title: s.title,
               updatedMs: updated,
               isNew,
-              inFlight: summary.hasTurn && !summary.ready,
+              // Stale zombies (turn started long before arming) excluded.
+              inFlight:
+                summary.hasTurn &&
+                !summary.ready &&
+                turnStartedAfterArm(summary.startedAtIso, sinceMs, ARM_SKEW_MS),
             };
             const prev = observations.get(s.id);
             if (!prev || (prev.updatedMs ?? 0) <= (observation.updatedMs ?? 0)) {
@@ -179,6 +184,8 @@ export class OpenCodeAdapter implements AgentAdapter {
             }
 
             if (!summary.ready || !summary.messageId) continue;
+            // Historical turns (completed before arming) are never captures.
+            if (!turnCompletedAfterArm(summary.completedAtIso, sinceMs, ARM_SKEW_MS)) continue;
             const key = `${summary.sessionId ?? s.id}:${summary.messageId}`;
             if (emittedTurns.has(key)) continue;
             emittedTurns.add(key);
@@ -223,10 +230,10 @@ export class OpenCodeAdapter implements AgentAdapter {
 
         if (endpoints.length - failures > 0) {
           successfulPasses++;
-          // Completions are emitted BEFORE the session snapshot so the manager
-          // can seed its binding snapshot and then evaluate each turn.
-          for (const c of completions) sink({ type: 'completion', completion: c });
+          // Snapshot FIRST so the binding policy is armed before any
+          // completion from the same pass is evaluated.
           sink({ type: 'sessions', sessions: [...observations.values()], armPass: successfulPasses === 1 });
+          for (const c of completions) sink({ type: 'completion', completion: c });
         }
         if (debug && !handle.isStopped()) {
           console.error(

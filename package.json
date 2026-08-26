@@ -16,7 +16,8 @@
     "test:v03": "node test/v03.test.mjs",
     "test:adapter": "node test/adapter.test.mjs",
     "test:binding": "node test/binding.test.mjs",
-    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding",
+    "test:claude": "node test/claude.test.mjs",
+    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml"
   },
   "main": "dist/server/backend/main.js",

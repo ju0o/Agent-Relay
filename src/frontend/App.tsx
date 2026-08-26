@@ -182,6 +182,8 @@ function AppInner(): React.ReactElement {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [capture, setCapture] = useState<CaptureStatusView | null>(null);
   const [pickSession, setPickSession] = useState('');
+  const [captureAgent, setCaptureAgent] = useState('opencode');
+  const [agentChoices, setAgentChoices] = useState<{ id: string; agentName: string }[]>([{ id: 'opencode', agentName: 'OpenCode' }]);
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
   const [sessions, setSessions]           = useState<ProjectSession[]>([_initSess]);
@@ -326,6 +328,11 @@ function AppInner(): React.ReactElement {
   // ── Agent 어댑터 자동 수신 상태 구독 ─────────────────────────────────────────
   const captureHandlerRef = useRef<(s: CaptureStatusView) => void>(() => undefined);
   useEffect(() => onCaptureStatus(s => { setCapture({ ...s }); captureHandlerRef.current(s); }), []);
+  useEffect(() => {
+    must<{ id: string; agentName: string }[]>({ op: 'adapters:list' })
+      .then(list => { if (Array.isArray(list) && list.length) setAgentChoices(list); })
+      .catch(() => undefined);
+  }, []);
   const noticedVersion = useRef<string | null>(null);
   useEffect(() => {
     if (updateStatus?.phase === 'available' && updateStatus.nextVersion
@@ -575,9 +582,9 @@ function AppInner(): React.ReactElement {
   async function armAutoCapture(): Promise<void> {
     if (!activeTab?.folder) { notify('err', '런 폴더가 필요합니다. 먼저 저장하세요.'); return; }
     try {
-      await must({ op: 'capture:arm', folder: activeTab.folder });
+      await must({ op: 'capture:arm', folder: activeTab.folder, adapterId: captureAgent });
       setPickSession('');
-      notify('info', 'OpenCode 응답 완료를 감시합니다. OpenCode에서 작업을 마치면 결과가 자동으로 채워집니다.');
+      notify('info', `${captureAgent} 응답 완료를 감시합니다. 에이전트에서 작업을 마치면 결과가 자동으로 채워집니다.`);
     } catch (e) {
       notify('err', e instanceof Error ? e.message : String(e));
     }
@@ -1370,15 +1377,29 @@ function AppInner(): React.ReactElement {
                             onClick={() => void revealResult(activeTab)}
                           >위치 열기</button>
                         )}
-                        {capture?.phase === 'watching' && capture.folder === activeTab.folder && (
-                          <span className="mini cap-live" title={capture.boundSessionId
-                            ? `바인딩된 세션: ${capture.boundSessionId}`
-                            : 'OpenCode 응답 완료를 감시하는 중입니다'}>
-                            ● OpenCode 수신 대기{capture.boundSessionId ? ` (${capture.boundSessionId.slice(0, 12)}…)` : ''}
+                        {capture?.phase === 'watching' && capture.folder === activeTab.folder ? (
+                          <span
+                            className="mini cap-live"
+                            title={capture.boundSessionId
+                              ? `바인딩된 세션: ${capture.boundSessionId}`
+                              : '에이전트 응답 완료를 감시하는 중입니다'}
+                          >
+                            ● {(agentChoices.find(a => a.id === (capture.adapterId ?? captureAgent))?.agentName ?? capture.adapterId ?? captureAgent)} 수신 대기{capture.boundSessionId ? ` (${capture.boundSessionId.slice(0, 12)}…)` : ''}
                           </span>
+                        ) : (
+                          <select
+                            className="mini"
+                            value={captureAgent}
+                            title="자동 수신할 에이전트 선택"
+                            onChange={e => setCaptureAgent(e.target.value)}
+                          >
+                            {agentChoices.map(a => (
+                              <option key={a.id} value={a.id}>{a.agentName}</option>
+                            ))}
+                          </select>
                         )}
                         {capture?.phase === 'captured' && capture.folder === activeTab.folder && (
-                          <span className="mini cap-done" title="OpenCode 결과가 자동 수신되었습니다">✓ 자동수신됨</span>
+                          <span className="mini cap-done" title="에이전트 결과가 자동 수신되었습니다">✓ 자동수신됨</span>
                         )}
                         {capture?.phase === 'ambiguous' && capture.folder === activeTab.folder && (
                           <span className="cap-pick">

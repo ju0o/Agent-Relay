@@ -29,6 +29,38 @@ function onlyOf(set: Set<string>): string | null {
   return [...set][0] ?? null;
 }
 
+/**
+ * Freshness gate: only turns whose terminal timestamp lies at/after the arm
+ * moment may ever be captured. This prevents historical end_turn entries
+ * (first observation of an OLD transcript) from being mistaken for new work.
+ */
+export function turnCompletedAfterArm(
+  completedAtIso: string | null | undefined,
+  sinceMs: number,
+  skewMs = 1_500,
+): boolean {
+  return isoAtOrAfterArm(completedAtIso, sinceMs, skewMs);
+}
+
+/**
+ * Same gate for turn STARTS: an "in-flight" turn that began long before the
+ * watch armed is a stale zombie (file merely touched), never the user's
+ * current work — it must not enter the arm-time binding snapshot.
+ */
+export function turnStartedAfterArm(
+  startedAtIso: string | null | undefined,
+  sinceMs: number,
+  skewMs = 1_500,
+): boolean {
+  return isoAtOrAfterArm(startedAtIso, sinceMs, skewMs);
+}
+
+function isoAtOrAfterArm(iso: string | null | undefined, sinceMs: number, skewMs: number): boolean {
+  if (!iso) return false;
+  const t = Date.parse(iso);
+  return !Number.isNaN(t) && t >= sinceMs - skewMs;
+}
+
 export class SessionBindingPolicy {
   private bound: BindingInfo | null = null;
   private ambiguous = false;
@@ -90,6 +122,36 @@ export class SessionBindingPolicy {
     this.bound = { sessionId, reason: 'manual' };
     this.ambiguous = false;
     return true;
+  }
+
+  /**
+   * Undo a binding that was established but NOT yet persisted. Used by the
+   * settle window when a rival session appears before the result is written.
+   * After revocation the policy is unresolved again and will demand fresh
+   * evidence (or explicit selection).
+   */
+  revoke(): void {
+    if (!this.bound || !this.persistable) return;
+    this.bound = null;
+    this.ambiguous = false;
+  }
+
+  /** True while the current binding has not been written to disk yet. */
+  private persistable = true;
+
+  /** Called right after files are written — the binding becomes permanent. */
+  markPersisted(): void {
+    this.persistable = false;
+  }
+
+  /** Ids of sessions created after arm (read-only view for settle checks). */
+  get newSessionIds(): string[] {
+    return [...this.newSeen];
+  }
+
+  /** Ids that were mid-turn at arm time (read-only view). */
+  get armInFlightSnapshot(): string[] {
+    return [...this.armInFlightIds];
   }
 
   /** Candidate list for the minimal user-selection flow (stable order). */

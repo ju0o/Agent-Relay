@@ -94,7 +94,7 @@ export type RelayRequest =
  | { op: 'settings:setProjectOrder'; order: string[] }
  | { op: 'settings:setAgentOrder'; order: string[] }
  | { op: 'adapters:list' }
- | { op: 'capture:arm'; folder: string }
+ | { op: 'capture:arm'; folder: string; adapterId?: string }
  | { op: 'capture:disarm' }
  | { op: 'capture:select'; sessionId: string }
  | { op: 'update:check' }

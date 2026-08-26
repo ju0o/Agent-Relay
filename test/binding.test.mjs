@@ -3,7 +3,7 @@
    Runs against the compiled server modules under dist/server. */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { SessionBindingPolicy } from '../dist/server/integrations/core/binding.js';
+import { SessionBindingPolicy, turnCompletedAfterArm } from '../dist/server/integrations/core/binding.js';
 import { captureCompletion } from '../dist/server/integrations/core/capture.js';
 import * as relayFs from '../dist/server/backend/fs.js';
 
@@ -152,6 +152,46 @@ async function main() {
     check(typeof ev.capturedAt === 'string' && typeof ev.completion.observedAt === 'string', 'timestamps present');
     check(ev.binding?.reason === 'unique-new', 'binding reason recorded');
     check(ev.completion.rawFinalText === undefined, 'raw text not duplicated in evidence');
+  }
+
+  console.log('B10) 신선도 가드 — arm 이전 완료 턴은 캡처 후보 아님');
+  {
+    const now = Date.now();
+    check(turnCompletedAfterArm(new Date(now - 60_000).toISOString(), now) === false, 'completed 1min before arm → rejected');
+    check(turnCompletedAfterArm(new Date(now - 500).toISOString(), now) === true, 'completed just now (within skew) → accepted');
+    check(turnCompletedAfterArm(null, now) === false && turnCompletedAfterArm('garbage', now) === false, 'missing/garbage timestamp → rejected');
+    const oldIso = '2026-08-26T12:00:09.000Z';
+    check(turnCompletedAfterArm(oldIso, Date.parse(oldIso) + 600_000) === false, 'fixture-style historical transcript rejected at later arm');
+  }
+
+  console.log('B11) 정착 창 — 기록 전 라이벌 등장 시 바인딩 철회 가능');
+  {
+    const p = new SessionBindingPolicy();
+    p.note([obs('first_new', { isNew: true })]);
+    check(p.decide('first_new') === 'accept', 'unique-new accepted (pending settle)');
+    p.note([obs('rival_new', { isNew: true })]);
+    check(p.newSessionIds.includes('rival_new'), 'rival observed during settle window');
+    p.revoke();
+    check(p.binding === null, 'binding revoked BEFORE any file write');
+    check(p.decide('first_new') === 'need-selection' || p.candidatesNeedSelection(), 'post-revoke state demands selection/evidence, no silent guess');
+
+    const q = new SessionBindingPolicy();
+    q.bindManual('manual_s');
+    q.markPersisted();
+    q.revoke();
+    check(q.binding?.sessionId === 'manual_s', 'persisted binding can never be revoked');
+  }
+
+  console.log('B12) 정착 중 다른 세션 완료 → 수용 불가(모호 전환은 매니저 몫)');
+  {
+    const p = new SessionBindingPolicy();
+    p.seedArmInFlight(['solo_inflight']);
+    p.note([obs('solo_inflight')]);
+    check(p.decide('solo_inflight') === 'accept', 'pending accept for unique in-flight session');
+    p.note([obs('brand_new', { isNew: true })]);
+    const rivalNew = p.newSessionIds.filter((id) => id !== 'solo_inflight').length > 0;
+    const rivalInflight = p.armInFlightSnapshot.filter((id) => id !== 'solo_inflight').length > 0;
+    check(rivalNew || rivalInflight || p.candidatesNeedSelection(), 'settle-time rivalry detectable via policy views');
   }
 
   const ok = process.exitCode === undefined;
