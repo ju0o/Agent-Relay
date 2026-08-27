@@ -9,6 +9,7 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { renderMd } from './md.js';
+import { SessionBindingStatus } from './SessionBindingStatus.js';
 import {
   DEFAULT_AGENTS,
   CaptureStatusView,
@@ -581,10 +582,11 @@ function AppInner(): React.ReactElement {
   // ── Agent 어댑터 자동 수신 (OpenCode) ────────────────────────────────────────
   async function armAutoCapture(): Promise<void> {
     if (!activeTab?.folder) { notify('err', '런 폴더가 필요합니다. 먼저 저장하세요.'); return; }
+    const agentLabel = agentChoices.find(a => a.id === captureAgent)?.agentName ?? captureAgent;
     try {
       await must({ op: 'capture:arm', folder: activeTab.folder, adapterId: captureAgent });
       setPickSession('');
-      notify('info', `${captureAgent} 응답 완료를 감시합니다. 에이전트에서 작업을 마치면 결과가 자동으로 채워집니다.`);
+      notify('info', `${agentLabel} 응답 완료를 감시합니다. 에이전트에서 작업을 마치면 결과가 자동으로 채워집니다.`);
     } catch (e) {
       notify('err', e instanceof Error ? e.message : String(e));
     }
@@ -618,6 +620,7 @@ function AppInner(): React.ReactElement {
       return;
     }
     if (s.phase !== 'captured' || !s.folder) return;
+    const agentLabel = s.agentName ?? '에이전트';
     const files = s.files ?? [];
     void (async () => {
       try {
@@ -630,9 +633,9 @@ function AppInner(): React.ReactElement {
             nextTabs[idx] = { ...nextTabs[idx], result: rec.result, tags: rec.tags, resultSaved: true };
             return { ...sess, tabs: nextTabs };
           }));
-          notify('ok', 'OpenCode 결과 자동 수신 완료 — 결과 패널을 확인하세요.');
+          notify('ok', `${agentLabel} 결과 자동 수신 완료 — 결과 패널을 확인하세요.`);
         } else {
-          notify('info', `OpenCode 결과가 agent-result.md로 수신되었습니다. (${files.join(', ')}) result.md의 기존 내용은 유지됩니다.`);
+          notify('info', `${agentLabel} 결과가 agent-result.md로 수신되었습니다. (${files.join(', ')}) result.md의 기존 내용은 유지됩니다.`);
         }
         await refreshHistory();
       } catch (e) {
@@ -1289,6 +1292,9 @@ function AppInner(): React.ReactElement {
                       </div>
                     </div>
 
+                    {/* 세션·에이전트 상태 (Session-Bound Capture UX — canonical 상태를 그대로 표시) */}
+                    <SessionBindingStatus capture={capture} activeFolder={activeTab.folder} />
+
                     {/* 태그 */}
                     <div className="tags-inline">
                       {TAG_PRESETS.map(p => {
@@ -1381,10 +1387,10 @@ function AppInner(): React.ReactElement {
                           <span
                             className="mini cap-live"
                             title={capture.boundSessionId
-                              ? `바인딩된 세션: ${capture.boundSessionId}`
-                              : '에이전트 응답 완료를 감시하는 중입니다'}
+                              ? `바인딩된 세션: ${capture.boundSessionId} — 연결됨 · 응답 대기 중`
+                              : '세션 연결 대기 중 — 아직 연결된 세션이 없어 응답을 받지 않습니다'}
                           >
-                            ● {(agentChoices.find(a => a.id === (capture.adapterId ?? captureAgent))?.agentName ?? capture.adapterId ?? captureAgent)} 수신 대기{capture.boundSessionId ? ` (${capture.boundSessionId.slice(0, 12)}…)` : ''}
+                            ● {capture.boundSessionId ? '응답 대기 중' : '세션 찾는 중'}
                           </span>
                         ) : (
                           <select
@@ -1407,7 +1413,7 @@ function AppInner(): React.ReactElement {
                               className="mini"
                               value={pickSession}
                               onChange={e => setPickSession(e.target.value)}
-                              title="결과를 받아올 OpenCode 세션을 선택하세요"
+                              title="결과를 받아올 에이전트 세션을 선택하세요"
                             >
                               <option value="">세션 선택…</option>
                               {(capture.candidates ?? []).map(c => (
@@ -1426,13 +1432,13 @@ function AppInner(): React.ReactElement {
                         <button
                           className={`mini${capture?.phase === 'watching' && capture.folder === activeTab.folder ? ' preview-on' : ''}`}
                           title={capture?.phase === 'watching' && capture.folder === activeTab.folder
-                            ? '감시 중입니다 — 눌러서 해제'
-                            : 'OpenCode가 응답을 마치면 이 런에 결과를 자동으로 받습니다'}
+                            ? '이 런에 에이전트 세션이 연결되어 응답을 기다리는 중입니다 — 눌러서 해제'
+                            : '이 런을 에이전트 세션에 연결하고, 그 세션이 다음 응답을 마치면 결과를 자동으로 받습니다'}
                           disabled={!activeTab.folder}
                           onClick={() => void (capture?.phase === 'watching' && capture.folder === activeTab.folder
                             ? disarmAutoCapture()
                             : armAutoCapture())}
-                        >{capture?.phase === 'watching' && capture.folder === activeTab.folder ? '수신 해제' : '🤖 자동수신'}</button>
+                        >{capture?.phase === 'watching' && capture.folder === activeTab.folder ? '수신 해제' : '🤖 세션 연결·자동수신'}</button>
                         <button
                           className={`mini${activeTab.resultPreview ? ' preview-on' : ''}`}
                           title={activeTab.resultPreview ? '원문으로 전환' : '마크다운 미리보기'}

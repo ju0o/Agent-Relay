@@ -291,26 +291,52 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
 
 export type CapturePhase = 'watching' | 'ambiguous' | 'captured' | 'error' | 'stopped';
 
-/** One selectable OpenCode session shown in the minimal ambiguity picker. */
+/**
+ * Agent-neutral Session-bound capture state (Session-Bound Capture UX, packet 03).
+ *
+ * This is the SAME canonical lifecycle the backend binding policy owns — the
+ * frontend renders it verbatim and never invents its own interpretation. The
+ * visible Session identity ALWAYS comes from the same backend binding state
+ * that writes evidence/adapter.json; there is no frontend-only sessionId.
+ *
+ * Mapping to the product-visible state flow (Agent → bind → wait → result):
+ *   watching + no boundSessionId  → UNBOUND / BINDING (세션 연결 대기 중)
+ *   watching + boundSessionId     → BOUND / WAITING_RESPONSE (연결됨 · 응답 대기 중)
+ *   ambiguous                     → AMBIGUOUS (세션 선택 필요)
+ *   captured                      → RESULT_RECEIVED (Result 수신 완료, binding 유지)
+ *   error                         → ERROR
+ *   stopped                       → disarmed (연결 해제)
+ */
+export interface CaptureStatusView {
+  /** Canonical capture lifecycle phase (owned by CaptureManager/binding policy). */
+  phase: CapturePhase;
+  /** Run folder the watch is bound to. */
+  folder?: string;
+  /** Adapter id this Run is listening to, e.g. 'opencode' / 'claude-code'. */
+  adapterId?: string;
+  /** Human-facing agent name, e.g. 'OpenCode' / 'Claude Code'. */
+  agentName?: string;
+  /** captured — files written inside the run folder. */
+  files?: string[];
+  message?: string;
+  /**
+   * The ONE session allowed to supply this Run's result (once bound).
+   * Provenance-identical to evidence/adapter.json → completion.sessionId.
+   */
+  boundSessionId?: string;
+  /** Optional bound-session title from the adapter (evidence title), display-only. */
+  boundSessionTitle?: string;
+  /** How the bound session was selected (manual / unique-new / unique-inflight). */
+  bindingReason?: string;
+  /** ambiguous — selectable source sessions for explicit binding. */
+  candidates?: CaptureCandidateView[];
+}
+
+/** One selectable Agent session shown in the minimal ambiguity picker. */
 export interface CaptureCandidateView {
   sessionId: string;
   title?: string;
   directory?: string;
-}
-
-/** Push payload for 'relay-capture-status'. */
-export interface CaptureStatusView {
-  phase: CapturePhase;
-  /** Run folder the watch is bound to. */
-  folder?: string;
-  adapterId?: string;
-  /** captured — files written inside the run folder. */
-  files?: string[];
-  message?: string;
-  /** The ONE session allowed to supply this Run's result (once bound). */
-  boundSessionId?: string;
-  /** ambiguous — selectable source sessions for explicit binding. */
-  candidates?: CaptureCandidateView[];
 }
 
 // ── Drag reorder helpers ────────────────────────────────────────────────────

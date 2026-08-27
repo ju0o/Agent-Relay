@@ -46,6 +46,12 @@ export class CaptureManager {
     return listAdapters().map((a) => ({ id: a.id, agentName: a.agentName }));
   }
 
+  /** Agent-neutral display name for an adapter id (falls back to the id). */
+  private agentNameOf(id?: string): string | undefined {
+    if (!id) return undefined;
+    return getAdapter(id)?.agentName ?? listAdapters().find((a) => a.id === id)?.agentName ?? undefined;
+  }
+
   isActive(folder?: string): boolean {
     if (!this.handle) return false;
     return folder ? this.folder === folder : true;
@@ -179,20 +185,28 @@ export class CaptureManager {
     }
     this.policy.note(sessions);
 
-    if (this.pending && this.policy.binding) {
-      // Settle window: any rival plausible source revokes the pending binding.
+    // Any bound-but-not-yet-persisted binding is provisional: a rival
+    // plausible source revokes it so files are never written on a guess.
+    if (this.policy.binding && !this.policy.isPersisted) {
       const boundId = this.policy.binding.sessionId;
       const rival =
         this.policy.newSessionIds.some((id) => id !== boundId) ||
         this.policy.armInFlightSnapshot.some((id) => id !== boundId) ||
         this.policy.candidatesNeedSelection();
       if (rival) {
-        this.cancelPendingAndAmbiguate();
+        this.revokeAndAmbiguate();
         return;
       }
     }
 
     if (!this.policy.binding) {
+      if (this.armSnapshotSeeded && this.policy.tryAutoBind()) {
+        // Early deterministic binding — the bound Session identity becomes
+        // visible while the agent is still working (Session-Bound Capture UX),
+        // not only at completion time.
+        this.emitWatchingBound();
+        return;
+      }
       const ambiguousNow =
         this.armSnapshotSeeded && (this.policy.isAmbiguous || this.policy.candidatesNeedSelection());
       if (ambiguousNow) {
@@ -240,6 +254,27 @@ export class CaptureManager {
     this.pending = null;
     this.policy?.revoke();
     this.emitAmbiguous();
+  }
+
+  /**
+   * Revoke a provisional (not-yet-persisted) binding whenever a rival session
+   * appears — used for early deterministic bindings that have no pending
+   * completion yet, and for settle-window rival detection.
+   */
+  private revokeAndAmbiguate(): void {
+    this.clearPending();
+    this.policy?.revoke();
+    this.emitAmbiguous();
+  }
+
+  /** Push the current watching state with the early-bound Session identity. */
+  private emitWatchingBound(): void {
+    this.lastPushKey = '';
+    this.emit({
+      phase: 'watching',
+      folder: this.folder ?? undefined,
+      ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
+    });
   }
 
   private clearPending(): void {
@@ -292,16 +327,31 @@ export class CaptureManager {
   }
 
   private emit(s: CaptureStatusView): void {
+    const enriched: CaptureStatusView = {
+      ...s,
+      agentName: s.agentName ?? this.agentNameOf(s.adapterId ?? this.currentAdapterId ?? undefined),
+    };
+    // Provenance: visible Session identity always mirrors the backend binding
+    // state (sessionId + reason + title) — never a frontend-only value.
+    if (this.policy) {
+      const binding = this.policy.binding;
+      if (binding) {
+        enriched.boundSessionId = binding.sessionId;
+        enriched.bindingReason = binding.reason;
+        const obs = this.policy.bindingObservation;
+        if (obs?.title) enriched.boundSessionTitle = obs.title;
+      }
+    }
     const key =
-      s.phase +
+      enriched.phase +
       '|' +
-      (s.phase === 'ambiguous'
-        ? JSON.stringify(s.candidates?.map((c) => c.sessionId) ?? [])
-        : s.phase === 'watching'
-          ? (s.boundSessionId ?? '')
+      (enriched.phase === 'ambiguous'
+        ? JSON.stringify(enriched.candidates?.map((c) => c.sessionId) ?? [])
+        : enriched.phase === 'watching'
+          ? (enriched.boundSessionId ?? '')
           : '');
-    if (key === this.lastPushKey && (s.phase === 'watching' || s.phase === 'ambiguous')) return;
+    if (key === this.lastPushKey && (enriched.phase === 'watching' || enriched.phase === 'ambiguous')) return;
     this.lastPushKey = key;
-    this.push(s);
+    this.push(enriched);
   }
 }

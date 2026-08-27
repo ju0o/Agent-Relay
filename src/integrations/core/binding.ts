@@ -98,6 +98,12 @@ export class SessionBindingPolicy {
     return this.bound ? { ...this.bound } : null;
   }
 
+  /** Latest observed metadata (title/directory) of the CURRENTLY bound session. */
+  get bindingObservation(): SessionObservation | null {
+    if (!this.bound) return null;
+    return this.lastSeen.get(this.bound.sessionId) ?? null;
+  }
+
   /**
    * True when deterministic auto-binding has become IMPOSSIBLE (more than one
    * plausible source of truth exists). The caller should surface the
@@ -139,9 +145,34 @@ export class SessionBindingPolicy {
   /** True while the current binding has not been written to disk yet. */
   private persistable = true;
 
+  /** True once the current binding has been persisted (permanent). */
+  get isPersisted(): boolean {
+    return !this.persistable;
+  }
+
   /** Called right after files are written — the binding becomes permanent. */
   markPersisted(): void {
     this.persistable = false;
+  }
+
+  /**
+   * Establish an EARLY deterministic binding from unique identity evidence
+   * (exactly one new session, or exactly one arm-time in-flight session).
+   * Session-Bound Capture UX: the bound identity becomes visible while the
+   * agent is still working, not only at completion time. Never guesses — any
+   * multiplicity leaves the policy unresolved.
+   */
+  tryAutoBind(): boolean {
+    if (this.bound) return true;
+    if (this.newSeen.size > 1 || this.armInFlightIds.size > 1) return false;
+    const fromNew = onlyOf(this.newSeen);
+    const fromInflight = onlyOf(this.armInFlightIds);
+    if (fromNew && fromInflight && fromNew !== fromInflight) return false;
+    const id = fromNew ?? fromInflight;
+    if (!id) return false;
+    this.bound = { sessionId: id, reason: fromNew ? 'unique-new' : 'unique-inflight' };
+    this.ambiguous = false;
+    return true;
   }
 
   /** Ids of sessions created after arm (read-only view for settle checks). */

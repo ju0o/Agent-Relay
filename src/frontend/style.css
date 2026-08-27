@@ -969,3 +969,31 @@ html, body, #app {
 /* Agent adapter auto-capture status (vNext) */
 .paneacts .cap-live, .paneacts .cap-done { color: #30D158; font-size: 11px; cursor: default; white-space: nowrap; }
 .paneacts .cap-pick { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Session-bound capture status strip (packet 03) — agent-neutral */
+.sess-bound-status {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px 8px;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+  min-width: 220px;
+}
+.sbs-row { display: flex; gap: 6px; align-items: baseline; }
+.sbs-label {
+  width: 46px; flex-shrink: 0;
+  color: var(--muted); font-weight: 600; letter-spacing: 0.3px;
+}
+.sbs-value { color: var(--fg); font-weight: 600; word-break: break-all; }
+.sbs-agent { color: var(--accent); }
+.sbs-status { font-weight: 400; color: var(--muted); }
+.sess-bound-status.sbs-unbound .sbs-status,
+.sess-bound-status.sbs-idle   .sbs-status { color: var(--muted); }
+.sess-bound-status.sbs-bound   .sbs-status { color: #30D158; }
+.sess-bound-status.sbs-result  .sbs-status { color: #30D158; }
+.sess-bound-status.sbs-bound   .sbs-session { color: var(--accent); }
+.sess-bound-status.sbs-result  .sbs-session { color: var(--accent); }
+.sess-bound-status.sbs-ambiguous .sbs-status { color: #FF9F0A; }
+.sess-bound-status.sbs-error   .sbs-status { color: var(--danger); }
+.sess-bound-status.sbs-ambiguous { border-color: #FF9F0A; }
+.sess-bound-status.sbs-error   { border-color: var(--danger); }
