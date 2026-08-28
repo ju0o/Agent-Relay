@@ -1434,7 +1434,6 @@ function AppInner(): React.ReactElement {
                           title={capture?.phase === 'watching' && capture.folder === activeTab.folder
                             ? '이 런에 에이전트 세션이 연결되어 응답을 기다리는 중입니다 — 눌러서 해제'
                             : '이 런을 에이전트 세션에 연결하고, 그 세션이 다음 응답을 마치면 결과를 자동으로 받습니다'}
-                          disabled={!activeTab.folder}
                           onClick={() => void (capture?.phase === 'watching' && capture.folder === activeTab.folder
                             ? disarmAutoCapture()
                             : armAutoCapture())}

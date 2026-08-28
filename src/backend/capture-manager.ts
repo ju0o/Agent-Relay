@@ -83,6 +83,7 @@ export class CaptureManager {
       this.folder = null;
       this.policy = null;
       this.emit({ phase: 'error', folder, message });
+      throw err instanceof Error ? err : new Error(message);
     }
   }
 
