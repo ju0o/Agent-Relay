@@ -626,15 +626,24 @@ function AppInner(): React.ReactElement {
       try {
         const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: s.folder! });
         if (files.includes('result.md')) {
+          // result.md was written by capture (fresh write or overwrite-of-empty).
+          // Refresh the result pane unless the user has unsaved manual edits.
           setSessions(prev => prev.map(sess => {
             const idx = sess.tabs.findIndex(t => t.folder === s.folder);
             if (idx < 0) return sess;
+            const tab = sess.tabs[idx]!;
+            // Data-safety guard: if the tab has unsaved manual content (user typed
+            // something but did not save it), do not silently destroy it.
+            // resultSaved=true means the pane mirrors a saved file → safe to refresh.
+            // result='' means the pane is empty → safe to populate.
+            if (tab.result && !tab.resultSaved) return sess;
             const nextTabs = [...sess.tabs];
-            nextTabs[idx] = { ...nextTabs[idx], result: rec.result, tags: rec.tags, resultSaved: true };
+            nextTabs[idx] = { ...tab, result: rec.result, tags: rec.tags, resultSaved: true };
             return { ...sess, tabs: nextTabs };
           }));
           notify('ok', `${agentLabel} 결과 자동 수신 완료 — 결과 패널을 확인하세요.`);
         } else {
+          // result.md was skipped (had non-empty manual content) — protect it.
           notify('info', `${agentLabel} 결과가 agent-result.md로 수신되었습니다. (${files.join(', ')}) result.md의 기존 내용은 유지됩니다.`);
         }
         await refreshHistory();

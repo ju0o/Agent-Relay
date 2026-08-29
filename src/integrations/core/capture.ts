@@ -79,7 +79,16 @@ export function captureCompletion(
       written.push('agent-result.md');
     }
 
-    if (fs.existsSync(resultMdPath)) {
+    // result.md: write when absent OR when the file exists but is empty.
+    // An empty result.md is an artifact of saving a run before entering a result
+    // (e.g. Ctrl+S / 모두 저장 before capture); it holds no manual content and
+    // must not block auto-capture from populating the result pane.
+    // A non-empty result.md is treated as a manual/GPT-drag entry and protected.
+    const existingResult = fs.existsSync(resultMdPath)
+      ? fs.readFileSync(resultMdPath, 'utf8')
+      : null;
+    if (existingResult !== null && existingResult.trim().length > 0) {
+      // Has real content — protect the manual/GPT-drag result entry.
       skipped.push('result.md');
     } else {
       fs.writeFileSync(resultMdPath, c.rawFinalText, 'utf8');
