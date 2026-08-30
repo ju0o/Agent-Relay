@@ -38,6 +38,15 @@ class ClaudeWatchHandle implements WatchHandle {
 }
 
 /**
+ * Normalize a filesystem path for cross-platform comparison.
+ * On Windows paths may differ in case (C:\Users\user\Desktop vs desktop)
+ * or use backslashes vs forward slashes. Normalize to lowercase forward slashes.
+ */
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, '/').toLowerCase();
+}
+
+/**
  * Claude Code adapter — passive completion observation over the official
  * on-disk session transcripts. No hooks, no settings changes, no plugins,
  * no terminal scraping; purely read-only file observation.
@@ -50,6 +59,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const handle = new ClaudeWatchHandle(sink);
     const sinceMs = Date.now();
     const debug = process.env['AGENT_RELAY_CAPTURE_DEBUG'] === '1';
+    const workspaceFilter = target.workspaceRoot ? normalizePath(target.workspaceRoot) : null;
 
     const root = claudeProjectsRoot();
     if (!root) {
@@ -58,6 +68,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       throw new Error(message);
     }
     sink({ type: 'status', phase: 'connecting' });
+
+    if (debug) {
+      console.error(`[claude-adapter] root=${root} workspaceFilter=${workspaceFilter ?? '(none)'}`);
+    }
 
     /** sessionId → last seen {size,mtimeMs}; unchanged ⇒ reuse cached summary. */
     const statCache = new Map<string, { size: number; mtimeMs: number; summary: ClaudeTranscriptSummary }>();
@@ -80,8 +94,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // Only transcripts modified at/after arming are relevant; everything
         // older can never produce a NEW post-arm turn.
         let failures = 0;
+        let totalFiles = 0;
+        let freshFiles = 0;
         try {
-          const files = listTranscriptFiles(root).filter((f) => f.mtimeMs >= sinceMs - ARM_SKEW_MS);
+          const allFiles = listTranscriptFiles(root);
+          totalFiles = allFiles.length;
+          const files = allFiles.filter((f) => f.mtimeMs >= sinceMs - ARM_SKEW_MS);
+          freshFiles = files.length;
+
           for (const f of files) {
             if (handle.isStopped()) break;
             const cached = statCache.get(f.sessionId);
@@ -99,10 +119,38 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             statCache.set(f.sessionId, { size: f.size, mtimeMs: f.mtimeMs, summary });
 
             const sessionId = summary.sessionId ?? f.sessionId;
+
+            // Workspace filter: when the target specifies a workspaceRoot, skip
+            // sessions from unrelated project directories. Comparison is
+            // case-insensitive and slash-normalized for Windows compatibility.
+            if (workspaceFilter && summary.cwd) {
+              const cwdNorm = normalizePath(summary.cwd);
+              // Allow both exact match and subdirectory match.
+              if (!cwdNorm.startsWith(workspaceFilter) && !workspaceFilter.startsWith(cwdNorm)) {
+                if (debug) {
+                  console.error(
+                    `[claude-adapter] skip session=${sessionId} (cwd mismatch: ${summary.cwd} vs ${target.workspaceRoot})`,
+                  );
+                }
+                continue;
+              }
+            }
+
             // "New" identity evidence = session CREATED after arming, taken
             // from the transcript's own first timestamp.
             const createdIso = firstTimestamp(raw);
             const isNew = createdIso !== null && Date.parse(createdIso) >= sinceMs - ARM_SKEW_MS;
+
+            const startedAfterArm = turnStartedAfterArm(summary.startedAtIso, sinceMs, ARM_SKEW_MS);
+            const completedAfterArm = turnCompletedAfterArm(summary.completedAtIso, sinceMs, ARM_SKEW_MS);
+
+            if (debug) {
+              console.error(
+                `[claude-adapter] session=${sessionId} mtime=${f.mtimeMs} cwd=${summary.cwd ?? '?'} ` +
+                `hasTurn=${summary.hasTurn} ready=${summary.ready} ` +
+                `startedAfterArm=${startedAfterArm} completedAfterArm=${completedAfterArm} isNew=${isNew}`,
+              );
+            }
 
             observations.set(sessionId, {
               sessionId,
@@ -115,12 +163,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
               inFlight:
                 summary.hasTurn &&
                 !summary.ready &&
-                turnStartedAfterArm(summary.startedAtIso, sinceMs, ARM_SKEW_MS),
+                startedAfterArm,
             });
 
             if (!summary.ready || !summary.messageId) continue;
             // Historical turns (completed before arming) are never captures.
-            if (!turnCompletedAfterArm(summary.completedAtIso, sinceMs, ARM_SKEW_MS)) continue;
+            if (!completedAfterArm) continue;
             const key = `${sessionId}:${summary.messageId}`;
             if (emittedTurns.has(key)) continue;
             emittedTurns.add(key);
@@ -154,7 +202,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           for (const c of completions) sink({ type: 'completion', completion: c });
         }
         if (debug && !handle.isStopped()) {
-          console.error(`[claude-adapter] poll: obs=${observations.size} emitted=${emittedTurns.size} failures=${failures}`);
+          console.error(
+            `[claude-adapter] poll#${successfulPasses}: files=${totalFiles} fresh=${freshFiles} ` +
+            `obs=${observations.size} emitted=${emittedTurns.size} failures=${failures}`,
+          );
         }
         if (!handle.isStopped()) sink({ type: 'status', phase: 'watching' });
       } finally {

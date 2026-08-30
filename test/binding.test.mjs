@@ -194,6 +194,50 @@ async function main() {
     check(rivalNew || rivalInflight || p.candidatesNeedSelection(), 'settle-time rivalry detectable via policy views');
   }
 
+  console.log('B13) Case B — pre-existing session starts post-arm turn (in-flight detected)');
+  {
+    const p = new SessionBindingPolicy();
+    // Arm-time: session exists but is idle → first pass has nothing in-flight
+    p.seedArmInFlight([]);
+    p.note([obs('old_s', { inFlight: false, isNew: false })]);
+    check(p.binding === null, 'idle pre-existing session not auto-bound on first pass');
+    check(p.tryAutoBind() === false, 'no eligible evidence → no early bind');
+
+    // User sends message → session becomes in-flight in a later pass
+    p.note([obs('old_s', { inFlight: true, isNew: false })]);
+    check(p.tryAutoBind() === true, 'unique post-arm inflight session auto-binds early');
+    check(
+      p.binding?.sessionId === 'old_s' && p.binding?.reason === 'unique-inflight',
+      'bound with unique-inflight reason for post-arm inflight',
+    );
+  }
+
+  console.log('B14) Case B fast — sole observed session completes before inFlight is ever seen');
+  {
+    const p = new SessionBindingPolicy();
+    // Arm-time: nothing in-flight
+    p.seedArmInFlight([]);
+    // One session observed (mtime is fresh, in-flight = false because already completed)
+    p.note([obs('fast_s', { inFlight: false, isNew: false })]);
+    check(p.tryAutoBind() === false, 'no early bind without inflight/new evidence');
+
+    // Completion arrives — this is the only session we ever observed
+    const d = p.decide('fast_s');
+    check(d === 'accept', 'sole observed session completion auto-accepted (fast-completion path)');
+    check(p.binding?.sessionId === 'fast_s', 'bound to the only observed session');
+  }
+
+  console.log('B15) Case B — two pre-existing sessions, both post-arm inflight → ambiguous');
+  {
+    const p = new SessionBindingPolicy();
+    p.seedArmInFlight([]);
+    p.note([obs('s1', { inFlight: false }), obs('s2', { inFlight: false })]);
+    p.note([obs('s1', { inFlight: true }), obs('s2', { inFlight: true })]);
+    check(p.candidatesNeedSelection() === true, 'two post-arm inflight sessions → selection required');
+    check(p.tryAutoBind() === false, 'ambiguous — no auto-bind when two candidates');
+    check(p.decide('s1') === 'need-selection', 'completion from s1 not silently captured');
+  }
+
   const ok = process.exitCode === undefined;
   console.log('\n결과:', ok ? 'ALL PASS' : 'SOME FAILED');
 }

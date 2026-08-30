@@ -1,16 +1,21 @@
 import { SessionObservation } from './types.js';
 
 /**
- * Deterministic Run ↔ OpenCode session binding policy (Correction Pass 01).
+ * Deterministic Run ↔ Claude/OpenCode session binding policy (Correction Pass 01).
  *
  * Invariant: ONE capture Run ↔ ONE explicitly identified sessionId. Once
  * bound, only that exact session may supply a captured result; the bound
  * session can never be silently replaced.
  *
  * Auto-bind uses ONLY exact identity evidence gathered at/after arm time:
- *   unique-new      — exactly ONE session was created after the arm timestamp
- *   unique-inflight — exactly ONE session had a running (incomplete) turn when
- *                     the watch armed
+ *   unique-new           — exactly ONE session was created after the arm timestamp
+ *   unique-inflight      — exactly ONE session had a running (incomplete) turn when
+ *                          the watch armed
+ *   unique-post-inflight — exactly ONE pre-existing session started a NEW turn after
+ *                          arm time (Case B: launch agent → arm Relay → send message)
+ *   unique-sole-observed — exactly ONE fresh session was ever observed, and it is the
+ *                          only one that arrived with a post-arm completion (fast
+ *                          completion case: turn completed between polls)
  * Any other situation is ambiguous and MUST be resolved by explicit user
  * selection — never by guessing.
  */
@@ -67,6 +72,22 @@ export class SessionBindingPolicy {
   private readonly newSeen = new Set<string>();
   private readonly lastSeen = new Map<string, SessionObservation>();
   private readonly armInFlightIds: Set<string>;
+  /**
+   * Sessions NOT in armInFlightIds but observed as in-flight (turn started
+   * after arm time) in any later poll pass. Populated by note() whenever
+   * a session's inFlight flag is true and it wasn't already in armInFlightIds.
+   * Enables auto-binding for Case B: agent was launched before arming, then
+   * the user sends the first post-arm message (file mtime is stale at arm
+   * time, so the session missed the arm-snapshot seed pass).
+   */
+  private readonly postArmInflightIds = new Set<string>();
+  /**
+   * Sessions that arrived via decide() with no prior early-binding evidence
+   * (eligible was empty at decide() time). Used exclusively for the
+   * fast-completion path: if exactly ONE fresh session was ever observed AND
+   * it is the only post-arm completion we have seen, we can safely auto-bind.
+   */
+  private readonly postArmCompletions = new Set<string>();
 
   constructor(armInFlightIds?: Set<string>) {
     this.armInFlightIds = armInFlightIds ?? new Set();
@@ -87,6 +108,15 @@ export class SessionBindingPolicy {
       if (!s.sessionId) continue;
       this.lastSeen.set(s.sessionId, s);
       if (s.isNew) this.newSeen.add(s.sessionId);
+      // Track sessions that start a NEW turn after arm time but were NOT
+      // captured in the arm-time snapshot (i.e. they weren't in-flight when
+      // arming happened — the file was stale so the session was excluded from
+      // the first poll pass, or it completed too fast for the first pass).
+      // The adapter's inFlight flag already implies turnStartedAfterArm, so
+      // adding here is safe without re-checking the timestamp.
+      if (s.inFlight && !this.armInFlightIds.has(s.sessionId)) {
+        this.postArmInflightIds.add(s.sessionId);
+      }
     }
   }
 
@@ -111,11 +141,7 @@ export class SessionBindingPolicy {
    */
   candidatesNeedSelection(): boolean {
     if (this.bound) return false;
-    const fromNew = onlyOf(this.newSeen);
-    const fromInflight = onlyOf(this.armInFlightIds);
-    if (this.newSeen.size > 1 || this.armInFlightIds.size > 1) return true;
-    if (fromNew && fromInflight && fromNew !== fromInflight) return true;
-    return false;
+    return this.eligibleFromSets().size > 1;
   }
 
   /**
@@ -157,20 +183,18 @@ export class SessionBindingPolicy {
 
   /**
    * Establish an EARLY deterministic binding from unique identity evidence
-   * (exactly one new session, or exactly one arm-time in-flight session).
-   * Session-Bound Capture UX: the bound identity becomes visible while the
-   * agent is still working, not only at completion time. Never guesses — any
-   * multiplicity leaves the policy unresolved.
+   * (exactly one new session, arm-time inflight session, or post-arm inflight
+   * session). Session-Bound Capture UX: the bound identity becomes visible
+   * while the agent is still working, not only at completion time. Never
+   * guesses — any multiplicity leaves the policy unresolved.
    */
   tryAutoBind(): boolean {
     if (this.bound) return true;
-    if (this.newSeen.size > 1 || this.armInFlightIds.size > 1) return false;
-    const fromNew = onlyOf(this.newSeen);
-    const fromInflight = onlyOf(this.armInFlightIds);
-    if (fromNew && fromInflight && fromNew !== fromInflight) return false;
-    const id = fromNew ?? fromInflight;
-    if (!id) return false;
-    this.bound = { sessionId: id, reason: fromNew ? 'unique-new' : 'unique-inflight' };
+    const eligible = this.eligibleFromSets();
+    if (eligible.size !== 1) return false;
+    const id = [...eligible][0]!;
+    const reason: BindingReason = this.newSeen.has(id) ? 'unique-new' : 'unique-inflight';
+    this.bound = { sessionId: id, reason };
     this.ambiguous = false;
     return true;
   }
@@ -185,9 +209,19 @@ export class SessionBindingPolicy {
     return [...this.armInFlightIds];
   }
 
+  /** Ids that became mid-turn AFTER arm time (not in armInFlightSnapshot). */
+  get postArmInflightSnapshot(): string[] {
+    return [...this.postArmInflightIds];
+  }
+
   /** Candidate list for the minimal user-selection flow (stable order). */
   candidates(): SessionObservation[] {
-    const preferred = new Set<string>([...this.newSeen, ...this.armInFlightIds]);
+    const preferred = new Set<string>([
+      ...this.newSeen,
+      ...this.armInFlightIds,
+      ...this.postArmInflightIds,
+      ...this.postArmCompletions,
+    ]);
     const out: SessionObservation[] = [];
     for (const id of preferred) {
       const obs = this.lastSeen.get(id);
@@ -212,23 +246,14 @@ export class SessionBindingPolicy {
     if (!sessionId) return 'need-selection';
     if (this.bound) return sessionId === this.bound.sessionId ? 'accept' : 'ignore';
 
-    const eligible = new Set<string>();
-    const reasons = new Map<string, BindingReason>();
-    const fromNew = onlyOf(this.newSeen);
-    if (fromNew) {
-      eligible.add(fromNew);
-      reasons.set(fromNew, 'unique-new');
-    }
-    const fromInflight = onlyOf(this.armInFlightIds);
-    if (fromInflight) {
-      eligible.add(fromInflight);
-      if (!reasons.has(fromInflight)) reasons.set(fromInflight, 'unique-inflight');
-    }
+    const eligible = this.eligibleFromSets();
 
     if (eligible.size === 1) {
+      // Exactly ONE plausible source identified from early evidence.
       const id = onlyOf(eligible)!;
       if (id === sessionId) {
-        this.bound = { sessionId: id, reason: reasons.get(id) ?? 'manual' };
+        const reason: BindingReason = this.newSeen.has(id) ? 'unique-new' : 'unique-inflight';
+        this.bound = { sessionId: id, reason };
         this.ambiguous = false;
         return 'accept';
       }
@@ -237,7 +262,44 @@ export class SessionBindingPolicy {
       return 'need-selection';
     }
 
+    if (eligible.size > 1) {
+      // Multiple plausible sources → ambiguous, never guess.
+      this.ambiguous = true;
+      return 'need-selection';
+    }
+
+    // eligible is empty: no early binding evidence from any tracked set.
+    // Fast-completion path (Case B): the agent completed its turn between
+    // poll intervals so inFlight was never observed as true.
+    // Auto-bind ONLY when this is the SOLE live session that was ever
+    // observed by the adapter (lastSeen has exactly one entry and it matches).
+    // This prevents incorrectly binding to one of several concurrent sessions.
+    this.postArmCompletions.add(sessionId);
+    if (
+      this.lastSeen.size === 1 &&
+      this.lastSeen.has(sessionId) &&
+      this.postArmCompletions.size === 1
+    ) {
+      this.bound = { sessionId, reason: 'unique-inflight' };
+      this.ambiguous = false;
+      return 'accept';
+    }
     this.ambiguous = true;
     return 'need-selection';
+  }
+
+  // ── Private helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Union of all sets that carry early binding evidence gathered at or after
+   * arm time (excluding postArmCompletions, which is only for the decide()
+   * fast-completion fallback). Used by tryAutoBind() and candidatesNeedSelection().
+   */
+  private eligibleFromSets(): Set<string> {
+    return new Set<string>([
+      ...this.newSeen,
+      ...this.armInFlightIds,
+      ...this.postArmInflightIds,
+    ]);
   }
 }

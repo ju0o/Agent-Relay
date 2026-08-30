@@ -193,6 +193,7 @@ export class CaptureManager {
       const rival =
         this.policy.newSessionIds.some((id) => id !== boundId) ||
         this.policy.armInFlightSnapshot.some((id) => id !== boundId) ||
+        this.policy.postArmInflightSnapshot.some((id) => id !== boundId) ||
         this.policy.candidatesNeedSelection();
       if (rival) {
         this.revokeAndAmbiguate();
