@@ -19,7 +19,8 @@
     "test:claude": "node test/claude.test.mjs",
     "test:capture-ux": "node test/capture-ux.test.mjs",
     "test:capture-result-refresh": "node test/capture-result-refresh.test.mjs",
-    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh",
+    "test:adapter-agent-map": "node test/adapter-agent-map.test.mjs",
+    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh && npm run test:adapter-agent-map",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml"
   },
   "main": "dist/server/backend/main.js",

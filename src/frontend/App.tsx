@@ -5,6 +5,7 @@
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { must, hasBridge, dragLocalFile, onUpdateStatus, onCaptureStatus } from './bridge.js';
+import { agentNameToAdapterId } from '../shared/adapter-map.js';
 import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
@@ -184,7 +185,12 @@ function AppInner(): React.ReactElement {
   const [capture, setCapture] = useState<CaptureStatusView | null>(null);
   const [pickSession, setPickSession] = useState('');
   const [captureAgent, setCaptureAgent] = useState('opencode');
+  // True when the active tab's agent has no registered adapter — show UI error, block arm.
+  const [captureAgentUnsupported, setCaptureAgentUnsupported] = useState(false);
   const [agentChoices, setAgentChoices] = useState<{ id: string; agentName: string }[]>([{ id: 'opencode', agentName: 'OpenCode' }]);
+  // Ref updated on every render so effects can read the latest capture state
+  // without adding it to their dependency arrays.
+  const captureRef = useRef<CaptureStatusView | null>(null);
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
   const [sessions, setSessions]           = useState<ProjectSession[]>([_initSess]);
@@ -326,6 +332,10 @@ function AppInner(): React.ReactElement {
   // ── Updater 구독 + 백그라운드 새 버전 알림 (정책: 자동 설치 없음) ────────────
   useEffect(() => onUpdateStatus(s => setUpdateStatus({ ...s })), []);
 
+  // Keep captureRef in sync on every render so the derivation effect below can
+  // read the current capture state without declaring it as a dep.
+  captureRef.current = capture;
+
   // ── Agent 어댑터 자동 수신 상태 구독 ─────────────────────────────────────────
   const captureHandlerRef = useRef<(s: CaptureStatusView) => void>(() => undefined);
   useEffect(() => onCaptureStatus(s => { setCapture({ ...s }); captureHandlerRef.current(s); }), []);
@@ -334,6 +344,37 @@ function AppInner(): React.ReactElement {
       .then(list => { if (Array.isArray(list) && list.length) setAgentChoices(list); })
       .catch(() => undefined);
   }, []);
+
+  // ── Derive capture adapter from the active tab's agent ────────────────────
+  // Runs whenever the active tab or its agent changes.
+  // Invariant: if the active Run belongs to Claude Code, the armed adapter
+  // MUST be claude-code. If it belongs to OpenCode, it MUST be opencode.
+  // The Owner must not have to select the same Agent twice.
+  useEffect(() => {
+    const agentName = activeTab?.agent ?? '';
+    const adapterId = agentNameToAdapterId(agentName);
+    const c = captureRef.current;
+    const tabFolder = activeTab?.folder ?? '';
+
+    if (adapterId !== null) {
+      setCaptureAgentUnsupported(false);
+      // Safety disarm: if THIS tab's folder is already being watched by a
+      // different adapter (stale cross-agent state), disarm it. This prevents
+      // an OpenCode session from being carried into a Claude Code arm or vice versa.
+      if (c?.phase === 'watching' && c.folder === tabFolder && tabFolder && c.adapterId !== adapterId) {
+        void (async () => {
+          try { await must({ op: 'capture:disarm' }); setPickSession(''); } catch { /* ignore */ }
+        })();
+      }
+      setCaptureAgent(adapterId);
+    } else {
+      // No registered adapter for this agent — never fall back silently.
+      setCaptureAgentUnsupported(!!agentName);
+    }
+  // captureRef and disarmAutoCapture are intentionally excluded: captureRef is
+  // a ref (not reactive), and we only want to fire when the tab/agent changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab?.agent, activeTab?.id]);
   const noticedVersion = useRef<string | null>(null);
   useEffect(() => {
     if (updateStatus?.phase === 'available' && updateStatus.nextVersion
@@ -579,12 +620,20 @@ function AppInner(): React.ReactElement {
     await saveTabResult(tabId, false, resolved);
   }
 
-  // ── Agent 어댑터 자동 수신 (OpenCode) ────────────────────────────────────────
+  // ── Agent 어댑터 자동 수신 ───────────────────────────────────────────────────
+  // Invariant: the adapter is ALWAYS derived from the active Run's Agent —
+  // never from a stale captureAgent dropdown value. The Owner must not have
+  // to select the same Agent twice.
   async function armAutoCapture(): Promise<void> {
     if (!activeTab?.folder) { notify('err', '런 폴더가 필요합니다. 먼저 저장하세요.'); return; }
-    const agentLabel = agentChoices.find(a => a.id === captureAgent)?.agentName ?? captureAgent;
+    const adapterId = agentNameToAdapterId(activeTab.agent);
+    if (!adapterId) {
+      notify('err', `"${activeTab.agent}"에는 자동 수신 어댑터가 없습니다. 결과를 직접 붙여넣기하세요.`);
+      return;
+    }
+    const agentLabel = agentChoices.find(a => a.id === adapterId)?.agentName ?? activeTab.agent;
     try {
-      await must({ op: 'capture:arm', folder: activeTab.folder, adapterId: captureAgent });
+      await must({ op: 'capture:arm', folder: activeTab.folder, adapterId });
       setPickSession('');
       notify('info', `${agentLabel} 응답 완료를 감시합니다. 에이전트에서 작업을 마치면 결과가 자동으로 채워집니다.`);
     } catch (e) {
@@ -1401,11 +1450,17 @@ function AppInner(): React.ReactElement {
                           >
                             ● {capture.boundSessionId ? '응답 대기 중' : '세션 찾는 중'}
                           </span>
+                        ) : captureAgentUnsupported ? (
+                          <span
+                            className="mini"
+                            title={`"${activeTab?.agent ?? ''}"에는 자동 수신 어댑터가 없습니다. 결과를 직접 붙여넣기하세요.`}
+                            style={{ color: 'var(--muted)', cursor: 'default' }}
+                          >어댑터 없음</span>
                         ) : (
                           <select
                             className="mini"
                             value={captureAgent}
-                            title="자동 수신할 에이전트 선택"
+                            title={`자동 수신 어댑터: ${activeTab?.agent ?? ''}에서 자동 선택됨`}
                             onChange={e => setCaptureAgent(e.target.value)}
                           >
                             {agentChoices.map(a => (
