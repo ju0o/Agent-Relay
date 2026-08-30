@@ -5,7 +5,7 @@
  * AgentAdapter in V1. New entries MUST have a corresponding AgentAdapter
  * registered in CaptureManager before being added here.
  *
- * V1 registered adapters: opencode, claude-code.
+ * V1 registered adapters: opencode, claude-code, codex, commandcode, cline, grok.
  * Everything else returns null — callers MUST NOT silently fall back to any
  * default adapter.
  */
@@ -13,6 +13,10 @@
 const AGENT_ADAPTER_MAP: ReadonlyMap<string, string> = new Map<string, string>([
   ['OpenCode', 'opencode'],
   ['Claude Code', 'claude-code'],
+  ['Codex', 'codex'],
+  ['CommandCode', 'commandcode'],
+  ['Cline', 'cline'],
+  ['Grok', 'grok'],
 ]);
 
 /**

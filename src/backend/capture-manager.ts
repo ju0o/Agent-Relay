@@ -4,6 +4,10 @@ import { captureCompletion } from '../integrations/core/capture.js';
 import { getAdapter, listAdapters, registerAdapter } from '../integrations/core/registry.js';
 import { createOpenCodeAdapter } from '../integrations/opencode/watch.js';
 import { createClaudeCodeAdapter } from '../integrations/claude/watch.js';
+import { createCodexAdapter } from '../integrations/codex/watch.js';
+import { createCommandCodeAdapter } from '../integrations/commandcode/watch.js';
+import { createClineAdapter } from '../integrations/cline/watch.js';
+import { createGrokAdapter } from '../integrations/grok/watch.js';
 import { CaptureCandidateView, CaptureStatusView } from '../shared/types.js';
 
 /**
@@ -31,6 +35,10 @@ export class CaptureManager {
     for (const [id, factory] of [
       ['opencode', createOpenCodeAdapter],
       ['claude-code', createClaudeCodeAdapter],
+      ['codex', createCodexAdapter],
+      ['commandcode', createCommandCodeAdapter],
+      ['cline', createClineAdapter],
+      ['grok', createGrokAdapter],
     ] as const) {
       if (!getAdapter(id)) {
         try {

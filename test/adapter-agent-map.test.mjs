@@ -1,14 +1,15 @@
-/* adapter-agent-map tests (Owner Dogfood Correction 03).
+/* adapter-agent-map tests (Owner Dogfood Correction 03 + Adapter Coverage Batch 01).
    Verifies:
      1. Claude Code Run → claude-code adapter selected
      2. OpenCode Run → opencode adapter selected
      3. Changing active Run OpenCode → Claude updates capture adapter
      4. Changing active Run Claude → OpenCode updates capture adapter
-     5. Unsupported Run Agent does not silently fall back to OpenCode
+     5. V1 registered adapters present; still-unsupported agents do not fall back
      6. Active/bound capture does not carry across Agent switch (CaptureManager level)
      7. OpenCode Owner flow regression
      8. Claude adapter tests regression
-     9. Manual Result fallback remains usable
+     9. Manual Result fallback for still-unsupported agents
+     10. Codex/CommandCode/Cline/Grok now registered
    Runs against the compiled server modules under dist/server. */
 
 import * as fs from 'node:fs';
@@ -66,18 +67,32 @@ async function main() {
     check(fromId !== toId, 'adapter changes across agent switch (no stale carryover)');
   }
 
-  console.log('AM5) Unsupported Run Agent does NOT silently fall back to OpenCode');
+  console.log('AM5) V1 registered adapters: Codex/CommandCode/Cline/Grok now registered; other unknown agents still null');
   {
-    const unsupportedAgents = ['Codex', 'CommandCode', 'Cline', 'Grok', 'Devin', 'Kiro', 'Other', '', 'Random'];
+    // V1 registered: opencode, claude-code, codex, commandcode, cline, grok
+    const registeredAgents = [
+      { name: 'Codex', expectedId: 'codex' },
+      { name: 'CommandCode', expectedId: 'commandcode' },
+      { name: 'Cline', expectedId: 'cline' },
+      { name: 'Grok', expectedId: 'grok' },
+    ];
+    for (const { name, expectedId } of registeredAgents) {
+      const id = agentNameToAdapterId(name);
+      check(id === expectedId, `agentNameToAdapterId('${name}') === '${expectedId}' (got: ${id})`);
+      check(hasRegisteredAdapter(name) === true, `hasRegisteredAdapter('${name}') === true`);
+    }
+    // Still-unregistered agents must not silently fall back
+    const unsupportedAgents = ['Devin', 'Kiro', 'Other', '', 'Random'];
     for (const name of unsupportedAgents) {
       const id = agentNameToAdapterId(name);
       check(id === null, `agentNameToAdapterId('${name}') === null (no silent fallback)`);
       check(hasRegisteredAdapter(name) === false, `hasRegisteredAdapter('${name}') === false`);
     }
-    // Confirm it's strictly null — not 'opencode', not undefined
+    // Codex now registered — does NOT silently fallback to opencode or claude-code
     const codeId = agentNameToAdapterId('Codex');
     check(codeId !== 'opencode', 'Codex does NOT silently get opencode adapter');
     check(codeId !== 'claude-code', 'Codex does NOT silently get claude-code adapter');
+    check(codeId === 'codex', 'Codex correctly maps to codex adapter');
   }
 
   console.log('AM6) Active/bound capture does not carry across Agent switch (CaptureManager)');
@@ -197,13 +212,13 @@ async function main() {
     clearAdapters();
   }
 
-  console.log('AM9) Manual Result fallback — unsupported agent still allows manual save');
+  console.log('AM9) Manual Result fallback — unsupported agent still allows manual save; V1 six now in supportedAgentNames');
   {
-    // When no adapter is registered for an agent (e.g. Codex), the user can still
+    // When no adapter is registered for an agent (e.g. Devin), the user can still
     // manually paste/save a result. The mapping returns null, triggering the UI error,
     // but the run folder and manual workflow remain unaffected.
-    const codexAdapterId = agentNameToAdapterId('Codex');
-    check(codexAdapterId === null, 'Codex has no adapter (returns null)');
+    const devinAdapterId = agentNameToAdapterId('Devin');
+    check(devinAdapterId === null, 'Devin has no adapter (returns null)');
     // Simulate: the UI would show "어댑터 없음" and the arm call would show an error.
     // The folder itself is writable (no capture lock needed for manual saves).
     const folder = freshFolder('manual-fallback');
@@ -211,11 +226,18 @@ async function main() {
     fs.writeFileSync(path.join(folder, 'result.md'), '# 수동 결과', 'utf8');
     const content = fs.readFileSync(path.join(folder, 'result.md'), 'utf8');
     check(content === '# 수동 결과', 'manual result.md writable even when agent has no adapter');
-    // Verify supportedAgentNames does not include Codex
+    // Verify supportedAgentNames includes all V1 six registered adapters
     const supported = supportedAgentNames();
-    check(!supported.includes('Codex'), 'Codex not in supportedAgentNames');
     check(supported.includes('OpenCode'), 'OpenCode in supportedAgentNames');
     check(supported.includes('Claude Code'), 'Claude Code in supportedAgentNames');
+    check(supported.includes('Codex'), 'Codex in supportedAgentNames (Adapter Coverage Batch 01)');
+    check(supported.includes('CommandCode'), 'CommandCode in supportedAgentNames (Adapter Coverage Batch 01)');
+    check(supported.includes('Cline'), 'Cline in supportedAgentNames (Adapter Coverage Batch 01)');
+    check(supported.includes('Grok'), 'Grok in supportedAgentNames (Adapter Coverage Batch 01)');
+    check(!supported.includes('Devin'), 'Devin NOT in supportedAgentNames (still unregistered)');
+    check(!supported.includes('Kiro'), 'Kiro NOT in supportedAgentNames (still unregistered)');
+    // Total: 6 registered adapters in V1
+    check(supported.length === 6, `supportedAgentNames has 6 entries (got: ${supported.length})`);
   }
 
   const ok = process.exitCode === undefined;
