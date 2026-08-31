@@ -10,6 +10,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electro
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
+import * as goalTask from './goal-task.js';
 import { CaptureManager } from './capture-manager.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
@@ -214,7 +215,8 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
 
     case 'run:tagUpdate': {
       if (!req.folder) throw new Error('folder가 필요합니다.');
-      relay.writeRunMeta(req.folder, { tags: req.tags });
+      const prev = relay.readRunMeta(req.folder);
+      relay.writeRunMeta(req.folder, { ...prev, tags: req.tags });
       return req.tags;
     }
 
@@ -377,6 +379,56 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       captureManager.updateDraftParams(req.captureId, req.materializeParams);
       return true;
     }
+
+    case 'goal:create':
+      return goalTask.createGoal(req.dataRoot, req.project, {
+        title: req.title,
+        goalStatement: req.goalStatement,
+        description: req.description,
+        tags: req.tags,
+        completionCriteria: req.completionCriteria,
+        permissionPolicy: req.permissionPolicy,
+        status: req.status,
+      });
+
+    case 'goal:get':
+      return goalTask.getGoal(req.dataRoot, req.project, req.goalId);
+
+    case 'goal:list':
+      return goalTask.listGoals(req.dataRoot, req.project);
+
+    case 'goal:update':
+      return goalTask.updateGoal(req.dataRoot, req.project, req.goalId, req.patch ?? {});
+
+    case 'goal:progress':
+      return goalTask.getGoalProgress(req.dataRoot, req.project, req.goalId);
+
+    case 'task:create':
+      return goalTask.createTask(req.dataRoot, req.project, {
+        goalId: req.goalId,
+        title: req.title,
+        goal: req.goal,
+        reason: req.reason,
+        scope: req.scope,
+        completionCriteria: req.completionCriteria,
+        dependencies: req.dependencies,
+        status: req.status,
+      });
+
+    case 'task:get':
+      return goalTask.getTask(req.dataRoot, req.project, req.taskId);
+
+    case 'task:list':
+      return goalTask.listTasks(req.dataRoot, req.project, req.goalId);
+
+    case 'task:update':
+      return goalTask.updateTask(req.dataRoot, req.project, req.taskId, req.patch ?? {});
+
+    case 'task:linkRun':
+      return goalTask.linkRunToTask(req.dataRoot, req.project, req.taskId, req.runFolder);
+
+    case 'task:unlinkRun':
+      return goalTask.unlinkRunFromTask(req.dataRoot, req.project, req.taskId, req.runFolder);
 
     case 'update:check': {
       if (!updaterSupported(app.isPackaged)) {

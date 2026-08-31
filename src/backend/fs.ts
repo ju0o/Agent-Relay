@@ -139,8 +139,9 @@ export function listProjects(dataRoot: string): ProjectInfo[] {
     (e) => e.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(e.name),
   );
 
+  // Exclude hidden (.) and reserved metadata (_relay, _dogfooding, …) folders.
   const subProjects: ProjectInfo[] = entries
-    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !/^\d{4}-\d{2}-\d{2}$/.test(e.name))
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_') && !/^\d{4}-\d{2}-\d{2}$/.test(e.name))
     .map((e) => ({ name: e.name, path: path.join(dataRoot, e.name) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -233,23 +234,51 @@ export function writeMarkdown(
   return p;
 }
 
-// ── run meta (tags) ─────────────────────────────────────────────────────────
+// ── run meta (tags + optional Goal/Task linkage) ────────────────────────────
 
-interface RunMeta { tags: string[] }
+/**
+ * Run folder meta.json.
+ * Legacy files with only `{ tags }` remain valid.
+ * Optional goalId / taskId / taskRunSequence link a materialized Run back to a Task.
+ * Physical Run number is NOT taskRunSequence.
+ */
+export interface RunMeta {
+  tags: string[];
+  goalId?: string;
+  taskId?: string;
+  taskRunSequence?: number;
+}
 
-/** Read meta.json from a run folder. Returns empty defaults when missing. */
+/** Read meta.json from a run folder. Returns empty defaults when missing/malformed. */
 export function readRunMeta(folder: string): RunMeta {
   try {
-    return JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8')) as RunMeta;
+    const raw = JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8')) as Partial<RunMeta>;
+    const tags = Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : [];
+    const meta: RunMeta = { tags };
+    if (typeof raw.goalId === 'string') meta.goalId = raw.goalId;
+    if (typeof raw.taskId === 'string') meta.taskId = raw.taskId;
+    if (typeof raw.taskRunSequence === 'number' && Number.isFinite(raw.taskRunSequence)) {
+      meta.taskRunSequence = raw.taskRunSequence;
+    }
+    return meta;
   } catch {
     return { tags: [] };
   }
 }
 
-/** Write meta.json to a run folder. */
+/**
+ * Write meta.json to a run folder.
+ * Callers should pass the full desired meta object (read-merge-write for partial updates).
+ */
 export function writeRunMeta(folder: string, meta: RunMeta): void {
   fs.mkdirSync(folder, { recursive: true });
-  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
+  const out: RunMeta = { tags: Array.isArray(meta.tags) ? meta.tags : [] };
+  if (typeof meta.goalId === 'string') out.goalId = meta.goalId;
+  if (typeof meta.taskId === 'string') out.taskId = meta.taskId;
+  if (typeof meta.taskRunSequence === 'number' && Number.isFinite(meta.taskRunSequence)) {
+    out.taskRunSequence = meta.taskRunSequence;
+  }
+  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify(out, null, 2) + '\n', 'utf8');
 }
 
 // ── run operations ───────────────────────────────────────────────────────────

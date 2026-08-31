@@ -99,6 +99,17 @@ export type RelayRequest =
  | { op: 'capture:select'; sessionId: string; captureId?: string; folder?: string }
  | { op: 'capture:updateDraftParams'; captureId: string; materializeParams: MaterializeParams }
  | { op: 'run:materialize'; captureId?: string; dataRoot: string; project: string; date: string; agent: string }
+ | { op: 'goal:create'; dataRoot: string; project: string; title: string; goalStatement: string; description?: string; tags?: string[]; completionCriteria?: string[]; permissionPolicy?: PermissionPolicy; status?: GoalStatus }
+ | { op: 'goal:get'; dataRoot: string; project: string; goalId: string }
+ | { op: 'goal:list'; dataRoot: string; project: string }
+ | { op: 'goal:update'; dataRoot: string; project: string; goalId: string; patch: GoalUpdatePatch }
+ | { op: 'goal:progress'; dataRoot: string; project: string; goalId: string }
+ | { op: 'task:create'; dataRoot: string; project: string; goalId: string; title: string; goal: string; reason: string; scope: string; completionCriteria?: string[]; dependencies?: string[]; status?: TaskStatus }
+ | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
+ | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
+ | { op: 'task:update'; dataRoot: string; project: string; taskId: string; patch: TaskUpdatePatch }
+ | { op: 'task:linkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }
+ | { op: 'task:unlinkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -284,6 +295,131 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
       return s;
   }
 }
+
+// ── Goal / Task data kernel (Phase B1) ───────────────────────────────────────
+//
+// Logical hierarchy: Project → Goal → Task → Run.
+// Physical Run storage (YYYY-MM-DD/Agent/NN) is unchanged; Goals/Tasks live under
+// Project/_relay/{goals,tasks}/ as Markdown + JSON SSOT. Progress is derived.
+
+/** Goal lifecycle — explicit; B1 does not auto-complete Goals. */
+export const GOAL_STATUSES = [
+  'PLANNING',
+  'ACTIVE',
+  'WAITING_OWNER',
+  'BLOCKED',
+  'COMPLETED',
+  'ABANDONED',
+] as const;
+export type GoalStatus = (typeof GOAL_STATUSES)[number];
+
+/**
+ * Task lifecycle.
+ * Progress semantics (B1): DONE and ACCEPTED both count as complete.
+ * ACCEPTED = PM verified; DONE = final closed. Both contribute to doneTasks.
+ */
+export const TASK_STATUSES = [
+  'PLANNED',
+  'READY',
+  'DISPATCHED',
+  'WORKING',
+  'RESULT_RECEIVED',
+  'VERIFYING',
+  'CHANGES_REQUESTED',
+  'BLOCKED',
+  'ACCEPTED',
+  'DONE',
+  'ABANDONED',
+] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+/** Permission modes — structure only; runtime enforcement is deferred. */
+export const PERMISSION_MODES = ['PLAN', 'APPROVE', 'BYPASS'] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+export interface PermissionOverrides {
+  dispatch?: boolean;
+  redispatch?: boolean;
+  createTask?: boolean;
+  runTests?: boolean;
+  mergeMain?: boolean;
+  release?: boolean;
+  destructiveAction?: boolean;
+  productionDeploy?: boolean;
+  secretChange?: boolean;
+}
+
+export interface PermissionPolicy {
+  mode: PermissionMode;
+  overrides?: PermissionOverrides;
+}
+
+export const GOAL_TASK_SCHEMA_VERSION = 1;
+
+/** Persistent Goal record (JSON SSOT companion to goal.md). */
+export interface GoalRecord {
+  schemaVersion: number;
+  goalId: string;
+  project: string;
+  title: string;
+  goalStatement: string;
+  status: GoalStatus;
+  completionCriteria: string[];
+  permissionPolicy: PermissionPolicy;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  tags?: string[];
+}
+
+/** One linked physical Run reference on a Task (folder path + logical sequence). */
+export interface LinkedRunRef {
+  folder: string;
+  taskRunSequence: number;
+}
+
+/** Persistent Task record (JSON SSOT companion to task.md). */
+export interface TaskRecord {
+  schemaVersion: number;
+  taskId: string;
+  goalId: string;
+  project: string;
+  title: string;
+  goal: string;
+  reason: string;
+  scope: string;
+  completionCriteria: string[];
+  status: TaskStatus;
+  dependencies: string[];
+  linkedRuns: LinkedRunRef[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Derived Goal progress — never authoritative on disk. */
+export interface GoalProgress {
+  goalId: string;
+  totalTasks: number;
+  doneTasks: number;
+  activeTasks: number;
+  blockedTasks: number;
+  /** doneTasks / totalTasks, or 0 when no tasks. */
+  weightedProgress: number;
+}
+
+export type GoalUpdatePatch = Partial<
+  Pick<
+    GoalRecord,
+    'title' | 'goalStatement' | 'status' | 'completionCriteria' | 'permissionPolicy' | 'description' | 'tags'
+  >
+>;
+
+export type TaskUpdatePatch = Partial<
+  Pick<
+    TaskRecord,
+    'title' | 'goal' | 'reason' | 'scope' | 'completionCriteria' | 'status' | 'dependencies'
+  >
+>;
 
 // ── Agent adapter auto-capture (vNext foundation) ───────────────────────────
 //
