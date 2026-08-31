@@ -64,9 +64,13 @@ async function main() {
 
   gt.updateTask(TEST_ROOT, project, 'TASK-0001', { title: 'Kernel impl' });
   check(gt.getTask(TEST_ROOT, project, 'TASK-0001').title === 'Kernel impl', 'updateTask narrative title');
-  rt.refreshTaskReadiness(TEST_ROOT, project, 'TASK-0001');
-  rt.transitionTaskExecution(TEST_ROOT, project, 'TASK-0001', 'DISPATCHED');
-  rt.transitionTaskExecution(TEST_ROOT, project, 'TASK-0001', 'RUNNING');
+  await rt.refreshTaskReadiness(TEST_ROOT, project, 'TASK-0001');
+  await rt.transitionTaskExecution(TEST_ROOT, project, 'TASK-0001', {
+    expectedExecutionState: 'READY', to: 'DISPATCHED',
+  });
+  await rt.transitionTaskExecution(TEST_ROOT, project, 'TASK-0001', {
+    expectedExecutionState: 'DISPATCHED', to: 'RUNNING',
+  });
   check(gt.getTask(TEST_ROOT, project, 'TASK-0001').executionState === 'RUNNING', 'transitionExecution → RUNNING');
 
   // ── State validation (I17–I19) ────────────────────────────────────────────
@@ -84,7 +88,9 @@ async function main() {
   const earlyRun = await relay.atomicMaterializeRun(TEST_ROOT, project, relay.todayString(), 'EarlyResult');
   await gt.linkRunToTask(TEST_ROOT, project, 'TASK-0001', earlyRun.folder);
   const earlyRunId = relay.readRunMeta(earlyRun.folder).runId;
-  rt.markResultReceived(TEST_ROOT, project, 'TASK-0001', earlyRunId);
+  await rt.markResultReceived(TEST_ROOT, project, 'TASK-0001', earlyRunId, {
+    expectedExecutionState: 'RUNNING',
+  });
   const afterResult = gt.getTask(TEST_ROOT, project, 'TASK-0001');
   check(
     afterResult.executionState === 'RESULT_RECEIVED' && afterResult.pmState === 'VERIFYING',
@@ -192,25 +198,31 @@ async function main() {
   const acceptTask = gt.getTask(TEST_ROOT, project, 'TASK-0001');
   const pickId = acceptTask.linkedRuns[0].runId;
   let badAccept = false;
-  try { rt.acceptResult(TEST_ROOT, project, 'TASK-0001', 'not-a-real-run'); }
+  try { await rt.acceptResult(TEST_ROOT, project, 'TASK-0001', 'not-a-real-run'); }
   catch { badAccept = true; }
   check(badAccept, 'I13 acceptedRunId must reference linked Run');
 
   // TASK-0001 is already RESULT_RECEIVED/VERIFYING from I19
-  const withAccept = rt.acceptResult(TEST_ROOT, project, 'TASK-0001', pickId);
+  const withAccept = await rt.acceptResult(TEST_ROOT, project, 'TASK-0001', pickId);
   check(withAccept.acceptedRunId === pickId && withAccept.pmState === 'ACCEPTED', 'I20 PM ACCEPTED + acceptedRunId');
   check(withAccept.linkedRuns.length > 1, 'I14 other attempts still linked');
-  const cleared = rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', 'PENDING');
+  const cleared = await rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', {
+    expectedPmState: 'ACCEPTED', to: 'PENDING',
+  });
   check(cleared.acceptedRunId === undefined && cleared.pmState === 'PENDING', 'I15 reopen clears acceptedRunId');
 
   // ── Goal progress (I21–I23) ───────────────────────────────────────────────
   console.log('I21–I23) Goal progress semantics');
   // Reset TASK-0001 to CHANGES_REQUESTED (not complete) via legal transitions
-  // PENDING → VERIFYING → CHANGES_REQUESTED; execution already RESULT_RECEIVED
-  rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', 'VERIFYING');
-  rt.requestChanges(TEST_ROOT, project, 'TASK-0001', 'progress fixture');
-  // t2 blocked via create-time fixture (transition from PLANNED also fine)
-  rt.transitionTaskExecution(TEST_ROOT, project, t2.taskId, 'BLOCKED', 'fixture');
+  await rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', {
+    expectedPmState: 'PENDING', to: 'VERIFYING',
+  });
+  await rt.requestChanges(TEST_ROOT, project, 'TASK-0001', {
+    expectedPmState: 'VERIFYING', reason: 'progress fixture',
+  });
+  await rt.transitionTaskExecution(TEST_ROOT, project, t2.taskId, {
+    expectedExecutionState: 'PLANNED', to: 'BLOCKED', reason: 'fixture',
+  });
   const tAccepted = await gt.createTask(TEST_ROOT, project, {
     goalId: 'GOAL-0001', title: 'done one', goal: 'g', reason: 'r', scope: 's',
     executionState: 'RESULT_RECEIVED', pmState: 'ACCEPTED',

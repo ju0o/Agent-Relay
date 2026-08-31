@@ -314,7 +314,7 @@ async function main() {
     await gt.linkRunToTask(TEST_ROOT, project, t.taskId, r2.folder);
     let rec = gt.getTask(TEST_ROOT, project, t.taskId);
     const pick = rec.linkedRuns[0].runId;
-    rt.acceptResult(TEST_ROOT, project, t.taskId, pick);
+    await rt.acceptResult(TEST_ROOT, project, t.taskId, pick);
     rec = gt.getTask(TEST_ROOT, project, t.taskId);
     check(rec.acceptedRunId === pick, 'F17 accepted set');
     const pickFolder = rec.linkedRuns.find(r => r.runId === pick).folder;

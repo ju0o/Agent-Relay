@@ -1,41 +1,41 @@
 /**
- * Phase B2 — Goal/Task deterministic runtime state layer.
+ * Phase B2 — Goal/Task deterministic runtime state layer
+ * (+ architecture review addendum: CAS, derived deps, requestRetry).
  *
- * Relay owns persistent state. Callers (future GPT / MCP / UI) must mutate
- * execution/pm/goal status only through validated transitions below.
+ * B2 is a state kernel + validated commands + derived read model —
+ * NOT a workflow engine / orchestrator / scheduler.
  *
- * Documented semantics (chosen for V1):
+ * Documented semantics:
  *
- * Execution:
+ * Execution (persisted):
  *   PLANNED → READY | BLOCKED | CANCELLED
- *   READY → DISPATCHED | BLOCKED | CANCELLED | PLANNED (refresh: deps unsatisfied)
+ *   READY → DISPATCHED | BLOCKED | CANCELLED | PLANNED (explicit only)
  *   DISPATCHED → RUNNING | FAILED | CANCELLED
  *   RUNNING → RESULT_RECEIVED | FAILED | CANCELLED
- *   RESULT_RECEIVED → READY | DISPATCHED (correction/retry)
- *   BLOCKED → PLANNED | READY (unblock; target depends on dependency readiness)
- *   FAILED / CANCELLED = terminal (no further execution transitions)
+ *   RESULT_RECEIVED → (no direct exec transition; use task:requestRetry)
+ *   BLOCKED → PLANNED | READY
+ *   FAILED / CANCELLED = terminal
+ *
+ * Correction retry (explicit command, not raw transition):
+ *   RESULT_RECEIVED + CHANGES_REQUESTED → requestRetry → READY + PENDING
+ *   Does NOT delete prior linkedRuns; next attempt needs a NEW linked Run.
  *
  * PM:
  *   PENDING → VERIFYING
  *   VERIFYING → ACCEPTED | CHANGES_REQUESTED
  *   CHANGES_REQUESTED → VERIFYING | PENDING
  *   ACCEPTED → PENDING (explicit reopen; clears acceptedRunId)
- *   ACCEPTED requires acceptedRunId referencing a linked Run and
- *   executionState=RESULT_RECEIVED. Agent Result alone never implies ACCEPTED.
  *
- * markResultReceived:
- *   Sets executionState=RESULT_RECEIVED.
- *   If pmState is CHANGES_REQUESTED or PENDING → VERIFYING (new result to review).
- *   Never sets ACCEPTED.
+ * Dependencies (DERIVED only):
+ *   Satisfied iff dependency.pmState === ACCEPTED.
+ *   WAITING_DEPENDENCIES is never persisted.
+ *   Accepting/failing a dependency does NOT mutate dependents.
  *
- * Dependencies:
- *   Satisfied only when dependency.pmState === ACCEPTED.
- *   Same-Goal only; cycles rejected.
- *   WAITING_DEPENDENCIES is derived readiness, not executionState=BLOCKED.
+ * refreshReadiness:
+ *   May only promote PLANNED → READY when deps ACCEPTED and not explicitly blocked.
+ *   No demotion, no cascade, no auto-BLOCK.
  *
- * Goal completion:
- *   Task-complete eligible when ≥1 task and every non-CANCELLED task is ACCEPTED.
- *   goal:complete writes COMPLETED only through the gate; reads never auto-complete.
+ * All Task mutations: per-task lock + CAS expected-from validation.
  */
 import {
   GoalCompletionEvaluation,
@@ -56,6 +56,7 @@ import {
   listTasks,
   persistGoalRecord,
   persistTaskRecord,
+  withTaskLinkLock,
 } from './goal-task.js';
 
 export { wouldCreateDependencyCycle } from './goal-task.js';
@@ -67,7 +68,8 @@ const EXEC_TRANSITIONS: Readonly<Record<TaskExecutionState, readonly TaskExecuti
   READY: ['DISPATCHED', 'BLOCKED', 'CANCELLED', 'PLANNED'],
   DISPATCHED: ['RUNNING', 'FAILED', 'CANCELLED'],
   RUNNING: ['RESULT_RECEIVED', 'FAILED', 'CANCELLED'],
-  RESULT_RECEIVED: ['READY', 'DISPATCHED'],
+  // Correction retry is task:requestRetry — not a raw RESULT_RECEIVED → DISPATCHED jump.
+  RESULT_RECEIVED: [],
   BLOCKED: ['PLANNED', 'READY'],
   FAILED: [],
   CANCELLED: [],
@@ -102,8 +104,17 @@ function requireNonEmptyString(value: unknown, field: string): string {
   return value.trim();
 }
 
+/** Deterministic CAS conflict — no partial write occurred. */
+export class RuntimeConflictError extends Error {
+  readonly code = 'RUNTIME_CONFLICT';
+  constructor(message: string) {
+    super(message);
+    this.name = 'RuntimeConflictError';
+  }
+}
+
 export function isLegalExecutionTransition(from: TaskExecutionState, to: TaskExecutionState): boolean {
-  if (from === to) return true; // idempotent no-op
+  if (from === to) return true;
   return EXEC_TRANSITIONS[from].includes(to);
 }
 
@@ -135,7 +146,23 @@ export function assertLegalGoalTransition(from: GoalStatus, to: GoalStatus): voi
   }
 }
 
-// ── Dependency helpers ──────────────────────────────────────────────────────
+function assertExpectedExecution(actual: TaskExecutionState, expected: TaskExecutionState): void {
+  if (actual !== expected) {
+    throw new RuntimeConflictError(
+      `CONFLICT: expectedExecutionState=${expected} but found ${actual}`,
+    );
+  }
+}
+
+function assertExpectedPm(actual: TaskPmState, expected: TaskPmState): void {
+  if (actual !== expected) {
+    throw new RuntimeConflictError(
+      `CONFLICT: expectedPmState=${expected} but found ${actual}`,
+    );
+  }
+}
+
+// ── Dependency helpers (derived) ────────────────────────────────────────────
 
 /** Dependency satisfied only when pmState === ACCEPTED. */
 export function isDependencySatisfied(dep: TaskRecord | undefined): boolean {
@@ -143,7 +170,7 @@ export function isDependencySatisfied(dep: TaskRecord | undefined): boolean {
 }
 
 export function isHardDependencyBlocker(dep: TaskRecord | undefined): boolean {
-  if (!dep) return true; // missing dep is a hard problem
+  if (!dep) return true;
   return (
     dep.executionState === 'FAILED'
     || dep.executionState === 'BLOCKED'
@@ -175,13 +202,12 @@ export function collectDependencyInfo(
   };
 }
 
-// ── Readiness (pure) ────────────────────────────────────────────────────────
+// ── Readiness (pure / derived) ──────────────────────────────────────────────
 
 /**
  * Pure readiness calculation.
- *
- * WAITING_DEPENDENCIES ≠ explicit BLOCKED.
- * TERMINAL covers FAILED/CANCELLED and ACCEPTED (done).
+ * WAITING_DEPENDENCIES is derived — never persisted.
+ * isEligibleForReady ≠ persisted READY.
  */
 export function getTaskReadiness(
   task: TaskRecord,
@@ -206,9 +232,14 @@ export function getTaskReadiness(
   } else if (task.executionState === 'READY') {
     kind = 'READY';
   } else {
-    // PLANNED + deps satisfied → still PLANNED until refresh promotes to READY
     kind = 'PLANNED';
   }
+
+  const isEligibleForReady =
+    depInfo.dependenciesSatisfied
+    && task.executionState === 'PLANNED'
+    && task.pmState !== 'ACCEPTED'
+    && !TERMINAL_EXEC.has(task.executionState);
 
   const parallelizable =
     task.executionState === 'READY'
@@ -224,6 +255,7 @@ export function getTaskReadiness(
     unsatisfiedDependencies: depInfo.unsatisfiedDependencies,
     blockedBy: depInfo.blockedBy,
     dependenciesSatisfied: depInfo.dependenciesSatisfied,
+    isEligibleForReady,
     parallelizable,
   };
 }
@@ -248,174 +280,159 @@ export function getTaskReadinessForId(
 }
 
 /**
- * Refresh readiness for one Task.
- * Conservative: never mutates RUNNING / RESULT_RECEIVED / ACCEPTED / terminal backwards
- * because a dependency later changed.
+ * refreshReadiness: may ONLY promote PLANNED → READY when deps ACCEPTED
+ * and Task is not explicitly BLOCKED. No demotion, no cascade, no auto-BLOCK.
  */
 export function refreshTaskReadiness(
   dataRoot: string,
   project: string,
   taskId: string,
-): TaskRecord {
-  const task = getTask(dataRoot, project, taskId);
-  if (
-    task.pmState === 'ACCEPTED'
-    || TERMINAL_EXEC.has(task.executionState)
-    || task.executionState === 'DISPATCHED'
-    || task.executionState === 'RUNNING'
-    || task.executionState === 'RESULT_RECEIVED'
-  ) {
-    return task; // stable no-op
-  }
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
 
-  const { tasks, byId } = loadGoalTaskMap(dataRoot, project, task.goalId);
-  const depInfo = collectDependencyInfo(task, byId);
-  const before = task.executionState;
+    if (task.executionState !== 'PLANNED') {
+      return task; // no-op — never demote or touch other states
+    }
+    if (task.pmState === 'ACCEPTED') return task;
 
-  if (task.executionState === 'BLOCKED') {
-    // Explicit blocker stays until transitionExecution unblocks — refresh does not clear it.
-    return task;
-  }
+    const { byId } = loadGoalTaskMap(dataRoot, project, task.goalId);
+    const depInfo = collectDependencyInfo(task, byId);
+    if (!depInfo.dependenciesSatisfied) {
+      return task; // stays PLANNED; WAITING is derived only
+    }
 
-  if (task.executionState === 'PLANNED' && depInfo.dependenciesSatisfied) {
     task.executionState = 'READY';
-  } else if (task.executionState === 'READY' && !depInfo.dependenciesSatisfied) {
-    task.executionState = 'PLANNED';
-  }
-
-  if (task.executionState === before) return task;
-
-  task.updatedAt = nowIso();
-  task.lastTransitionReason = 'refreshReadiness';
-  return persistTaskRecord(dataRoot, project, task);
+    task.updatedAt = nowIso();
+    task.lastTransitionReason = 'refreshReadiness';
+    return persistTaskRecord(dataRoot, project, task);
+  });
 }
 
-/**
- * After a Task becomes ACCEPTED, refresh dependents in the same Goal that are
- * PLANNED/READY so they can become READY when eligible.
- */
-export function refreshDependentReadiness(
-  dataRoot: string,
-  project: string,
-  acceptedTaskId: string,
-): TaskRecord[] {
-  const accepted = getTask(dataRoot, project, acceptedTaskId);
-  const dependents = listTasks(dataRoot, project, accepted.goalId).filter((t) =>
-    t.dependencies.includes(acceptedTaskId)
-  );
-  const updated: TaskRecord[] = [];
-  for (const d of dependents) {
-    const next = refreshTaskReadiness(dataRoot, project, d.taskId);
-    updated.push(next);
-  }
-  return updated;
-}
+// ── Execution / PM transitions (CAS + lock) ─────────────────────────────────
 
-// ── Execution / PM transitions ──────────────────────────────────────────────
+export interface TransitionExecutionInput {
+  expectedExecutionState: TaskExecutionState;
+  to: TaskExecutionState;
+  reason?: string;
+}
 
 export function transitionTaskExecution(
   dataRoot: string,
   project: string,
   taskId: string,
-  to: TaskExecutionState,
-  reason?: string,
-): TaskRecord {
-  const task = getTask(dataRoot, project, taskId);
-  assertLegalExecutionTransition(task.executionState, to);
+  input: TransitionExecutionInput,
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  const expected = input.expectedExecutionState;
+  const to = input.to;
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
+    assertExpectedExecution(task.executionState, expected);
 
-  if (task.executionState === to) {
-    // Idempotent: still allow refreshing blocker metadata when staying BLOCKED with new reason
-    if (to === 'BLOCKED' && reason && reason !== task.blockedReason) {
-      task.blockedReason = reason;
-      task.blockedAt = task.blockedAt ?? nowIso();
-      task.lastTransitionReason = reason;
-      task.updatedAt = nowIso();
-      return persistTaskRecord(dataRoot, project, task);
+    if (task.executionState === to) {
+      if (to === 'BLOCKED' && input.reason?.trim() && input.reason.trim() !== task.blockedReason) {
+        task.blockedReason = input.reason.trim();
+        task.blockedAt = task.blockedAt ?? nowIso();
+        task.lastTransitionReason = input.reason.trim();
+        task.updatedAt = nowIso();
+        return persistTaskRecord(dataRoot, project, task);
+      }
+      return task; // idempotent replay
     }
-    return task;
-  }
 
-  // Unblock: choose READY vs PLANNED from dependency readiness when target is ambiguous.
-  // Caller may pass READY or PLANNED explicitly; if BLOCKED→READY but deps unsatisfied, reject.
-  if (task.executionState === 'BLOCKED' && (to === 'READY' || to === 'PLANNED')) {
-    const { byId } = loadGoalTaskMap(dataRoot, project, task.goalId);
-    const depInfo = collectDependencyInfo(task, byId);
-    if (to === 'READY' && !depInfo.dependenciesSatisfied) {
-      throw new Error('의존성이 충족되지 않아 BLOCKED → READY로 해제할 수 없습니다. PLANNED를 사용하세요.');
+    assertLegalExecutionTransition(task.executionState, to);
+
+    if (to === 'READY') {
+      const { byId } = loadGoalTaskMap(dataRoot, project, task.goalId);
+      const depInfo = collectDependencyInfo(task, byId);
+      if (!depInfo.dependenciesSatisfied) {
+        throw new Error('의존성이 충족되지 않아 READY로 전이할 수 없습니다.');
+      }
     }
-    delete task.blockedReason;
-    delete task.blockedAt;
-  }
 
-  if (to === 'BLOCKED') {
-    task.blockedReason = reason?.trim() || task.blockedReason || 'explicitly blocked';
-    task.blockedAt = nowIso();
-  } else if (task.executionState === 'BLOCKED') {
-    delete task.blockedReason;
-    delete task.blockedAt;
-  }
-
-  // Correction retry from RESULT_RECEIVED clears ACCEPTED if somehow set (should not be)
-  if (task.executionState === 'RESULT_RECEIVED' && (to === 'READY' || to === 'DISPATCHED')) {
-    if (task.pmState === 'ACCEPTED') {
-      throw new Error('ACCEPTED Task는 재시도 전에 pmState를 명시적으로 재개방해야 합니다.');
+    if (task.executionState === 'BLOCKED' && (to === 'READY' || to === 'PLANNED')) {
+      delete task.blockedReason;
+      delete task.blockedAt;
     }
-  }
 
-  task.executionState = to;
-  if (reason?.trim()) task.lastTransitionReason = reason.trim();
-  task.updatedAt = nowIso();
-  return persistTaskRecord(dataRoot, project, task);
+    if (to === 'BLOCKED') {
+      task.blockedReason = input.reason?.trim() || task.blockedReason || 'explicitly blocked';
+      task.blockedAt = nowIso();
+    } else if (task.executionState === 'BLOCKED') {
+      delete task.blockedReason;
+      delete task.blockedAt;
+    }
+
+    task.executionState = to;
+    if (input.reason?.trim()) task.lastTransitionReason = input.reason.trim();
+    task.updatedAt = nowIso();
+    return persistTaskRecord(dataRoot, project, task);
+  });
+}
+
+export interface TransitionPmInput {
+  expectedPmState: TaskPmState;
+  to: TaskPmState;
+  reason?: string;
+  acceptedRunId?: string;
+  /** When accepting, optionally assert execution axis too. */
+  expectedExecutionState?: TaskExecutionState;
 }
 
 export function transitionTaskPm(
   dataRoot: string,
   project: string,
   taskId: string,
-  to: TaskPmState,
-  opts?: { reason?: string; acceptedRunId?: string },
-): TaskRecord {
-  const task = getTask(dataRoot, project, taskId);
-  assertLegalPmTransition(task.pmState, to);
-
-  if (task.pmState === to) {
-    if (to === 'ACCEPTED' && opts?.acceptedRunId && opts.acceptedRunId === task.acceptedRunId) {
-      return task; // idempotent accept
+  input: TransitionPmInput,
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
+    assertExpectedPm(task.pmState, input.expectedPmState);
+    if (input.expectedExecutionState !== undefined) {
+      assertExpectedExecution(task.executionState, input.expectedExecutionState);
     }
-    if (to === 'ACCEPTED') return task;
-    return task;
-  }
 
-  if (to === 'ACCEPTED') {
-    if (task.executionState !== 'RESULT_RECEIVED') {
-      throw new Error('ACCEPTED는 executionState=RESULT_RECEIVED일 때만 설정할 수 있습니다.');
+    if (task.pmState === input.to) {
+      if (
+        input.to === 'ACCEPTED'
+        && input.acceptedRunId
+        && input.acceptedRunId === task.acceptedRunId
+      ) {
+        return task;
+      }
+      return task; // idempotent
     }
-    const runId = opts?.acceptedRunId ?? task.acceptedRunId;
-    if (!runId) throw new Error('ACCEPTED에는 acceptedRunId가 필요합니다.');
-    if (!task.linkedRuns.some((r) => r.runId === runId)) {
-      throw new Error('acceptedRunId는 linkedRuns에 포함된 runId여야 합니다.');
+
+    assertLegalPmTransition(task.pmState, input.to);
+
+    if (input.to === 'ACCEPTED') {
+      if (task.executionState !== 'RESULT_RECEIVED') {
+        throw new Error('ACCEPTED는 executionState=RESULT_RECEIVED일 때만 설정할 수 있습니다.');
+      }
+      const runId = input.acceptedRunId ?? task.acceptedRunId;
+      if (!runId) throw new Error('ACCEPTED에는 acceptedRunId가 필요합니다.');
+      if (!task.linkedRuns.some((r) => r.runId === runId)) {
+        throw new Error('acceptedRunId는 linkedRuns에 포함된 runId여야 합니다.');
+      }
+      task.acceptedRunId = runId;
     }
-    task.acceptedRunId = runId;
-  }
 
-  if (task.pmState === 'ACCEPTED' && to === 'PENDING') {
-    delete task.acceptedRunId;
-  }
+    if (task.pmState === 'ACCEPTED' && input.to === 'PENDING') {
+      delete task.acceptedRunId;
+    }
+    if (input.to === 'CHANGES_REQUESTED') {
+      delete task.acceptedRunId;
+    }
 
-  if (to === 'CHANGES_REQUESTED') {
-    delete task.acceptedRunId;
-  }
-
-  task.pmState = to;
-  if (opts?.reason?.trim()) task.lastTransitionReason = opts.reason.trim();
-  task.updatedAt = nowIso();
-  const saved = persistTaskRecord(dataRoot, project, task);
-
-  if (to === 'ACCEPTED') {
-    refreshDependentReadiness(dataRoot, project, saved.taskId);
-    return getTask(dataRoot, project, saved.taskId);
-  }
-  return saved;
+    task.pmState = input.to;
+    if (input.reason?.trim()) task.lastTransitionReason = input.reason.trim();
+    task.updatedAt = nowIso();
+    // No eager dependent mutation — readiness of dependents is derived on read.
+    return persistTaskRecord(dataRoot, project, task);
+  });
 }
 
 export function markResultReceived(
@@ -423,46 +440,56 @@ export function markResultReceived(
   project: string,
   taskId: string,
   runId: string,
-): TaskRecord {
-  const id = requireNonEmptyString(runId, 'runId');
-  const task = getTask(dataRoot, project, taskId);
+  opts?: { expectedExecutionState?: TaskExecutionState },
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
 
-  if (!task.linkedRuns.some((r) => r.runId === id)) {
-    throw new Error('runId는 이 Task에 연결된 Run이어야 합니다.');
-  }
-  if (task.pmState === 'ACCEPTED') {
-    throw new Error('이미 ACCEPTED된 Task에는 markResultReceived를 적용할 수 없습니다.');
-  }
+    if (!task.linkedRuns.some((r) => r.runId === rid)) {
+      throw new Error('runId는 이 Task에 연결된 Run이어야 합니다.');
+    }
+    if (task.pmState === 'ACCEPTED') {
+      throw new Error('이미 ACCEPTED된 Task에는 markResultReceived를 적용할 수 없습니다.');
+    }
 
-  // Idempotent: already RESULT_RECEIVED for review
-  const already = task.executionState === 'RESULT_RECEIVED';
-  if (!already) {
-    // Allow from DISPATCHED/RUNNING primarily; also READY/PLANNED would be illegal —
-    // use transition table: only RUNNING→RESULT_RECEIVED is preferred, but DISPATCHED may skip?
-    // Spec preferred flow includes RUNNING → RESULT_RECEIVED. Also allow DISPATCHED → via RUNNING.
-    // Practical: allow DISPATCHED|RUNNING → RESULT_RECEIVED as a safe high-level command.
+    // Idempotent replay: already RESULT_RECEIVED
+    if (task.executionState === 'RESULT_RECEIVED') {
+      if (opts?.expectedExecutionState && opts.expectedExecutionState !== 'RESULT_RECEIVED') {
+        throw new RuntimeConflictError(
+          `CONFLICT: expectedExecutionState=${opts.expectedExecutionState} but found RESULT_RECEIVED`,
+        );
+      }
+      // Ensure review state
+      if (task.pmState === 'CHANGES_REQUESTED' || task.pmState === 'PENDING') {
+        task.pmState = 'VERIFYING';
+        task.lastTransitionReason = `markResultReceived:${rid}`;
+        task.updatedAt = nowIso();
+        return persistTaskRecord(dataRoot, project, task);
+      }
+      return task;
+    }
+
+    if (opts?.expectedExecutionState !== undefined) {
+      assertExpectedExecution(task.executionState, opts.expectedExecutionState);
+    }
+
     if (task.executionState === 'DISPATCHED') {
-      // Promote through RUNNING implicitly for this high-level op (single updatedAt bump).
       assertLegalExecutionTransition('DISPATCHED', 'RUNNING');
       assertLegalExecutionTransition('RUNNING', 'RESULT_RECEIVED');
     } else {
       assertLegalExecutionTransition(task.executionState, 'RESULT_RECEIVED');
     }
+
     task.executionState = 'RESULT_RECEIVED';
-  }
-
-  // New result to review: CHANGES_REQUESTED|PENDING → VERIFYING
-  if (task.pmState === 'CHANGES_REQUESTED' || task.pmState === 'PENDING') {
-    task.pmState = 'VERIFYING';
-  }
-
-  if (already && task.pmState === 'VERIFYING') {
-    return task; // stable
-  }
-
-  task.lastTransitionReason = `markResultReceived:${id}`;
-  task.updatedAt = nowIso();
-  return persistTaskRecord(dataRoot, project, task);
+    if (task.pmState === 'CHANGES_REQUESTED' || task.pmState === 'PENDING') {
+      task.pmState = 'VERIFYING';
+    }
+    task.lastTransitionReason = `markResultReceived:${rid}`;
+    task.updatedAt = nowIso();
+    return persistTaskRecord(dataRoot, project, task);
+  });
 }
 
 export function acceptResult(
@@ -470,72 +497,139 @@ export function acceptResult(
   project: string,
   taskId: string,
   runId: string,
-  reason?: string,
-): TaskRecord {
-  const id = requireNonEmptyString(runId, 'runId');
-  const task = getTask(dataRoot, project, taskId);
+  opts?: {
+    reason?: string;
+    expectedPmState?: TaskPmState;
+    expectedExecutionState?: TaskExecutionState;
+  },
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
 
-  if (!task.linkedRuns.some((r) => r.runId === id)) {
-    throw new Error('runId는 이 Task에 연결된 Run이어야 합니다.');
-  }
-  if (task.executionState !== 'RESULT_RECEIVED') {
-    throw new Error('acceptResult는 executionState=RESULT_RECEIVED가 필요합니다.');
-  }
+    if (!task.linkedRuns.some((r) => r.runId === rid)) {
+      throw new Error('runId는 이 Task에 연결된 Run이어야 합니다.');
+    }
 
-  // Idempotent same accept
-  if (task.pmState === 'ACCEPTED' && task.acceptedRunId === id) {
-    return task;
-  }
+    // Idempotent same accept
+    if (task.pmState === 'ACCEPTED' && task.acceptedRunId === rid) {
+      if (opts?.expectedPmState && opts.expectedPmState !== 'ACCEPTED') {
+        // Replay of accept after success: treat as idempotent success when already accepted same run
+        // unless caller insisted on a different expected — then conflict
+        throw new RuntimeConflictError(
+          `CONFLICT: expectedPmState=${opts.expectedPmState} but found ACCEPTED`,
+        );
+      }
+      return task;
+    }
 
-  // From VERIFYING (preferred) or PENDING (explicit accept without verify step)
-  if (task.pmState === 'ACCEPTED' && task.acceptedRunId !== id) {
-    throw new Error('이미 다른 Run이 ACCEPTED되어 있습니다. 재개방 후 다시 시도하세요.');
-  }
-  if (task.pmState === 'CHANGES_REQUESTED') {
-    throw new Error('CHANGES_REQUESTED 상태에서는 acceptResult할 수 없습니다. VERIFYING으로 전이하세요.');
-  }
-  if (task.pmState === 'PENDING') {
-    // Allow PENDING → VERIFYING → ACCEPTED in one high-level accept (caller decided).
-    assertLegalPmTransition('PENDING', 'VERIFYING');
-    assertLegalPmTransition('VERIFYING', 'ACCEPTED');
-  } else {
-    assertLegalPmTransition(task.pmState, 'ACCEPTED');
-  }
+    const expectedExec = opts?.expectedExecutionState ?? 'RESULT_RECEIVED';
+    assertExpectedExecution(task.executionState, expectedExec);
 
-  task.acceptedRunId = id;
-  task.pmState = 'ACCEPTED';
-  if (reason?.trim()) task.lastTransitionReason = reason.trim();
-  else task.lastTransitionReason = `acceptResult:${id}`;
-  task.updatedAt = nowIso();
-  const saved = persistTaskRecord(dataRoot, project, task);
-  refreshDependentReadiness(dataRoot, project, saved.taskId);
-  return getTask(dataRoot, project, saved.taskId);
+    const expectedPm = opts?.expectedPmState ?? task.pmState;
+    assertExpectedPm(task.pmState, expectedPm);
+
+    if (task.pmState === 'CHANGES_REQUESTED') {
+      throw new RuntimeConflictError(
+        'CONFLICT: CHANGES_REQUESTED 상태에서는 acceptResult할 수 없습니다.',
+      );
+    }
+    if (task.pmState === 'ACCEPTED' && task.acceptedRunId !== rid) {
+      throw new Error('이미 다른 Run이 ACCEPTED되어 있습니다. 재개방 후 다시 시도하세요.');
+    }
+
+    if (task.pmState === 'PENDING') {
+      assertLegalPmTransition('PENDING', 'VERIFYING');
+      assertLegalPmTransition('VERIFYING', 'ACCEPTED');
+    } else {
+      assertLegalPmTransition(task.pmState, 'ACCEPTED');
+    }
+
+    task.acceptedRunId = rid;
+    task.pmState = 'ACCEPTED';
+    if (opts?.reason?.trim()) task.lastTransitionReason = opts.reason.trim();
+    else task.lastTransitionReason = `acceptResult:${rid}`;
+    task.updatedAt = nowIso();
+    // No eager dependent mutation
+    return persistTaskRecord(dataRoot, project, task);
+  });
 }
 
 export function requestChanges(
   dataRoot: string,
   project: string,
   taskId: string,
-  reason?: string,
-): TaskRecord {
-  const task = getTask(dataRoot, project, taskId);
+  opts?: { reason?: string; expectedPmState?: TaskPmState },
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
 
-  if (task.pmState === 'CHANGES_REQUESTED') {
-    if (reason?.trim() && reason.trim() !== task.lastTransitionReason) {
-      task.lastTransitionReason = reason.trim();
-      task.updatedAt = nowIso();
-      return persistTaskRecord(dataRoot, project, task);
+    if (task.pmState === 'CHANGES_REQUESTED') {
+      if (opts?.expectedPmState && opts.expectedPmState !== 'CHANGES_REQUESTED') {
+        throw new RuntimeConflictError(
+          `CONFLICT: expectedPmState=${opts.expectedPmState} but found CHANGES_REQUESTED`,
+        );
+      }
+      if (opts?.reason?.trim() && opts.reason.trim() !== task.lastTransitionReason) {
+        task.lastTransitionReason = opts.reason.trim();
+        task.updatedAt = nowIso();
+        return persistTaskRecord(dataRoot, project, task);
+      }
+      return task; // idempotent
     }
-    return task; // idempotent
-  }
 
-  assertLegalPmTransition(task.pmState, 'CHANGES_REQUESTED');
-  // Preferred from VERIFYING; PENDING→CHANGES_REQUESTED is illegal by table.
-  delete task.acceptedRunId;
-  task.pmState = 'CHANGES_REQUESTED';
-  if (reason?.trim()) task.lastTransitionReason = reason.trim();
-  task.updatedAt = nowIso();
-  return persistTaskRecord(dataRoot, project, task);
+    const expectedPm = opts?.expectedPmState ?? 'VERIFYING';
+    assertExpectedPm(task.pmState, expectedPm);
+    assertLegalPmTransition(task.pmState, 'CHANGES_REQUESTED');
+
+    delete task.acceptedRunId;
+    task.pmState = 'CHANGES_REQUESTED';
+    if (opts?.reason?.trim()) task.lastTransitionReason = opts.reason.trim();
+    task.updatedAt = nowIso();
+    return persistTaskRecord(dataRoot, project, task);
+  });
+}
+
+/**
+ * Explicit correction retry loop.
+ * RESULT_RECEIVED + CHANGES_REQUESTED → READY + PENDING.
+ * Preserves all linkedRuns; next attempt requires a NEW linked Run.
+ */
+export function requestRetry(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  opts?: {
+    reason?: string;
+    expectedExecutionState?: TaskExecutionState;
+    expectedPmState?: TaskPmState;
+  },
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
+    const expectedExec = opts?.expectedExecutionState ?? 'RESULT_RECEIVED';
+    const expectedPm = opts?.expectedPmState ?? 'CHANGES_REQUESTED';
+
+    assertExpectedExecution(task.executionState, expectedExec);
+    assertExpectedPm(task.pmState, expectedPm);
+
+    if (task.executionState !== 'RESULT_RECEIVED' || task.pmState !== 'CHANGES_REQUESTED') {
+      throw new Error('requestRetry는 RESULT_RECEIVED + CHANGES_REQUESTED에서만 가능합니다.');
+    }
+    if (task.acceptedRunId) {
+      throw new Error('requestRetry는 acceptedRunId가 없을 때만 가능합니다.');
+    }
+
+    task.executionState = 'READY';
+    task.pmState = 'PENDING';
+    task.retryCount = (task.retryCount ?? 0) + 1;
+    task.lastTransitionReason = opts?.reason?.trim() || 'requestRetry';
+    task.updatedAt = nowIso();
+    return persistTaskRecord(dataRoot, project, task);
+  });
 }
 
 // ── Goal completion / transitions ───────────────────────────────────────────
@@ -545,6 +639,7 @@ export function isAbandonedTask(t: TaskRecord): boolean {
   return t.executionState === 'CANCELLED';
 }
 
+/** Pure / read-only — never writes Goal status. */
 export function evaluateGoalCompletion(
   goal: GoalRecord,
   tasks: readonly TaskRecord[],
@@ -641,11 +736,11 @@ export function transitionGoalStatus(
 
   goal.status = to;
   goal.updatedAt = nowIso();
-  // GoalRecord has no lastTransitionReason — reason only used for error context / future
   void reason;
   return persistGoalRecord(dataRoot, project, goal);
 }
 
+/** Explicit write only — never called from progress/accept/refresh. */
 export function completeGoal(
   dataRoot: string,
   project: string,
@@ -674,6 +769,7 @@ function toTaskSummary(task: TaskRecord, goalTasks: readonly TaskRecord[]): Task
     ...(task.acceptedRunId ? { acceptedRunId: task.acceptedRunId } : {}),
     ...(latestRun ? { latestRun } : {}),
     readiness: readiness.kind,
+    isEligibleForReady: readiness.isEligibleForReady,
     parallelizable: readiness.parallelizable,
     ...(task.blockedReason ? { blockedReason: task.blockedReason } : {}),
   };
@@ -708,10 +804,7 @@ export function getGoalRuntimeState(
   };
 }
 
-/**
- * Deterministic PM-facing context seed for future relay.get_pm_context / MCP.
- * No LLM summarization. No Prompt/Result bodies.
- */
+/** Deterministic PM context seed — no LLM summarization. */
 export function buildGoalRuntimeContext(
   dataRoot: string,
   project: string,

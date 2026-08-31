@@ -5,8 +5,12 @@
  * Physical Run storage unchanged. Logical runId is authoritative for linkage.
  * Task uses split executionState + pmState (schemaVersion=2). Progress is derived.
  *
- * Phase B2: runtime transitions live in goal-task-runtime.ts. This module rejects
- * raw executionState/pmState/acceptedRunId/status patches on update* APIs.
+ * Phase B2: runtime transitions live in goal-task-runtime.ts.
+ *
+ * Privileged/legacy: `updateTask` / `updateGoal` are narrative-field patches only.
+ * They MUST NOT set runtime axes (executionState/pmState/acceptedRunId/Goal status).
+ * Future MCP/Event Runtime must call explicit B2 commands, never raw task:update
+ * for READY/DISPATCHED/RUNNING/RESULT_RECEIVED/ACCEPTED flows.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -256,7 +260,11 @@ function allocateTaskIdWithCounter(dataRoot: string, project: string): string {
   }
 }
 
-function withTaskLinkLock<T>(project: string, taskId: string, fn: () => T): Promise<T> {
+/**
+ * Per-task serialization for link/unlink and B2 runtime mutations.
+ * Same lock key for all Task writers — no check-then-write outside this lock.
+ */
+export function withTaskLinkLock<T>(project: string, taskId: string, fn: () => T): Promise<T> {
   const key = `${project}::${taskId}`;
   const prev = _linkLocks.get(key) ?? Promise.resolve();
   const work = prev.then(() => fn());
@@ -631,6 +639,9 @@ export function normalizeTaskRecord(raw: Record<string, unknown>): TaskRecord {
   }
   if (typeof raw.lastTransitionReason === 'string' && raw.lastTransitionReason) {
     record.lastTransitionReason = raw.lastTransitionReason;
+  }
+  if (typeof raw.retryCount === 'number' && Number.isInteger(raw.retryCount) && raw.retryCount >= 0) {
+    record.retryCount = raw.retryCount;
   }
   validateTaskRecord(record);
   return record;

@@ -116,11 +116,12 @@ export type RelayRequest =
  | { op: 'task:unlinkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }
  | { op: 'task:getReadiness'; dataRoot: string; project: string; taskId: string }
  | { op: 'task:refreshReadiness'; dataRoot: string; project: string; taskId: string }
- | { op: 'task:transitionExecution'; dataRoot: string; project: string; taskId: string; to: TaskExecutionState; reason?: string }
- | { op: 'task:transitionPm'; dataRoot: string; project: string; taskId: string; to: TaskPmState; reason?: string; acceptedRunId?: string }
- | { op: 'task:markResultReceived'; dataRoot: string; project: string; taskId: string; runId: string }
- | { op: 'task:acceptResult'; dataRoot: string; project: string; taskId: string; runId: string; reason?: string }
- | { op: 'task:requestChanges'; dataRoot: string; project: string; taskId: string; reason?: string }
+ | { op: 'task:transitionExecution'; dataRoot: string; project: string; taskId: string; expectedExecutionState: TaskExecutionState; to: TaskExecutionState; reason?: string }
+ | { op: 'task:transitionPm'; dataRoot: string; project: string; taskId: string; expectedPmState: TaskPmState; to: TaskPmState; reason?: string; acceptedRunId?: string }
+ | { op: 'task:markResultReceived'; dataRoot: string; project: string; taskId: string; runId: string; expectedExecutionState?: TaskExecutionState }
+ | { op: 'task:acceptResult'; dataRoot: string; project: string; taskId: string; runId: string; reason?: string; expectedPmState?: TaskPmState; expectedExecutionState?: TaskExecutionState }
+ | { op: 'task:requestChanges'; dataRoot: string; project: string; taskId: string; reason?: string; expectedPmState?: TaskPmState }
+ | { op: 'task:requestRetry'; dataRoot: string; project: string; taskId: string; reason?: string; expectedExecutionState?: TaskExecutionState; expectedPmState?: TaskPmState }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -451,6 +452,8 @@ export interface TaskRecord {
   blockedAt?: string;
   /** Optional last transition / PM reason (audit hint; not an event log). */
   lastTransitionReason?: string;
+  /** Number of explicit requestRetry cycles completed (optional metadata). */
+  retryCount?: number;
 }
 
 /**
@@ -529,9 +532,13 @@ export type GoalUpdatePatch = Partial<
 };
 
 /**
- * Narrative Task patch.
- * Runtime axes (executionState / pmState / acceptedRunId) must use validated
- * transition commands — passing them here is rejected (no bypass).
+ * Privileged/legacy narrative Task patch.
+ *
+ * NOT the normal B2 runtime mutation path. Runtime axes
+ * (executionState / pmState / acceptedRunId) are rejected here — use
+ * transitionExecution / transitionPm / acceptResult / requestChanges /
+ * requestRetry / markResultReceived instead.
+ * Future MCP/Event Runtime must not use raw task:update for state.
  */
 export type TaskUpdatePatch = Partial<
   Pick<
@@ -544,13 +551,13 @@ export type TaskUpdatePatch = Partial<
     | 'dependencies'
   >
 > & {
-  /** @deprecated B2 — use task:transitionExecution. Rejected if present. */
+  /** @deprecated Privileged/legacy — rejected. Use task:transitionExecution. */
   executionState?: TaskExecutionState;
-  /** @deprecated B2 — use task:transitionPm / acceptResult / requestChanges. Rejected if present. */
+  /** @deprecated Privileged/legacy — rejected. Use task:transitionPm / acceptResult / requestChanges. */
   pmState?: TaskPmState;
-  /** @deprecated B2 — use task:acceptResult. Rejected if present. */
+  /** @deprecated Privileged/legacy — rejected. Use task:acceptResult. */
   acceptedRunId?: string;
-  /** @deprecated B2 — use task:transitionPm reopen. Rejected if present. */
+  /** @deprecated Privileged/legacy — rejected. Use task:transitionPm reopen. */
   clearAcceptedRunId?: boolean;
 };
 
@@ -578,7 +585,13 @@ export interface TaskReadiness {
   blockedBy: string[];
   /** True when all dependencies have pmState=ACCEPTED (or none). */
   dependenciesSatisfied: boolean;
-  /** Eligible for parallel dispatch consideration (READY + not accepted + not explicit BLOCKED). */
+  /**
+   * Derived: dependencies satisfied and Task could be promoted to READY
+   * (PLANNED, not terminal/accepted/explicit BLOCKED). Not the same as
+   * persisted executionState=READY (which is an explicit declaration).
+   */
+  isEligibleForReady: boolean;
+  /** Eligible for parallel dispatch consideration (persisted READY + deps satisfied + not accepted). */
   parallelizable: boolean;
 }
 
@@ -607,6 +620,7 @@ export interface TaskRuntimeSummary {
   acceptedRunId?: string;
   latestRun?: LinkedRunRef;
   readiness: TaskReadinessKind;
+  isEligibleForReady: boolean;
   parallelizable: boolean;
   blockedReason?: string;
 }

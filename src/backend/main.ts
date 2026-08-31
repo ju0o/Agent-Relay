@@ -451,22 +451,44 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return goalTaskRuntime.refreshTaskReadiness(req.dataRoot, req.project, req.taskId);
 
     case 'task:transitionExecution':
-      return goalTaskRuntime.transitionTaskExecution(req.dataRoot, req.project, req.taskId, req.to, req.reason);
+      return goalTaskRuntime.transitionTaskExecution(req.dataRoot, req.project, req.taskId, {
+        expectedExecutionState: req.expectedExecutionState,
+        to: req.to,
+        reason: req.reason,
+      });
 
     case 'task:transitionPm':
-      return goalTaskRuntime.transitionTaskPm(req.dataRoot, req.project, req.taskId, req.to, {
+      return goalTaskRuntime.transitionTaskPm(req.dataRoot, req.project, req.taskId, {
+        expectedPmState: req.expectedPmState,
+        to: req.to,
         reason: req.reason,
         acceptedRunId: req.acceptedRunId,
       });
 
     case 'task:markResultReceived':
-      return goalTaskRuntime.markResultReceived(req.dataRoot, req.project, req.taskId, req.runId);
+      return goalTaskRuntime.markResultReceived(req.dataRoot, req.project, req.taskId, req.runId, {
+        expectedExecutionState: req.expectedExecutionState,
+      });
 
     case 'task:acceptResult':
-      return goalTaskRuntime.acceptResult(req.dataRoot, req.project, req.taskId, req.runId, req.reason);
+      return goalTaskRuntime.acceptResult(req.dataRoot, req.project, req.taskId, req.runId, {
+        reason: req.reason,
+        expectedPmState: req.expectedPmState,
+        expectedExecutionState: req.expectedExecutionState,
+      });
 
     case 'task:requestChanges':
-      return goalTaskRuntime.requestChanges(req.dataRoot, req.project, req.taskId, req.reason);
+      return goalTaskRuntime.requestChanges(req.dataRoot, req.project, req.taskId, {
+        reason: req.reason,
+        expectedPmState: req.expectedPmState,
+      });
+
+    case 'task:requestRetry':
+      return goalTaskRuntime.requestRetry(req.dataRoot, req.project, req.taskId, {
+        reason: req.reason,
+        expectedExecutionState: req.expectedExecutionState,
+        expectedPmState: req.expectedPmState,
+      });
 
     case 'update:check': {
       if (!updaterSupported(app.isPackaged)) {
