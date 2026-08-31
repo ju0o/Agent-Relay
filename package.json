@@ -25,7 +25,8 @@
     "test:session-ownership": "node test/session-ownership.test.mjs",
     "test:draft-idempotency": "node test/draft-idempotency.test.mjs",
     "test:goal-task-kernel": "node test/goal-task-kernel.test.mjs",
-    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh && npm run test:adapter-agent-map && npm run test:parallel-capture && npm run test:draft-materialization && npm run test:session-ownership && npm run test:draft-idempotency && npm run test:goal-task-kernel",
+    "test:b1-corrections": "node test/b1-corrections.test.mjs",
+    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh && npm run test:adapter-agent-map && npm run test:parallel-capture && npm run test:draft-materialization && npm run test:session-ownership && npm run test:draft-idempotency && npm run test:goal-task-kernel && npm run test:b1-corrections",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml"
   },
   "main": "dist/server/backend/main.js",

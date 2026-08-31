@@ -7,6 +7,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import {
   GOAL_STATUSES,
   GOAL_TASK_SCHEMA_VERSION,
@@ -130,6 +131,116 @@ function allocateExclusiveId(dir: string, prefix: 'GOAL' | 'TASK', re: RegExp): 
     const idDir = path.join(dir, id);
     try {
       fs.mkdirSync(idDir);
+      return id;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        n += 1;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// ── monotonic counters for GOAL/TASK IDs ───────────────────────────────────
+
+export function countersPath(dataRoot: string, project: string): string {
+  return path.join(relayDir(dataRoot, project), 'counters.json');
+}
+
+export interface CountersRecord {
+  nextGoalNumber: number;
+  nextTaskNumber: number;
+}
+
+function loadCounters(dataRoot: string, project: string): CountersRecord {
+  const p = countersPath(dataRoot, project);
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    parsed = null;
+  }
+  const goalsMax = maxExistingId(goalsDir(dataRoot, project), GOAL_ID_RE);
+  const tasksMax = maxExistingId(tasksDir(dataRoot, project), TASK_ID_RE);
+  let nextGoal: number | undefined;
+  let nextTask: number | undefined;
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    if (typeof obj.nextGoalNumber === 'number' && Number.isInteger(obj.nextGoalNumber) && obj.nextGoalNumber >= 1) {
+      nextGoal = obj.nextGoalNumber;
+    }
+    if (typeof obj.nextTaskNumber === 'number' && Number.isInteger(obj.nextTaskNumber) && obj.nextTaskNumber >= 1) {
+      nextTask = obj.nextTaskNumber;
+    }
+  }
+  if (nextGoal === undefined) nextGoal = goalsMax + 1;
+  if (nextTask === undefined) nextTask = tasksMax + 1;
+  // Ensure monotonic beyond filesystem max (manual folder, stale counter)
+  nextGoal = Math.max(nextGoal, goalsMax + 1);
+  nextTask = Math.max(nextTask, tasksMax + 1);
+  return { nextGoalNumber: nextGoal, nextTaskNumber: nextTask };
+}
+
+function saveCounters(dataRoot: string, project: string, c: CountersRecord): void {
+  writeJsonAtomic(countersPath(dataRoot, project), c);
+}
+
+function allocateGoalIdWithCounter(dataRoot: string, project: string): string {
+  // Caller must hold _goalAllocLock serialization; cross-process safety via mkdir EEXIST loop + merge.
+  fs.mkdirSync(goalsDir(dataRoot, project), { recursive: true });
+  let counters = loadCounters(dataRoot, project);
+  let n = counters.nextGoalNumber;
+  for (;;) {
+    const id = padId('GOAL', n);
+    const idDir = path.join(goalsDir(dataRoot, project), id);
+    try {
+      fs.mkdirSync(idDir);
+      // Merge with latest counters to avoid clobbering concurrent Task counter increments from other processes
+      let latestTaskNext = counters.nextTaskNumber;
+      try {
+        const latestRaw = JSON.parse(fs.readFileSync(countersPath(dataRoot, project), 'utf8')) as Record<string, unknown>;
+        if (typeof latestRaw.nextTaskNumber === 'number' && Number.isInteger(latestRaw.nextTaskNumber) && latestRaw.nextTaskNumber >= 1) {
+          latestTaskNext = Math.max(latestTaskNext, latestRaw.nextTaskNumber);
+        }
+      } catch { /* no latest file or malformed — keep ours */ }
+      writeJsonAtomic(countersPath(dataRoot, project), {
+        nextGoalNumber: n + 1,
+        nextTaskNumber: latestTaskNext,
+      });
+      return id;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        n += 1;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function allocateTaskIdWithCounter(dataRoot: string, project: string): string {
+  fs.mkdirSync(tasksDir(dataRoot, project), { recursive: true });
+  let counters = loadCounters(dataRoot, project);
+  let n = counters.nextTaskNumber;
+  for (;;) {
+    const id = padId('TASK', n);
+    const idDir = path.join(tasksDir(dataRoot, project), id);
+    try {
+      fs.mkdirSync(idDir);
+      let latestGoalNext = counters.nextGoalNumber;
+      try {
+        const latestRaw = JSON.parse(fs.readFileSync(countersPath(dataRoot, project), 'utf8')) as Record<string, unknown>;
+        if (typeof latestRaw.nextGoalNumber === 'number' && Number.isInteger(latestRaw.nextGoalNumber) && latestRaw.nextGoalNumber >= 1) {
+          latestGoalNext = Math.max(latestGoalNext, latestRaw.nextGoalNumber);
+        }
+      } catch { /* keep ours */ }
+      writeJsonAtomic(countersPath(dataRoot, project), {
+        nextGoalNumber: latestGoalNext,
+        nextTaskNumber: n + 1,
+      });
       return id;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
@@ -303,6 +414,14 @@ export function validateTaskRecord(t: TaskRecord): void {
   if (!Array.isArray(t.dependencies)) throw new Error('dependencies는 배열이어야 합니다.');
   if (!Array.isArray(t.linkedRuns)) throw new Error('linkedRuns는 배열이어야 합니다.');
   validateLinkedRuns(t.linkedRuns);
+  if (typeof t.nextTaskRunSequence !== 'number' || !Number.isInteger(t.nextTaskRunSequence) || t.nextTaskRunSequence < 1) {
+    throw new Error('nextTaskRunSequence는 1 이상의 정수여야 합니다.');
+  }
+  // nextTaskRunSequence must be beyond any existing sequence to guarantee monotonicity
+  const maxSeq = t.linkedRuns.reduce((m, r) => Math.max(m, r.taskRunSequence), 0);
+  if (t.nextTaskRunSequence <= maxSeq) {
+    throw new Error(`nextTaskRunSequence(${t.nextTaskRunSequence})는 max taskRunSequence(${maxSeq})보다 커야 합니다.`);
+  }
   if (t.acceptedRunId !== undefined) {
     if (typeof t.acceptedRunId !== 'string' || !t.acceptedRunId) {
       throw new Error('acceptedRunId는 비어 있지 않은 문자열이어야 합니다.');
@@ -332,7 +451,7 @@ function inferDateAgentFromFolder(folder: string): { date?: string; agent?: stri
   };
 }
 
-function migrateLinkedRuns(raw: unknown): LinkedRunRef[] {
+function migrateLinkedRuns(raw: unknown, rawTaskId?: string): LinkedRunRef[] {
   if (raw == null) return [];
   if (!Array.isArray(raw)) throw new Error('linkedRuns는 배열이어야 합니다.');
   const out: LinkedRunRef[] = [];
@@ -342,12 +461,19 @@ function migrateLinkedRuns(raw: unknown): LinkedRunRef[] {
     const folder = typeof row.folder === 'string' ? row.folder : '';
     if (!folder) throw new Error('linkedRuns.folder가 필요합니다.');
     let runId = typeof row.runId === 'string' && row.runId ? row.runId : '';
-    if (!runId) {
-      if (fs.existsSync(folder)) runId = ensureRunId(folder);
-      else throw new Error(`legacy linked Run에 runId가 없고 폴더도 없습니다: ${folder}`);
-    }
     const seq = typeof row.taskRunSequence === 'number' ? row.taskRunSequence : NaN;
     if (!Number.isInteger(seq) || seq < 1) throw new Error('linkedRuns.taskRunSequence가 잘못되었습니다.');
+    if (!runId) {
+      if (fs.existsSync(folder)) {
+        runId = ensureRunId(folder);
+      } else {
+        // Dangling legacy link — synthesize stable recoverable ID, do not create folder
+        const normalized = path.resolve(folder).replace(/\\/g, '/');
+        const seed = `${normalized}|${String(rawTaskId ?? '')}|${String(seq)}`;
+        const hash = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 16);
+        runId = `legacy-dangling:${hash}`;
+      }
+    }
     const inferred = inferDateAgentFromFolder(folder);
     const link: LinkedRunRef = {
       runId,
@@ -387,7 +513,18 @@ export function normalizeTaskRecord(raw: Record<string, unknown>): TaskRecord {
     throw new Error(`지원하지 않는 Task schemaVersion: ${schemaVersion}`);
   }
 
-  const linkedRuns = migrateLinkedRuns(raw.linkedRuns);
+  const rawTaskIdStr = typeof raw.taskId === 'string' ? raw.taskId : '';
+  const linkedRuns = migrateLinkedRuns(raw.linkedRuns, rawTaskIdStr);
+  // Derive nextTaskRunSequence: explicit if present and valid, else max+1 (legacy)
+  let nextTaskRunSequence: number;
+  if (typeof raw.nextTaskRunSequence === 'number' && Number.isInteger(raw.nextTaskRunSequence) && raw.nextTaskRunSequence >= 1) {
+    nextTaskRunSequence = raw.nextTaskRunSequence;
+    // Ensure monotonic beyond current links (handles legacy files where counter lags)
+    const maxSeq = linkedRuns.reduce((m, r) => Math.max(m, r.taskRunSequence), 0);
+    if (nextTaskRunSequence <= maxSeq) nextTaskRunSequence = maxSeq + 1;
+  } else {
+    nextTaskRunSequence = linkedRuns.reduce((m, r) => Math.max(m, r.taskRunSequence), 0) + 1;
+  }
   const record: TaskRecord = {
     schemaVersion: GOAL_TASK_SCHEMA_VERSION,
     taskId: String(raw.taskId ?? ''),
@@ -406,6 +543,7 @@ export function normalizeTaskRecord(raw: Record<string, unknown>): TaskRecord {
       ? raw.dependencies.filter((x): x is string => typeof x === 'string')
       : [],
     linkedRuns,
+    nextTaskRunSequence,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : nowIso(),
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : nowIso(),
   };
@@ -562,8 +700,7 @@ export function createGoal(
   const description = typeof input.description === 'string' ? input.description : undefined;
 
   const work = _goalAllocLock.then((): GoalRecord => {
-    const dir = goalsDir(dataRoot, project);
-    const goalId = allocateExclusiveId(dir, 'GOAL', GOAL_ID_RE);
+    const goalId = allocateGoalIdWithCounter(dataRoot, project);
     const ts = nowIso();
     const record: GoalRecord = {
       schemaVersion: GOAL_TASK_SCHEMA_VERSION,
@@ -596,10 +733,16 @@ export function getGoal(dataRoot: string, project: string, goalId: string): Goal
   return record;
 }
 
-export function listGoals(dataRoot: string, project: string): GoalRecord[] {
+export interface ListGoalsResult {
+  goals: GoalRecord[];
+  warnings: string[];
+}
+
+export function listGoalsWithDiagnostics(dataRoot: string, project: string): ListGoalsResult {
   const dir = goalsDir(dataRoot, project);
-  if (!fs.existsSync(dir)) return [];
+  if (!fs.existsSync(dir)) return { goals: [], warnings: [] };
   const out: GoalRecord[] = [];
+  const warnings: string[] = [];
   for (const name of fs.readdirSync(dir)) {
     if (!GOAL_ID_RE.test(name)) continue;
     const file = path.join(dir, name, 'goal.json');
@@ -610,10 +753,19 @@ export function listGoals(dataRoot: string, project: string): GoalRecord[] {
       out.push(record);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Goal ${name} 읽기 실패: ${msg}`);
+      warnings.push(`Goal ${name} 읽기 실패: ${msg}`);
     }
   }
-  return out.sort((a, b) => a.goalId.localeCompare(b.goalId));
+  out.sort((a, b) => a.goalId.localeCompare(b.goalId));
+  return { goals: out, warnings };
+}
+
+export function listGoals(dataRoot: string, project: string): GoalRecord[] {
+  return listGoalsWithDiagnostics(dataRoot, project).goals;
+}
+
+export function getGoalsDiagnostics(dataRoot: string, project: string): string[] {
+  return listGoalsWithDiagnostics(dataRoot, project).warnings;
 }
 
 export function updateGoal(
@@ -693,8 +845,7 @@ export function createTask(
   const dependencies = normalizeDependencies(input.dependencies, null, existingIds);
 
   const work = _taskAllocLock.then((): TaskRecord => {
-    const dir = tasksDir(dataRoot, project);
-    const taskId = allocateExclusiveId(dir, 'TASK', TASK_ID_RE);
+    const taskId = allocateTaskIdWithCounter(dataRoot, project);
     const ts = nowIso();
     const record: TaskRecord = {
       schemaVersion: GOAL_TASK_SCHEMA_VERSION,
@@ -710,6 +861,7 @@ export function createTask(
       pmState,
       dependencies,
       linkedRuns: [],
+      nextTaskRunSequence: 1,
       createdAt: ts,
       updatedAt: ts,
     };
@@ -728,12 +880,18 @@ export function getTask(dataRoot: string, project: string, taskId: string): Task
   return loadTaskRecord(file);
 }
 
-export function listTasks(dataRoot: string, project: string, goalId?: string): TaskRecord[] {
+export interface ListTasksResult {
+  tasks: TaskRecord[];
+  warnings: string[];
+}
+
+export function listTasksWithDiagnostics(dataRoot: string, project: string, goalId?: string): ListTasksResult {
   const dir = tasksDir(dataRoot, project);
-  if (!fs.existsSync(dir)) return [];
+  if (!fs.existsSync(dir)) return { tasks: [], warnings: [] };
   const filterGoal = goalId ? requireNonEmptyString(goalId, 'goalId') : null;
   if (filterGoal && !GOAL_ID_RE.test(filterGoal)) throw new Error(`잘못된 Goal ID: ${filterGoal}`);
   const out: TaskRecord[] = [];
+  const warnings: string[] = [];
   for (const name of fs.readdirSync(dir)) {
     if (!TASK_ID_RE.test(name)) continue;
     const file = path.join(dir, name, 'task.json');
@@ -744,10 +902,19 @@ export function listTasks(dataRoot: string, project: string, goalId?: string): T
       out.push(record);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Task ${name} 읽기 실패: ${msg}`);
+      warnings.push(`Task ${name} 읽기 실패: ${msg}`);
     }
   }
-  return out.sort((a, b) => a.taskId.localeCompare(b.taskId));
+  out.sort((a, b) => a.taskId.localeCompare(b.taskId));
+  return { tasks: out, warnings };
+}
+
+export function listTasks(dataRoot: string, project: string, goalId?: string): TaskRecord[] {
+  return listTasksWithDiagnostics(dataRoot, project, goalId).tasks;
+}
+
+export function getTasksDiagnostics(dataRoot: string, project: string, goalId?: string): string[] {
+  return listTasksWithDiagnostics(dataRoot, project, goalId).warnings;
 }
 
 export function updateTask(
@@ -857,8 +1024,17 @@ export function linkRunToTask(
       throw new Error(`Run meta가 이미 다른 Task(${meta.taskId})를 가리킵니다.`);
     }
 
-    const nextSeq =
-      task.linkedRuns.reduce((m, r) => Math.max(m, r.taskRunSequence), 0) + 1;
+    // Monotonic sequence: consume only after all precondition checks pass
+    // Ensure nextTaskRunSequence exists (legacy migration fallback)
+    if (typeof task.nextTaskRunSequence !== 'number' || !Number.isInteger(task.nextTaskRunSequence) || task.nextTaskRunSequence < 1) {
+      task.nextTaskRunSequence = task.linkedRuns.reduce((m, r) => Math.max(m, r.taskRunSequence), 0) + 1;
+    }
+    // Ensure counter is beyond any existing max (defensive)
+    const maxExisting = task.linkedRuns.reduce((m, r) => Math.max(m, r.taskRunSequence), 0);
+    if (task.nextTaskRunSequence <= maxExisting) {
+      task.nextTaskRunSequence = maxExisting + 1;
+    }
+    const nextSeq = task.nextTaskRunSequence;
     const inferred = inferDateAgentFromFolder(resolved);
     const link: LinkedRunRef = {
       runId,
@@ -868,6 +1044,7 @@ export function linkRunToTask(
     };
 
     task.linkedRuns = [...task.linkedRuns, link];
+    task.nextTaskRunSequence = nextSeq + 1;
     task.updatedAt = nowIso();
     validateTaskRecord(task);
     persistTaskFiles(taskFolder(dataRoot, project, task.taskId), task);

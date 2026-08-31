@@ -426,6 +426,12 @@ export interface TaskRecord {
   acceptedRunId?: string;
   dependencies: string[];
   linkedRuns: LinkedRunRef[];
+  /**
+   * Monotonic next sequence to allocate — starts at 1, only increases.
+   * Legacy v2 files without this field derive max(linkedRuns.taskRunSequence)+1.
+   * Unlink never decrements; failed link does not consume.
+   */
+  nextTaskRunSequence: number;
   createdAt: string;
   updatedAt: string;
 }
