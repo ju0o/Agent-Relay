@@ -104,12 +104,23 @@ export type RelayRequest =
  | { op: 'goal:list'; dataRoot: string; project: string }
  | { op: 'goal:update'; dataRoot: string; project: string; goalId: string; patch: GoalUpdatePatch }
  | { op: 'goal:progress'; dataRoot: string; project: string; goalId: string }
+ | { op: 'goal:getRuntimeState'; dataRoot: string; project: string; goalId: string }
+ | { op: 'goal:evaluateCompletion'; dataRoot: string; project: string; goalId: string }
+ | { op: 'goal:transition'; dataRoot: string; project: string; goalId: string; to: GoalStatus; reason?: string }
+ | { op: 'goal:complete'; dataRoot: string; project: string; goalId: string; reason?: string }
  | { op: 'task:create'; dataRoot: string; project: string; goalId: string; title: string; goal: string; reason: string; scope: string; completionCriteria?: string[]; dependencies?: string[]; executionState?: TaskExecutionState; pmState?: TaskPmState }
  | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
  | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
  | { op: 'task:update'; dataRoot: string; project: string; taskId: string; patch: TaskUpdatePatch }
  | { op: 'task:linkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }
  | { op: 'task:unlinkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }
+ | { op: 'task:getReadiness'; dataRoot: string; project: string; taskId: string }
+ | { op: 'task:refreshReadiness'; dataRoot: string; project: string; taskId: string }
+ | { op: 'task:transitionExecution'; dataRoot: string; project: string; taskId: string; to: TaskExecutionState; reason?: string }
+ | { op: 'task:transitionPm'; dataRoot: string; project: string; taskId: string; to: TaskPmState; reason?: string; acceptedRunId?: string }
+ | { op: 'task:markResultReceived'; dataRoot: string; project: string; taskId: string; runId: string }
+ | { op: 'task:acceptResult'; dataRoot: string; project: string; taskId: string; runId: string; reason?: string }
+ | { op: 'task:requestChanges'; dataRoot: string; project: string; taskId: string; reason?: string }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -434,6 +445,12 @@ export interface TaskRecord {
   nextTaskRunSequence: number;
   createdAt: string;
   updatedAt: string;
+  /** Explicit runtime blocker reason (executionState=BLOCKED). Cleared on unblock. */
+  blockedReason?: string;
+  /** ISO timestamp when explicit BLOCKED was set. Cleared on unblock. */
+  blockedAt?: string;
+  /** Optional last transition / PM reason (audit hint; not an event log). */
+  lastTransitionReason?: string;
 }
 
 /**
@@ -495,13 +512,27 @@ export interface GoalProgress {
   weightedProgress: number;
 }
 
+/**
+ * Narrative Goal patch. Status changes must use goal:transition / goal:complete.
+ * Passing `status` here is rejected by the runtime layer.
+ */
 export type GoalUpdatePatch = Partial<
   Pick<
     GoalRecord,
-    'title' | 'goalStatement' | 'status' | 'completionCriteria' | 'permissionPolicy' | 'description' | 'tags'
+    'title' | 'goalStatement' | 'completionCriteria' | 'permissionPolicy' | 'description' | 'tags'
   >
->;
+> & {
+  /**
+   * @deprecated B2 — use goal:transition / goal:complete. Rejected if present.
+   */
+  status?: GoalStatus;
+};
 
+/**
+ * Narrative Task patch.
+ * Runtime axes (executionState / pmState / acceptedRunId) must use validated
+ * transition commands — passing them here is rejected (no bypass).
+ */
 export type TaskUpdatePatch = Partial<
   Pick<
     TaskRecord,
@@ -510,15 +541,90 @@ export type TaskUpdatePatch = Partial<
     | 'reason'
     | 'scope'
     | 'completionCriteria'
-    | 'executionState'
-    | 'pmState'
-    | 'acceptedRunId'
     | 'dependencies'
   >
 > & {
-  /** Pass null to clear acceptedRunId when reopening a Task. */
+  /** @deprecated B2 — use task:transitionExecution. Rejected if present. */
+  executionState?: TaskExecutionState;
+  /** @deprecated B2 — use task:transitionPm / acceptResult / requestChanges. Rejected if present. */
+  pmState?: TaskPmState;
+  /** @deprecated B2 — use task:acceptResult. Rejected if present. */
+  acceptedRunId?: string;
+  /** @deprecated B2 — use task:transitionPm reopen. Rejected if present. */
   clearAcceptedRunId?: boolean;
 };
+
+// ── Phase B2 runtime snapshots (derived / command results) ──────────────────
+
+/** Derived readiness class — distinct from persisted executionState=BLOCKED. */
+export const TASK_READINESS_KINDS = [
+  'READY',
+  'WAITING_DEPENDENCIES',
+  'BLOCKED',
+  'TERMINAL',
+  'IN_PROGRESS',
+  'PLANNED',
+] as const;
+export type TaskReadinessKind = (typeof TASK_READINESS_KINDS)[number];
+
+export interface TaskReadiness {
+  taskId: string;
+  kind: TaskReadinessKind;
+  executionState: TaskExecutionState;
+  pmState: TaskPmState;
+  dependencies: string[];
+  unsatisfiedDependencies: string[];
+  /** Dependency taskIds that FAILED / BLOCKED / CANCELLED (hard blockers). */
+  blockedBy: string[];
+  /** True when all dependencies have pmState=ACCEPTED (or none). */
+  dependenciesSatisfied: boolean;
+  /** Eligible for parallel dispatch consideration (READY + not accepted + not explicit BLOCKED). */
+  parallelizable: boolean;
+}
+
+export interface GoalCompletionEvaluation {
+  eligible: boolean;
+  reasons: string[];
+  totalTasks: number;
+  acceptedTasks: number;
+  incompleteTasks: string[];
+  blockedTasks: string[];
+  abandonedTasks: string[];
+  /** Present when Goal has completionCriteria text — B2 cannot objectively verify. */
+  completionCriteriaPresent: boolean;
+  completionCriteriaCount: number;
+}
+
+export interface TaskRuntimeSummary {
+  taskId: string;
+  title: string;
+  executionState: TaskExecutionState;
+  pmState: TaskPmState;
+  dependencies: string[];
+  unsatisfiedDependencies: string[];
+  blockedBy: string[];
+  linkedRunsCount: number;
+  acceptedRunId?: string;
+  latestRun?: LinkedRunRef;
+  readiness: TaskReadinessKind;
+  parallelizable: boolean;
+  blockedReason?: string;
+}
+
+export interface GoalRuntimeState {
+  goal: GoalRecord;
+  progress: GoalProgress;
+  completionEligibility: GoalCompletionEvaluation;
+  tasks: TaskRuntimeSummary[];
+  readyTasks: TaskRuntimeSummary[];
+  workingTasks: TaskRuntimeSummary[];
+  resultReceivedTasks: TaskRuntimeSummary[];
+  verifyingTasks: TaskRuntimeSummary[];
+  changesRequestedTasks: TaskRuntimeSummary[];
+  blockedTasks: TaskRuntimeSummary[];
+  waitingDependencyTasks: TaskRuntimeSummary[];
+  acceptedTasks: TaskRuntimeSummary[];
+}
 
 // ── Agent adapter auto-capture (vNext foundation) ───────────────────────────
 //

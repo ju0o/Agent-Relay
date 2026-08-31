@@ -4,6 +4,9 @@
  * Local-first filesystem SSOT under Project/_relay/{goals,tasks}/.
  * Physical Run storage unchanged. Logical runId is authoritative for linkage.
  * Task uses split executionState + pmState (schemaVersion=2). Progress is derived.
+ *
+ * Phase B2: runtime transitions live in goal-task-runtime.ts. This module rejects
+ * raw executionState/pmState/acceptedRunId/status patches on update* APIs.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -334,10 +337,46 @@ function normalizeTags(input: unknown): string[] | undefined {
   });
 }
 
+/**
+ * Detect A→…→A cycles for proposed deps of selfTaskId within the given adjacency.
+ */
+export function wouldCreateDependencyCycle(
+  selfTaskId: string,
+  deps: readonly string[],
+  adjacency: ReadonlyMap<string, readonly string[]>,
+): boolean {
+  const adj = new Map<string, readonly string[]>();
+  for (const [k, v] of adjacency) adj.set(k, v);
+  adj.set(selfTaskId, deps);
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const dfs = (node: string): boolean => {
+    if (visiting.has(node)) return true;
+    if (visited.has(node)) return false;
+    visiting.add(node);
+    for (const next of adj.get(node) ?? []) {
+      if (dfs(next)) return true;
+    }
+    visiting.delete(node);
+    visited.add(node);
+    return false;
+  };
+  return dfs(selfTaskId);
+}
+
 export function normalizeDependencies(
   deps: unknown,
   selfTaskId: string | null,
   existingTaskIds: ReadonlySet<string>,
+  opts?: {
+    /** When set, every dependency must belong to this Goal (V1). */
+    goalId?: string;
+    /** taskId → goalId for cross-goal guard. */
+    taskGoalById?: ReadonlyMap<string, string>;
+    /** taskId → dependencies for cycle detection (same Goal graph). */
+    adjacency?: ReadonlyMap<string, readonly string[]>;
+  },
 ): string[] {
   if (deps == null) return [];
   if (!Array.isArray(deps)) throw new Error('dependencies는 Task ID 배열이어야 합니다.');
@@ -358,10 +397,44 @@ export function normalizeDependencies(
     if (!existingTaskIds.has(id)) {
       throw new Error(`의존 Task가 프로젝트에 없습니다: ${id}`);
     }
+    if (opts?.goalId && opts.taskGoalById) {
+      const depGoal = opts.taskGoalById.get(id);
+      if (depGoal !== opts.goalId) {
+        throw new Error(`V1에서 Task 의존성은 동일 Goal 안에서만 허용됩니다: ${id} (goal=${depGoal ?? '?'})`);
+      }
+    }
     seen.add(id);
     out.push(id);
   }
+  if (selfTaskId && opts?.adjacency) {
+    if (wouldCreateDependencyCycle(selfTaskId, out, opts.adjacency)) {
+      throw new Error('Task 의존성 그래프에 순환이 있습니다.');
+    }
+  } else if (!selfTaskId && opts?.adjacency && out.length) {
+    // createTask: self id not yet known — cycle among deps alone cannot include self yet;
+    // post-alloc validation happens after id assignment when needed. Direct A→B→A needs self.
+  }
   return out;
+}
+
+function buildTaskGraphMeta(dataRoot: string, project: string): {
+  ids: Set<string>;
+  taskGoalById: Map<string, string>;
+  adjacency: Map<string, string[]>;
+} {
+  const ids = listTaskIds(dataRoot, project);
+  const taskGoalById = new Map<string, string>();
+  const adjacency = new Map<string, string[]>();
+  for (const id of ids) {
+    try {
+      const t = getTask(dataRoot, project, id);
+      taskGoalById.set(t.taskId, t.goalId);
+      adjacency.set(t.taskId, [...t.dependencies]);
+    } catch {
+      // Malformed sibling — skip for graph meta (read isolation elsewhere)
+    }
+  }
+  return { ids, taskGoalById, adjacency };
 }
 
 export function validateGoalRecord(g: GoalRecord): void {
@@ -550,6 +623,15 @@ export function normalizeTaskRecord(raw: Record<string, unknown>): TaskRecord {
   if (typeof raw.acceptedRunId === 'string' && raw.acceptedRunId) {
     record.acceptedRunId = raw.acceptedRunId;
   }
+  if (typeof raw.blockedReason === 'string' && raw.blockedReason) {
+    record.blockedReason = raw.blockedReason;
+  }
+  if (typeof raw.blockedAt === 'string' && raw.blockedAt) {
+    record.blockedAt = raw.blockedAt;
+  }
+  if (typeof raw.lastTransitionReason === 'string' && raw.lastTransitionReason) {
+    record.lastTransitionReason = raw.lastTransitionReason;
+  }
   validateTaskRecord(record);
   return record;
 }
@@ -645,6 +727,12 @@ export function renderTaskMarkdown(t: TaskRecord): string {
     '',
     runs,
     '',
+    '## Blocker',
+    '',
+    t.blockedReason
+      ? `${t.blockedReason}${t.blockedAt ? ` @ ${t.blockedAt}` : ''}`
+      : '(none)',
+    '',
     `goalId: ${t.goalId}`,
     `createdAt: ${t.createdAt}`,
     `updatedAt: ${t.updatedAt}`,
@@ -670,6 +758,20 @@ function persistTaskFiles(folder: string, record: TaskRecord): void {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Task JSON은 저장됐지만 Markdown 쓰기에 실패했습니다 (복구 가능): ${msg}`);
   }
+}
+
+/** Persist a validated Goal record (B2 runtime). */
+export function persistGoalRecord(dataRoot: string, project: string, record: GoalRecord): GoalRecord {
+  validateGoalRecord(record);
+  persistGoalFiles(goalFolder(dataRoot, project, record.goalId), record);
+  return record;
+}
+
+/** Persist a validated Task record (B2 runtime). */
+export function persistTaskRecord(dataRoot: string, project: string, record: TaskRecord): TaskRecord {
+  validateTaskRecord(record);
+  persistTaskFiles(taskFolder(dataRoot, project, record.taskId), record);
+  return record;
 }
 
 // ── Goal CRUD ───────────────────────────────────────────────────────────────
@@ -774,13 +876,12 @@ export function updateGoal(
   goalId: string,
   patch: GoalUpdatePatch,
 ): GoalRecord {
+  if (patch.status !== undefined) {
+    throw new Error('Goal status는 goal:transition / goal:complete를 통해 변경해야 합니다.');
+  }
   const existing = getGoal(dataRoot, project, goalId);
   if (patch.title !== undefined) existing.title = requireNonEmptyString(patch.title, 'title');
   if (patch.goalStatement !== undefined) existing.goalStatement = requireNonEmptyString(patch.goalStatement, 'goalStatement');
-  if (patch.status !== undefined) {
-    if (!isGoalStatus(patch.status)) throw new Error(`알 수 없는 Goal status: ${String(patch.status)}`);
-    existing.status = patch.status;
-  }
   if (patch.completionCriteria !== undefined) existing.completionCriteria = normalizeCriteria(patch.completionCriteria);
   if (patch.permissionPolicy !== undefined) existing.permissionPolicy = normalizePermissionPolicy(patch.permissionPolicy);
   if (patch.description !== undefined) existing.description = patch.description;
@@ -841,11 +942,21 @@ export function createTask(
       : (() => { throw new Error(`알 수 없는 Task pmState: ${String(input.pmState)}`); })());
 
   const completionCriteria = normalizeCriteria(input.completionCriteria);
-  const existingIds = listTaskIds(dataRoot, project);
-  const dependencies = normalizeDependencies(input.dependencies, null, existingIds);
+  const graph = buildTaskGraphMeta(dataRoot, project);
+  const dependencies = normalizeDependencies(input.dependencies, null, graph.ids, {
+    goalId,
+    taskGoalById: graph.taskGoalById,
+    adjacency: graph.adjacency,
+  });
 
   const work = _taskAllocLock.then((): TaskRecord => {
     const taskId = allocateTaskIdWithCounter(dataRoot, project);
+    // Re-validate with concrete self id for cycle detection (A→B→A via existing edges).
+    const depsFinal = normalizeDependencies(dependencies, taskId, new Set([...graph.ids, taskId]), {
+      goalId,
+      taskGoalById: graph.taskGoalById,
+      adjacency: graph.adjacency,
+    });
     const ts = nowIso();
     const record: TaskRecord = {
       schemaVersion: GOAL_TASK_SCHEMA_VERSION,
@@ -859,7 +970,7 @@ export function createTask(
       completionCriteria,
       executionState,
       pmState,
-      dependencies,
+      dependencies: depsFinal,
       linkedRuns: [],
       nextTaskRunSequence: 1,
       createdAt: ts,
@@ -923,6 +1034,16 @@ export function updateTask(
   taskId: string,
   patch: TaskUpdatePatch,
 ): TaskRecord {
+  if (patch.executionState !== undefined) {
+    throw new Error('executionState는 task:transitionExecution / markResultReceived를 통해 변경해야 합니다.');
+  }
+  if (patch.pmState !== undefined) {
+    throw new Error('pmState는 task:transitionPm / acceptResult / requestChanges를 통해 변경해야 합니다.');
+  }
+  if (patch.acceptedRunId !== undefined || patch.clearAcceptedRunId) {
+    throw new Error('acceptedRunId는 task:acceptResult / transitionPm(재개방)을 통해 변경해야 합니다.');
+  }
+
   const existing = getTask(dataRoot, project, taskId);
   if (patch.title !== undefined) existing.title = requireNonEmptyString(patch.title, 'title');
   if (patch.goal !== undefined) existing.goal = requireNonEmptyString(patch.goal, 'goal');
@@ -934,35 +1055,16 @@ export function updateTask(
     if (typeof patch.scope !== 'string') throw new Error('scope가 필요합니다.');
     existing.scope = patch.scope;
   }
-  if (patch.executionState !== undefined) {
-    if (!isTaskExecutionState(patch.executionState)) {
-      throw new Error(`알 수 없는 Task executionState: ${String(patch.executionState)}`);
-    }
-    existing.executionState = patch.executionState;
-  }
-  if (patch.pmState !== undefined) {
-    if (!isTaskPmState(patch.pmState)) {
-      throw new Error(`알 수 없는 Task pmState: ${String(patch.pmState)}`);
-    }
-    existing.pmState = patch.pmState;
-  }
   if (patch.completionCriteria !== undefined) {
     existing.completionCriteria = normalizeCriteria(patch.completionCriteria);
   }
   if (patch.dependencies !== undefined) {
-    const ids = listTaskIds(dataRoot, project);
-    existing.dependencies = normalizeDependencies(patch.dependencies, existing.taskId, ids);
-  }
-  if (patch.clearAcceptedRunId) {
-    delete existing.acceptedRunId;
-  } else if (patch.acceptedRunId !== undefined) {
-    if (typeof patch.acceptedRunId !== 'string' || !patch.acceptedRunId) {
-      throw new Error('acceptedRunId는 비어 있지 않은 문자열이어야 합니다.');
-    }
-    if (!existing.linkedRuns.some((r) => r.runId === patch.acceptedRunId)) {
-      throw new Error('acceptedRunId는 linkedRuns에 포함된 runId여야 합니다.');
-    }
-    existing.acceptedRunId = patch.acceptedRunId;
+    const graph = buildTaskGraphMeta(dataRoot, project);
+    existing.dependencies = normalizeDependencies(patch.dependencies, existing.taskId, graph.ids, {
+      goalId: existing.goalId,
+      taskGoalById: graph.taskGoalById,
+      adjacency: graph.adjacency,
+    });
   }
   existing.schemaVersion = GOAL_TASK_SCHEMA_VERSION;
   existing.updatedAt = nowIso();

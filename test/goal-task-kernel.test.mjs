@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as relay from '../dist/server/backend/fs.js';
 import * as gt from '../dist/server/backend/goal-task.js';
+import * as rt from '../dist/server/backend/goal-task-runtime.js';
 import { deriveCompatTaskStatus, mapLegacyTaskStatus } from '../dist/server/shared/types.js';
 
 const TEST_ROOT = path.join(os.tmpdir(), `agent-relay-b1fix-${process.pid}-${Date.now()}`);
@@ -35,8 +36,8 @@ async function main() {
   check(g1.schemaVersion === 2, `goal schemaVersion=${g1.schemaVersion}`);
   check(gt.getGoal(TEST_ROOT, project, 'GOAL-0001').title === g1.title, 'getGoal');
   check(gt.listGoals(TEST_ROOT, project).length === 1, 'listGoals');
-  const gUp = gt.updateGoal(TEST_ROOT, project, 'GOAL-0001', { status: 'ACTIVE' });
-  check(gUp.status === 'ACTIVE', 'updateGoal');
+  const gUp = rt.transitionGoalStatus(TEST_ROOT, project, 'GOAL-0001', 'ACTIVE');
+  check(gUp.status === 'ACTIVE', 'goal:transition → ACTIVE');
 
   // ── Task CRUD defaults (I16, I28) ─────────────────────────────────────────
   console.log('B/I16/I28) Task CRUD defaults');
@@ -61,27 +62,35 @@ async function main() {
   } catch { badGoal = true; }
   check(badGoal, 'task requires valid Goal');
 
-  gt.updateTask(TEST_ROOT, project, 'TASK-0001', { title: 'Kernel impl', executionState: 'RUNNING' });
-  check(gt.getTask(TEST_ROOT, project, 'TASK-0001').executionState === 'RUNNING', 'updateTask executionState');
+  gt.updateTask(TEST_ROOT, project, 'TASK-0001', { title: 'Kernel impl' });
+  check(gt.getTask(TEST_ROOT, project, 'TASK-0001').title === 'Kernel impl', 'updateTask narrative title');
+  rt.refreshTaskReadiness(TEST_ROOT, project, 'TASK-0001');
+  rt.transitionTaskExecution(TEST_ROOT, project, 'TASK-0001', 'DISPATCHED');
+  rt.transitionTaskExecution(TEST_ROOT, project, 'TASK-0001', 'RUNNING');
+  check(gt.getTask(TEST_ROOT, project, 'TASK-0001').executionState === 'RUNNING', 'transitionExecution → RUNNING');
 
   // ── State validation (I17–I19) ────────────────────────────────────────────
   console.log('I17–I19) State validation');
   let badExec = false;
   try { gt.updateTask(TEST_ROOT, project, 'TASK-0001', { executionState: 'WORKING' }); }
   catch { badExec = true; }
-  check(badExec, 'I17 invalid executionState rejected');
+  check(badExec, 'I17 raw/invalid executionState via updateTask rejected');
   let badPm = false;
   try { gt.updateTask(TEST_ROOT, project, 'TASK-0001', { pmState: 'DONE' }); }
   catch { badPm = true; }
-  check(badPm, 'I18 invalid pmState rejected');
+  check(badPm, 'I18 raw/invalid pmState via updateTask rejected');
 
-  gt.updateTask(TEST_ROOT, project, 'TASK-0001', { executionState: 'RESULT_RECEIVED', pmState: 'PENDING' });
+  // Drive to RESULT_RECEIVED without ACCEPTED (needs a linked run for markResultReceived)
+  const earlyRun = await relay.atomicMaterializeRun(TEST_ROOT, project, relay.todayString(), 'EarlyResult');
+  await gt.linkRunToTask(TEST_ROOT, project, 'TASK-0001', earlyRun.folder);
+  const earlyRunId = relay.readRunMeta(earlyRun.folder).runId;
+  rt.markResultReceived(TEST_ROOT, project, 'TASK-0001', earlyRunId);
   const afterResult = gt.getTask(TEST_ROOT, project, 'TASK-0001');
   check(
-    afterResult.executionState === 'RESULT_RECEIVED' && afterResult.pmState === 'PENDING',
+    afterResult.executionState === 'RESULT_RECEIVED' && afterResult.pmState === 'VERIFYING',
     'I19 RESULT_RECEIVED does not imply ACCEPTED',
   );
-  check(deriveCompatTaskStatus(afterResult) === 'RESULT_RECEIVED', 'compat label not ACCEPTED');
+  check(deriveCompatTaskStatus(afterResult) === 'VERIFYING', 'compat label VERIFYING not ACCEPTED');
 
   // ── Stable runId (I1–I4) ──────────────────────────────────────────────────
   console.log('I1–I4) Stable runId');
@@ -183,28 +192,25 @@ async function main() {
   const acceptTask = gt.getTask(TEST_ROOT, project, 'TASK-0001');
   const pickId = acceptTask.linkedRuns[0].runId;
   let badAccept = false;
-  try { gt.updateTask(TEST_ROOT, project, 'TASK-0001', { acceptedRunId: 'not-a-real-run' }); }
+  try { rt.acceptResult(TEST_ROOT, project, 'TASK-0001', 'not-a-real-run'); }
   catch { badAccept = true; }
   check(badAccept, 'I13 acceptedRunId must reference linked Run');
 
-  const withAccept = gt.updateTask(TEST_ROOT, project, 'TASK-0001', {
-    pmState: 'ACCEPTED',
-    acceptedRunId: pickId,
-  });
+  // TASK-0001 is already RESULT_RECEIVED/VERIFYING from I19
+  const withAccept = rt.acceptResult(TEST_ROOT, project, 'TASK-0001', pickId);
   check(withAccept.acceptedRunId === pickId && withAccept.pmState === 'ACCEPTED', 'I20 PM ACCEPTED + acceptedRunId');
   check(withAccept.linkedRuns.length > 1, 'I14 other attempts still linked');
-  const cleared = gt.updateTask(TEST_ROOT, project, 'TASK-0001', { clearAcceptedRunId: true, pmState: 'PENDING' });
-  check(cleared.acceptedRunId === undefined, 'I15 clearing acceptedRunId works');
+  const cleared = rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', 'PENDING');
+  check(cleared.acceptedRunId === undefined && cleared.pmState === 'PENDING', 'I15 reopen clears acceptedRunId');
 
   // ── Goal progress (I21–I23) ───────────────────────────────────────────────
   console.log('I21–I23) Goal progress semantics');
-  // Reset TASK-0001 to CHANGES_REQUESTED (not complete)
-  gt.updateTask(TEST_ROOT, project, 'TASK-0001', {
-    executionState: 'RESULT_RECEIVED',
-    pmState: 'CHANGES_REQUESTED',
-  });
-  // t2 blocked
-  gt.updateTask(TEST_ROOT, project, t2.taskId, { executionState: 'BLOCKED', pmState: 'PENDING' });
+  // Reset TASK-0001 to CHANGES_REQUESTED (not complete) via legal transitions
+  // PENDING → VERIFYING → CHANGES_REQUESTED; execution already RESULT_RECEIVED
+  rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', 'VERIFYING');
+  rt.requestChanges(TEST_ROOT, project, 'TASK-0001', 'progress fixture');
+  // t2 blocked via create-time fixture (transition from PLANNED also fine)
+  rt.transitionTaskExecution(TEST_ROOT, project, t2.taskId, 'BLOCKED', 'fixture');
   const tAccepted = await gt.createTask(TEST_ROOT, project, {
     goalId: 'GOAL-0001', title: 'done one', goal: 'g', reason: 'r', scope: 's',
     executionState: 'RESULT_RECEIVED', pmState: 'ACCEPTED',

@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
 import * as goalTask from './goal-task.js';
+import * as goalTaskRuntime from './goal-task-runtime.js';
 import { CaptureManager } from './capture-manager.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
@@ -403,6 +404,18 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'goal:progress':
       return goalTask.getGoalProgress(req.dataRoot, req.project, req.goalId);
 
+    case 'goal:getRuntimeState':
+      return goalTaskRuntime.getGoalRuntimeState(req.dataRoot, req.project, req.goalId);
+
+    case 'goal:evaluateCompletion':
+      return goalTaskRuntime.evaluateGoalCompletionForId(req.dataRoot, req.project, req.goalId);
+
+    case 'goal:transition':
+      return goalTaskRuntime.transitionGoalStatus(req.dataRoot, req.project, req.goalId, req.to, req.reason);
+
+    case 'goal:complete':
+      return goalTaskRuntime.completeGoal(req.dataRoot, req.project, req.goalId, req.reason);
+
     case 'task:create':
       return goalTask.createTask(req.dataRoot, req.project, {
         goalId: req.goalId,
@@ -430,6 +443,30 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
 
     case 'task:unlinkRun':
       return goalTask.unlinkRunFromTask(req.dataRoot, req.project, req.taskId, req.runFolder);
+
+    case 'task:getReadiness':
+      return goalTaskRuntime.getTaskReadinessForId(req.dataRoot, req.project, req.taskId);
+
+    case 'task:refreshReadiness':
+      return goalTaskRuntime.refreshTaskReadiness(req.dataRoot, req.project, req.taskId);
+
+    case 'task:transitionExecution':
+      return goalTaskRuntime.transitionTaskExecution(req.dataRoot, req.project, req.taskId, req.to, req.reason);
+
+    case 'task:transitionPm':
+      return goalTaskRuntime.transitionTaskPm(req.dataRoot, req.project, req.taskId, req.to, {
+        reason: req.reason,
+        acceptedRunId: req.acceptedRunId,
+      });
+
+    case 'task:markResultReceived':
+      return goalTaskRuntime.markResultReceived(req.dataRoot, req.project, req.taskId, req.runId);
+
+    case 'task:acceptResult':
+      return goalTaskRuntime.acceptResult(req.dataRoot, req.project, req.taskId, req.runId, req.reason);
+
+    case 'task:requestChanges':
+      return goalTaskRuntime.requestChanges(req.dataRoot, req.project, req.taskId, req.reason);
 
     case 'update:check': {
       if (!updaterSupported(app.isPackaged)) {

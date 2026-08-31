@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as relay from '../dist/server/backend/fs.js';
 import * as gt from '../dist/server/backend/goal-task.js';
+import * as rt from '../dist/server/backend/goal-task-runtime.js';
 
 const TEST_ROOT = path.join(os.tmpdir(), `b1-corr-${process.pid}-${Date.now()}`);
 const PASS = (m) => console.log('  PASS  ' + m);
@@ -303,19 +304,22 @@ async function main() {
   console.log('F17) unlink accepted Run clears acceptedRunId');
   {
     const g = await gt.createGoal(TEST_ROOT, project, { title: 'F17', goalStatement: 's' });
-    const t = await gt.createTask(TEST_ROOT, project, { goalId:g.goalId, title:'F17', goal:'g', reason:'r', scope:'s'});
+    const t = await gt.createTask(TEST_ROOT, project, {
+      goalId: g.goalId, title: 'F17', goal: 'g', reason: 'r', scope: 's',
+      executionState: 'RESULT_RECEIVED', pmState: 'VERIFYING',
+    });
     const r1 = await relay.atomicMaterializeRun(TEST_ROOT, project, date, 'F17A');
     const r2 = await relay.atomicMaterializeRun(TEST_ROOT, project, date, 'F17B');
     await gt.linkRunToTask(TEST_ROOT, project, t.taskId, r1.folder);
     await gt.linkRunToTask(TEST_ROOT, project, t.taskId, r2.folder);
     let rec = gt.getTask(TEST_ROOT, project, t.taskId);
     const pick = rec.linkedRuns[0].runId;
-    gt.updateTask(TEST_ROOT, project, t.taskId, {acceptedRunId:pick, pmState:'ACCEPTED'});
+    rt.acceptResult(TEST_ROOT, project, t.taskId, pick);
     rec = gt.getTask(TEST_ROOT, project, t.taskId);
-    check(rec.acceptedRunId===pick, 'F17 accepted set');
-    const pickFolder = rec.linkedRuns.find(r=> r.runId===pick).folder;
+    check(rec.acceptedRunId === pick, 'F17 accepted set');
+    const pickFolder = rec.linkedRuns.find(r => r.runId === pick).folder;
     const after = await gt.unlinkRunFromTask(TEST_ROOT, project, t.taskId, pickFolder);
-    check(after.acceptedRunId===undefined, `F17 after unlink cleared ${after.acceptedRunId}`);
+    check(after.acceptedRunId === undefined, `F17 after unlink cleared ${after.acceptedRunId}`);
     // also ensure valid still
     gt.getTask(TEST_ROOT, project, t.taskId);
     PASS('F17 still valid');
