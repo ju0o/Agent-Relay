@@ -95,8 +95,8 @@ export type RelayRequest =
  | { op: 'settings:setAgentOrder'; order: string[] }
  | { op: 'adapters:list' }
  | { op: 'capture:arm'; folder: string; adapterId?: string }
- | { op: 'capture:disarm' }
- | { op: 'capture:select'; sessionId: string }
+ | { op: 'capture:disarm'; folder: string }
+ | { op: 'capture:select'; sessionId: string; folder: string }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };

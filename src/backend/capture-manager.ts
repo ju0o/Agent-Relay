@@ -11,27 +11,47 @@ import { createGrokAdapter } from '../integrations/grok/watch.js';
 import { CaptureCandidateView, CaptureStatusView } from '../shared/types.js';
 
 /**
- * Binds one registered adapter to one run folder and funnels completions
- * into the Core capture service. A deterministic session binding policy
- * decides WHICH agent session may supply the Run's result; anything else is
- * ignored. A short settle window guards each acceptance: if a rival session
- * appears before the result is written, the binding is revoked into the
- * explicit-selection flow — files are never written on a guess.
+ * Per-run capture context — holds ALL mutable state for one Run folder.
+ * Contexts are never shared between folders; arming a new folder never
+ * mutates an existing context.
+ */
+interface CaptureContext {
+  readonly folder: string;
+  readonly adapterId: string;
+  handle: WatchHandle;
+  policy: SessionBindingPolicy;
+  armSnapshotSeeded: boolean;
+  lastPhase: CaptureStatusView['phase'] | null;
+  /** Dedupe key for watching/ambiguous status pushes. */
+  lastPushKey: string;
+  pending: { completion: AgentCompletion; timer: ReturnType<typeof setTimeout> } | null;
+}
+
+/**
+ * Manages multiple independently armed Run captures simultaneously.
+ *
+ * Each Run folder owns its own CaptureContext — arm/disarm/events for
+ * one Run NEVER affect another Run's watch, policy, or result files.
+ *
+ * Preferred call pattern:
+ *   arm(folderA, 'opencode')   → context A created
+ *   arm(folderB, 'claude-code') → context B created (A unaffected)
+ *   disarm(folderA)            → A stopped, B unaffected
+ *   disarmAll()                → app shutdown / test cleanup
  */
 export class CaptureManager {
-  private static SETTLE_MS = 6_000;
+  /** Settle window before writing files (overridable for tests). */
+  private readonly settleMs: number;
 
-  private handle: WatchHandle | null = null;
-  private folder: string | null = null;
-  private lastPhase: CaptureStatusView['phase'] | null = null;
-  private policy: SessionBindingPolicy | null = null;
-  private armSnapshotSeeded = false;
-  private currentAdapterId: string | null = null;
-  /** Dedupe of pushed binding/ambiguity state so the UI is not spammed. */
-  private lastPushKey = '';
-  private pending: { completion: AgentCompletion; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** Active capture contexts, keyed by absolute run folder path. */
+  private readonly contexts = new Map<string, CaptureContext>();
 
-  constructor(private readonly push: (s: CaptureStatusView) => void) {
+  constructor(
+    private readonly push: (s: CaptureStatusView) => void,
+    opts: { settleMs?: number } = {},
+  ) {
+    this.settleMs = opts.settleMs ?? 6_000;
+
     for (const [id, factory] of [
       ['opencode', createOpenCodeAdapter],
       ['claude-code', createClaudeCodeAdapter],
@@ -60,295 +80,353 @@ export class CaptureManager {
     return getAdapter(id)?.agentName ?? listAdapters().find((a) => a.id === id)?.agentName ?? undefined;
   }
 
+  /**
+   * True if the specific folder (or any folder) has an active watch.
+   * Passing no argument tests whether ANY capture is active.
+   */
   isActive(folder?: string): boolean {
-    if (!this.handle) return false;
-    return folder ? this.folder === folder : true;
+    if (folder !== undefined) return this.contexts.has(folder);
+    return this.contexts.size > 0;
   }
 
-  /** Bind ONE registered adapter to a run folder. Replaces any active watch. */
+  /**
+   * Arm a specific run folder with the given adapter.
+   *
+   * Invariant: only THIS folder's existing watch is stopped (if any).
+   * All other active captures are completely untouched.
+   */
   async arm(folder: string, adapterId = 'opencode'): Promise<void> {
     if (typeof folder !== 'string' || !folder.trim()) throw new Error('run folder 경로가 필요합니다.');
-    await this.stopInternal(false);
+
+    // Stop only this folder's existing context — never touch others.
+    await this.stopContextForFolder(folder, false);
 
     const adapter = getAdapter(adapterId);
     if (!adapter) {
-      this.emit({ phase: 'error', folder, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
+      this.push({ phase: 'error', folder, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
       throw new Error(`어댑터를 찾을 수 없습니다: ${adapterId}`);
     }
 
-    this.folder = folder;
-    this.policy = new SessionBindingPolicy();
-    this.armSnapshotSeeded = false;
-    this.lastPushKey = '';
-    this.currentAdapterId = adapter.id;
-    this.clearPending();
+    // Use a no-op handle until the real one is assigned; this lets the context
+    // be registered BEFORE startWatch so synchronous sink events (e.g. an
+    // immediate 'sessions' armPass) pass the stale-handle guard correctly.
+    const noopHandle: WatchHandle = { adapterId: adapter.id, stop: async () => undefined };
+    const ctx: CaptureContext = {
+      folder,
+      adapterId: adapter.id,
+      handle: noopHandle,
+      policy: new SessionBindingPolicy(),
+      armSnapshotSeeded: false,
+      lastPhase: null,
+      lastPushKey: '',
+      pending: null,
+    };
+
+    // Register BEFORE startWatch so the sink closure's identity guard works
+    // for any events the adapter emits synchronously during startup.
+    this.contexts.set(folder, ctx);
+
     try {
-      this.handle = await adapter.startWatch({}, (e) => this.onEvent(e));
-      this.emit({ phase: 'watching', folder, adapterId: adapter.id });
+      ctx.handle = await adapter.startWatch({}, (e) => this.onEvent(ctx, e));
+
+      // Guard: a synchronous 'stopped' status during startWatch may have already
+      // removed the context — if so, stop the real handle and exit cleanly.
+      if (this.contexts.get(folder) !== ctx) {
+        await ctx.handle.stop().catch(() => undefined);
+        return;
+      }
+
+      this.emitToCtx(ctx, { phase: 'watching', folder, adapterId: adapter.id });
     } catch (err) {
+      this.contexts.delete(folder);
+      this.clearPending(ctx);
       const message = err instanceof Error ? err.message : String(err);
-      this.handle = null;
-      this.folder = null;
-      this.policy = null;
-      this.emit({ phase: 'error', folder, message });
+      this.push({ phase: 'error', folder, message });
       throw err instanceof Error ? err : new Error(message);
     }
   }
 
   /**
-   * Explicit user selection (ambiguity resolution). The chosen sessionId
-   * becomes THE only source for this Run; an existing binding is never
-   * replaced.
+   * Explicit user selection (ambiguity resolution for ONE run folder).
+   * The chosen sessionId becomes THE only source for that Run; other Runs
+   * are not affected.
+   *
+   * @param folder - The run folder whose ambiguity to resolve. When omitted
+   *   the method falls back to the single active context (legacy / test usage).
    */
-  selectSession(sessionId: string): boolean {
-    if (!this.policy || !this.handle) return false;
-    const ok = this.policy.bindManual(sessionId);
+  selectSession(sessionId: string, folder?: string): boolean {
+    const ctx = folder !== undefined
+      ? this.contexts.get(folder)
+      : (this.contexts.size === 1 ? [...this.contexts.values()][0] : undefined);
+    if (!ctx) return false;
+
+    const ok = ctx.policy.bindManual(sessionId);
     if (ok) {
-      this.lastPushKey = '';
-      this.emit({
+      ctx.lastPushKey = '';
+      this.emitToCtx(ctx, {
         phase: 'watching',
-        folder: this.folder ?? undefined,
-        ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
+        folder: ctx.folder,
+        adapterId: ctx.adapterId,
         boundSessionId: sessionId,
       });
     }
     return ok;
   }
 
-  async disarm(): Promise<void> {
-    await this.stopInternal(true);
+  /**
+   * Disarm a specific run folder. All other active captures are unaffected.
+   *
+   * When called with no argument the method stops all active contexts
+   * (backward-compatible with test/legacy call sites that pre-date multi-run).
+   */
+  async disarm(folder?: string): Promise<void> {
+    if (folder !== undefined) {
+      await this.stopContextForFolder(folder, true);
+    } else {
+      // Legacy / cleanup: disarm every active context with status pushes.
+      const folders = [...this.contexts.keys()];
+      for (const f of folders) {
+        await this.stopContextForFolder(f, true).catch(() => undefined);
+      }
+    }
   }
 
-  /** Teardown without status pushes (app shutdown). */
+  /** Stop all active captures silently (app shutdown / test cleanup). */
+  async disarmAll(): Promise<void> {
+    const folders = [...this.contexts.keys()];
+    await Promise.all(folders.map((f) => this.stopContextForFolder(f, false).catch(() => undefined)));
+  }
+
+  /** Alias kept for backward compatibility with the app shutdown path. */
   async dispose(): Promise<void> {
-    const h = this.handle;
-    this.handle = null;
-    this.folder = null;
-    this.lastPhase = null;
-    this.policy = null;
-    this.clearPending();
-    if (h) await h.stop().catch(() => undefined);
+    await this.disarmAll();
   }
 
-  private async stopInternal(withStatus: boolean): Promise<void> {
-    const h = this.handle;
-    const f = this.folder;
-    this.handle = null;
-    this.folder = null;
-    this.policy = null;
-    this.clearPending();
-    if (h && !withStatus) {
-      // suppress the handle's own 'stopped' event for silent internal stops
-      this.lastPhase = null;
+  // ── Per-folder internal stop ──────────────────────────────────────────────
+
+  private async stopContextForFolder(folder: string, withStatus: boolean): Promise<void> {
+    const ctx = this.contexts.get(folder);
+    if (!ctx) {
+      if (withStatus) this.push({ phase: 'stopped', folder });
+      return;
+    }
+    this.contexts.delete(folder);
+    this.clearPending(ctx);
+    ctx.lastPhase = null;
+    const h = ctx.handle;
+    if (!withStatus) {
       await h.stop().catch(() => undefined);
       return;
     }
-    this.lastPhase = null;
-    if (h) await h.stop().catch(() => undefined);
-    if (withStatus) this.emit({ phase: 'stopped', folder: f ?? undefined });
+    await h.stop().catch(() => undefined);
+    this.push({ phase: 'stopped', folder });
   }
 
-  private onEvent(e: AdapterEvent): void {
+  // ── Event routing ─────────────────────────────────────────────────────────
+
+  /**
+   * Called by the adapter's sink. The ctx reference is what we use to guard
+   * against stale events from a handle that was already replaced or stopped:
+   * if the folder now maps to a different context object, this event is stale.
+   */
+  private onEvent(ctx: CaptureContext, e: AdapterEvent): void {
+    if (this.contexts.get(ctx.folder) !== ctx) return; // stale handle — ignore
+
     switch (e.type) {
-      case 'sessions': {
-        this.onSessions(e.sessions, e.armPass);
+      case 'sessions':
+        this.onSessions(ctx, e.sessions, e.armPass);
         break;
-      }
-      case 'status': {
+      case 'status':
         if (e.phase === 'watching') {
-          const bound = this.policy?.binding?.sessionId;
-          this.emit({
+          const bound = ctx.policy?.binding?.sessionId;
+          this.emitToCtx(ctx, {
             phase: 'watching',
-            folder: this.folder ?? undefined,
-            ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
+            folder: ctx.folder,
+            adapterId: ctx.adapterId,
             ...(bound ? { boundSessionId: bound } : {}),
           });
         } else if (e.phase === 'stopped') {
-          // timeout-driven stop from inside the adapter
-          if (this.handle) {
-            this.handle = null;
-            const folder = this.folder ?? undefined;
-            this.folder = null;
-            this.policy = null;
-            this.emit({ phase: 'stopped', folder, message: e.detail });
+          // Timeout-driven stop from inside the adapter.
+          if (this.contexts.get(ctx.folder) === ctx) {
+            this.contexts.delete(ctx.folder);
+            this.emitToCtx(ctx, { phase: 'stopped', folder: ctx.folder, message: e.detail });
           }
         }
         break;
-      }
-      case 'error': {
-        this.emit({ phase: 'error', folder: this.folder ?? undefined, message: e.message });
+      case 'error':
+        this.emitToCtx(ctx, { phase: 'error', folder: ctx.folder, message: e.message });
         break;
-      }
-      case 'completion': {
-        this.onCompletion(e.completion);
+      case 'completion':
+        this.onCompletion(ctx, e.completion);
         break;
-      }
     }
   }
 
-  private onSessions(sessions: SessionObservation[], armPass: boolean): void {
-    if (!this.policy) return;
-    if (armPass && !this.armSnapshotSeeded) {
-      this.policy.seedArmInFlight(sessions.filter((s) => s.inFlight).map((s) => s.sessionId));
-      this.armSnapshotSeeded = true;
+  private onSessions(ctx: CaptureContext, sessions: SessionObservation[], armPass: boolean): void {
+    if (this.contexts.get(ctx.folder) !== ctx) return;
+    if (!ctx.policy) return;
+
+    if (armPass && !ctx.armSnapshotSeeded) {
+      ctx.policy.seedArmInFlight(sessions.filter((s) => s.inFlight).map((s) => s.sessionId));
+      ctx.armSnapshotSeeded = true;
     }
-    this.policy.note(sessions);
+    ctx.policy.note(sessions);
 
     // Any bound-but-not-yet-persisted binding is provisional: a rival
     // plausible source revokes it so files are never written on a guess.
-    if (this.policy.binding && !this.policy.isPersisted) {
-      const boundId = this.policy.binding.sessionId;
+    if (ctx.policy.binding && !ctx.policy.isPersisted) {
+      const boundId = ctx.policy.binding.sessionId;
       const rival =
-        this.policy.newSessionIds.some((id) => id !== boundId) ||
-        this.policy.armInFlightSnapshot.some((id) => id !== boundId) ||
-        this.policy.postArmInflightSnapshot.some((id) => id !== boundId) ||
-        this.policy.candidatesNeedSelection();
+        ctx.policy.newSessionIds.some((id) => id !== boundId) ||
+        ctx.policy.armInFlightSnapshot.some((id) => id !== boundId) ||
+        ctx.policy.postArmInflightSnapshot.some((id) => id !== boundId) ||
+        ctx.policy.candidatesNeedSelection();
       if (rival) {
-        this.revokeAndAmbiguate();
+        this.revokeAndAmbiguate(ctx);
         return;
       }
     }
 
-    if (!this.policy.binding) {
-      if (this.armSnapshotSeeded && this.policy.tryAutoBind()) {
+    if (!ctx.policy.binding) {
+      if (ctx.armSnapshotSeeded && ctx.policy.tryAutoBind()) {
         // Early deterministic binding — the bound Session identity becomes
-        // visible while the agent is still working (Session-Bound Capture UX),
-        // not only at completion time.
-        this.emitWatchingBound();
+        // visible while the agent is still working (Session-Bound Capture UX).
+        this.emitWatchingBound(ctx);
         return;
       }
       const ambiguousNow =
-        this.armSnapshotSeeded && (this.policy.isAmbiguous || this.policy.candidatesNeedSelection());
+        ctx.armSnapshotSeeded && (ctx.policy.isAmbiguous || ctx.policy.candidatesNeedSelection());
       if (ambiguousNow) {
-        this.emitAmbiguous();
+        this.emitAmbiguous(ctx);
       }
     }
   }
 
-  private onCompletion(completion: AgentCompletion): void {
-    const folder = this.folder;
-    const policy = this.policy;
-    if (!folder || !policy) return;
+  private onCompletion(ctx: CaptureContext, completion: AgentCompletion): void {
+    if (this.contexts.get(ctx.folder) !== ctx) return;
+    if (!ctx.policy) return;
 
-    const decision = policy.decide(completion.sessionId ?? '');
+    const decision = ctx.policy.decide(completion.sessionId ?? '');
     if (decision === 'ignore') return;
     if (decision === 'need-selection') {
-      this.emitAmbiguous();
+      this.emitAmbiguous(ctx);
       return;
     }
 
-    // accept — but do NOT write yet: hold a settle window so a rival session
-    // appearing moments later can still revoke the binding pre-write.
-    if (this.pending) {
-      if (this.pending.completion.sessionId === completion.sessionId) return; // dup while settling
-      this.cancelPendingAndAmbiguate();
+    // accept — hold a settle window so a rival session appearing moments
+    // later can still revoke the binding before files are written.
+    if (ctx.pending) {
+      if (ctx.pending.completion.sessionId === completion.sessionId) return; // dup while settling
+      this.cancelPendingAndAmbiguate(ctx);
       return;
     }
-    const binding = policy.binding!;
-    const timer = setTimeout(() => void this.settleCapture(), CaptureManager.SETTLE_MS);
-    this.pending = { completion, timer };
-    void binding;
+    const timer = setTimeout(() => void this.settleCapture(ctx), this.settleMs);
+    ctx.pending = { completion, timer };
   }
 
-  private async settleCapture(): Promise<void> {
-    const p = this.pending;
-    if (!p || !this.folder || !this.policy) return;
-    this.pending = null;
-    await this.persist(p.completion);
-  }
-
-  private cancelPendingAndAmbiguate(): void {
-    const p = this.pending;
+  private async settleCapture(ctx: CaptureContext): Promise<void> {
+    if (this.contexts.get(ctx.folder) !== ctx) return;
+    const p = ctx.pending;
     if (!p) return;
-    clearTimeout(p.timer);
-    this.pending = null;
-    this.policy?.revoke();
-    this.emitAmbiguous();
+    ctx.pending = null;
+    await this.persist(ctx, p.completion);
+  }
+
+  private cancelPendingAndAmbiguate(ctx: CaptureContext): void {
+    this.clearPending(ctx);
+    ctx.policy?.revoke();
+    this.emitAmbiguous(ctx);
   }
 
   /**
-   * Revoke a provisional (not-yet-persisted) binding whenever a rival session
-   * appears — used for early deterministic bindings that have no pending
-   * completion yet, and for settle-window rival detection.
+   * Revoke a provisional binding whenever a rival session appears — used for
+   * early deterministic bindings with no pending completion yet, and for
+   * settle-window rival detection.
    */
-  private revokeAndAmbiguate(): void {
-    this.clearPending();
-    this.policy?.revoke();
-    this.emitAmbiguous();
+  private revokeAndAmbiguate(ctx: CaptureContext): void {
+    this.clearPending(ctx);
+    ctx.policy?.revoke();
+    this.emitAmbiguous(ctx);
   }
 
-  /** Push the current watching state with the early-bound Session identity. */
-  private emitWatchingBound(): void {
-    this.lastPushKey = '';
-    this.emit({
+  private emitWatchingBound(ctx: CaptureContext): void {
+    ctx.lastPushKey = '';
+    this.emitToCtx(ctx, {
       phase: 'watching',
-      folder: this.folder ?? undefined,
-      ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
+      folder: ctx.folder,
+      adapterId: ctx.adapterId,
     });
   }
 
-  private clearPending(): void {
-    if (this.pending) clearTimeout(this.pending.timer);
-    this.pending = null;
+  private clearPending(ctx: CaptureContext): void {
+    if (ctx.pending) clearTimeout(ctx.pending.timer);
+    ctx.pending = null;
   }
 
-  private async persist(completion: AgentCompletion): Promise<void> {
-    const folder = this.folder;
-    const policy = this.policy;
-    if (!folder || !policy) return;
-    const binding = policy.binding;
+  private async persist(ctx: CaptureContext, completion: AgentCompletion): Promise<void> {
+    if (this.contexts.get(ctx.folder) !== ctx) return;
+    const binding = ctx.policy?.binding;
     if (!binding || binding.sessionId !== completion.sessionId) return;
 
-    const outcome = captureCompletion(folder, completion, { bindingReason: binding.reason });
-    policy.markPersisted();
+    const outcome = captureCompletion(ctx.folder, completion, { bindingReason: binding.reason });
+    ctx.policy.markPersisted();
     if (!outcome.ok) {
-      this.emit({ phase: 'error', folder, message: outcome.reason ?? '결과 저장에 실패했습니다.' });
+      this.emitToCtx(ctx, {
+        phase: 'error',
+        folder: ctx.folder,
+        message: outcome.reason ?? '결과 저장에 실패했습니다.',
+      });
       return;
     }
     if (outcome.duplicate) return;
-    this.emit({
+    this.emitToCtx(ctx, {
       phase: 'captured',
-      folder,
+      folder: ctx.folder,
       adapterId: completion.adapterId,
       files: outcome.written,
       boundSessionId: binding.sessionId,
     });
-    // One-shot semantics: disarm silently after a successful capture so a
+    // One-shot semantics: silently disarm after a successful capture so a
     // later turn can never surprise-overwrite related files.
-    void this.stopInternal(false);
+    void this.stopContextForFolder(ctx.folder, false);
   }
 
-  private emitAmbiguous(): void {
-    const candidates: CaptureCandidateView[] = this.policy!.candidates()
+  private emitAmbiguous(ctx: CaptureContext): void {
+    const candidates: CaptureCandidateView[] = ctx.policy!.candidates()
       .slice(0, 8)
       .map((c) => ({
         sessionId: c.sessionId,
         title: c.title,
         directory: c.directory,
       }));
-    this.emit({
+    this.emitToCtx(ctx, {
       phase: 'ambiguous',
-      folder: this.folder ?? undefined,
-      ...(this.currentAdapterId ? { adapterId: this.currentAdapterId } : {}),
+      folder: ctx.folder,
+      adapterId: ctx.adapterId,
       candidates,
       message:
         '에이전트 세션이 여러 개 후보가 되어 자동 확정할 수 없습니다. 결과를 받을 세션을 선택하세요.',
     });
   }
 
-  private emit(s: CaptureStatusView): void {
+  /**
+   * Enrich and push a status view scoped to one context.
+   * Dedupe suppresses repeat watching/ambiguous pushes with an identical key
+   * so the UI is not spammed on every poll cycle.
+   */
+  private emitToCtx(ctx: CaptureContext, s: CaptureStatusView): void {
     const enriched: CaptureStatusView = {
       ...s,
-      agentName: s.agentName ?? this.agentNameOf(s.adapterId ?? this.currentAdapterId ?? undefined),
+      agentName: s.agentName ?? this.agentNameOf(s.adapterId ?? ctx.adapterId ?? undefined),
     };
     // Provenance: visible Session identity always mirrors the backend binding
     // state (sessionId + reason + title) — never a frontend-only value.
-    if (this.policy) {
-      const binding = this.policy.binding;
+    if (ctx.policy) {
+      const binding = ctx.policy.binding;
       if (binding) {
         enriched.boundSessionId = binding.sessionId;
         enriched.bindingReason = binding.reason;
-        const obs = this.policy.bindingObservation;
+        const obs = ctx.policy.bindingObservation;
         if (obs?.title) enriched.boundSessionTitle = obs.title;
       }
     }
@@ -360,8 +438,8 @@ export class CaptureManager {
         : enriched.phase === 'watching'
           ? (enriched.boundSessionId ?? '')
           : '');
-    if (key === this.lastPushKey && (enriched.phase === 'watching' || enriched.phase === 'ambiguous')) return;
-    this.lastPushKey = key;
+    if (key === ctx.lastPushKey && (enriched.phase === 'watching' || enriched.phase === 'ambiguous')) return;
+    ctx.lastPushKey = key;
     this.push(enriched);
   }
 }

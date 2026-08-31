@@ -182,14 +182,15 @@ function AppInner(): React.ReactElement {
 
   // In-app updater 상태 (main이 relay-update-status로 푸시)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
-  const [capture, setCapture] = useState<CaptureStatusView | null>(null);
+  /** Per-run capture state keyed by run folder path. */
+  const [captureMap, setCaptureMap] = useState<Map<string, CaptureStatusView>>(() => new Map());
   const [pickSession, setPickSession] = useState('');
   const [captureAgent, setCaptureAgent] = useState('opencode');
   // True when the active tab's agent has no registered adapter — show UI error, block arm.
   const [captureAgentUnsupported, setCaptureAgentUnsupported] = useState(false);
   const [agentChoices, setAgentChoices] = useState<{ id: string; agentName: string }[]>([{ id: 'opencode', agentName: 'OpenCode' }]);
   // Ref updated on every render so effects can read the latest capture state
-  // without adding it to their dependency arrays.
+  // for the active tab without adding it to their dependency arrays.
   const captureRef = useRef<CaptureStatusView | null>(null);
 
   // 프로젝트 세션 상태 (멀티 프로젝트 탭)
@@ -332,13 +333,26 @@ function AppInner(): React.ReactElement {
   // ── Updater 구독 + 백그라운드 새 버전 알림 (정책: 자동 설치 없음) ────────────
   useEffect(() => onUpdateStatus(s => setUpdateStatus({ ...s })), []);
 
-  // Keep captureRef in sync on every render so the derivation effect below can
-  // read the current capture state without declaring it as a dep.
+  // Derive the capture state for the currently active tab's run folder.
+  // All per-run UI logic uses this derived value — switching tabs automatically
+  // shows the correct capture state without any extra event routing.
+  const capture: CaptureStatusView | null =
+    (activeTab?.folder ? captureMap.get(activeTab.folder) : undefined) ?? null;
+
+  // Keep captureRef in sync on every render so the safety-disarm effect below
+  // can read the current capture state without declaring it as a dep.
   captureRef.current = capture;
 
   // ── Agent 어댑터 자동 수신 상태 구독 ─────────────────────────────────────────
   const captureHandlerRef = useRef<(s: CaptureStatusView) => void>(() => undefined);
-  useEffect(() => onCaptureStatus(s => { setCapture({ ...s }); captureHandlerRef.current(s); }), []);
+  useEffect(() => onCaptureStatus(s => {
+    // Route each status event to its run folder in the map — events for Run B
+    // never overwrite Run A's capture state.
+    if (s.folder) {
+      setCaptureMap(prev => new Map(prev).set(s.folder!, { ...s }));
+    }
+    captureHandlerRef.current(s);
+  }), []);
   useEffect(() => {
     must<{ id: string; agentName: string }[]>({ op: 'adapters:list' })
       .then(list => { if (Array.isArray(list) && list.length) setAgentChoices(list); })
@@ -359,11 +373,12 @@ function AppInner(): React.ReactElement {
     if (adapterId !== null) {
       setCaptureAgentUnsupported(false);
       // Safety disarm: if THIS tab's folder is already being watched by a
-      // different adapter (stale cross-agent state), disarm it. This prevents
-      // an OpenCode session from being carried into a Claude Code arm or vice versa.
+      // different adapter (stale cross-agent state), disarm only that folder.
+      // This prevents an OpenCode session from being carried into a Claude Code
+      // arm or vice versa — other active captures are unaffected.
       if (c?.phase === 'watching' && c.folder === tabFolder && tabFolder && c.adapterId !== adapterId) {
         void (async () => {
-          try { await must({ op: 'capture:disarm' }); setPickSession(''); } catch { /* ignore */ }
+          try { await must({ op: 'capture:disarm', folder: tabFolder }); setPickSession(''); } catch { /* ignore */ }
         })();
       }
       setCaptureAgent(adapterId);
@@ -642,8 +657,10 @@ function AppInner(): React.ReactElement {
   }
 
   async function disarmAutoCapture(): Promise<void> {
+    const folder = activeTab?.folder;
+    if (!folder) return;
     try {
-      await must({ op: 'capture:disarm' });
+      await must({ op: 'capture:disarm', folder });
       setPickSession('');
       notify('info', '자동 수신을 해제했습니다.');
     } catch (e) {
@@ -652,8 +669,10 @@ function AppInner(): React.ReactElement {
   }
 
   async function selectCaptureSession(sessionId: string): Promise<void> {
+    const folder = activeTab?.folder;
+    if (!folder) return;
     try {
-      await must({ op: 'capture:select', sessionId });
+      await must({ op: 'capture:select', sessionId, folder });
       notify('info', `세션이 바인딩되었습니다: ${sessionId.slice(0, 12)}…`);
     } catch (e) {
       notify('err', e instanceof Error ? e.message : String(e));

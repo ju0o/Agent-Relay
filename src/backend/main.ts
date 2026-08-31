@@ -329,13 +329,13 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
 
     case 'capture:disarm': {
       if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
-      await captureManager.disarm();
+      await captureManager.disarm(req.folder);
       return true;
     }
 
     case 'capture:select': {
       if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
-      const ok = captureManager.selectSession(req.sessionId);
+      const ok = captureManager.selectSession(req.sessionId, req.folder);
       if (!ok) throw new Error('세션을 선택할 수 없습니다. 감시가 활성 상태인지 확인하세요.');
       return { selected: req.sessionId };
     }
