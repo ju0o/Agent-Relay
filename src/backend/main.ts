@@ -12,6 +12,7 @@ import * as path from 'path';
 import * as relay from './fs.js';
 import * as goalTask from './goal-task.js';
 import * as goalTaskRuntime from './goal-task-runtime.js';
+import * as evidenceKernel from './evidence.js';
 import { CaptureManager } from './capture-manager.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
@@ -489,6 +490,35 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
         expectedExecutionState: req.expectedExecutionState,
         expectedPmState: req.expectedPmState,
       });
+
+    case 'evidence:create':
+      return evidenceKernel.createEvidence(req.dataRoot, req.project, req.input);
+
+    case 'evidence:get':
+      return evidenceKernel.getEvidence(req.dataRoot, req.project, req.evidenceId);
+
+    case 'evidence:listForRun':
+      return evidenceKernel.listEvidenceForRun(req.dataRoot, req.project, req.runId);
+
+    case 'evidence:listForTask':
+      return evidenceKernel.listEvidenceForTask(
+        req.dataRoot,
+        req.project,
+        req.taskId,
+        req.includeRunEvidence !== false,
+      );
+
+    case 'evidence:listForGoal':
+      return evidenceKernel.listEvidenceForGoal(req.dataRoot, req.project, req.goalId);
+
+    case 'evidence:getRunSummary':
+      return evidenceKernel.getRunEvidenceSummary(req.dataRoot, req.project, req.runId);
+
+    case 'evidence:getTaskSummary':
+      return evidenceKernel.getTaskEvidenceSummary(req.dataRoot, req.project, req.taskId);
+
+    case 'evidence:evaluateTask':
+      return evidenceKernel.evaluateTaskEvidence(req.dataRoot, req.project, req.taskId);
 
     case 'update:check': {
       if (!updaterSupported(app.isPackaged)) {

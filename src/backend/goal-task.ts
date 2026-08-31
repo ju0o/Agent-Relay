@@ -159,6 +159,8 @@ export function countersPath(dataRoot: string, project: string): string {
 export interface CountersRecord {
   nextGoalNumber: number;
   nextTaskNumber: number;
+  /** Phase C Evidence counter — preserved by Goal/Task allocators. */
+  nextEvidenceNumber?: number;
 }
 
 function loadCounters(dataRoot: string, project: string): CountersRecord {
@@ -173,6 +175,7 @@ function loadCounters(dataRoot: string, project: string): CountersRecord {
   const tasksMax = maxExistingId(tasksDir(dataRoot, project), TASK_ID_RE);
   let nextGoal: number | undefined;
   let nextTask: number | undefined;
+  let nextEvidence: number | undefined;
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     const obj = parsed as Record<string, unknown>;
     if (typeof obj.nextGoalNumber === 'number' && Number.isInteger(obj.nextGoalNumber) && obj.nextGoalNumber >= 1) {
@@ -181,13 +184,18 @@ function loadCounters(dataRoot: string, project: string): CountersRecord {
     if (typeof obj.nextTaskNumber === 'number' && Number.isInteger(obj.nextTaskNumber) && obj.nextTaskNumber >= 1) {
       nextTask = obj.nextTaskNumber;
     }
+    if (typeof obj.nextEvidenceNumber === 'number' && Number.isInteger(obj.nextEvidenceNumber) && obj.nextEvidenceNumber >= 1) {
+      nextEvidence = obj.nextEvidenceNumber;
+    }
   }
   if (nextGoal === undefined) nextGoal = goalsMax + 1;
   if (nextTask === undefined) nextTask = tasksMax + 1;
   // Ensure monotonic beyond filesystem max (manual folder, stale counter)
   nextGoal = Math.max(nextGoal, goalsMax + 1);
   nextTask = Math.max(nextTask, tasksMax + 1);
-  return { nextGoalNumber: nextGoal, nextTaskNumber: nextTask };
+  const out: CountersRecord = { nextGoalNumber: nextGoal, nextTaskNumber: nextTask };
+  if (nextEvidence !== undefined) out.nextEvidenceNumber = nextEvidence;
+  return out;
 }
 
 function saveCounters(dataRoot: string, project: string, c: CountersRecord): void {
@@ -204,18 +212,26 @@ function allocateGoalIdWithCounter(dataRoot: string, project: string): string {
     const idDir = path.join(goalsDir(dataRoot, project), id);
     try {
       fs.mkdirSync(idDir);
-      // Merge with latest counters to avoid clobbering concurrent Task counter increments from other processes
+      // Merge with latest counters to avoid clobbering concurrent Task/Evidence counter increments
       let latestTaskNext = counters.nextTaskNumber;
+      let latestEvidenceNext = counters.nextEvidenceNumber;
       try {
         const latestRaw = JSON.parse(fs.readFileSync(countersPath(dataRoot, project), 'utf8')) as Record<string, unknown>;
         if (typeof latestRaw.nextTaskNumber === 'number' && Number.isInteger(latestRaw.nextTaskNumber) && latestRaw.nextTaskNumber >= 1) {
           latestTaskNext = Math.max(latestTaskNext, latestRaw.nextTaskNumber);
         }
+        if (typeof latestRaw.nextEvidenceNumber === 'number' && Number.isInteger(latestRaw.nextEvidenceNumber) && latestRaw.nextEvidenceNumber >= 1) {
+          latestEvidenceNext = latestEvidenceNext === undefined
+            ? latestRaw.nextEvidenceNumber
+            : Math.max(latestEvidenceNext, latestRaw.nextEvidenceNumber);
+        }
       } catch { /* no latest file or malformed — keep ours */ }
-      writeJsonAtomic(countersPath(dataRoot, project), {
+      const nextCounters: CountersRecord = {
         nextGoalNumber: n + 1,
         nextTaskNumber: latestTaskNext,
-      });
+      };
+      if (latestEvidenceNext !== undefined) nextCounters.nextEvidenceNumber = latestEvidenceNext;
+      writeJsonAtomic(countersPath(dataRoot, project), nextCounters);
       return id;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
@@ -238,16 +254,24 @@ function allocateTaskIdWithCounter(dataRoot: string, project: string): string {
     try {
       fs.mkdirSync(idDir);
       let latestGoalNext = counters.nextGoalNumber;
+      let latestEvidenceNext = counters.nextEvidenceNumber;
       try {
         const latestRaw = JSON.parse(fs.readFileSync(countersPath(dataRoot, project), 'utf8')) as Record<string, unknown>;
         if (typeof latestRaw.nextGoalNumber === 'number' && Number.isInteger(latestRaw.nextGoalNumber) && latestRaw.nextGoalNumber >= 1) {
           latestGoalNext = Math.max(latestGoalNext, latestRaw.nextGoalNumber);
         }
+        if (typeof latestRaw.nextEvidenceNumber === 'number' && Number.isInteger(latestRaw.nextEvidenceNumber) && latestRaw.nextEvidenceNumber >= 1) {
+          latestEvidenceNext = latestEvidenceNext === undefined
+            ? latestRaw.nextEvidenceNumber
+            : Math.max(latestEvidenceNext, latestRaw.nextEvidenceNumber);
+        }
       } catch { /* keep ours */ }
-      writeJsonAtomic(countersPath(dataRoot, project), {
+      const nextCounters: CountersRecord = {
         nextGoalNumber: latestGoalNext,
         nextTaskNumber: n + 1,
-      });
+      };
+      if (latestEvidenceNext !== undefined) nextCounters.nextEvidenceNumber = latestEvidenceNext;
+      writeJsonAtomic(countersPath(dataRoot, project), nextCounters);
       return id;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
@@ -1095,6 +1119,15 @@ function findTaskOwningRunId(dataRoot: string, project: string, runId: string): 
     if (t.linkedRuns.some((r) => r.runId === runId)) return t;
   }
   return null;
+}
+
+/** Locate the Task that owns a logical runId (if any). */
+export function findTaskByRunId(
+  dataRoot: string,
+  project: string,
+  runId: string,
+): TaskRecord | null {
+  return findTaskOwningRunId(dataRoot, project, runId);
 }
 
 export function linkRunToTask(

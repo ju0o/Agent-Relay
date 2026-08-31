@@ -122,6 +122,14 @@ export type RelayRequest =
  | { op: 'task:acceptResult'; dataRoot: string; project: string; taskId: string; runId: string; reason?: string; expectedPmState?: TaskPmState; expectedExecutionState?: TaskExecutionState }
  | { op: 'task:requestChanges'; dataRoot: string; project: string; taskId: string; reason?: string; expectedPmState?: TaskPmState }
  | { op: 'task:requestRetry'; dataRoot: string; project: string; taskId: string; reason?: string; expectedExecutionState?: TaskExecutionState; expectedPmState?: TaskPmState }
+ | { op: 'evidence:create'; dataRoot: string; project: string; input: EvidenceCreateInput }
+ | { op: 'evidence:get'; dataRoot: string; project: string; evidenceId: string }
+ | { op: 'evidence:listForRun'; dataRoot: string; project: string; runId: string }
+ | { op: 'evidence:listForTask'; dataRoot: string; project: string; taskId: string; includeRunEvidence?: boolean }
+ | { op: 'evidence:listForGoal'; dataRoot: string; project: string; goalId: string }
+ | { op: 'evidence:getRunSummary'; dataRoot: string; project: string; runId: string }
+ | { op: 'evidence:getTaskSummary'; dataRoot: string; project: string; taskId: string }
+ | { op: 'evidence:evaluateTask'; dataRoot: string; project: string; taskId: string }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -638,6 +646,203 @@ export interface GoalRuntimeState {
   blockedTasks: TaskRuntimeSummary[];
   waitingDependencyTasks: TaskRuntimeSummary[];
   acceptedTasks: TaskRuntimeSummary[];
+}
+
+// ── Phase C Evidence kernel ─────────────────────────────────────────────────
+//
+// AGENT RESULT ≠ TASK OUTCOME.
+// Worker claim ≠ observed reality ≠ objective verification ≠ PM/Owner acceptance.
+// Trust levels are never silently upgraded; higher confidence = NEW evidence.
+
+/** Evidence schema version (Phase C starts at 1). */
+export const EVIDENCE_SCHEMA_VERSION = 1;
+
+/**
+ * Trust / truthfulness axis — do NOT collapse into a single "verified" boolean.
+ * Never infer ACCEPTED from VERIFIED, or VERIFIED from OBSERVED.
+ */
+export const EVIDENCE_TRUST_LEVELS = [
+  'CLAIMED',
+  'OBSERVED',
+  'VERIFIED',
+  'ACCEPTED',
+] as const;
+export type EvidenceTrustLevel = (typeof EVIDENCE_TRUST_LEVELS)[number];
+
+/** Evidence category vocabulary — extensible but not free-form. */
+export const EVIDENCE_TYPES = [
+  'WORKER_CLAIM',
+  'ADAPTER_OBSERVATION',
+  'GIT',
+  'TEST',
+  'BUILD',
+  'QA',
+  'ARTIFACT',
+  'PM_DECISION',
+  'RUNTIME',
+  'MANUAL',
+] as const;
+export type EvidenceType = (typeof EVIDENCE_TYPES)[number];
+
+/** Status vocabulary — not every type must be PASS/FAIL (INFO is valid). */
+export const EVIDENCE_STATUSES = [
+  'PASS',
+  'FAIL',
+  'INFO',
+  'INCONCLUSIVE',
+] as const;
+export type EvidenceStatus = (typeof EVIDENCE_STATUSES)[number];
+
+/** Provenance: who/what produced this evidence. */
+export interface EvidenceSource {
+  kind: string;
+  agent?: string;
+  adapter?: string;
+  command?: string;
+  tool?: string;
+  actor?: string;
+}
+
+/** Optional Git payload (storage/validation only — no auto-fetch in Phase C). */
+export interface GitEvidenceDetails {
+  repository?: string;
+  branch?: string;
+  commitSha?: string;
+  baseSha?: string;
+  headSha?: string;
+  changedFiles?: string[];
+  aheadBy?: number;
+  behindBy?: number;
+  cleanWorkingTree?: boolean;
+}
+
+/** Test / Build command result payload — logs via rawRef/artifactRefs, not embedded. */
+export interface CommandEvidenceDetails {
+  command?: string;
+  exitCode?: number;
+  durationMs?: number;
+  stdoutRef?: string;
+  stderrRef?: string;
+  resultSummary?: string;
+}
+
+/** QA payload — full report via artifact/rawRef. */
+export interface QaEvidenceDetails {
+  verdict?: string;
+  findingsSummary?: string;
+  severityCounts?: Record<string, number>;
+  targetSha?: string;
+  qaRole?: string;
+}
+
+/** PM / Owner decision payload. trustLevel ACCEPTED only when verdict is ACCEPTED. */
+export const PM_DECISION_VERDICTS = [
+  'ACCEPTED',
+  'CHANGES_REQUESTED',
+  'REJECTED',
+  'OWNER_REQUIRED',
+] as const;
+export type PmDecisionVerdict = (typeof PM_DECISION_VERDICTS)[number];
+
+export interface PmDecisionDetails {
+  verdict: PmDecisionVerdict;
+  reason?: string;
+  targetRunId?: string;
+}
+
+/** Type-specific details bag — helpers normalize into this field. */
+export type EvidenceDetails =
+  | GitEvidenceDetails
+  | CommandEvidenceDetails
+  | QaEvidenceDetails
+  | PmDecisionDetails
+  | Record<string, unknown>;
+
+/**
+ * Persistent Evidence record (JSON SSOT companion to evidence.md).
+ * Identity is project-scoped EVIDENCE-NNNNNN — never a file path.
+ */
+export interface EvidenceRecord {
+  schemaVersion: number;
+  evidenceId: string;
+  project: string;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  type: EvidenceType;
+  trustLevel: EvidenceTrustLevel;
+  status: EvidenceStatus;
+  source: EvidenceSource;
+  summary: string;
+  details?: EvidenceDetails;
+  createdAt: string;
+  updatedAt: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  /**
+   * Optional collector idempotency key.
+   * Same project + sourceEventId → return existing record (no duplicate).
+   */
+  sourceEventId?: string;
+}
+
+/** Input for evidence:create — linkage identities are validated, never fabricated. */
+export interface EvidenceCreateInput {
+  type: EvidenceType;
+  trustLevel: EvidenceTrustLevel;
+  status: EvidenceStatus;
+  source: EvidenceSource;
+  summary: string;
+  details?: EvidenceDetails;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Pure read-side aggregation — never collapses to verified=true. */
+export interface EvidenceSummary {
+  claimedCount: number;
+  observedCount: number;
+  verifiedCount: number;
+  acceptedCount: number;
+  passCount: number;
+  failCount: number;
+  inconclusiveCount: number;
+  infoCount: number;
+  latestEvidenceAt?: string;
+  evidenceTypes: EvidenceType[];
+  totalCount: number;
+}
+
+/**
+ * Advisory readiness snapshot for future PM Context Packet.
+ * MUST NOT mutate Task pmState.
+ */
+export interface TaskEvidenceEvaluation {
+  hasWorkerClaim: boolean;
+  hasObservation: boolean;
+  hasObjectiveVerification: boolean;
+  hasVerificationFailure: boolean;
+  hasPmAcceptanceEvidence: boolean;
+  blockers: string[];
+}
+
+/** Read-normalized view of legacy Run/evidence/adapter.json (does not rewrite disk). */
+export interface LegacyAdapterEvidenceView {
+  present: boolean;
+  folder: string;
+  dedupeKey?: string;
+  capturedAt?: string;
+  adapterId?: string;
+  agentName?: string;
+  sessionId?: string;
+  bindingReason?: string;
+  raw?: Record<string, unknown>;
 }
 
 // ── Agent adapter auto-capture (vNext foundation) ───────────────────────────
