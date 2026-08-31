@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { AdapterEvent, AgentCompletion, SessionObservation, WatchHandle } from '../integrations/core/types.js';
 import { SessionBindingPolicy } from '../integrations/core/binding.js';
 import { captureCompletion } from '../integrations/core/capture.js';
@@ -8,15 +9,21 @@ import { createCodexAdapter } from '../integrations/codex/watch.js';
 import { createCommandCodeAdapter } from '../integrations/commandcode/watch.js';
 import { createClineAdapter } from '../integrations/cline/watch.js';
 import { createGrokAdapter } from '../integrations/grok/watch.js';
-import { CaptureCandidateView, CaptureStatusView } from '../shared/types.js';
+import { CaptureCandidateView, CaptureStatusView, MaterializeParams } from '../shared/types.js';
 
 /**
- * Per-run capture context — holds ALL mutable state for one Run folder.
- * Contexts are never shared between folders; arming a new folder never
- * mutates an existing context.
+ * Per-capture context — holds ALL mutable state for one Draft or materialized Run.
+ *
+ * Before materialization: folder = null.
+ * After materialization:  folder = absolute run folder path.
+ *
+ * Contexts are NEVER shared; arming a new captureId never mutates an existing one.
  */
 interface CaptureContext {
-  readonly folder: string;
+  /** Stable identity — never changes after arm, independent of physical folder. */
+  readonly captureId: string;
+  /** Physical run folder. null means the Draft has not yet materialized. */
+  folder: string | null;
   readonly adapterId: string;
   handle: WatchHandle;
   policy: SessionBindingPolicy;
@@ -25,32 +32,37 @@ interface CaptureContext {
   /** Dedupe key for watching/ambiguous status pushes. */
   lastPushKey: string;
   pending: { completion: AgentCompletion; timer: ReturnType<typeof setTimeout> } | null;
+  /** Parameters for on-demand folder creation when folder is null. */
+  materializeParams?: MaterializeParams;
 }
+
+/** Callback that atomically creates a physical Run folder for a Draft. */
+export type MaterializeFn = (captureId: string, params: MaterializeParams) => Promise<{ folder: string; run: string }>;
 
 /**
  * Manages multiple independently armed Run captures simultaneously.
  *
- * Each Run folder owns its own CaptureContext — arm/disarm/events for
- * one Run NEVER affect another Run's watch, policy, or result files.
+ * Phase A2: contexts are keyed by captureId (not folder). A Draft can be armed
+ * with no physical folder; the folder is set lazily on first meaningful data.
  *
- * Preferred call pattern:
- *   arm(folderA, 'opencode')   → context A created
- *   arm(folderB, 'claude-code') → context B created (A unaffected)
- *   disarm(folderA)            → A stopped, B unaffected
- *   disarmAll()                → app shutdown / test cleanup
+ * Backward compatibility:
+ *   arm(folderPath, adapterId)  — legacy; captureId = folderPath, folder = folderPath
+ *   arm(captureId, adapterId, { isDraft: true, materializeParams })  — Phase A2 Draft
+ *   arm(captureId, adapterId, { folder })                            — Phase A2 materialized
  */
 export class CaptureManager {
-  /** Settle window before writing files (overridable for tests). */
   private readonly settleMs: number;
+  private readonly materializeFn?: MaterializeFn;
 
-  /** Active capture contexts, keyed by absolute run folder path. */
+  /** Active capture contexts, keyed by captureId. */
   private readonly contexts = new Map<string, CaptureContext>();
 
   constructor(
     private readonly push: (s: CaptureStatusView) => void,
-    opts: { settleMs?: number } = {},
+    opts: { settleMs?: number; materializeFn?: MaterializeFn } = {},
   ) {
     this.settleMs = opts.settleMs ?? 6_000;
+    this.materializeFn = opts.materializeFn;
 
     for (const [id, factory] of [
       ['opencode', createOpenCodeAdapter],
@@ -74,44 +86,66 @@ export class CaptureManager {
     return listAdapters().map((a) => ({ id: a.id, agentName: a.agentName }));
   }
 
-  /** Agent-neutral display name for an adapter id (falls back to the id). */
   private agentNameOf(id?: string): string | undefined {
     if (!id) return undefined;
     return getAdapter(id)?.agentName ?? listAdapters().find((a) => a.id === id)?.agentName ?? undefined;
   }
 
   /**
-   * True if the specific folder (or any folder) has an active watch.
+   * True if the specific captureId (or folder for legacy callers) has an active watch.
    * Passing no argument tests whether ANY capture is active.
    */
-  isActive(folder?: string): boolean {
-    if (folder !== undefined) return this.contexts.has(folder);
+  isActive(captureIdOrFolder?: string): boolean {
+    if (captureIdOrFolder !== undefined) {
+      if (this.contexts.has(captureIdOrFolder)) return true;
+      return this.findByFolder(captureIdOrFolder) !== undefined;
+    }
     return this.contexts.size > 0;
   }
 
   /**
-   * Arm a specific run folder with the given adapter.
+   * Arm a Draft or existing Run.
    *
-   * Invariant: only THIS folder's existing watch is stopped (if any).
-   * All other active captures are completely untouched.
+   * @param captureId  Stable identity for this capture (passed from the tab).
+   * @param adapterId  Adapter to use (default 'opencode').
+   * @param opts.folder         Physical folder (undefined = derive from captureId for
+   *                            legacy callers; null / opts.isDraft=true = Draft).
+   * @param opts.isDraft        Explicitly arm as Draft (folder = null, no legacy fallback).
+   * @param opts.materializeParams  Required when isDraft=true to enable auto-materialization.
+   *
+   * Backward compatibility: arm(folderPath, adapterId) with no opts treats
+   * folderPath as both captureId AND folder.
    */
-  async arm(folder: string, adapterId = 'opencode'): Promise<void> {
-    if (typeof folder !== 'string' || !folder.trim()) throw new Error('run folder 경로가 필요합니다.');
+  async arm(
+    captureId: string,
+    adapterId = 'opencode',
+    opts?: { folder?: string; isDraft?: boolean; materializeParams?: MaterializeParams },
+  ): Promise<void> {
+    if (typeof captureId !== 'string' || !captureId.trim()) {
+      throw new Error('captureId가 필요합니다.');
+    }
 
-    // Stop only this folder's existing context — never touch others.
-    await this.stopContextForFolder(folder, false);
+    // Resolve folder:
+    //   isDraft=true  → null (Draft)
+    //   folder given  → use it
+    //   neither       → treat captureId as folder (legacy: arm(folderPath, adapterid))
+    const folder: string | null =
+      opts?.isDraft === true ? null :
+      opts?.folder !== undefined ? opts.folder :
+      captureId;
+
+    // Stop only this captureId's existing context — never touch others.
+    await this.stopById(captureId, false);
 
     const adapter = getAdapter(adapterId);
     if (!adapter) {
-      this.push({ phase: 'error', folder, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
+      this.push({ phase: 'error', captureId, folder: folder ?? undefined, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
       throw new Error(`어댑터를 찾을 수 없습니다: ${adapterId}`);
     }
 
-    // Use a no-op handle until the real one is assigned; this lets the context
-    // be registered BEFORE startWatch so synchronous sink events (e.g. an
-    // immediate 'sessions' armPass) pass the stale-handle guard correctly.
     const noopHandle: WatchHandle = { adapterId: adapter.id, stop: async () => undefined };
     const ctx: CaptureContext = {
+      captureId,
       folder,
       adapterId: adapter.id,
       handle: noopHandle,
@@ -120,44 +154,102 @@ export class CaptureManager {
       lastPhase: null,
       lastPushKey: '',
       pending: null,
+      materializeParams: opts?.materializeParams,
     };
 
-    // Register BEFORE startWatch so the sink closure's identity guard works
-    // for any events the adapter emits synchronously during startup.
-    this.contexts.set(folder, ctx);
+    // Register BEFORE startWatch so synchronous sink events pass the stale-handle guard.
+    this.contexts.set(captureId, ctx);
 
     try {
       ctx.handle = await adapter.startWatch({}, (e) => this.onEvent(ctx, e));
 
-      // Guard: a synchronous 'stopped' status during startWatch may have already
-      // removed the context — if so, stop the real handle and exit cleanly.
-      if (this.contexts.get(folder) !== ctx) {
+      if (this.contexts.get(captureId) !== ctx) {
         await ctx.handle.stop().catch(() => undefined);
         return;
       }
 
-      this.emitToCtx(ctx, { phase: 'watching', folder, adapterId: adapter.id });
+      this.emitToCtx(ctx, {
+        phase: 'watching',
+        captureId,
+        folder: folder ?? undefined,
+        adapterId: adapter.id,
+      });
     } catch (err) {
-      this.contexts.delete(folder);
+      this.contexts.delete(captureId);
       this.clearPending(ctx);
       const message = err instanceof Error ? err.message : String(err);
-      this.push({ phase: 'error', folder, message });
+      this.push({ phase: 'error', captureId, folder: folder ?? undefined, message });
       throw err instanceof Error ? err : new Error(message);
     }
   }
 
   /**
-   * Explicit user selection (ambiguity resolution for ONE run folder).
-   * The chosen sessionId becomes THE only source for that Run; other Runs
-   * are not affected.
+   * Assign a physical folder to an existing Draft context without resetting
+   * SessionBindingPolicy. Called when the frontend materializes a Run manually
+   * (e.g. on non-empty Prompt save) while capture is already armed.
    *
-   * @param folder - The run folder whose ambiguity to resolve. When omitted
-   *   the method falls back to the single active context (legacy / test usage).
+   * If no context exists for captureId this is a no-op (returns false).
    */
-  selectSession(sessionId: string, folder?: string): boolean {
-    const ctx = folder !== undefined
-      ? this.contexts.get(folder)
-      : (this.contexts.size === 1 ? [...this.contexts.values()][0] : undefined);
+  assignFolder(captureId: string, folder: string): boolean {
+    const ctx = this.contexts.get(captureId);
+    if (!ctx) return false;
+    if (ctx.folder === folder) return true;
+    ctx.folder = folder;
+    ctx.lastPushKey = '';
+    this.emitToCtx(ctx, {
+      phase: 'watching',
+      captureId,
+      folder,
+      adapterId: ctx.adapterId,
+    });
+    return true;
+  }
+
+  /**
+   * Disarm a specific capture (by captureId or folder for legacy callers).
+   * With no argument stops ALL active contexts.
+   */
+  async disarm(captureIdOrFolder?: string): Promise<void> {
+    if (captureIdOrFolder !== undefined) {
+      if (this.contexts.has(captureIdOrFolder)) {
+        await this.stopById(captureIdOrFolder, true);
+      } else {
+        const ctx = this.findByFolder(captureIdOrFolder);
+        if (ctx) {
+          await this.stopById(ctx.captureId, true);
+        } else {
+          this.push({ phase: 'stopped', folder: captureIdOrFolder });
+        }
+      }
+    } else {
+      const ids = [...this.contexts.keys()];
+      for (const id of ids) {
+        await this.stopById(id, true).catch(() => undefined);
+      }
+    }
+  }
+
+  /** Stop all active captures silently (app shutdown / test cleanup). */
+  async disarmAll(): Promise<void> {
+    const ids = [...this.contexts.keys()];
+    await Promise.all(ids.map((id) => this.stopById(id, false).catch(() => undefined)));
+  }
+
+  async dispose(): Promise<void> {
+    await this.disarmAll();
+  }
+
+  /**
+   * Explicit user selection (ambiguity resolution).
+   * Accepts captureId (preferred) or folder path (legacy).
+   */
+  selectSession(sessionId: string, captureIdOrFolder?: string): boolean {
+    let ctx: CaptureContext | undefined;
+    if (captureIdOrFolder !== undefined) {
+      ctx = this.contexts.get(captureIdOrFolder) ?? this.findByFolder(captureIdOrFolder);
+    } else if (this.contexts.size === 1) {
+      ctx = [...this.contexts.values()][0];
+    }
     if (!ctx) return false;
 
     const ok = ctx.policy.bindManual(sessionId);
@@ -165,7 +257,8 @@ export class CaptureManager {
       ctx.lastPushKey = '';
       this.emitToCtx(ctx, {
         phase: 'watching',
-        folder: ctx.folder,
+        captureId: ctx.captureId,
+        folder: ctx.folder ?? undefined,
         adapterId: ctx.adapterId,
         boundSessionId: sessionId,
       });
@@ -173,64 +266,34 @@ export class CaptureManager {
     return ok;
   }
 
-  /**
-   * Disarm a specific run folder. All other active captures are unaffected.
-   *
-   * When called with no argument the method stops all active contexts
-   * (backward-compatible with test/legacy call sites that pre-date multi-run).
-   */
-  async disarm(folder?: string): Promise<void> {
-    if (folder !== undefined) {
-      await this.stopContextForFolder(folder, true);
-    } else {
-      // Legacy / cleanup: disarm every active context with status pushes.
-      const folders = [...this.contexts.keys()];
-      for (const f of folders) {
-        await this.stopContextForFolder(f, true).catch(() => undefined);
-      }
+  // ── Internal helpers ──────────────────────────────────────────────────────
+
+  private findByFolder(folder: string): CaptureContext | undefined {
+    for (const ctx of this.contexts.values()) {
+      if (ctx.folder === folder) return ctx;
     }
+    return undefined;
   }
 
-  /** Stop all active captures silently (app shutdown / test cleanup). */
-  async disarmAll(): Promise<void> {
-    const folders = [...this.contexts.keys()];
-    await Promise.all(folders.map((f) => this.stopContextForFolder(f, false).catch(() => undefined)));
-  }
-
-  /** Alias kept for backward compatibility with the app shutdown path. */
-  async dispose(): Promise<void> {
-    await this.disarmAll();
-  }
-
-  // ── Per-folder internal stop ──────────────────────────────────────────────
-
-  private async stopContextForFolder(folder: string, withStatus: boolean): Promise<void> {
-    const ctx = this.contexts.get(folder);
+  private async stopById(captureId: string, withStatus: boolean): Promise<void> {
+    const ctx = this.contexts.get(captureId);
     if (!ctx) {
-      if (withStatus) this.push({ phase: 'stopped', folder });
+      if (withStatus) this.push({ phase: 'stopped', captureId, folder: undefined });
       return;
     }
-    this.contexts.delete(folder);
+    this.contexts.delete(captureId);
     this.clearPending(ctx);
     ctx.lastPhase = null;
-    const h = ctx.handle;
-    if (!withStatus) {
-      await h.stop().catch(() => undefined);
-      return;
+    await ctx.handle.stop().catch(() => undefined);
+    if (withStatus) {
+      this.push({ phase: 'stopped', captureId, folder: ctx.folder ?? undefined });
     }
-    await h.stop().catch(() => undefined);
-    this.push({ phase: 'stopped', folder });
   }
 
   // ── Event routing ─────────────────────────────────────────────────────────
 
-  /**
-   * Called by the adapter's sink. The ctx reference is what we use to guard
-   * against stale events from a handle that was already replaced or stopped:
-   * if the folder now maps to a different context object, this event is stale.
-   */
   private onEvent(ctx: CaptureContext, e: AdapterEvent): void {
-    if (this.contexts.get(ctx.folder) !== ctx) return; // stale handle — ignore
+    if (this.contexts.get(ctx.captureId) !== ctx) return; // stale — ignore
 
     switch (e.type) {
       case 'sessions':
@@ -241,20 +304,30 @@ export class CaptureManager {
           const bound = ctx.policy?.binding?.sessionId;
           this.emitToCtx(ctx, {
             phase: 'watching',
-            folder: ctx.folder,
+            captureId: ctx.captureId,
+            folder: ctx.folder ?? undefined,
             adapterId: ctx.adapterId,
             ...(bound ? { boundSessionId: bound } : {}),
           });
         } else if (e.phase === 'stopped') {
-          // Timeout-driven stop from inside the adapter.
-          if (this.contexts.get(ctx.folder) === ctx) {
-            this.contexts.delete(ctx.folder);
-            this.emitToCtx(ctx, { phase: 'stopped', folder: ctx.folder, message: e.detail });
+          if (this.contexts.get(ctx.captureId) === ctx) {
+            this.contexts.delete(ctx.captureId);
+            this.emitToCtx(ctx, {
+              phase: 'stopped',
+              captureId: ctx.captureId,
+              folder: ctx.folder ?? undefined,
+              message: e.detail,
+            });
           }
         }
         break;
       case 'error':
-        this.emitToCtx(ctx, { phase: 'error', folder: ctx.folder, message: e.message });
+        this.emitToCtx(ctx, {
+          phase: 'error',
+          captureId: ctx.captureId,
+          folder: ctx.folder ?? undefined,
+          message: e.message,
+        });
         break;
       case 'completion':
         this.onCompletion(ctx, e.completion);
@@ -263,7 +336,7 @@ export class CaptureManager {
   }
 
   private onSessions(ctx: CaptureContext, sessions: SessionObservation[], armPass: boolean): void {
-    if (this.contexts.get(ctx.folder) !== ctx) return;
+    if (this.contexts.get(ctx.captureId) !== ctx) return;
     if (!ctx.policy) return;
 
     if (armPass && !ctx.armSnapshotSeeded) {
@@ -272,8 +345,6 @@ export class CaptureManager {
     }
     ctx.policy.note(sessions);
 
-    // Any bound-but-not-yet-persisted binding is provisional: a rival
-    // plausible source revokes it so files are never written on a guess.
     if (ctx.policy.binding && !ctx.policy.isPersisted) {
       const boundId = ctx.policy.binding.sessionId;
       const rival =
@@ -289,8 +360,6 @@ export class CaptureManager {
 
     if (!ctx.policy.binding) {
       if (ctx.armSnapshotSeeded && ctx.policy.tryAutoBind()) {
-        // Early deterministic binding — the bound Session identity becomes
-        // visible while the agent is still working (Session-Bound Capture UX).
         this.emitWatchingBound(ctx);
         return;
       }
@@ -303,7 +372,7 @@ export class CaptureManager {
   }
 
   private onCompletion(ctx: CaptureContext, completion: AgentCompletion): void {
-    if (this.contexts.get(ctx.folder) !== ctx) return;
+    if (this.contexts.get(ctx.captureId) !== ctx) return;
     if (!ctx.policy) return;
 
     const decision = ctx.policy.decide(completion.sessionId ?? '');
@@ -313,10 +382,8 @@ export class CaptureManager {
       return;
     }
 
-    // accept — hold a settle window so a rival session appearing moments
-    // later can still revoke the binding before files are written.
     if (ctx.pending) {
-      if (ctx.pending.completion.sessionId === completion.sessionId) return; // dup while settling
+      if (ctx.pending.completion.sessionId === completion.sessionId) return;
       this.cancelPendingAndAmbiguate(ctx);
       return;
     }
@@ -325,7 +392,7 @@ export class CaptureManager {
   }
 
   private async settleCapture(ctx: CaptureContext): Promise<void> {
-    if (this.contexts.get(ctx.folder) !== ctx) return;
+    if (this.contexts.get(ctx.captureId) !== ctx) return;
     const p = ctx.pending;
     if (!p) return;
     ctx.pending = null;
@@ -338,11 +405,6 @@ export class CaptureManager {
     this.emitAmbiguous(ctx);
   }
 
-  /**
-   * Revoke a provisional binding whenever a rival session appears — used for
-   * early deterministic bindings with no pending completion yet, and for
-   * settle-window rival detection.
-   */
   private revokeAndAmbiguate(ctx: CaptureContext): void {
     this.clearPending(ctx);
     ctx.policy?.revoke();
@@ -353,7 +415,8 @@ export class CaptureManager {
     ctx.lastPushKey = '';
     this.emitToCtx(ctx, {
       phase: 'watching',
-      folder: ctx.folder,
+      captureId: ctx.captureId,
+      folder: ctx.folder ?? undefined,
       adapterId: ctx.adapterId,
     });
   }
@@ -364,16 +427,45 @@ export class CaptureManager {
   }
 
   private async persist(ctx: CaptureContext, completion: AgentCompletion): Promise<void> {
-    if (this.contexts.get(ctx.folder) !== ctx) return;
+    if (this.contexts.get(ctx.captureId) !== ctx) return;
     const binding = ctx.policy?.binding;
     if (!binding || binding.sessionId !== completion.sessionId) return;
 
-    const outcome = captureCompletion(ctx.folder, completion, { bindingReason: binding.reason });
+    // ── Lazy materialization (Phase A2) ──────────────────────────────────────
+    // If no physical folder exists yet (Draft arm), atomically create one now.
+    let runLabel: string | undefined;
+    if (ctx.folder === null) {
+      if (!ctx.materializeParams || !this.materializeFn) {
+        this.emitToCtx(ctx, {
+          phase: 'error',
+          captureId: ctx.captureId,
+          message: '런 폴더를 확정할 수 없습니다. 프로젝트를 선택한 뒤 캡처를 재시작하세요.',
+        });
+        return;
+      }
+      try {
+        const { folder, run } = await this.materializeFn(ctx.captureId, ctx.materializeParams);
+        if (this.contexts.get(ctx.captureId) !== ctx) return; // disarmed during await
+        ctx.folder = folder;
+        runLabel = run;
+      } catch (err) {
+        if (this.contexts.get(ctx.captureId) !== ctx) return;
+        const message = err instanceof Error ? err.message : String(err);
+        this.emitToCtx(ctx, { phase: 'error', captureId: ctx.captureId, message });
+        return;
+      }
+    }
+
+    const folder = ctx.folder!;
+    if (!runLabel) runLabel = path.basename(folder);
+
+    const outcome = captureCompletion(folder, completion, { bindingReason: binding.reason });
     ctx.policy.markPersisted();
     if (!outcome.ok) {
       this.emitToCtx(ctx, {
         phase: 'error',
-        folder: ctx.folder,
+        captureId: ctx.captureId,
+        folder,
         message: outcome.reason ?? '결과 저장에 실패했습니다.',
       });
       return;
@@ -381,46 +473,37 @@ export class CaptureManager {
     if (outcome.duplicate) return;
     this.emitToCtx(ctx, {
       phase: 'captured',
-      folder: ctx.folder,
+      captureId: ctx.captureId,
+      folder,
+      run: runLabel,
       adapterId: completion.adapterId,
       files: outcome.written,
       boundSessionId: binding.sessionId,
     });
-    // One-shot semantics: silently disarm after a successful capture so a
-    // later turn can never surprise-overwrite related files.
-    void this.stopContextForFolder(ctx.folder, false);
+    void this.stopById(ctx.captureId, false);
   }
 
   private emitAmbiguous(ctx: CaptureContext): void {
     const candidates: CaptureCandidateView[] = ctx.policy!.candidates()
       .slice(0, 8)
-      .map((c) => ({
-        sessionId: c.sessionId,
-        title: c.title,
-        directory: c.directory,
-      }));
+      .map((c) => ({ sessionId: c.sessionId, title: c.title, directory: c.directory }));
     this.emitToCtx(ctx, {
       phase: 'ambiguous',
-      folder: ctx.folder,
+      captureId: ctx.captureId,
+      folder: ctx.folder ?? undefined,
       adapterId: ctx.adapterId,
       candidates,
-      message:
-        '에이전트 세션이 여러 개 후보가 되어 자동 확정할 수 없습니다. 결과를 받을 세션을 선택하세요.',
+      message: '에이전트 세션이 여러 개 후보가 되어 자동 확정할 수 없습니다. 결과를 받을 세션을 선택하세요.',
     });
   }
 
-  /**
-   * Enrich and push a status view scoped to one context.
-   * Dedupe suppresses repeat watching/ambiguous pushes with an identical key
-   * so the UI is not spammed on every poll cycle.
-   */
   private emitToCtx(ctx: CaptureContext, s: CaptureStatusView): void {
     const enriched: CaptureStatusView = {
       ...s,
+      captureId: ctx.captureId,
+      folder: s.folder ?? (ctx.folder ?? undefined),
       agentName: s.agentName ?? this.agentNameOf(s.adapterId ?? ctx.adapterId ?? undefined),
     };
-    // Provenance: visible Session identity always mirrors the backend binding
-    // state (sessionId + reason + title) — never a frontend-only value.
     if (ctx.policy) {
       const binding = ctx.policy.binding;
       if (binding) {

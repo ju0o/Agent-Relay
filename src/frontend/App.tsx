@@ -16,6 +16,7 @@ import {
   CaptureStatusView,
   DfContext,
   HistoryItem,
+  MaterializeParams,
   ProjectInfo,
   ProjectViewData,
   ROOT_PROJECT,
@@ -59,6 +60,7 @@ function RunDot({ hasPrompt, hasResult }: { hasPrompt: boolean; hasResult: boole
 // ── 에디터 탭 타입 ───────────────────────────────────────────────────────────
 interface EditorTab {
   id: string;
+  captureId: string;   // Phase A2: stable Draft identity, independent of folder
   agent: string;
   run: string;
   folder: string;
@@ -76,8 +78,12 @@ interface EditorTab {
 
 let _tabCounter = 0;
 function makeTab(agent = 'Claude Code'): EditorTab {
+  const n = ++_tabCounter;
   return {
-    id: `tab-${++_tabCounter}`,
+    id: `tab-${n}`,
+    captureId: (typeof crypto !== 'undefined' && typeof (crypto as { randomUUID?: () => string }).randomUUID === 'function')
+      ? (crypto as { randomUUID: () => string }).randomUUID()
+      : `cid-${n}-${Date.now().toString(36)}`,
     agent,
     run: '', folder: '', prompt: '', result: '', tags: [],
     promptPreview: false, resultPreview: false, promptDrag: false, resultDrag: false,
@@ -337,7 +343,9 @@ function AppInner(): React.ReactElement {
   // All per-run UI logic uses this derived value — switching tabs automatically
   // shows the correct capture state without any extra event routing.
   const capture: CaptureStatusView | null =
-    (activeTab?.folder ? captureMap.get(activeTab.folder) : undefined) ?? null;
+    (activeTab?.captureId ? captureMap.get(activeTab.captureId) : undefined)
+    ?? (activeTab?.folder ? captureMap.get(activeTab.folder) : undefined)
+    ?? null;
 
   // Keep captureRef in sync on every render so the safety-disarm effect below
   // can read the current capture state without declaring it as a dep.
@@ -346,10 +354,10 @@ function AppInner(): React.ReactElement {
   // ── Agent 어댑터 자동 수신 상태 구독 ─────────────────────────────────────────
   const captureHandlerRef = useRef<(s: CaptureStatusView) => void>(() => undefined);
   useEffect(() => onCaptureStatus(s => {
-    // Route each status event to its run folder in the map — events for Run B
-    // never overwrite Run A's capture state.
-    if (s.folder) {
-      setCaptureMap(prev => new Map(prev).set(s.folder!, { ...s }));
+    // Route by captureId (preferred, Phase A2) or folder (legacy).
+    const key = s.captureId ?? s.folder;
+    if (key) {
+      setCaptureMap(prev => new Map(prev).set(key, { ...s }));
     }
     captureHandlerRef.current(s);
   }), []);
@@ -376,9 +384,13 @@ function AppInner(): React.ReactElement {
       // different adapter (stale cross-agent state), disarm only that folder.
       // This prevents an OpenCode session from being carried into a Claude Code
       // arm or vice versa — other active captures are unaffected.
-      if (c?.phase === 'watching' && c.folder === tabFolder && tabFolder && c.adapterId !== adapterId) {
+      const tabCaptureId = activeTab?.captureId ?? '';
+      if (c?.phase === 'watching' && c.captureId === tabCaptureId && c.adapterId !== adapterId) {
         void (async () => {
-          try { await must({ op: 'capture:disarm', folder: tabFolder }); setPickSession(''); } catch { /* ignore */ }
+          try {
+            await must({ op: 'capture:disarm', captureId: tabCaptureId });
+            setPickSession('');
+          } catch { /* ignore */ }
         })();
       }
       setCaptureAgent(adapterId);
@@ -486,6 +498,10 @@ function AppInner(): React.ReactElement {
     if (!tab) return;
     const sessId = activeSessionId;
     const doRemove = (): void => {
+      // Phase A2: disarm Draft capture (even before folder exists).
+      if (tab.captureId) {
+        void must({ op: 'capture:disarm', captureId: tab.captureId }).catch(() => undefined);
+      }
       setSessions(prev => prev.map(s => {
         if (s.id !== sessId) return s;
         const next = s.tabs.filter(t => t.id !== id);
@@ -567,11 +583,22 @@ function AppInner(): React.ReactElement {
     if (!tab || !dataRoot) return;
     let folder = resolved?.folder ?? tab.folder;
     if (!folder) {
+      // Phase A2: don't materialize for whitespace-only content.
+      if (!tab.prompt.trim()) return;
       if (!project) { notify('err', '프로젝트를 먼저 선택하세요.'); return; }
-      const res = await getNextRun(project, tab.agent, date);
+      // Phase A2: use atomic run:materialize
+      const res = await must<RunFolderResult>({
+        op: 'run:materialize',
+        captureId: tab.captureId,
+        dataRoot,
+        project,
+        date,
+        agent: tab.agent,
+      });
       if (!res) { notify('err', '런 폴더를 생성할 수 없습니다.'); return; }
       resolved = res;
       folder = res.folder;
+      updateTab(tabId, res);
     }
     const runNo = resolved?.run ?? tab.run;
     try {
@@ -595,11 +622,21 @@ function AppInner(): React.ReactElement {
     if (!tab || !dataRoot) return;
     let folder = resolved?.folder ?? tab.folder;
     if (!folder) {
+      // Phase A2: don't materialize for whitespace-only content.
+      if (!tab.result.trim()) return;
       if (!project) { notify('err', '프로젝트를 먼저 선택하세요.'); return; }
-      const res = await getNextRun(project, tab.agent, date);
+      const res = await must<RunFolderResult>({
+        op: 'run:materialize',
+        captureId: tab.captureId,
+        dataRoot,
+        project,
+        date,
+        agent: tab.agent,
+      });
       if (!res) { notify('err', '런 폴더를 생성할 수 없습니다.'); return; }
       resolved = res;
       folder = res.folder;
+      updateTab(tabId, res);
     }
     const runNo = resolved?.run ?? tab.run;
     try {
@@ -621,12 +658,26 @@ function AppInner(): React.ReactElement {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab || !dataRoot) return;
 
+    const hasPrompt = tab.prompt.trim().length > 0;
+    const hasResult = tab.result.trim().length > 0;
+
+    // Phase A2: empty Ctrl+S on an unmaterialized Draft → no-op, no folder created.
+    if (!tab.folder && !hasPrompt && !hasResult) return;
+
     // 런 폴더가 없으면 딱 한 번만 생성하고 두 저장에 같은 폴더를 넘긴다.
     // (stale closure로 인해 prompt/result가 서로 다른 런에 저장되는 문제 방지)
     let resolved: RunFolderResult | undefined;
     if (!tab.folder) {
       if (!project) { notify('err', '프로젝트를 먼저 선택하세요.'); return; }
-      const res = await getNextRun(project, tab.agent, date);
+      // Phase A2: use atomic run:materialize (also notifies CaptureManager of folder)
+      const res = await must<RunFolderResult>({
+        op: 'run:materialize',
+        captureId: tab.captureId,
+        dataRoot,
+        project,
+        date,
+        agent: tab.agent,
+      });
       if (!res) { notify('err', '런 폴더를 생성할 수 없습니다.'); return; }
       resolved = res;
       updateTab(tabId, res);
@@ -640,15 +691,23 @@ function AppInner(): React.ReactElement {
   // never from a stale captureAgent dropdown value. The Owner must not have
   // to select the same Agent twice.
   async function armAutoCapture(): Promise<void> {
-    if (!activeTab?.folder) { notify('err', '런 폴더가 필요합니다. 먼저 저장하세요.'); return; }
+    if (!activeTab) return;
     const adapterId = agentNameToAdapterId(activeTab.agent);
     if (!adapterId) {
       notify('err', `"${activeTab.agent}"에는 자동 수신 어댑터가 없습니다. 결과를 직접 붙여넣기하세요.`);
       return;
     }
     const agentLabel = agentChoices.find(a => a.id === adapterId)?.agentName ?? activeTab.agent;
+    const captureId = activeTab.captureId;
+    const folder = activeTab.folder || undefined;
+    // Build materializeParams if arming a Draft (no physical folder yet).
+    const isDraft = !folder;
+    const materializeParams: MaterializeParams | undefined =
+      isDraft && project && dataRoot
+        ? { dataRoot, project, date, agent: activeTab.agent }
+        : undefined;
     try {
-      await must({ op: 'capture:arm', folder: activeTab.folder, adapterId });
+      await must({ op: 'capture:arm', captureId, adapterId, folder, isDraft, materializeParams });
       setPickSession('');
       notify('info', `${agentLabel} 응답 완료를 감시합니다. 에이전트에서 작업을 마치면 결과가 자동으로 채워집니다.`);
     } catch (e) {
@@ -657,10 +716,10 @@ function AppInner(): React.ReactElement {
   }
 
   async function disarmAutoCapture(): Promise<void> {
-    const folder = activeTab?.folder;
-    if (!folder) return;
+    if (!activeTab) return;
+    const captureId = activeTab.captureId;
     try {
-      await must({ op: 'capture:disarm', folder });
+      await must({ op: 'capture:disarm', captureId });
       setPickSession('');
       notify('info', '자동 수신을 해제했습니다.');
     } catch (e) {
@@ -669,10 +728,10 @@ function AppInner(): React.ReactElement {
   }
 
   async function selectCaptureSession(sessionId: string): Promise<void> {
-    const folder = activeTab?.folder;
-    if (!folder) return;
+    if (!activeTab) return;
+    const captureId = activeTab.captureId;
     try {
-      await must({ op: 'capture:select', sessionId, folder });
+      await must({ op: 'capture:select', sessionId, captureId });
       notify('info', `세션이 바인딩되었습니다: ${sessionId.slice(0, 12)}…`);
     } catch (e) {
       notify('err', e instanceof Error ? e.message : String(e));
@@ -680,7 +739,7 @@ function AppInner(): React.ReactElement {
   }
 
   function handleCapturedStatus(s: CaptureStatusView): void {
-    if (s.phase === 'error' && s.folder && s.message) {
+    if (s.phase === 'error' && s.message) {
       notify('err', `자동 수신 오류: ${s.message}`);
       return;
     }
@@ -697,16 +756,28 @@ function AppInner(): React.ReactElement {
           // result.md was written by capture (fresh write or overwrite-of-empty).
           // Refresh the result pane unless the user has unsaved manual edits.
           setSessions(prev => prev.map(sess => {
-            const idx = sess.tabs.findIndex(t => t.folder === s.folder);
+            const idx = s.captureId
+              ? sess.tabs.findIndex(t => t.captureId === s.captureId)
+              : sess.tabs.findIndex(t => t.folder === s.folder);
             if (idx < 0) return sess;
             const tab = sess.tabs[idx]!;
+            // Also update folder/run if materialization just happened (Draft → Run).
+            const newFolder = s.folder && s.folder !== tab.folder ? s.folder : undefined;
+            const newRun = s.run && s.run !== tab.run ? s.run : undefined;
             // Data-safety guard: if the tab has unsaved manual content (user typed
             // something but did not save it), do not silently destroy it.
             // resultSaved=true means the pane mirrors a saved file → safe to refresh.
             // result='' means the pane is empty → safe to populate.
             if (tab.result && !tab.resultSaved) return sess;
             const nextTabs = [...sess.tabs];
-            nextTabs[idx] = { ...tab, result: rec.result, tags: rec.tags, resultSaved: true };
+            nextTabs[idx] = {
+              ...tab,
+              ...(newFolder ? { folder: newFolder } : {}),
+              ...(newRun ? { run: newRun } : {}),
+              result: rec.result,
+              tags: rec.tags,
+              resultSaved: true,
+            };
             return { ...sess, tabs: nextTabs };
           }));
           notify('ok', `${agentLabel} 결과 자동 수신 완료 — 결과 패널을 확인하세요.`);

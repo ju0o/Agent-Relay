@@ -94,9 +94,10 @@ export type RelayRequest =
  | { op: 'settings:setProjectOrder'; order: string[] }
  | { op: 'settings:setAgentOrder'; order: string[] }
  | { op: 'adapters:list' }
- | { op: 'capture:arm'; folder: string; adapterId?: string }
- | { op: 'capture:disarm'; folder: string }
- | { op: 'capture:select'; sessionId: string; folder: string }
+ | { op: 'capture:arm'; captureId?: string; folder?: string; adapterId?: string; isDraft?: boolean; materializeParams?: MaterializeParams }
+ | { op: 'capture:disarm'; captureId?: string; folder?: string }
+ | { op: 'capture:select'; sessionId: string; captureId?: string; folder?: string }
+ | { op: 'run:materialize'; captureId?: string; dataRoot: string; project: string; date: string; agent: string }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -291,6 +292,14 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
 
 export type CapturePhase = 'watching' | 'ambiguous' | 'captured' | 'error' | 'stopped';
 
+/** Parameters for on-demand physical Run folder creation (Phase A2). */
+export interface MaterializeParams {
+  dataRoot: string;
+  project: string;
+  date: string;
+  agent: string;
+}
+
 /**
  * Agent-neutral Session-bound capture state (Session-Bound Capture UX, packet 03).
  *
@@ -310,6 +319,10 @@ export type CapturePhase = 'watching' | 'ambiguous' | 'captured' | 'error' | 'st
 export interface CaptureStatusView {
   /** Canonical capture lifecycle phase (owned by CaptureManager/binding policy). */
   phase: CapturePhase;
+  /** Phase A2: stable Draft/Run capture identity. */
+  captureId?: string;
+  /** Phase A2: run number (e.g. "04"), set when materialization is known. */
+  run?: string;
   /** Run folder the watch is bound to. */
   folder?: string;
   /** Adapter id this Run is listening to, e.g. 'opencode' / 'claude-code'. */

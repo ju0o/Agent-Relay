@@ -323,21 +323,44 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'capture:arm': {
       if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
       const adapterId = typeof req.adapterId === 'string' && req.adapterId ? req.adapterId : 'opencode';
-      await captureManager.arm(req.folder, adapterId);
-      return { armed: true, folder: req.folder, adapterId };
+      const captureId = typeof req.captureId === 'string' && req.captureId ? req.captureId : (req.folder ?? '');
+      const folder = typeof req.folder === 'string' && req.folder ? req.folder : undefined;
+      const isDraft = req.isDraft === true;
+      await captureManager.arm(captureId, adapterId, { folder, isDraft, materializeParams: req.materializeParams });
+      return { armed: true, captureId, folder: folder ?? null, adapterId };
     }
 
     case 'capture:disarm': {
       if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
-      await captureManager.disarm(req.folder);
+      const captureIdOrFolder = typeof req.captureId === 'string' && req.captureId
+        ? req.captureId
+        : typeof req.folder === 'string' && req.folder
+          ? req.folder
+          : undefined;
+      await captureManager.disarm(captureIdOrFolder);
       return true;
     }
 
     case 'capture:select': {
       if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
-      const ok = captureManager.selectSession(req.sessionId, req.folder);
+      const captureIdOrFolder = typeof req.captureId === 'string' && req.captureId
+        ? req.captureId
+        : typeof req.folder === 'string' && req.folder
+          ? req.folder
+          : undefined;
+      const ok = captureManager.selectSession(req.sessionId, captureIdOrFolder);
       if (!ok) throw new Error('세션을 선택할 수 없습니다. 감시가 활성 상태인지 확인하세요.');
       return { selected: req.sessionId };
+    }
+
+    case 'run:materialize': {
+      const { folder, run } = await relay.atomicMaterializeRun(req.dataRoot, req.project, req.date, req.agent);
+      // If a captureId was given, assign the new folder to that Draft context.
+      if (captureManager && typeof req.captureId === 'string' && req.captureId) {
+        captureManager.assignFolder(req.captureId, folder);
+      }
+      const out: RunFolderResult = { folder, run };
+      return out;
     }
 
     case 'update:check': {
@@ -496,7 +519,11 @@ app.whenReady().then(() => {
   createWindow();
 
   // ── Agent adapter auto-capture ──
-  captureManager = new CaptureManager(pushCaptureStatus);
+  captureManager = new CaptureManager(pushCaptureStatus, {
+    materializeFn: async (_captureId, params) => {
+      return relay.atomicMaterializeRun(params.dataRoot, params.project, params.date, params.agent);
+    },
+  });
 
   // ── Updater ──
   // 시작 후 조용히 1회 확인(정책상 자동 다운로드/설치 없음). 새 버전이 있으면

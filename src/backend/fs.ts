@@ -709,3 +709,35 @@ export function readFeedbackRaw(dataRoot: string, id: string): string {
 export function readProjectFeedbackRaw(dataRoot: string, project: string, id: string): string {
   return readRawInDir(projectDogfoodingDir(dataRoot, project), id);
 }
+
+/** Module-level promise chain that serializes concurrent materialization requests. */
+let _materializeLock: Promise<void> = Promise.resolve();
+
+/**
+ * Atomically allocate the next Run number and create its folder.
+ *
+ * All concurrent calls are serialized through a promise chain so two Draft
+ * Runs completing at the same moment never receive the same Run number.
+ * Uses only synchronous fs operations inside the chain to guarantee atomicity
+ * within Node.js's single-threaded event loop.
+ *
+ * @returns { folder: absolute path, run: zero-padded number string }
+ */
+export function atomicMaterializeRun(
+  dataRoot: string,
+  project: string,
+  date: string,
+  agent: string,
+): Promise<{ folder: string; run: string }> {
+  const result = _materializeLock.then((): { folder: string; run: string } => {
+    const run = nextRunNumber(dataRoot, project, date, agent);
+    const folder = ensureRunFolder(dataRoot, project, date, agent, run);
+    return { folder, run };
+  });
+  // Advance the shared lock to the tail of this operation (swallowing its value).
+  _materializeLock = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
