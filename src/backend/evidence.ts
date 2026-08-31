@@ -1,12 +1,20 @@
 /**
- * Evidence kernel (Phase C).
+ * Evidence kernel (Phase C — trust-boundary correction).
  *
  * Local-first filesystem SSOT under Project/_relay/evidence/<EVIDENCE-ID>/.
  * Append-oriented: identity / linkage / type / trustLevel are immutable after create.
  * Higher confidence later = create NEW Evidence — never patch CLAIMED → VERIFIED.
+ * Evidence is immutable: only createdAt, no updatedAt. metadata.supersedes may link corrections.
  *
  * AGENT RESULT ≠ TASK OUTCOME.
  * Does NOT implement Event Bus, collectors, MCP, PM Gateway, or auto-acceptance.
+ *
+ * Trust boundary:
+ *   - Public IPC derives trustLevel server-side; callers never choose trustLevel.
+ *   - Internal primitive createEvidenceInternal may accept resolved trustLevel but is
+ *     NOT exposed via frontend/MCP-facing IPC.
+ *   - Worker-safe helpers always mint CLAIMED; adapter helpers always OBSERVED;
+ *     collector helpers always VERIFIED (require runId); PM helper derives ACCEPTED.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -30,7 +38,9 @@ import {
   PmDecisionDetails,
   PmDecisionVerdict,
   QaEvidenceDetails,
+  TaskAttemptEvidenceSummary,
   TaskEvidenceEvaluation,
+  TaskEvidenceSummary,
   TaskRecord,
 } from '../shared/types.js';
 import { buildHistory, readRunMeta } from './fs.js';
@@ -66,6 +76,11 @@ export function evidenceFolder(dataRoot: string, project: string, evidenceId: st
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function isValidIsoTimestamp(v: string): boolean {
+  const d = new Date(v);
+  return !Number.isNaN(d.getTime()) && typeof v === 'string' && v.includes('T');
 }
 
 function requireNonEmptyString(value: unknown, field: string): string {
@@ -214,27 +229,71 @@ function normalizeMetadata(input: unknown): Record<string, unknown> | undefined 
 }
 
 /**
- * Reject silent trust upgrades that would collapse truth categories.
- * MANUAL may carry any trustLevel (explicit human assertion).
+ * Enforce cross-field trust invariants (SHOULD 1).
+ * MANUAL is internal-only; public helpers never mint MANUAL. Kernel allows it internally
+ * but still enforces runId for VERIFIED and PM verdict coupling.
  */
-function assertTypeTrustCompatibility(type: EvidenceType, trustLevel: EvidenceTrustLevel, source: EvidenceSource): void {
-  if (type === 'MANUAL') return;
-
-  if (type === 'WORKER_CLAIM' && (trustLevel === 'VERIFIED' || trustLevel === 'ACCEPTED')) {
-    throw new Error('WORKER_CLAIM은 VERIFIED/ACCEPTED trustLevel을 가질 수 없습니다 — 새 Evidence를 만드세요.');
+function assertTypeTrustCompatibility(
+  type: EvidenceType,
+  trustLevel: EvidenceTrustLevel,
+  source: EvidenceSource,
+  linkage: { runId?: string },
+  details?: EvidenceDetails,
+): void {
+  // Strict per-type trust
+  if (type === 'WORKER_CLAIM' && trustLevel !== 'CLAIMED') {
+    throw new Error('WORKER_CLAIM은 CLAIMED만 가질 수 있습니다.');
   }
-  if (type === 'ADAPTER_OBSERVATION' && (trustLevel === 'VERIFIED' || trustLevel === 'ACCEPTED')) {
-    throw new Error('ADAPTER_OBSERVATION은 VERIFIED/ACCEPTED trustLevel을 가질 수 없습니다 — 새 Evidence를 만드세요.');
+  if (type === 'ADAPTER_OBSERVATION' && trustLevel !== 'OBSERVED') {
+    throw new Error('ADAPTER_OBSERVATION은 OBSERVED만 가질 수 있습니다.');
   }
-  if (type === 'PM_DECISION' && trustLevel === 'VERIFIED') {
-    throw new Error('PM_DECISION은 VERIFIED가 아닙니다 — ACCEPTED(수락) 또는 OBSERVED(그 외 결정)을 사용하세요.');
+  if ((type === 'GIT' || type === 'TEST' || type === 'BUILD' || type === 'QA') && trustLevel !== 'VERIFIED') {
+    throw new Error(`${type}은 VERIFIED만 가질 수 있습니다.`);
   }
+  // MANUAL is allowed any but public path never exposes it; if caller tries VERIFIED via MANUAL loophole, require runId still
+  if (type !== 'MANUAL') {
+    // WORKER_CLAIM cannot become VERIFIED/ACCEPTED, etc already enforced above
+    if (type === 'WORKER_CLAIM' && (trustLevel === 'VERIFIED' || trustLevel === 'ACCEPTED')) {
+      throw new Error('WORKER_CLAIM은 VERIFIED/ACCEPTED trustLevel을 가질 수 없습니다 — 새 Evidence를 만드세요.');
+    }
+    if (type === 'ADAPTER_OBSERVATION' && (trustLevel === 'VERIFIED' || trustLevel === 'ACCEPTED')) {
+      throw new Error('ADAPTER_OBSERVATION은 VERIFIED/ACCEPTED trustLevel을 가질 수 없습니다 — 새 Evidence를 만드세요.');
+    }
+    if (type === 'PM_DECISION' && trustLevel === 'VERIFIED') {
+      throw new Error('PM_DECISION은 VERIFIED가 아닙니다 — ACCEPTED(수락) 또는 OBSERVED(그 외 결정)을 사용하세요.');
+    }
+  }
+  // PM_DECISION verdict coupling
+  if (type === 'PM_DECISION') {
+    const d = details as PmDecisionDetails | undefined;
+    const verdict = d?.verdict;
+    if (verdict) {
+      if (!isPmDecisionVerdict(verdict)) throw new Error(`알 수 없는 PM verdict: ${String(verdict)}`);
+      if (verdict === 'ACCEPTED' && trustLevel !== 'ACCEPTED') {
+        throw new Error('PM_DECISION verdict ACCEPTED는 trustLevel ACCEPTED여야 합니다.');
+      }
+      if (verdict !== 'ACCEPTED' && trustLevel === 'ACCEPTED') {
+        throw new Error('PM_DECISION non-ACCEPTED verdict는 ACCEPTED trustLevel을 가질 수 없습니다.');
+      }
+    } else {
+      // No verdict supplied via generic create path — still enforce trust level not VERIFIED
+      if (trustLevel === 'VERIFIED') throw new Error('PM_DECISION은 VERIFIED가 아닙니다.');
+    }
+  }
+  // VERIFIED requires non-anonymous source
   if (trustLevel === 'VERIFIED' && source.kind === 'anonymous') {
     throw new Error('익명 source로는 VERIFIED Evidence를 만들 수 없습니다 (MANUAL 제외).');
   }
   if (trustLevel === 'VERIFIED' && !source.kind.trim()) {
     throw new Error('VERIFIED Evidence에는 source.kind가 필요합니다.');
   }
+  // GIT / TEST / BUILD / QA VERIFIED require runId
+  if ((type === 'GIT' || type === 'TEST' || type === 'BUILD' || type === 'QA') && trustLevel === 'VERIFIED') {
+    if (!linkage.runId) {
+      throw new Error(`${type} VERIFIED Evidence는 runId가 필요합니다.`);
+    }
+  }
+  // ARTIFACT/RUNTIME generally not VERIFIED without runId either? enforce if needed
 }
 
 export function validateEvidenceRecord(e: EvidenceRecord): void {
@@ -255,8 +314,9 @@ export function validateEvidenceRecord(e: EvidenceRecord): void {
     throw new Error('runId는 비어 있지 않은 문자열이어야 합니다.');
   }
   if (e.createdAt && typeof e.createdAt !== 'string') throw new Error('createdAt은 문자열이어야 합니다.');
-  if (e.updatedAt && typeof e.updatedAt !== 'string') throw new Error('updatedAt은 문자열이어야 합니다.');
-  assertTypeTrustCompatibility(e.type, e.trustLevel, e.source);
+  // updatedAt is NOT allowed (immutability) — if present in persisted file, treat as malformed for new writes
+  // but tolerate reading legacy files: do not throw, just ignore. Validation should not require it.
+  assertTypeTrustCompatibility(e.type, e.trustLevel, e.source, { runId: e.runId }, e.details);
 }
 
 /** Resolve a logical runId to a physical folder within the project (if present). */
@@ -413,7 +473,7 @@ export function renderEvidenceMarkdown(e: EvidenceRecord): string {
     lines.push('## Artifacts', '', ...e.artifactRefs.map((a) => `- ${a}`), '');
   }
   if (e.sourceEventId) lines.push(`sourceEventId: ${e.sourceEventId}`);
-  lines.push('', `createdAt: ${e.createdAt}`, `updatedAt: ${e.updatedAt}`, '');
+  lines.push('', `createdAt: ${e.createdAt}`, '');
   return lines.join('\n');
 }
 
@@ -477,12 +537,18 @@ function findBySourceEventId(
   return null;
 }
 
-// ── CRUD ────────────────────────────────────────────────────────────────────
+// ── CRUD (internal primitive + public safe helpers) ─────────────────────────
 
-export function createEvidence(
+/**
+ * Internal primitive — accepts resolved trustLevel.
+ * NOT exposed via public IPC. `trustedCreatedAt` may only be supplied by
+ * trusted server-side collectors; public IPC must never forward caller timestamps.
+ */
+export function createEvidenceInternal(
   dataRoot: string,
   project: string,
   input: EvidenceCreateInput,
+  opts?: { trustedCreatedAt?: string },
 ): Promise<EvidenceRecord> {
   if (!isEvidenceType(input.type)) throw new Error(`알 수 없는 Evidence type: ${String(input.type)}`);
   if (!isEvidenceTrustLevel(input.trustLevel)) {
@@ -491,12 +557,20 @@ export function createEvidence(
   if (!isEvidenceStatus(input.status)) throw new Error(`알 수 없는 Evidence status: ${String(input.status)}`);
   const summary = requireNonEmptyString(input.summary, 'summary');
   const source = normalizeSource(input.source);
-  assertTypeTrustCompatibility(input.type, input.trustLevel, source);
 
   const sourceEventId =
     typeof input.sourceEventId === 'string' && input.sourceEventId.trim()
       ? input.sourceEventId.trim()
       : undefined;
+
+  // Validate trusted timestamp if supplied (internal collectors only)
+  let trustedCreatedAt: string | undefined;
+  if (opts?.trustedCreatedAt !== undefined) {
+    if (typeof opts.trustedCreatedAt !== 'string' || !isValidIsoTimestamp(opts.trustedCreatedAt)) {
+      throw new Error('trustedCreatedAt는 ISO timestamp 문자열이어야 합니다.');
+    }
+    trustedCreatedAt = opts.trustedCreatedAt;
+  }
 
   const work = _evidenceAllocLock.then((): EvidenceRecord => {
     if (sourceEventId) {
@@ -510,8 +584,11 @@ export function createEvidence(
       runId: input.runId,
     });
 
+    // Cross-field invariants (must be after linkage resolves runId)
+    assertTypeTrustCompatibility(input.type, input.trustLevel, source, { runId: linkage.runId }, input.details);
+
     const evidenceId = allocateEvidenceIdWithCounter(dataRoot, project);
-    const ts = nowIso();
+    const ts = trustedCreatedAt ?? nowIso();
     const artifactRefs = normalizeArtifactRefs(input.artifactRefs);
     const metadata = normalizeMetadata(input.metadata);
     const record: EvidenceRecord = {
@@ -524,7 +601,6 @@ export function createEvidence(
       source,
       summary,
       createdAt: ts,
-      updatedAt: ts,
       ...(linkage.goalId ? { goalId: linkage.goalId } : {}),
       ...(linkage.taskId ? { taskId: linkage.taskId } : {}),
       ...(linkage.runId ? { runId: linkage.runId } : {}),
@@ -546,6 +622,18 @@ export function createEvidence(
   });
   _evidenceAllocLock = work.then(() => undefined, () => undefined);
   return work;
+}
+
+/**
+ * Legacy public entry — retained as internal/admin primitive.
+ * NOT exposed via IPC. Prefer typed safe helpers.
+ */
+export function createEvidence(
+  dataRoot: string,
+  project: string,
+  input: EvidenceCreateInput,
+): Promise<EvidenceRecord> {
+  return createEvidenceInternal(dataRoot, project, input);
 }
 
 export function getEvidence(dataRoot: string, project: string, evidenceId: string): EvidenceRecord {
@@ -713,12 +801,7 @@ export function getTaskEvidenceSummary(
   dataRoot: string,
   project: string,
   taskId: string,
-): EvidenceSummary & {
-  workerClaimCount: number;
-  adapterObservationCount: number;
-  objectiveVerificationCount: number;
-  pmAcceptanceCount: number;
-} {
+): TaskEvidenceSummary {
   const records = listEvidenceForTask(dataRoot, project, taskId, true);
   const base = summarizeEvidence(records);
   let workerClaimCount = 0;
@@ -739,17 +822,52 @@ export function getTaskEvidenceSummary(
       if (d && d.verdict === 'ACCEPTED') pmAcceptanceCount += 1;
     }
   }
+  // Attempt-aware decomposition
+  const task = getTask(dataRoot, project, requireNonEmptyString(taskId, 'taskId'));
+  const sortedRuns = [...task.linkedRuns].sort((a, b) => a.taskRunSequence - b.taskRunSequence);
+  const maxSeq = sortedRuns.length ? sortedRuns[sortedRuns.length - 1]!.taskRunSequence : 0;
+  const acceptedRunId = task.acceptedRunId;
+  // Map runId -> evidence
+  const byRunId = new Map<string, EvidenceRecord[]>();
+  for (const e of records) {
+    if (e.runId) {
+      const arr = byRunId.get(e.runId) ?? [];
+      arr.push(e);
+      byRunId.set(e.runId, arr);
+    }
+  }
+  const attempts: TaskAttemptEvidenceSummary[] = sortedRuns.map((link) => {
+    const recs = byRunId.get(link.runId) ?? [];
+    // Include only run-linked evidence; task-level direct evidence is counted separately
+    const summary = summarizeEvidence(recs);
+    return {
+      runId: link.runId,
+      taskRunSequence: link.taskRunSequence,
+      isAcceptedAttempt: acceptedRunId === link.runId,
+      isLatestAttempt: link.taskRunSequence === maxSeq,
+      summary,
+    };
+  });
+  const currentAttemptRunId = acceptedRunId ?? (sortedRuns.length ? sortedRuns[sortedRuns.length - 1]!.runId : undefined);
+  const directTaskEvidenceCount = records.filter((e) => !e.runId || !sortedRuns.some((r) => r.runId === e.runId)).length;
+  // Actually direct means taskId match but not linked to a run; we count as above
   return {
     ...base,
     workerClaimCount,
     adapterObservationCount,
     objectiveVerificationCount,
     pmAcceptanceCount,
+    attempts,
+    ...(currentAttemptRunId ? { currentAttemptRunId } : {}),
+    ...(acceptedRunId ? { acceptedRunId } : {}),
+    directTaskEvidenceCount,
   };
 }
 
 /**
  * Advisory evaluation only — MUST NOT mutate Task pmState.
+ * hasVerificationFailure reflects CURRENT relevant attempt (acceptedRunId or latest),
+ * not any historical failure. Historical failures remain visible via TaskEvidenceSummary.attempts.
  */
 export function evaluateTaskEvidence(
   dataRoot: string,
@@ -757,6 +875,10 @@ export function evaluateTaskEvidence(
   taskId: string,
 ): TaskEvidenceEvaluation {
   const records = listEvidenceForTask(dataRoot, project, taskId, true);
+  const task = getTask(dataRoot, project, requireNonEmptyString(taskId, 'taskId'));
+  const sortedRuns = [...task.linkedRuns].sort((a, b) => a.taskRunSequence - b.taskRunSequence);
+  const currentRunId = task.acceptedRunId ?? (sortedRuns.length ? sortedRuns[sortedRuns.length - 1]!.runId : undefined);
+
   let hasWorkerClaim = false;
   let hasObservation = false;
   let hasObjectiveVerification = false;
@@ -764,6 +886,7 @@ export function evaluateTaskEvidence(
   let hasPmAcceptanceEvidence = false;
   const blockers: string[] = [];
 
+  // Overall flags (except verification failure which is attempt-aware)
   for (const e of records) {
     if (e.type === 'WORKER_CLAIM') hasWorkerClaim = true;
     if (e.type === 'ADAPTER_OBSERVATION' || e.trustLevel === 'OBSERVED') hasObservation = true;
@@ -772,10 +895,6 @@ export function evaluateTaskEvidence(
       (e.type === 'TEST' || e.type === 'BUILD' || e.type === 'GIT' || e.type === 'QA')
     ) {
       hasObjectiveVerification = true;
-      if (e.status === 'FAIL') {
-        hasVerificationFailure = true;
-        blockers.push(`${e.evidenceId}: ${e.type} FAIL — ${e.summary}`);
-      }
     }
     if (e.type === 'PM_DECISION') {
       const d = e.details as PmDecisionDetails | undefined;
@@ -787,6 +906,35 @@ export function evaluateTaskEvidence(
       }
       if (d?.verdict === 'OWNER_REQUIRED') {
         blockers.push(`${e.evidenceId}: OWNER_REQUIRED${d.reason ? ` — ${d.reason}` : ''}`);
+      }
+    }
+  }
+  // Current-attempt verification failure (advisory)
+  if (currentRunId) {
+    for (const e of records) {
+      if (e.runId !== currentRunId) continue;
+      if (
+        e.trustLevel === 'VERIFIED' &&
+        (e.type === 'TEST' || e.type === 'BUILD' || e.type === 'GIT' || e.type === 'QA') &&
+        e.status === 'FAIL'
+      ) {
+        hasVerificationFailure = true;
+        blockers.push(`${e.evidenceId}: ${e.type} FAIL (current attempt) — ${e.summary}`);
+      }
+    }
+    // If current attempt has no verification evidence but historical did, do NOT surface historical as current failure
+  } else {
+    // No linked run — consider direct task evidence for failure? Direct Task-level evidence is reported separately
+    // but for advisory we can check direct VERIFIED FAIL without runId (should be none per invariants)
+    for (const e of records) {
+      if (e.runId) continue;
+      if (
+        e.trustLevel === 'VERIFIED' &&
+        (e.type === 'TEST' || e.type === 'BUILD' || e.type === 'GIT' || e.type === 'QA') &&
+        e.status === 'FAIL'
+      ) {
+        hasVerificationFailure = true;
+        blockers.push(`${e.evidenceId}: ${e.type} FAIL — ${e.summary}`);
       }
     }
   }
@@ -802,6 +950,8 @@ export function evaluateTaskEvidence(
     hasVerificationFailure,
     hasPmAcceptanceEvidence,
     blockers,
+    ...(currentRunId ? { currentAttemptRunId: currentRunId } : {}),
+    ...(task.acceptedRunId ? { acceptedRunId: task.acceptedRunId } : {}),
   };
 }
 
@@ -824,7 +974,7 @@ export function recordWorkerClaim(
     sourceEventId?: string;
   },
 ): Promise<EvidenceRecord> {
-  return createEvidence(dataRoot, project, {
+  return createEvidenceInternal(dataRoot, project, {
     type: 'WORKER_CLAIM',
     trustLevel: 'CLAIMED',
     status: input.status ?? 'INFO',
@@ -858,7 +1008,7 @@ export function recordAdapterObservation(
     sourceEventId?: string;
   },
 ): Promise<EvidenceRecord> {
-  return createEvidence(dataRoot, project, {
+  return createEvidenceInternal(dataRoot, project, {
     type: 'ADAPTER_OBSERVATION',
     trustLevel: 'OBSERVED',
     status: input.status ?? 'INFO',
@@ -892,7 +1042,7 @@ export function recordGitEvidence(
     sourceEventId?: string;
   },
 ): Promise<EvidenceRecord> {
-  return createEvidence(dataRoot, project, {
+  return createEvidenceInternal(dataRoot, project, {
     type: 'GIT',
     trustLevel: 'VERIFIED',
     status: input.status ?? 'INFO',
@@ -930,12 +1080,54 @@ export function recordTestEvidence(
   const status: EvidenceStatus =
     input.status ??
     (typeof exitCode === 'number' ? (exitCode === 0 ? 'PASS' : 'FAIL') : 'INCONCLUSIVE');
-  return createEvidence(dataRoot, project, {
+  return createEvidenceInternal(dataRoot, project, {
     type: 'TEST',
     trustLevel: 'VERIFIED',
     status,
     source: {
       kind: input.source?.kind ?? 'test-executor',
+      ...(input.details?.command ? { command: input.details.command } : {}),
+      ...input.source,
+    },
+    summary: input.summary,
+    details: input.details,
+    goalId: input.goalId,
+    taskId: input.taskId,
+    runId: input.runId,
+    rawRef: input.rawRef,
+    artifactRefs: input.artifactRefs,
+    metadata: input.metadata,
+    sourceEventId: input.sourceEventId,
+  });
+}
+
+export function recordBuildEvidence(
+  dataRoot: string,
+  project: string,
+  input: {
+    summary: string;
+    details?: CommandEvidenceDetails;
+    status?: EvidenceStatus;
+    source?: Partial<EvidenceSource>;
+    goalId?: string;
+    taskId?: string;
+    runId?: string;
+    rawRef?: string;
+    artifactRefs?: string[];
+    metadata?: Record<string, unknown>;
+    sourceEventId?: string;
+  },
+): Promise<EvidenceRecord> {
+  const exitCode = input.details?.exitCode;
+  const status: EvidenceStatus =
+    input.status ??
+    (typeof exitCode === 'number' ? (exitCode === 0 ? 'PASS' : 'FAIL') : 'INCONCLUSIVE');
+  return createEvidenceInternal(dataRoot, project, {
+    type: 'BUILD',
+    trustLevel: 'VERIFIED',
+    status,
+    source: {
+      kind: input.source?.kind ?? 'build-executor',
       ...(input.details?.command ? { command: input.details.command } : {}),
       ...input.source,
     },
@@ -968,7 +1160,7 @@ export function recordQaEvidence(
     sourceEventId?: string;
   },
 ): Promise<EvidenceRecord> {
-  return createEvidence(dataRoot, project, {
+  return createEvidenceInternal(dataRoot, project, {
     type: 'QA',
     trustLevel: 'VERIFIED',
     status: input.status ?? 'INFO',
@@ -1024,7 +1216,7 @@ export function recordPmDecision(
       ? 'PM accepted outcome'
       : `PM decision: ${input.verdict}`);
 
-  return createEvidence(dataRoot, project, {
+  return createEvidenceInternal(dataRoot, project, {
     type: 'PM_DECISION',
     trustLevel,
     status,
@@ -1083,6 +1275,7 @@ export function getLegacyAdapterEvidence(runFolder: string): LegacyAdapterEviden
 /**
  * Normalize legacy adapter.json into an EvidenceCreateInput-shaped view.
  * Does NOT write Evidence — callers may pass the result to createEvidence if desired.
+ * Internal helper — not a public trust-spoofing route.
  */
 export function normalizeLegacyAdapterEvidence(
   runFolder: string,

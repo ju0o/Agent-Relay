@@ -491,8 +491,26 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
         expectedPmState: req.expectedPmState,
       });
 
-    case 'evidence:create':
-      return evidenceKernel.createEvidence(req.dataRoot, req.project, req.input);
+    case 'evidence:recordWorkerClaim':
+      return evidenceKernel.recordWorkerClaim(req.dataRoot, req.project, req.input);
+
+    case 'evidence:recordAdapterObservation':
+      return evidenceKernel.recordAdapterObservation(req.dataRoot, req.project, req.input);
+
+    case 'evidence:recordGit':
+      return evidenceKernel.recordGitEvidence(req.dataRoot, req.project, req.input);
+
+    case 'evidence:recordTest':
+      return evidenceKernel.recordTestEvidence(req.dataRoot, req.project, req.input);
+
+    case 'evidence:recordBuild':
+      return evidenceKernel.recordBuildEvidence(req.dataRoot, req.project, req.input);
+
+    case 'evidence:recordQa':
+      return evidenceKernel.recordQaEvidence(req.dataRoot, req.project, req.input);
+
+    case 'evidence:recordPmDecision':
+      return evidenceKernel.recordPmDecision(req.dataRoot, req.project, req.input);
 
     case 'evidence:get':
       return evidenceKernel.getEvidence(req.dataRoot, req.project, req.evidenceId);

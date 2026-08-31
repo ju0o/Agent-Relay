@@ -122,8 +122,14 @@ export type RelayRequest =
  | { op: 'task:acceptResult'; dataRoot: string; project: string; taskId: string; runId: string; reason?: string; expectedPmState?: TaskPmState; expectedExecutionState?: TaskExecutionState }
  | { op: 'task:requestChanges'; dataRoot: string; project: string; taskId: string; reason?: string; expectedPmState?: TaskPmState }
  | { op: 'task:requestRetry'; dataRoot: string; project: string; taskId: string; reason?: string; expectedExecutionState?: TaskExecutionState; expectedPmState?: TaskPmState }
- | { op: 'evidence:create'; dataRoot: string; project: string; input: EvidenceCreateInput }
- | { op: 'evidence:get'; dataRoot: string; project: string; evidenceId: string }
+  | { op: 'evidence:recordWorkerClaim'; dataRoot: string; project: string; input: EvidenceWorkerClaimInput }
+  | { op: 'evidence:recordAdapterObservation'; dataRoot: string; project: string; input: EvidenceAdapterObservationInput }
+  | { op: 'evidence:recordGit'; dataRoot: string; project: string; input: EvidenceGitInput }
+  | { op: 'evidence:recordTest'; dataRoot: string; project: string; input: EvidenceTestInput }
+  | { op: 'evidence:recordBuild'; dataRoot: string; project: string; input: EvidenceBuildInput }
+  | { op: 'evidence:recordQa'; dataRoot: string; project: string; input: EvidenceQaInput }
+  | { op: 'evidence:recordPmDecision'; dataRoot: string; project: string; input: EvidencePmDecisionInput }
+  | { op: 'evidence:get'; dataRoot: string; project: string; evidenceId: string }
  | { op: 'evidence:listForRun'; dataRoot: string; project: string; runId: string }
  | { op: 'evidence:listForTask'; dataRoot: string; project: string; taskId: string; includeRunEvidence?: boolean }
  | { op: 'evidence:listForGoal'; dataRoot: string; project: string; goalId: string }
@@ -761,6 +767,9 @@ export type EvidenceDetails =
 /**
  * Persistent Evidence record (JSON SSOT companion to evidence.md).
  * Identity is project-scoped EVIDENCE-NNNNNN — never a file path.
+ * Append-only immutable fields: evidenceId, project/linkage, type, trustLevel,
+ * status, source, createdAt. Corrections create NEW Evidence; optional
+ * metadata.supersedes may point at a superseded evidenceId but no revision graph.
  */
 export interface EvidenceRecord {
   schemaVersion: number;
@@ -776,7 +785,6 @@ export interface EvidenceRecord {
   summary: string;
   details?: EvidenceDetails;
   createdAt: string;
-  updatedAt: string;
   rawRef?: string;
   artifactRefs?: string[];
   metadata?: Record<string, unknown>;
@@ -787,7 +795,10 @@ export interface EvidenceRecord {
   sourceEventId?: string;
 }
 
-/** Input for evidence:create — linkage identities are validated, never fabricated. */
+/**
+ * Internal Evidence create input — accepts resolved trustLevel.
+ * NOT exposed through public IPC. Public surfaces must derive trust server-side.
+ */
 export interface EvidenceCreateInput {
   type: EvidenceType;
   trustLevel: EvidenceTrustLevel;
@@ -795,6 +806,112 @@ export interface EvidenceCreateInput {
   source: EvidenceSource;
   summary: string;
   details?: EvidenceDetails;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Public safe input — Worker claim (always CLAIMED). Caller cannot choose trustLevel. */
+export interface EvidenceWorkerClaimInput {
+  summary: string;
+  source?: Partial<EvidenceSource>;
+  status?: EvidenceStatus;
+  details?: EvidenceDetails;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Public safe input — Adapter observation (always OBSERVED). */
+export interface EvidenceAdapterObservationInput {
+  summary: string;
+  source?: Partial<EvidenceSource>;
+  status?: EvidenceStatus;
+  details?: EvidenceDetails;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Public safe input — Git verified evidence (always VERIFIED, requires runId). */
+export interface EvidenceGitInput {
+  summary: string;
+  details?: GitEvidenceDetails;
+  status?: EvidenceStatus;
+  source?: Partial<EvidenceSource>;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Public safe input — Test verified evidence (always VERIFIED, requires runId). */
+export interface EvidenceTestInput {
+  summary: string;
+  details?: CommandEvidenceDetails;
+  status?: EvidenceStatus;
+  source?: Partial<EvidenceSource>;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Public safe input — Build verified evidence (always VERIFIED, requires runId). */
+export interface EvidenceBuildInput {
+  summary: string;
+  details?: CommandEvidenceDetails;
+  status?: EvidenceStatus;
+  source?: Partial<EvidenceSource>;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Public safe input — QA verified evidence (always VERIFIED, requires runId). */
+export interface EvidenceQaInput {
+  summary: string;
+  details?: QaEvidenceDetails;
+  status?: EvidenceStatus;
+  source?: Partial<EvidenceSource>;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  rawRef?: string;
+  artifactRefs?: string[];
+  metadata?: Record<string, unknown>;
+  sourceEventId?: string;
+}
+
+/** Public safe input — PM decision (trust derived from verdict; ACCEPTED only for verdict ACCEPTED). */
+export interface EvidencePmDecisionInput {
+  verdict: PmDecisionVerdict;
+  summary?: string;
+  reason?: string;
+  targetRunId?: string;
+  source?: Partial<EvidenceSource>;
   goalId?: string;
   taskId?: string;
   runId?: string;
@@ -819,9 +936,30 @@ export interface EvidenceSummary {
   totalCount: number;
 }
 
+export interface TaskAttemptEvidenceSummary {
+  runId: string;
+  taskRunSequence: number;
+  isAcceptedAttempt: boolean;
+  isLatestAttempt: boolean;
+  summary: EvidenceSummary;
+}
+
+export interface TaskEvidenceSummary extends EvidenceSummary {
+  workerClaimCount: number;
+  adapterObservationCount: number;
+  objectiveVerificationCount: number;
+  pmAcceptanceCount: number;
+  attempts: TaskAttemptEvidenceSummary[];
+  currentAttemptRunId?: string;
+  acceptedRunId?: string;
+  directTaskEvidenceCount: number;
+}
+
 /**
  * Advisory readiness snapshot for future PM Context Packet.
  * MUST NOT mutate Task pmState.
+ * hasVerificationFailure reflects the CURRENT relevant attempt
+ * (acceptedRunId or latest taskRunSequence), not any historical failure.
  */
 export interface TaskEvidenceEvaluation {
   hasWorkerClaim: boolean;
@@ -830,6 +968,9 @@ export interface TaskEvidenceEvaluation {
   hasVerificationFailure: boolean;
   hasPmAcceptanceEvidence: boolean;
   blockers: string[];
+  /** Current relevant attempt runId (accepted or latest), if any. */
+  currentAttemptRunId?: string;
+  acceptedRunId?: string;
 }
 
 /** Read-normalized view of legacy Run/evidence/adapter.json (does not rewrite disk). */

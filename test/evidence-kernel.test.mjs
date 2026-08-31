@@ -294,17 +294,32 @@ async function main() {
     'C-13 counts not collapsed',
   );
 
-  // ── C-14 FAIL evidence is failure, not acceptance ─────────────────────────
+  // ── C-14 FAIL evidence is failure, not acceptance (attempt-aware) ───────
   console.log('C-14) FAIL evidence appears as failure, not acceptance');
-  const failEv = await ev.recordTestEvidence(TEST_ROOT, project, {
-    summary: 'npm test failed',
+  // Create FAIL on old attempt (runId) — should NOT count as current failure when newer attempt is clean
+  const failEvOld = await ev.recordTestEvidence(TEST_ROOT, project, {
+    summary: 'npm test failed (old attempt)',
     runId,
     taskId: task.taskId,
     details: { command: 'npm test', exitCode: 1 },
   });
-  check(failEv.status === 'FAIL' && failEv.trustLevel === 'VERIFIED', 'C-14 FAIL/VERIFIED');
+  check(failEvOld.status === 'FAIL' && failEvOld.trustLevel === 'VERIFIED', 'C-14 old FAIL/VERIFIED');
+  const evalOld = ev.evaluateTaskEvidence(TEST_ROOT, project, task.taskId);
+  // Latest attempt is runIdExtra (clean), so current failure is false even though historical exists
+  check(evalOld.hasVerificationFailure === false, 'C-14 stale historical FAIL not counted as current failure');
+  // Also verify historical remains inspectable via attempt summary
+  const summaryAfterOld = ev.getTaskEvidenceSummary(TEST_ROOT, project, task.taskId);
+  check(summaryAfterOld.attempts.some((a) => a.runId === runId && a.summary.failCount >= 1), 'C-14 old failure remains inspectable');
+  // Now create FAIL on current (latest) attempt — should count
+  const failEv = await ev.recordTestEvidence(TEST_ROOT, project, {
+    summary: 'npm test failed (current)',
+    runId: runIdExtra,
+    taskId: task.taskId,
+    details: { command: 'npm test', exitCode: 1 },
+  });
+  check(failEv.status === 'FAIL' && failEv.trustLevel === 'VERIFIED', 'C-14 current FAIL/VERIFIED');
   const eval1 = ev.evaluateTaskEvidence(TEST_ROOT, project, task.taskId);
-  check(eval1.hasVerificationFailure === true, 'C-14 hasVerificationFailure');
+  check(eval1.hasVerificationFailure === true, 'C-14 current hasVerificationFailure');
   check(failEv.trustLevel !== 'ACCEPTED', 'C-14 FAIL is not ACCEPTED');
 
   // ── C-15 accepted evidence does not mutate Task pmState ───────────────────
