@@ -1,9 +1,9 @@
 /**
- * MCP transport/server layer (Phase E).
+ * MCP server layer (Phase E compliance) — uses official @modelcontextprotocol/sdk.
  *
- * Implements a minimal Model Context Protocol server over stdio (JSON-RPC 2.0).
- * Tools are registered at startup — the PM tool set or Worker tool set is composed
- * by the server entry and injected; the transport layer is surface-agnostic.
+ * Replaces the hand-rolled JSON-RPC dispatcher with the SDK's Server +
+ * StdioServerTransport so any standard MCP client can discover and call tools
+ * via tools/list and tools/call (JSON-RPC methods), not via custom method names.
  *
  * Architecture:
  *   - Process configuration (dataRoot, project, surface scope) is set once at
@@ -13,10 +13,50 @@
  *   - Errors are normalized via McpError / mapCoreError.
  *   - PM and Worker surfaces have structurally separate tool sets — the server
  *     does not register all tools and filter at runtime.
+ *
+ * SDK note: The @modelcontextprotocol/sdk wildcard package-exports pattern
+ * (`"./*": {"require":"./dist/cjs/*"}`) requires the `.js` extension on
+ * subpath specifiers under Node.js v24+ (the bare path is not resolved).
+ * We load via require() to bypass TypeScript's moduleResolution for those
+ * subpaths; skipLibCheck: true suppresses declaration-file type errors.
  */
 
 import type { McpErrorCode } from './errors.js';
-import { McpError, jsonRpcCodeFor, mapCoreError } from './errors.js';
+import { McpError, mapCoreError } from './errors.js';
+
+// ── SDK loader ─────────────────────────────────────────────────────────────────
+// Use require() so we can reference the wildcard exports with `.js` extension
+// without needing moduleResolution: node16 in the TypeScript config.
+
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any */
+const { Server: _SdkServer } = require('@modelcontextprotocol/sdk/server') as {
+  Server: new (
+    info: { name: string; version: string },
+    opts: { capabilities: { tools?: Record<string, unknown> } },
+  ) => _SdkServerInstance;
+};
+
+const { StdioServerTransport: _SdkStdioServerTransport } =
+  require('@modelcontextprotocol/sdk/server/stdio.js') as {
+    StdioServerTransport: new () => _SdkTransport;
+  };
+
+const { ListToolsRequestSchema, CallToolRequestSchema } =
+  require('@modelcontextprotocol/sdk/types.js') as {
+    ListToolsRequestSchema: unknown;
+    CallToolRequestSchema: unknown;
+  };
+/* eslint-enable @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any */
+
+// Minimal SDK instance shapes — just enough for our usage.
+interface _SdkTransport {
+  onclose?: () => void;
+}
+interface _SdkServerInstance {
+  setRequestHandler(schema: unknown, handler: (req: any) => any): void;
+  connect(transport: _SdkTransport): Promise<void>;
+  close(): Promise<void>;
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -51,44 +91,73 @@ export interface WorkerServerContext {
   sessionId?: string;
 }
 
-/** One JSON-RPC 2.0 request from stdin. */
-interface JsonRpcRequest {
-  jsonrpc: '2.0';
-  method: string;
-  params?: unknown;
-  id?: number | string | null;
-}
-
-/** One JSON-RPC 2.0 success response. */
-interface JsonRpcSuccess {
-  jsonrpc: '2.0';
-  id: number | string | null;
-  result: unknown;
-}
-
-/** One JSON-RPC 2.0 error response. */
-interface JsonRpcError {
-  jsonrpc: '2.0';
-  id: number | string | null;
-  error: { code: number; message: string; data?: unknown };
-}
-
-type JsonRpcResponse = JsonRpcSuccess | JsonRpcError;
-
 // ── Server ─────────────────────────────────────────────────────────────────────
 
 /**
- * Generic MCP server — surface-agnostic stdio JSON-RPC dispatcher.
+ * Generic MCP server — surface-agnostic.
+ *
+ * Wraps the SDK's low-level Server, registering:
+ *   - tools/list  → returns all registered tool descriptors
+ *   - tools/call  → dispatches to the named tool's handler
+ *
  * Callers inject exactly the tool set for their surface (PM or Worker).
  */
 export class McpServer {
   private readonly tools = new Map<string, McpTool>();
-  private closed = false;
+  private readonly _sdk: _SdkServerInstance;
 
   constructor(tools: McpTool[]) {
     for (const t of tools) {
       this.tools.set(t.name, t);
     }
+
+    this._sdk = new _SdkServer(
+      { name: 'relay-mcp', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
+
+    // ── tools/list ────────────────────────────────────────────────────────────
+    this._sdk.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: Array.from(this.tools.values()).map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    }));
+
+    // ── tools/call ────────────────────────────────────────────────────────────
+    this._sdk.setRequestHandler(
+      CallToolRequestSchema,
+      async (req: { params: { name: string; arguments?: Record<string, unknown> } }) => {
+        const toolName = req.params.name;
+        const tool = this.tools.get(toolName);
+
+        if (!tool) {
+          return {
+            content: [{ type: 'text', text: `Unknown tool: ${toolName}` }],
+            isError: true,
+          };
+        }
+
+        const args =
+          typeof req.params.arguments === 'object' && req.params.arguments !== null
+            ? req.params.arguments
+            : {};
+
+        try {
+          const result = await tool.handler(args);
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+          };
+        } catch (err) {
+          const mapped = mapCoreError(err);
+          return {
+            content: [{ type: 'text', text: mapped.message }],
+            isError: true,
+          };
+        }
+      },
+    );
   }
 
   /** Register an additional tool after construction (used in tests). */
@@ -102,116 +171,26 @@ export class McpServer {
   }
 
   /**
-   * Start listening on stdin (one-shot JSON-RPC request-response loop).
-   * Reads one JSON object per line (MCP stdio framing).
-   * Runs until stdin closes.
+   * Connect to stdio transport and serve until stdin closes.
+   * The SDK handles the MCP initialize handshake automatically.
    */
   async serve(): Promise<void> {
-    const stdin = process.stdin;
-    stdin.setEncoding('utf8');
+    const transport = new _SdkStdioServerTransport();
 
-    let buffer = '';
+    // Set onclose BEFORE connect() so the SDK wraps (not replaces) our handler.
+    const closedPromise = new Promise<void>((resolve) => {
+      transport.onclose = resolve;
+    });
 
-    for await (const chunk of stdin) {
-      if (this.closed) break;
-      buffer += chunk;
-
-      const lines = buffer.split('\n');
-      for (let i = 0; i < lines.length - 1; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        const response = await this.dispatchLine(line);
-        if (response !== null) {
-          this.writeResponse(response);
-        }
-      }
-      buffer = lines[lines.length - 1];
-    }
+    await this._sdk.connect(transport);
+    await closedPromise;
   }
 
   /** Graceful shutdown. */
   close(): void {
-    this.closed = true;
-  }
-
-  // ── internal ───────────────────────────────────────────────────────────
-
-  private async dispatchLine(line: string): Promise<JsonRpcResponse | null> {
-    let req: JsonRpcRequest;
-    try {
-      req = JSON.parse(line);
-    } catch {
-      return this.errorResponse(null, -32700, 'Parse error: invalid JSON');
-    }
-
-    if (req.jsonrpc !== '2.0') {
-      return this.errorResponse(req.id ?? null, -32600, 'Invalid Request: jsonrpc must be 2.0');
-    }
-
-    if (typeof req.method !== 'string' || !req.method) {
-      return this.errorResponse(req.id ?? null, -32600, 'Invalid Request: method required');
-    }
-
-    return this.handleMethod(req);
-  }
-
-  private async handleMethod(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
-    const id = req.id ?? null;
-
-    // Built-in methods
-    if (req.method === 'ping') {
-      return this.successResponse(id, 'pong');
-    }
-
-    // Protocol discovery — both surface-specific names and generic are accepted
-    if (
-      req.method === 'relay_pm_list_tools' ||
-      req.method === 'relay_worker_list_tools' ||
-      req.method === 'relay/list_tools'
-    ) {
-      const list = Array.from(this.tools.values()).map((t) => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema,
-      }));
-      return this.successResponse(id, list);
-    }
-
-    // Dispatch to registered tool
-    if (!this.tools.has(req.method)) {
-      return this.errorResponse(id, -32601, `Method not found: ${req.method}`);
-    }
-
-    const tool = this.tools.get(req.method)!;
-    const params =
-      typeof req.params === 'object' && req.params !== null && !Array.isArray(req.params)
-        ? (req.params as Record<string, unknown>)
-        : {};
-
-    try {
-      const result = await tool.handler(params);
-      return this.successResponse(id, result);
-    } catch (err) {
-      const mapped = mapCoreError(err);
-      return this.errorResponse(id, jsonRpcCodeFor(mapped.mcpCode), mapped.message);
-    }
-  }
-
-  private successResponse(id: number | string | null, result: unknown): JsonRpcSuccess {
-    return { jsonrpc: '2.0', id, result };
-  }
-
-  private errorResponse(id: number | string | null, code: number, message: string): JsonRpcError {
-    return { jsonrpc: '2.0', id, error: { code, message } };
-  }
-
-  private writeResponse(res: JsonRpcResponse): void {
-    if (this.closed) return;
-    try {
-      process.stdout.write(JSON.stringify(res) + '\n');
-    } catch {
-      // stdout closed — ignore
-    }
+    this._sdk.close().catch(() => {
+      // ignore shutdown errors
+    });
   }
 }
 

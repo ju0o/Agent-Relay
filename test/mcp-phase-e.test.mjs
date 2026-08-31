@@ -1,5 +1,5 @@
 /**
- * Phase E MCP Foundation tests (E-01..E-39).
+ * Phase E MCP Foundation tests (E-01..E-39) + MCP Protocol Compliance (MP-01..MP-20).
  *
  * Tests are organized into groups:
  *   E-01..04  Structural separation (tool registration)
@@ -11,10 +11,18 @@
  *   E-30..33  No-generic-tool structural checks
  *   E-34..35  stdio smoke (deferred to mcp-smoke.mjs; verified via import here)
  *   E-36..39  Regression (Phase D, C, B2, A)
+ *   MP-01..10 MCP protocol compliance — PM surface (real Client + StdioClientTransport)
+ *   MP-11..20 MCP protocol compliance — Worker surface
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+
+// SDK client (ES-module import; .js extension required for wildcard exports on Node v24+)
+import { Client } from '@modelcontextprotocol/sdk/client';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+const SERVER = path.resolve(process.cwd(), 'dist', 'server', 'mcp', 'index.js');
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 
@@ -616,6 +624,174 @@ console.log('\n── E-36..39: Regression ──');
     const fetched = gt.getGoal(TEST_ROOT, project, goal.goalId);
     check(fetched.goalId === goal.goalId, 'E-39 Phase A: getGoal round-trip');
   }
+}
+
+// ── MP-01..20: MCP Protocol Compliance ────────────────────────────────────────
+//
+// Uses a real MCP Client + StdioClientTransport to verify that the server
+// conforms to the standard MCP protocol (tools/list + tools/call), not the
+// custom hand-rolled JSON-RPC dispatcher from the pre-Phase-E implementation.
+
+console.log('\n── MP-01..10: MCP Protocol Compliance — PM surface ──');
+
+/**
+ * Run `fn(client)` against an MCP server subprocess with the given extra args.
+ * Handles connect + cleanup automatically.
+ */
+async function withMcpClient(extraArgs, fn) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER, '--dataRoot', TEST_ROOT, '--project', project, ...extraArgs],
+    stderr: 'ignore',
+  });
+  const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+  await client.connect(transport);
+  try {
+    await fn(client);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+// ── PM surface (MP-01..MP-10) ────────────────────────────────────────────────
+
+{
+  await withMcpClient(['--surface', 'pm'], async (client) => {
+    // MP-01: listTools returns an array
+    const { tools } = await client.listTools();
+    check(Array.isArray(tools), 'MP-01 PM: listTools() returns array');
+
+    // MP-02: PM tool set includes relay_pm_get_goal
+    check(tools.some((t) => t.name === 'relay_pm_get_goal'),
+      'MP-02 PM: listTools includes relay_pm_get_goal');
+
+    // MP-03: PM tool set includes relay_pm_list_tasks
+    check(tools.some((t) => t.name === 'relay_pm_list_tasks'),
+      'MP-03 PM: listTools includes relay_pm_list_tasks');
+
+    // MP-04: PM tool set excludes all Worker tools
+    check(!tools.some((t) => t.name.startsWith('relay_worker_')),
+      'MP-04 PM: listTools excludes relay_worker_* tools');
+
+    // MP-05: Each PM tool has name, description, inputSchema
+    const allValid = tools.every(
+      (t) => typeof t.name === 'string' && typeof t.description === 'string' && t.inputSchema != null,
+    );
+    check(allValid && tools.length > 0, 'MP-05 PM: each tool has name, description, inputSchema');
+
+    // MP-06: callTool(relay_pm_list_goals) returns content array (no args — project is in server context)
+    const r1 = await client.callTool({ name: 'relay_pm_list_goals' });
+    check(Array.isArray(r1.content) && r1.content.length > 0,
+      'MP-06 PM: callTool(relay_pm_list_goals) returns content');
+
+    // MP-07: content[0].type === 'text'
+    check(r1.content[0]?.type === 'text',
+      'MP-07 PM: callTool content[0].type is "text"');
+
+    // MP-08: content text is parseable JSON
+    let parsed;
+    try { parsed = JSON.parse(r1.content[0].text); } catch { /* */ }
+    check(parsed !== undefined, 'MP-08 PM: callTool content[0].text is parseable JSON');
+
+    // MP-09: callTool with bad args returns isError content (not a protocol error)
+    const r2 = await client.callTool({ name: 'relay_pm_get_task', arguments: { taskId: 'TASK-NONEXISTENT' } });
+    check(r2.isError === true, 'MP-09 PM: callTool(bad taskId) returns isError: true');
+
+    // MP-10: callTool unknown tool returns isError content
+    const r3 = await client.callTool({ name: 'nonexistent_tool_xyz' });
+    check(r3.isError === true && r3.content[0]?.text?.includes('nonexistent_tool_xyz'),
+      'MP-10 PM: callTool(nonexistent) returns isError with tool name in message');
+  });
+}
+
+// ── Worker surface (MP-11..MP-20) ────────────────────────────────────────────
+
+console.log('\n── MP-11..20: MCP Protocol Compliance — Worker surface ──');
+
+{
+  // Set up a real goal + task + run for the worker surface tests
+  let mpTaskId, mpRunId;
+  try {
+    const mpGoal = await gt.createGoal(TEST_ROOT, project, {
+      title: 'MP Worker Goal',
+      goalStatement: 'mp test',
+      completionCriteria: ['done'],
+    });
+    const mpTask = await gt.createTask(TEST_ROOT, project, {
+      goalId: mpGoal.goalId,
+      title: 'MP Worker Task',
+      goal: 'mp test task',
+      reason: 'mp test',
+      scope: 'test',
+      completionCriteria: ['done'],
+    });
+    mpTaskId = mpTask.taskId;
+    const mpRun = await relay.atomicMaterializeRun(TEST_ROOT, project, relay.todayString(), 'MPAgent');
+    const mpLinked = await gt.linkRunToTask(TEST_ROOT, project, mpTaskId, mpRun.folder);
+    mpRunId = mpLinked.linkedRuns.find((r) => r.folder === path.resolve(mpRun.folder))?.runId;
+  } catch (e) {
+    // Fallback so remaining tests can still run
+    mpTaskId = 'TASK-MP'; mpRunId = 'run-mp';
+    FAIL('MP-11..20 fixture setup failed: ' + e.message);
+  }
+
+  await withMcpClient(
+    ['--surface', 'worker', '--taskId', mpTaskId, '--runId', mpRunId],
+    async (client) => {
+      // MP-11: listTools returns an array
+      const { tools } = await client.listTools();
+      check(Array.isArray(tools), 'MP-11 Worker: listTools() returns array');
+
+      // MP-12: Worker tool set includes relay_worker_get_assignment
+      check(tools.some((t) => t.name === 'relay_worker_get_assignment'),
+        'MP-12 Worker: listTools includes relay_worker_get_assignment');
+
+      // MP-13: Worker tool set excludes PM tools
+      check(!tools.some((t) => t.name.startsWith('relay_pm_')),
+        'MP-13 Worker: listTools excludes relay_pm_* tools');
+
+      // MP-14: Each Worker tool has name, description, inputSchema
+      const allValid = tools.every(
+        (t) => typeof t.name === 'string' && typeof t.description === 'string' && t.inputSchema != null,
+      );
+      check(allValid && tools.length > 0, 'MP-14 Worker: each tool has name, description, inputSchema');
+
+      // MP-15: Worker tool count >= 8 (8 tools registered in Phase E)
+      check(tools.length >= 8, `MP-15 Worker: listTools returns >= 8 tools (got ${tools.length})`);
+
+      // MP-16: callTool(relay_worker_get_assignment) returns content
+      const r1 = await client.callTool({ name: 'relay_worker_get_assignment' });
+      check(Array.isArray(r1.content) && r1.content.length > 0,
+        'MP-16 Worker: callTool(relay_worker_get_assignment) returns content');
+
+      // MP-17: content[0].type === 'text'
+      check(r1.content[0]?.type === 'text',
+        'MP-17 Worker: callTool content[0].type is "text"');
+
+      // MP-18: callTool(relay_worker_get_task_context) returns parseable JSON
+      const r2 = await client.callTool({ name: 'relay_worker_get_task_context' });
+      let r2Parsed;
+      try { r2Parsed = JSON.parse(r2.content[0]?.text ?? ''); } catch { /* */ }
+      check(r2Parsed?.taskId === mpTaskId,
+        'MP-18 Worker: callTool(relay_worker_get_task_context) returns task JSON');
+
+      // MP-19: get_task_context with foreign taskId returns isError
+      const r3 = await client.callTool({
+        name: 'relay_worker_get_task_context',
+        arguments: { taskId: 'TASK-FOREIGN-XYZ' },
+      });
+      check(r3.isError === true,
+        'MP-19 Worker: callTool(foreign taskId) returns isError: true');
+
+      // MP-20: callTool(relay_worker_submit_claim) succeeds and returns content
+      const r4 = await client.callTool({
+        name: 'relay_worker_submit_claim',
+        arguments: { summary: 'MP protocol test claim' },
+      });
+      check(!r4.isError && Array.isArray(r4.content) && r4.content.length > 0,
+        'MP-20 Worker: callTool(relay_worker_submit_claim) returns content without isError');
+    },
+  );
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

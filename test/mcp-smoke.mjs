@@ -1,13 +1,16 @@
 /**
  * MCP server stdio smoke tests (PM + Worker surfaces).
- * Spawns server processes, sends JSON-RPC requests, and verifies responses.
  *
- * Covers E-34 (PM/Worker stdio smoke) and E-35 (unknown tool normalized error).
+ * Uses the official @modelcontextprotocol/sdk Client + StdioClientTransport to
+ * verify that the server speaks standard MCP (tools/list, tools/call) rather
+ * than the hand-rolled JSON-RPC dispatcher that used custom method names.
  */
-import * as cp from 'node:child_process';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
+
+import { Client } from '@modelcontextprotocol/sdk/client';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const TEST_ROOT = path.join(os.tmpdir(), `arl-mcp-smoke-${process.pid}-${Date.now()}`);
 fs.mkdirSync(TEST_ROOT, { recursive: true });
@@ -18,31 +21,23 @@ const PASS = (m) => console.log('  PASS  ' + m);
 const FAIL = (m) => { console.log('  FAIL  ' + m); process.exitCode = 1; };
 const check = (cond, m) => { if (cond) PASS(m); else FAIL(m); };
 
-/** Send requests to a server process and collect output. */
-async function runRequests(extraArgs, requests) {
-  const args = [SERVER, '--dataRoot', TEST_ROOT, '--project', 'SmokeProj', ...extraArgs];
-  const proc = cp.spawn(process.execPath, args, {
-    stdio: ['pipe', 'pipe', 'pipe'],
+/**
+ * Connect an MCP client to a server subprocess with the given extra args.
+ * Calls fn(client) then closes the connection.
+ */
+async function withMcpClient(extraArgs, fn) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER, '--dataRoot', TEST_ROOT, '--project', 'SmokeProj', ...extraArgs],
+    stderr: 'ignore',
   });
-
-  const result = await new Promise((resolve, reject) => {
-    const out = [];
-    const err = [];
-    proc.stdout.on('data', (d) => out.push(d.toString()));
-    proc.stderr.on('data', (d) => err.push(d.toString()));
-    proc.on('error', reject);
-
-    for (const req of requests) {
-      proc.stdin.write(JSON.stringify(req) + '\n');
-    }
-
-    setTimeout(() => {
-      proc.stdin.end();
-      resolve({ out: out.join(''), err: err.join('') });
-    }, 2000);
-  });
-
-  return result;
+  const client = new Client({ name: 'smoke-client', version: '1.0.0' }, { capabilities: {} });
+  await client.connect(transport);
+  try {
+    await fn(client);
+  } finally {
+    await client.close().catch(() => {});
+  }
 }
 
 // ── Set up Worker fixture ────────────────────────────────────────────────────
@@ -78,24 +73,25 @@ async function main() {
   console.log(`MCP server: ${SERVER}`);
   console.log(`TEST_ROOT: ${TEST_ROOT}`);
 
-  // ── PM smoke ──────────────────────────────────────────────────────────────
+  // ── PM surface smoke ──────────────────────────────────────────────────────
   console.log('\n── PM surface smoke ──');
-  const pmResult = await runRequests(['--surface', 'pm'], [
-    { jsonrpc: '2.0', method: 'ping', id: 1 },
-    { jsonrpc: '2.0', method: 'relay_pm_list_tools', id: 2 },
-    { jsonrpc: '2.0', method: 'unknown_method', id: 3 },
-  ]);
+  await withMcpClient(['--surface', 'pm'], async (client) => {
+    // Standard MCP tools/list
+    const { tools } = await client.listTools();
+    check(Array.isArray(tools) && tools.length > 0, 'E-34 PM: tools/list returns PM tools');
+    check(tools.some((t) => t.name === 'relay_pm_get_goal'), 'E-34 PM: list contains relay_pm_get_goal');
+    check(!tools.some((t) => t.name.startsWith('relay_worker_')), 'E-34 PM: list excludes Worker tools');
 
-  console.log('STDOUT:', pmResult.out);
-  if (pmResult.err) console.log('STDERR:', pmResult.err);
+    // Standard MCP tools/call — unknown tool returns isError (not a protocol error)
+    const unknownResult = await client.callTool({ name: 'unknown_method_xyz' });
+    check(unknownResult.isError === true, 'E-35 PM: unknown tool → isError: true');
 
-  const pmLines = pmResult.out.trim().split('\n').filter(Boolean);
-  check(pmLines.some((l) => l.includes('pong')), 'E-34 PM: ping → pong');
-  check(pmLines.some((l) => l.includes('relay_pm_get_goal')), 'E-34 PM: list_tools contains PM tools');
-  check(!pmLines.some((l) => l.includes('relay_worker_')), 'E-34 PM: list_tools excludes Worker tools');
-  check(pmLines.some((l) => l.includes('-32601')), 'E-35 PM: unknown method → -32601');
+    // tools/call on a valid tool (project is in server context — no args needed)
+    const listResult = await client.callTool({ name: 'relay_pm_list_goals' });
+    check(!listResult.isError && Array.isArray(listResult.content), 'E-34 PM: callTool(relay_pm_list_goals) succeeds');
+  });
 
-  // ── Worker smoke ──────────────────────────────────────────────────────────
+  // ── Worker surface smoke ──────────────────────────────────────────────────
   console.log('\n── Worker surface smoke ──');
   let taskId, runId;
   try {
@@ -105,28 +101,36 @@ async function main() {
     taskId = 'TASK-1'; runId = 'run-test';
   }
 
-  const workerResult = await runRequests(
+  await withMcpClient(
     ['--surface', 'worker', '--taskId', taskId, '--runId', runId],
-    [
-      { jsonrpc: '2.0', method: 'ping', id: 1 },
-      { jsonrpc: '2.0', method: 'relay_worker_list_tools', id: 2 },
-      { jsonrpc: '2.0', method: 'unknown_method', id: 3 },
-    ],
+    async (client) => {
+      // Standard MCP tools/list
+      const { tools } = await client.listTools();
+      check(Array.isArray(tools) && tools.length > 0, 'E-34 Worker: tools/list returns Worker tools');
+      check(tools.some((t) => t.name === 'relay_worker_get_assignment'),
+        'E-34 Worker: list contains relay_worker_get_assignment');
+      check(!tools.some((t) => t.name.startsWith('relay_pm_')), 'E-34 Worker: list excludes PM tools');
+
+      // tools/call — unknown tool returns isError
+      const unknownResult = await client.callTool({ name: 'unknown_method_xyz' });
+      check(unknownResult.isError === true, 'E-35 Worker: unknown tool → isError: true');
+
+      // tools/call on a valid worker tool
+      const assignResult = await client.callTool({ name: 'relay_worker_get_assignment' });
+      check(!assignResult.isError && Array.isArray(assignResult.content),
+        'E-34 Worker: callTool(relay_worker_get_assignment) succeeds');
+    },
   );
-
-  console.log('STDOUT:', workerResult.out);
-  if (workerResult.err) console.log('STDERR:', workerResult.err);
-
-  const wLines = workerResult.out.trim().split('\n').filter(Boolean);
-  check(wLines.some((l) => l.includes('pong')), 'E-34 Worker: ping → pong');
-  check(wLines.some((l) => l.includes('relay_worker_get_assignment')), 'E-34 Worker: list_tools contains Worker tools');
-  check(!wLines.some((l) => l.includes('relay_pm_')), 'E-34 Worker: list_tools excludes PM tools');
-  check(wLines.some((l) => l.includes('-32601')), 'E-35 Worker: unknown method → -32601');
 
   // ── Missing --surface error ────────────────────────────────────────────────
   console.log('\n── Missing --surface error ──');
-  const noSurface = await runRequests([], []);
-  check(!noSurface.err.includes('pong'), 'Missing --surface: server exits with error (no output)');
+  try {
+    await withMcpClient([], async (_client) => {
+      FAIL('Missing --surface: expected connection to fail, but server connected');
+    });
+  } catch {
+    PASS('Missing --surface: server rejects connection (no --surface given)');
+  }
 
   fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   console.log('\nMCP SMOKE DONE');
