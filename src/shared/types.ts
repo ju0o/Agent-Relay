@@ -136,6 +136,14 @@ export type RelayRequest =
  | { op: 'evidence:getRunSummary'; dataRoot: string; project: string; runId: string }
  | { op: 'evidence:getTaskSummary'; dataRoot: string; project: string; taskId: string }
  | { op: 'evidence:evaluateTask'; dataRoot: string; project: string; taskId: string }
+
+ | { op: 'event:get'; dataRoot: string; project: string; eventId: string }
+ | { op: 'event:list'; dataRoot: string; project: string; filter?: EventListFilter }
+ | { op: 'event:listPendingPm'; dataRoot: string; project: string }
+ | { op: 'event:getSummary'; dataRoot: string; project: string }
+ | { op: 'event:markDelivered'; dataRoot: string; project: string; eventId: string; expectedStatus?: EventDeliveryStatus }
+ | { op: 'event:acknowledge'; dataRoot: string; project: string; eventId: string; expectedStatus?: EventDeliveryStatus }
+ | { op: 'event:ignore'; dataRoot: string; project: string; eventId: string; expectedStatus?: EventDeliveryStatus }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
@@ -985,6 +993,147 @@ export interface LegacyAdapterEvidenceView {
   bindingReason?: string;
   raw?: Record<string, unknown>;
 }
+// ── Event runtime kernel (Phase D) ──────────────────────────────────────────
+//
+// EVENT ≠ STATE. Goal/Task/Run/Evidence remain the canonical SSOT.
+// An Event only records that something happened and MAY carry derived PM
+// attention classification. Events never mutate Goal/Task/Evidence state.
+// Immutable core payload (event.json) + mutable delivery state (delivery.json).
+
+export const EVENT_SCHEMA_VERSION = 1;
+
+/** Event category vocabulary — typed and extensible, but not free-form. */
+export const EVENT_TYPES = [
+  'RUN_RESULT_RECEIVED',
+  'RUN_FAILED',
+  'RUN_BLOCKED',
+  'EVIDENCE_READY',
+  'QA_FAILED',
+  'TASK_TIMEOUT',
+  'TASK_BECAME_READY',
+  'TASK_BLOCKED',
+  'ALL_PARALLEL_RUNS_COMPLETED',
+  'OWNER_DECISION_REQUIRED',
+  'PM_REVIEW_REQUIRED',
+  'GOAL_COMPLETION_ELIGIBLE',
+  'GOAL_COMPLETED',
+  'RUNTIME_WARNING',
+  'RUNTIME_ERROR',
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
+
+/** Small severity vocabulary — deliberately not Evidence PASS/FAIL. */
+export const EVENT_SEVERITIES = ['INFO', 'WARNING', 'ERROR', 'CRITICAL'] as const;
+export type EventSeverity = (typeof EVENT_SEVERITIES)[number];
+
+/** Delivery lifecycle — no retry queues / distributed semantics in Phase D. */
+export const EVENT_DELIVERY_STATUSES = ['PENDING', 'DELIVERED', 'ACKNOWLEDGED', 'IGNORED'] as const;
+export type EventDeliveryStatus = (typeof EVENT_DELIVERY_STATUSES)[number];
+
+/** PM attention urgency hint (informational only). */
+export const EVENT_PRIORITIES = ['LOW', 'NORMAL', 'HIGH', 'URGENT'] as const;
+export type EventPriority = (typeof EVENT_PRIORITIES)[number];
+
+/** Provenance of an Event: who/what emitted it. */
+export interface EventSource {
+  kind: string;
+  actor?: string;
+  agent?: string;
+  adapter?: string;
+  subsystem?: string;
+}
+
+/** Derived/recorded PM attention classification. */
+export interface PmAttention {
+  required: boolean;
+  reason?: string;
+  priority?: EventPriority;
+}
+
+/** Immutable Event record (event.json). Never mutated after creation. */
+export interface EventRecord {
+  schemaVersion: number;
+  eventId: string;
+  project: string;
+  type: EventType;
+  severity: EventSeverity;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  evidenceId?: string;
+  source: EventSource;
+  summary: string;
+  details?: Record<string, unknown>;
+  occurredAt: string;
+  recordedAt: string;
+  sourceEventId?: string;
+  correlationId?: string;
+  causationId?: string;
+  pmAttention: PmAttention;
+  metadata?: Record<string, unknown>;
+}
+
+/** Mutable delivery/ack state (delivery.json) — operational metadata only. */
+export interface EventDeliveryRecord {
+  eventId: string;
+  status: EventDeliveryStatus;
+  deliveredAt?: string;
+  acknowledgedAt?: string;
+  ignoredAt?: string;
+  updatedAt: string;
+}
+
+/** Internal Event creation input — NOT exposed as raw IPC event:create. */
+export interface EventCreateInput {
+  type: EventType;
+  severity?: EventSeverity;
+  summary: string;
+  details?: Record<string, unknown>;
+  source: EventSource;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  evidenceId?: string;
+  occurredAt?: string;
+  sourceEventId?: string;
+  correlationId?: string;
+  causationId?: string;
+  /** Explicit override; otherwise derived from centralized deterministic rules. */
+  pmAttention?: PmAttention;
+  metadata?: Record<string, unknown>;
+}
+
+/** Read-only event list filter. */
+export interface EventListFilter {
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  evidenceId?: string;
+  type?: EventType;
+  severity?: EventSeverity;
+  pmAttentionRequired?: boolean;
+  deliveryStatus?: EventDeliveryStatus;
+}
+
+/** Pure summary model for future PM Context — no raw prompt/result content. */
+export interface EventRuntimeSummary {
+  totalEvents: number;
+  pendingEvents: number;
+  pendingPmEvents: number;
+  criticalEvents: number;
+  errorEvents: number;
+  warningEvents: number;
+  latestEventAt?: string;
+  byType: Partial<Record<EventType, number>>;
+}
+
+/** Malformed-tolerant list result. */
+export interface EventListResult {
+  events: EventRecord[];
+  warnings: string[];
+}
+
+// ── Agent adapter auto-capture (vNext foundation) ───────────────────────────
 
 // ── Agent adapter auto-capture (vNext foundation) ───────────────────────────
 //

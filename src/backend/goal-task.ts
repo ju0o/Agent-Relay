@@ -161,6 +161,8 @@ export interface CountersRecord {
   nextTaskNumber: number;
   /** Phase C Evidence counter — preserved by Goal/Task allocators. */
   nextEvidenceNumber?: number;
+  /** Phase D Event counter — preserved by Goal/Task/Evidence allocators. */
+  nextEventNumber?: number;
 }
 
 function loadCounters(dataRoot: string, project: string): CountersRecord {
@@ -176,6 +178,7 @@ function loadCounters(dataRoot: string, project: string): CountersRecord {
   let nextGoal: number | undefined;
   let nextTask: number | undefined;
   let nextEvidence: number | undefined;
+  let nextEvent: number | undefined;
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     const obj = parsed as Record<string, unknown>;
     if (typeof obj.nextGoalNumber === 'number' && Number.isInteger(obj.nextGoalNumber) && obj.nextGoalNumber >= 1) {
@@ -187,6 +190,9 @@ function loadCounters(dataRoot: string, project: string): CountersRecord {
     if (typeof obj.nextEvidenceNumber === 'number' && Number.isInteger(obj.nextEvidenceNumber) && obj.nextEvidenceNumber >= 1) {
       nextEvidence = obj.nextEvidenceNumber;
     }
+    if (typeof obj.nextEventNumber === 'number' && Number.isInteger(obj.nextEventNumber) && obj.nextEventNumber >= 1) {
+      nextEvent = obj.nextEventNumber;
+    }
   }
   if (nextGoal === undefined) nextGoal = goalsMax + 1;
   if (nextTask === undefined) nextTask = tasksMax + 1;
@@ -195,6 +201,7 @@ function loadCounters(dataRoot: string, project: string): CountersRecord {
   nextTask = Math.max(nextTask, tasksMax + 1);
   const out: CountersRecord = { nextGoalNumber: nextGoal, nextTaskNumber: nextTask };
   if (nextEvidence !== undefined) out.nextEvidenceNumber = nextEvidence;
+  if (nextEvent !== undefined) out.nextEventNumber = nextEvent;
   return out;
 }
 
@@ -215,6 +222,7 @@ function allocateGoalIdWithCounter(dataRoot: string, project: string): string {
       // Merge with latest counters to avoid clobbering concurrent Task/Evidence counter increments
       let latestTaskNext = counters.nextTaskNumber;
       let latestEvidenceNext = counters.nextEvidenceNumber;
+      let latestEventNext = counters.nextEventNumber;
       try {
         const latestRaw = JSON.parse(fs.readFileSync(countersPath(dataRoot, project), 'utf8')) as Record<string, unknown>;
         if (typeof latestRaw.nextTaskNumber === 'number' && Number.isInteger(latestRaw.nextTaskNumber) && latestRaw.nextTaskNumber >= 1) {
@@ -225,12 +233,18 @@ function allocateGoalIdWithCounter(dataRoot: string, project: string): string {
             ? latestRaw.nextEvidenceNumber
             : Math.max(latestEvidenceNext, latestRaw.nextEvidenceNumber);
         }
+        if (typeof latestRaw.nextEventNumber === 'number' && Number.isInteger(latestRaw.nextEventNumber) && latestRaw.nextEventNumber >= 1) {
+          latestEventNext = latestEventNext === undefined
+            ? latestRaw.nextEventNumber
+            : Math.max(latestEventNext, latestRaw.nextEventNumber);
+        }
       } catch { /* no latest file or malformed — keep ours */ }
       const nextCounters: CountersRecord = {
         nextGoalNumber: n + 1,
         nextTaskNumber: latestTaskNext,
       };
       if (latestEvidenceNext !== undefined) nextCounters.nextEvidenceNumber = latestEvidenceNext;
+      if (latestEventNext !== undefined) nextCounters.nextEventNumber = latestEventNext;
       writeJsonAtomic(countersPath(dataRoot, project), nextCounters);
       return id;
     } catch (err) {
@@ -255,6 +269,7 @@ function allocateTaskIdWithCounter(dataRoot: string, project: string): string {
       fs.mkdirSync(idDir);
       let latestGoalNext = counters.nextGoalNumber;
       let latestEvidenceNext = counters.nextEvidenceNumber;
+      let latestEventNext = counters.nextEventNumber;
       try {
         const latestRaw = JSON.parse(fs.readFileSync(countersPath(dataRoot, project), 'utf8')) as Record<string, unknown>;
         if (typeof latestRaw.nextGoalNumber === 'number' && Number.isInteger(latestRaw.nextGoalNumber) && latestRaw.nextGoalNumber >= 1) {
@@ -265,12 +280,18 @@ function allocateTaskIdWithCounter(dataRoot: string, project: string): string {
             ? latestRaw.nextEvidenceNumber
             : Math.max(latestEvidenceNext, latestRaw.nextEvidenceNumber);
         }
+        if (typeof latestRaw.nextEventNumber === 'number' && Number.isInteger(latestRaw.nextEventNumber) && latestRaw.nextEventNumber >= 1) {
+          latestEventNext = latestEventNext === undefined
+            ? latestRaw.nextEventNumber
+            : Math.max(latestEventNext, latestRaw.nextEventNumber);
+        }
       } catch { /* keep ours */ }
       const nextCounters: CountersRecord = {
         nextGoalNumber: latestGoalNext,
         nextTaskNumber: n + 1,
       };
       if (latestEvidenceNext !== undefined) nextCounters.nextEvidenceNumber = latestEvidenceNext;
+      if (latestEventNext !== undefined) nextCounters.nextEventNumber = latestEventNext;
       writeJsonAtomic(countersPath(dataRoot, project), nextCounters);
       return id;
     } catch (err) {

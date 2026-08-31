@@ -13,6 +13,7 @@ import * as relay from './fs.js';
 import * as goalTask from './goal-task.js';
 import * as goalTaskRuntime from './goal-task-runtime.js';
 import * as evidenceKernel from './evidence.js';
+import * as eventKernel from './event.js';
 import { CaptureManager } from './capture-manager.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
@@ -537,6 +538,29 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
 
     case 'evidence:evaluateTask':
       return evidenceKernel.evaluateTaskEvidence(req.dataRoot, req.project, req.taskId);
+
+    // Phase D — Event runtime kernel. Read + delivery ops only.
+    // NO raw event:create is exposed; Event creation happens via trusted typed helpers internally.
+    case 'event:get':
+      return eventKernel.getEvent(req.dataRoot, req.project, req.eventId);
+
+    case 'event:list':
+      return eventKernel.listEvents(req.dataRoot, req.project, req.filter);
+
+    case 'event:listPendingPm':
+      return eventKernel.listPendingPmEvents(req.dataRoot, req.project);
+
+    case 'event:getSummary':
+      return eventKernel.getEventRuntimeSummary(req.dataRoot, req.project);
+
+    case 'event:markDelivered':
+      return eventKernel.markDelivered(req.dataRoot, req.project, req.eventId, req.expectedStatus);
+
+    case 'event:acknowledge':
+      return eventKernel.acknowledge(req.dataRoot, req.project, req.eventId, req.expectedStatus);
+
+    case 'event:ignore':
+      return eventKernel.ignore(req.dataRoot, req.project, req.eventId, req.expectedStatus);
 
     case 'update:check': {
       if (!updaterSupported(app.isPackaged)) {

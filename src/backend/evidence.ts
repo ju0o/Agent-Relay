@@ -180,6 +180,9 @@ function allocateEvidenceIdWithCounter(dataRoot: string, project: string): strin
         nextGoalNumber: nextGoal,
         nextTaskNumber: nextTask,
         nextEvidenceNumber: n + 1,
+        ...(typeof raw.nextEventNumber === 'number' && Number.isInteger(raw.nextEventNumber) && raw.nextEventNumber >= 1
+          ? { nextEventNumber: raw.nextEventNumber }
+          : {}),
       };
       writeJsonAtomic(countersPath(dataRoot, project), next);
       return id;
@@ -430,6 +433,18 @@ function validateLinkage(
   }
 
   return { goalId, taskId, runId };
+}
+
+/**
+ * Exported alias for the Event kernel's linkage validation reuse.
+ * Rejects fabricated cross-project / mismatched Goal-Task-Run relationships.
+ */
+export function validateEvidenceLinkage(
+  dataRoot: string,
+  project: string,
+  input: { goalId?: string; taskId?: string; runId?: string },
+): { goalId?: string; taskId?: string; runId?: string } {
+  return validateLinkage(dataRoot, project, input);
 }
 
 // ── markdown mirror ─────────────────────────────────────────────────────────
