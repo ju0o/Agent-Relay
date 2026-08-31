@@ -355,13 +355,27 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     }
 
     case 'run:materialize': {
-      const { folder, run } = await relay.atomicMaterializeRun(req.dataRoot, req.project, req.date, req.agent);
-      // If a captureId was given, assign the new folder to that Draft context.
+      // Authoritative path: if a captureId is present, route through materializeOnce()
+      // which deduplicates concurrent requests for the SAME captureId — preventing a
+      // prompt-save IPC and an auto-capture persist() from allocating two different
+      // Run numbers and splitting prompt.md / agent-result.md across them.
+      const params = { dataRoot: req.dataRoot, project: req.project, date: req.date, agent: req.agent };
+      let result: { folder: string; run: string };
       if (captureManager && typeof req.captureId === 'string' && req.captureId) {
-        captureManager.assignFolder(req.captureId, folder);
+        result = await captureManager.materializeOnce(req.captureId, params);
+      } else {
+        // Legacy / no-captureId path: direct allocation.
+        result = await relay.atomicMaterializeRun(req.dataRoot, req.project, req.date, req.agent);
       }
-      const out: RunFolderResult = { folder, run };
+      const out: RunFolderResult = { folder: result.folder, run: result.run };
       return out;
+    }
+
+    case 'capture:updateDraftParams': {
+      if (!captureManager) throw new Error('앱이 아직 준비되지 않았습니다.');
+      if (typeof req.captureId !== 'string' || !req.captureId) throw new Error('captureId가 필요합니다.');
+      captureManager.updateDraftParams(req.captureId, req.materializeParams);
+      return true;
     }
 
     case 'update:check': {

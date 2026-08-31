@@ -23,7 +23,8 @@
     "test:parallel-capture": "node test/parallel-capture.test.mjs",
     "test:draft-materialization": "node test/draft-materialization.test.mjs",
     "test:session-ownership": "node test/session-ownership.test.mjs",
-    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh && npm run test:adapter-agent-map && npm run test:parallel-capture && npm run test:draft-materialization && npm run test:session-ownership",
+    "test:draft-idempotency": "node test/draft-idempotency.test.mjs",
+    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh && npm run test:adapter-agent-map && npm run test:parallel-capture && npm run test:draft-materialization && npm run test:session-ownership && npm run test:draft-idempotency",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml"
   },
   "main": "dist/server/backend/main.js",

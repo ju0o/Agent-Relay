@@ -97,6 +97,7 @@ export type RelayRequest =
  | { op: 'capture:arm'; captureId?: string; folder?: string; adapterId?: string; isDraft?: boolean; materializeParams?: MaterializeParams }
  | { op: 'capture:disarm'; captureId?: string; folder?: string }
  | { op: 'capture:select'; sessionId: string; captureId?: string; folder?: string }
+ | { op: 'capture:updateDraftParams'; captureId: string; materializeParams: MaterializeParams }
  | { op: 'run:materialize'; captureId?: string; dataRoot: string; project: string; date: string; agent: string }
  | { op: 'update:check' }
  | { op: 'update:download' }

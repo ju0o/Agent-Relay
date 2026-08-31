@@ -81,6 +81,23 @@ export class CaptureManager {
    */
   private readonly sessionOwners = new Map<string, string>();
 
+  /**
+   * Per-captureId materialization deduplication cache.
+   *
+   * Maps normalizedId → Promise<{folder, run}>.
+   *
+   * INVARIANT: At most ONE physical Run is ever allocated for a given captureId.
+   * Any concurrent materialization request for the same captureId receives the
+   * same Promise and thus the same {folder, run} — preventing split writes where
+   * prompt.md ends up in Run 04 and agent-result.md ends up in Run 05.
+   *
+   * Cleared when:
+   *   • arm() replaces the context (new arm, new params, fresh allocation needed)
+   *   • stopById() removes the context (disarm — retry after re-arm gets fresh alloc)
+   *   • materializeFn throws (failure removed so retry is possible)
+   */
+  private readonly materializeCache = new Map<string, Promise<{ folder: string; run: string }>>();
+
   constructor(
     private readonly push: (s: CaptureStatusView) => void,
     opts: { settleMs?: number; materializeFn?: MaterializeFn } = {},
@@ -176,6 +193,11 @@ export class CaptureManager {
     // Stop only this captureId's existing context — never touch others.
     await this.stopById(normalizedId, false);
 
+    // Clear any cached materialization so the new arm always gets a fresh allocation
+    // with the new adapter/params. (stopById also clears, but arm may be called on a
+    // captureId that was never armed — deleting a missing key is always safe.)
+    this.materializeCache.delete(normalizedId);
+
     const adapter = getAdapter(adapterId);
     if (!adapter) {
       this.push({ phase: 'error', captureId: normalizedId, folder: folder ?? undefined, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
@@ -246,6 +268,98 @@ export class CaptureManager {
       folder,
       adapterId: ctx.adapterId,
     });
+    return true;
+  }
+
+  /**
+   * Idempotent physical Run-folder allocation for a Draft.
+   *
+   * Guarantees: ONE captureId → at most ONE Run folder, ever.
+   *
+   *   • Cache hit (in-flight or already resolved) → returns the SAME Promise and
+   *     thus the same {folder, run}. Concurrent callers (prompt-save IPC and
+   *     auto-capture persist()) share one Promise and never get two different runs.
+   *
+   *   • Context already has a folder (assigned externally) → wraps it and caches.
+   *
+   *   • No cached entry → starts a fresh allocation via materializeFn, caches it,
+   *     and on success assigns the folder to the CaptureContext (only if the same
+   *     context object is still live — avoids polluting a new re-armed context).
+   *
+   *   • materializeFn throws → removes the cache entry so retry is possible.
+   */
+  materializeOnce(captureId: string, params: MaterializeParams): Promise<{ folder: string; run: string }> {
+    const normalizedId = this.normalizePath(captureId);
+
+    // Fast path: in-flight or already resolved.
+    const cached = this.materializeCache.get(normalizedId);
+    if (cached) return cached;
+
+    // Context already has a physical folder — no new allocation needed.
+    const ctx = this.contexts.get(normalizedId);
+    if (ctx?.folder) {
+      const run = path.basename(ctx.folder);
+      const resolved = Promise.resolve({ folder: ctx.folder, run });
+      this.materializeCache.set(normalizedId, resolved);
+      return resolved;
+    }
+
+    if (!this.materializeFn) {
+      return Promise.reject(new Error('materializeFn이 설정되지 않았습니다.'));
+    }
+
+    // Snapshot the context at allocation start so we only assign the folder back
+    // to THIS context object — not to a different context that may later be armed
+    // with the same captureId (after a re-arm that cleared the cache).
+    const initialCtx = ctx ?? null;
+
+    const promise = this.materializeFn(normalizedId, params).then(
+      (result) => {
+        // Assign to context only if it's still the same live object AND unfilled.
+        if (
+          initialCtx !== null &&
+          this.contexts.get(normalizedId) === initialCtx &&
+          initialCtx.folder === null
+        ) {
+          initialCtx.folder = result.folder;
+          initialCtx.lastPushKey = '';
+        }
+        return result;
+      },
+      (err) => {
+        // On failure: remove from cache so the next caller can retry.
+        if (this.materializeCache.get(normalizedId) === promise) {
+          this.materializeCache.delete(normalizedId);
+        }
+        throw err;
+      },
+    );
+
+    this.materializeCache.set(normalizedId, promise);
+    return promise;
+  }
+
+  /**
+   * Update the materializeParams for an existing Draft context that has NOT yet
+   * been physically allocated (folder is still null, no in-flight allocation).
+   *
+   * Call this whenever agent/date/project changes in the UI while the Draft is
+   * still armed, so that a subsequent auto-capture persist() or manual IPC save
+   * uses the CURRENT identity rather than stale arm-time params.
+   *
+   * Returns true if the update was accepted.
+   * Returns false if:
+   *   • no context exists for the captureId
+   *   • the context has already materialized (folder is assigned)
+   *   • materialization is already in-flight (first params win; caller should re-arm)
+   */
+  updateDraftParams(captureId: string, params: MaterializeParams): boolean {
+    const normalizedId = this.normalizePath(captureId);
+    const ctx = this.contexts.get(normalizedId);
+    if (!ctx) return false;
+    if (ctx.folder !== null) return false;              // already materialized
+    if (this.materializeCache.has(normalizedId)) return false; // in-flight
+    ctx.materializeParams = params;
     return true;
   }
 
@@ -421,6 +535,9 @@ export class CaptureManager {
     ctx.lastPhase = null;
     // Release all session ownership claims this context held.
     this.releaseSessions(captureId);
+    // Clear materialization cache: after stop, a future re-arm or retry
+    // must allocate a fresh Run rather than reusing the stopped context's folder.
+    this.materializeCache.delete(captureId);
     await ctx.handle.stop().catch(() => undefined);
     if (withStatus) {
       this.push({ phase: 'stopped', captureId, folder: ctx.folder ?? undefined });
@@ -608,11 +725,14 @@ export class CaptureManager {
       return;
     }
 
-    // ── Lazy materialization (Phase A2) ──────────────────────────────────────
-    // If no physical Relay storage folder exists yet (Draft arm), create one now.
+    // ── Lazy materialization (Phase A2, idempotent via materializeOnce) ─────────
+    // If no physical Relay storage folder exists yet (Draft arm), allocate one now.
+    // materializeOnce() guarantees at most ONE physical Run per captureId: if the
+    // UI already called run:materialize for this same captureId (concurrent prompt-
+    // save race), both paths share the SAME Promise and resolve to the SAME folder.
     let runLabel: string | undefined;
     if (ctx.folder === null) {
-      if (!ctx.materializeParams || !this.materializeFn) {
+      if (!ctx.materializeParams) {
         this.emitToCtx(ctx, {
           phase: 'error',
           captureId: ctx.captureId,
@@ -621,9 +741,11 @@ export class CaptureManager {
         return;
       }
       try {
-        const { folder, run } = await this.materializeFn(ctx.captureId, ctx.materializeParams);
+        const { folder: allocFolder, run } = await this.materializeOnce(ctx.captureId, ctx.materializeParams);
         if (this.contexts.get(ctx.captureId) !== ctx) return; // disarmed during await
-        ctx.folder = folder;
+        // materializeOnce's .then() handler already assigned ctx.folder if the context
+        // was still live. Assign manually only if it somehow wasn't set (defensive).
+        if (!ctx.folder) ctx.folder = allocFolder;
         runLabel = run;
       } catch (err) {
         if (this.contexts.get(ctx.captureId) !== ctx) return;

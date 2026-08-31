@@ -1072,6 +1072,22 @@ function AppInner(): React.ReactElement {
         tabs: s.tabs.map(t => ({ ...t, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false })),
       }
     ));
+    // Live-params: notify backend of date change for any armed Draft captures.
+    // This prevents auto-capture persist() from materializing to a stale date
+    // if a completion arrives before the user manually saves (which would carry
+    // the current date via run:materialize). No-op if capture not armed or already
+    // materialized.
+    if (project && dataRoot) {
+      for (const tab of currTabs) {
+        if (!tab.folder && tab.captureId) {
+          void must({
+            op: 'capture:updateDraftParams',
+            captureId: tab.captureId,
+            materializeParams: { dataRoot, project, date: d, agent: tab.agent },
+          }).catch(() => undefined);
+        }
+      }
+    }
     if (project) {
       for (const tab of currTabs) {
         const n = await peekNextRun(project, tab.agent, d);
