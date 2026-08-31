@@ -554,12 +554,21 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return eventKernel.getEventRuntimeSummary(req.dataRoot, req.project);
 
     case 'event:markDelivered':
+      if (req.expectedStatus === undefined) {
+        throw new Error('event:markDelivered에는 expectedStatus가 필요합니다.');
+      }
       return eventKernel.markDelivered(req.dataRoot, req.project, req.eventId, req.expectedStatus);
 
     case 'event:acknowledge':
+      if (req.expectedStatus === undefined) {
+        throw new Error('event:acknowledge에는 expectedStatus가 필요합니다.');
+      }
       return eventKernel.acknowledge(req.dataRoot, req.project, req.eventId, req.expectedStatus);
 
     case 'event:ignore':
+      if (req.expectedStatus === undefined) {
+        throw new Error('event:ignore에는 expectedStatus가 필요합니다.');
+      }
       return eventKernel.ignore(req.dataRoot, req.project, req.eventId, req.expectedStatus);
 
     case 'update:check': {

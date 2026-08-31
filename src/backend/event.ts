@@ -33,6 +33,11 @@
  * IGNORED only. ACKNOWLEDGED and IGNORED are terminal. No retry counts, no
  * leases, no subscriptions, no distributed queue.
  *
+ * Delivery mutations use process-local per-event CAS locks (MUST CAS):
+ * markDelivered / acknowledge / ignore share one lock keyed by project+eventId.
+ * expectedStatus is required; stale expected rejects before any write. Idempotent
+ * replay is only a no-op when expectedStatus === current === target.
+ *
  * No MCP / PM Gateway / Dispatcher / event consumer in Phase D (strict non-goals).
  */
 import * as fs from 'fs';
@@ -66,6 +71,13 @@ const EVIDENCE_ID_RE = /^EVIDENCE-(\d+)$/;
 
 /** Serializes concurrent Event ID allocation / sourceEventId dedupe within one process. */
 let _eventAllocLock: Promise<void> = Promise.resolve();
+
+/**
+ * Per-event locks for delivery mutations (markDelivered / acknowledge / ignore).
+ * Keyed by project + eventId so different events may mutate in parallel.
+ * Process-local only — Phase D is a single Relay process (no multi-process lock).
+ */
+const _deliveryLocks = new Map<string, Promise<void>>();
 
 // ── paths ───────────────────────────────────────────────────────────────────
 
@@ -403,15 +415,32 @@ function persistDelivery(folder: string, delivery: EventDeliveryRecord): void {
 }
 
 /**
- * Apply a delivery transition with CAS expected-status semantics.
- * Returns the resulting EventDeliveryRecord.
+ * Per-event serialization for delivery mutations.
+ * Same lock for markDelivered / acknowledge / ignore — no check-then-write outside.
+ */
+export function withDeliveryLock<T>(project: string, eventId: string, fn: () => T | Promise<T>): Promise<T> {
+  const key = `${requireNonEmptyString(project, 'project')}::${requireNonEmptyString(eventId, 'eventId')}`;
+  const prev = _deliveryLocks.get(key) ?? Promise.resolve();
+  const work = prev.then(() => fn());
+  _deliveryLocks.set(key, work.then(() => undefined, () => undefined));
+  return work;
+}
+
+/**
+ * Apply a delivery transition with strict CAS expected-status semantics.
+ * Must run inside withDeliveryLock for the same event.
+ *
+ * Contract:
+ * 1. expectedStatus is required and must equal CURRENT — otherwise reject (no write).
+ * 2. If expectedStatus === CURRENT and target === CURRENT → idempotent no-op success.
+ * 3. Otherwise apply a legal transition, or reject illegal/terminal exits.
  */
 function transitionDelivery(
   dataRoot: string,
   project: string,
   eventId: string,
   action: 'markDelivered' | 'acknowledge' | 'ignore',
-  expectedStatus?: EventDeliveryStatus,
+  expectedStatus: EventDeliveryStatus,
 ): EventDeliveryRecord {
   const id = requireNonEmptyString(eventId, 'eventId');
   if (!EVENT_ID_RE.test(id)) throw new Error(`잘못된 Event ID: ${id}`);
@@ -419,18 +448,21 @@ function transitionDelivery(
   const eventFile = eventJsonPath(folder);
   if (!fs.existsSync(eventFile)) throw new Error(`존재하지 않는 Event: ${id}`);
 
-  const current = readDelivery(folder, id) ?? initialDelivery(id, nowIso());
-  if (expectedStatus !== undefined && !isEventDeliveryStatus(expectedStatus)) {
+  if (!isEventDeliveryStatus(expectedStatus)) {
     throw new Error(`잘못된 expectedStatus: ${String(expectedStatus)}`);
   }
-  if (expectedStatus !== undefined && current.status !== expectedStatus) {
+
+  const current = readDelivery(folder, id) ?? initialDelivery(id, nowIso());
+
+  // Strict CAS: reject stale expected before any idempotent or write path.
+  if (current.status !== expectedStatus) {
     throw new Error(`대기 상태 불일치: 현재 ${current.status}, 기대 ${expectedStatus}`);
   }
 
   const target: EventDeliveryStatus =
     action === 'markDelivered' ? 'DELIVERED' : action === 'acknowledge' ? 'ACKNOWLEDGED' : 'IGNORED';
 
-  // Idempotent replay where safe: repeated identical non-advancing command is a no-op success.
+  // Idempotent replay only when expected matches current and caller requests same state.
   if (current.status === target) {
     return current;
   }
@@ -852,16 +884,39 @@ export function getEventRuntimeSummary(dataRoot: string, project: string): Event
   };
 }
 
-// ── delivery commands ───────────────────────────────────────────────────────
+// ── delivery commands (CAS + per-event lock) ────────────────────────────────
 
-export function markDelivered(dataRoot: string, project: string, eventId: string, expectedStatus?: EventDeliveryStatus): EventDeliveryRecord {
-  return transitionDelivery(dataRoot, project, eventId, 'markDelivered', expectedStatus);
+export function markDelivered(
+  dataRoot: string,
+  project: string,
+  eventId: string,
+  expectedStatus: EventDeliveryStatus,
+): Promise<EventDeliveryRecord> {
+  return withDeliveryLock(project, eventId, () =>
+    transitionDelivery(dataRoot, project, eventId, 'markDelivered', expectedStatus),
+  );
 }
-export function acknowledge(dataRoot: string, project: string, eventId: string, expectedStatus?: EventDeliveryStatus): EventDeliveryRecord {
-  return transitionDelivery(dataRoot, project, eventId, 'acknowledge', expectedStatus);
+
+export function acknowledge(
+  dataRoot: string,
+  project: string,
+  eventId: string,
+  expectedStatus: EventDeliveryStatus,
+): Promise<EventDeliveryRecord> {
+  return withDeliveryLock(project, eventId, () =>
+    transitionDelivery(dataRoot, project, eventId, 'acknowledge', expectedStatus),
+  );
 }
-export function ignore(dataRoot: string, project: string, eventId: string, expectedStatus?: EventDeliveryStatus): EventDeliveryRecord {
-  return transitionDelivery(dataRoot, project, eventId, 'ignore', expectedStatus);
+
+export function ignore(
+  dataRoot: string,
+  project: string,
+  eventId: string,
+  expectedStatus: EventDeliveryStatus,
+): Promise<EventDeliveryRecord> {
+  return withDeliveryLock(project, eventId, () =>
+    transitionDelivery(dataRoot, project, eventId, 'ignore', expectedStatus),
+  );
 }
 
 /** Read current delivery state for an Event (pure read). */

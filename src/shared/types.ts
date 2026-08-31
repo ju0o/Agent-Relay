@@ -141,9 +141,9 @@ export type RelayRequest =
  | { op: 'event:list'; dataRoot: string; project: string; filter?: EventListFilter }
  | { op: 'event:listPendingPm'; dataRoot: string; project: string }
  | { op: 'event:getSummary'; dataRoot: string; project: string }
- | { op: 'event:markDelivered'; dataRoot: string; project: string; eventId: string; expectedStatus?: EventDeliveryStatus }
- | { op: 'event:acknowledge'; dataRoot: string; project: string; eventId: string; expectedStatus?: EventDeliveryStatus }
- | { op: 'event:ignore'; dataRoot: string; project: string; eventId: string; expectedStatus?: EventDeliveryStatus }
+ | { op: 'event:markDelivered'; dataRoot: string; project: string; eventId: string; expectedStatus: EventDeliveryStatus }
+ | { op: 'event:acknowledge'; dataRoot: string; project: string; eventId: string; expectedStatus: EventDeliveryStatus }
+ | { op: 'event:ignore'; dataRoot: string; project: string; eventId: string; expectedStatus: EventDeliveryStatus }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };

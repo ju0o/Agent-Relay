@@ -141,28 +141,47 @@ async function secondHalf({ goal, task, runId }) {
   check(typeof evk.recordGoalCompleted === 'function' && typeof evk.recordOwnerDecisionRequired === 'function' && typeof evk.recordGoalCompletionEligible === 'function', 'DC-14 privileged events minted only via trusted server-side helpers');
   check(exported.every((k) => !k.startsWith('recordWorker') && !k.startsWith('recordPublic')), 'DC-15 no Worker-safe privileged mint helper');
 
-  console.log('DC-16/17) delivery transitions');
+  console.log('DC-16/17) delivery transitions + required expectedStatus');
+  // Public IPC RelayRequest must require expectedStatus (no optional blind mutation).
+  check(
+    /op:\s*'event:markDelivered'[^}]*expectedStatus:\s*EventDeliveryStatus/.test(typesSrc)
+      && !/op:\s*'event:markDelivered'[^}]*expectedStatus\?\s*:\s*EventDeliveryStatus/.test(typesSrc),
+    'DC-16 IPC markDelivered requires expectedStatus',
+  );
+  check(
+    /op:\s*'event:acknowledge'[^}]*expectedStatus:\s*EventDeliveryStatus/.test(typesSrc)
+      && !/op:\s*'event:acknowledge'[^}]*expectedStatus\?\s*:\s*EventDeliveryStatus/.test(typesSrc),
+    'DC-16 IPC acknowledge requires expectedStatus',
+  );
+  check(
+    /op:\s*'event:ignore'[^}]*expectedStatus:\s*EventDeliveryStatus/.test(typesSrc)
+      && !/op:\s*'event:ignore'[^}]*expectedStatus\?\s*:\s*EventDeliveryStatus/.test(typesSrc),
+    'DC-16 IPC ignore requires expectedStatus',
+  );
   const d16 = await evk.recordRunResultReceived(TEST_ROOT, project, base);
-  const dd = evk.markDelivered(TEST_ROOT, project, d16.eventId, 'PENDING');
+  const dd = await evk.markDelivered(TEST_ROOT, project, d16.eventId, 'PENDING');
   check(dd.status === 'DELIVERED', 'DC-16 PENDING -> DELIVERED');
-  const da = evk.acknowledge(TEST_ROOT, project, d16.eventId, 'DELIVERED');
+  const da = await evk.acknowledge(TEST_ROOT, project, d16.eventId, 'DELIVERED');
   check(da.status === 'ACKNOWLEDGED', 'DC-17 DELIVERED -> ACKNOWLEDGED');
 
   console.log('DC-18) IGNORE terminal');
   const d18 = await evk.recordRunResultReceived(TEST_ROOT, project, base);
-  const ig = evk.ignore(TEST_ROOT, project, d18.eventId, 'PENDING');
+  const ig = await evk.ignore(TEST_ROOT, project, d18.eventId, 'PENDING');
   check(ig.status === 'IGNORED', 'DC-18 PENDING -> IGNORED');
   let termReject = false;
-  try { evk.markDelivered(TEST_ROOT, project, d18.eventId, 'IGNORED'); } catch { termReject = true; }
+  try { await evk.markDelivered(TEST_ROOT, project, d18.eventId, 'IGNORED'); } catch { termReject = true; }
   check(termReject, 'DC-18 IGNORED is terminal (no exit)');
   let termReplay = true;
-  try { const again = evk.ignore(TEST_ROOT, project, d18.eventId, 'IGNORED'); check(again.status === 'IGNORED', 'DC-18 repeated ignore is a no-op success'); } catch { termReplay = false; }
+  try {
+    const again = await evk.ignore(TEST_ROOT, project, d18.eventId, 'IGNORED');
+    check(again.status === 'IGNORED', 'DC-18 repeated ignore is a no-op success');
+  } catch { termReplay = false; }
   check(termReplay, 'DC-18 idempotent replay safe');
   const acked = await evk.recordRunResultReceived(TEST_ROOT, project, base);
-  evk.markDelivered(TEST_ROOT, project, acked.eventId, 'PENDING');
-  evk.acknowledge(TEST_ROOT, project, acked.eventId, 'DELIVERED');
+  await evk.markDelivered(TEST_ROOT, project, acked.eventId, 'PENDING');
+  await evk.acknowledge(TEST_ROOT, project, acked.eventId, 'DELIVERED');
   let ackTerminal = false;
-  try { evk.ignore(TEST_ROOT, project, acked.eventId, 'ACKNOWLEDGED'); } catch { ackTerminal = true; }
+  try { await evk.ignore(TEST_ROOT, project, acked.eventId, 'ACKNOWLEDGED'); } catch { ackTerminal = true; }
   check(ackTerminal, 'DC-18 ACKNOWLEDGED is terminal');
 
   console.log('DC-19) sourceEventId replay regression');

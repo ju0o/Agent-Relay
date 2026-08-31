@@ -56,7 +56,7 @@ async function main() {
 
   console.log('D-04) Event immutable payload');
   const jsonBefore = fs.readFileSync(path.join(folder1, 'event.json'), 'utf8');
-  evk.markDelivered(TEST_ROOT, project, w1.eventId, 'PENDING');
+  await evk.markDelivered(TEST_ROOT, project, w1.eventId, 'PENDING');
   const jsonAfter = fs.readFileSync(path.join(folder1, 'event.json'), 'utf8');
   check(jsonBefore === jsonAfter, 'D-04 event.json byte-identical after delivery change');
   check(evk.getEvent(TEST_ROOT, project, w1.eventId).summary === w1.summary, 'D-04 summary unchanged');
@@ -160,7 +160,7 @@ async function main() {
 // ?? D-18 pending PM queue filtering ??????????????????????????????????????
   console.log('D-18) pending PM queue filtering');
   const pendQA = await evk.recordQaFailed(TEST_ROOT, project, { ...base, taskId: task.taskId, runId });
-  evk.markDelivered(TEST_ROOT, project, pendQA.eventId, 'PENDING'); // delivered ??excluded
+  await evk.markDelivered(TEST_ROOT, project, pendQA.eventId, 'PENDING'); // delivered excluded
   const pendEligible = await evk.recordGoalCompletionEligible(TEST_ROOT, project, { ...base });
   const nonPm = await evk.recordRuntimeWarning(TEST_ROOT, project, { ...base });
   const pendingIds = evk.listPendingPmEvents(TEST_ROOT, project).map((r) => r.eventId);
@@ -172,40 +172,56 @@ async function main() {
 
   // ?? D-19 pending PM ordering ?????????????????????????????????????????????
   console.log('D-19) pending PM ordering (severity, then occurredAt, then id)');
-  const tInfo = '2026-01-01T00:00:00.000Z';
-  const tErr = '2026-01-01T00:01:00.000Z';
+  // Contract: severity → occurredAt ascending → eventId
+  // o1b ERROR at 00:00, o1 ERROR at 00:01 → o1b before o1
+  const tEarlier = '2026-01-01T00:00:00.000Z';
+  const tLater = '2026-01-01T00:01:00.000Z';
   const tWarn = '2026-01-01T00:02:00.000Z';
-  const o1 = await evk.recordQaFailed(TEST_ROOT, project, { ...base, occurredAt: tErr });
-  const o1b = await evk.recordRunFailed(TEST_ROOT, project, { ...base, occurredAt: tInfo }); // same severity, later occurredAt
+  const o1 = await evk.recordQaFailed(TEST_ROOT, project, { ...base, occurredAt: tLater });
+  const o1b = await evk.recordRunFailed(TEST_ROOT, project, { ...base, occurredAt: tEarlier }); // same severity, earlier occurredAt
   const o3 = await evk.recordOwnerDecisionRequired(TEST_ROOT, project, { ...base, occurredAt: tWarn });
   const ordered = evk.listPendingPmEvents(TEST_ROOT, project).map((r) => r.eventId);
   const orderPos = (id) => ordered.indexOf(id);
-  check(orderPos(o1.eventId) < orderPos(o1b.eventId), 'D-19 same severity ordered by occurredAt');
-  check(orderPos(o1b.eventId) < orderPos(o3.eventId), 'D-19 ERROR before WARNING');
+  check(orderPos(o1b.eventId) < orderPos(o1.eventId), 'D-19 same severity earlier occurredAt first');
+  check(orderPos(o1.eventId) < orderPos(o3.eventId), 'D-19 ERROR before WARNING');
+  // Same severity + same occurredAt → lower eventId first
+  const tSame = '2026-01-01T00:03:00.000Z';
+  const oSameA = await evk.recordQaFailed(TEST_ROOT, project, { ...base, occurredAt: tSame, summary: 'same-a' });
+  const oSameB = await evk.recordRunFailed(TEST_ROOT, project, { ...base, occurredAt: tSame, summary: 'same-b' });
+  const ordered2 = evk.listPendingPmEvents(TEST_ROOT, project).map((r) => r.eventId);
+  const posSame = (id) => ordered2.indexOf(id);
+  const [lowerId, higherId] = [oSameA.eventId, oSameB.eventId].sort((a, b) => a.localeCompare(b));
+  check(posSame(lowerId) < posSame(higherId), 'D-19 same severity+occurredAt ordered by eventId');
   // RUN_RESULT_RECEIVED is a fact event — must NOT appear in the PM queue
   const factEvt = await evk.recordRunResultReceived(TEST_ROOT, project, { ...base });
-  check(orderPos(factEvt.eventId) === -1, 'D-19 RUN_RESULT_RECEIVED (fact) excluded');
+  check(
+    !evk.listPendingPmEvents(TEST_ROOT, project).some((r) => r.eventId === factEvt.eventId),
+    'D-19 RUN_RESULT_RECEIVED (fact) excluded',
+  );
 
   // ?? D-20 non-PM event excluded ???????????????????????????????????????????
   console.log('D-20) non-PM event excluded');
   const nm = await evk.recordTaskBecameReady(TEST_ROOT, project, { ...base });
-  check(orderPos(nm.eventId) === -1, 'D-20 non-PM excluded from PM queue');
+  check(
+    !evk.listPendingPmEvents(TEST_ROOT, project).some((r) => r.eventId === nm.eventId),
+    'D-20 non-PM excluded from PM queue',
+  );
 
-  // ?? D-21 PENDING?ELIVERED ???????????????????????????????????????????????
+  // ?? D-21 PENDING->DELIVERED ???????????????????????????????????????????????
   console.log('D-21) PENDING -> DELIVERED');
   const d21 = await evk.recordRunResultReceived(TEST_ROOT, project, { ...base });
-  const d1 = evk.markDelivered(TEST_ROOT, project, d21.eventId, 'PENDING');
+  const d1 = await evk.markDelivered(TEST_ROOT, project, d21.eventId, 'PENDING');
   check(d1.status === 'DELIVERED', 'D-21 DELIVERED');
 
-  // ?? D-22 DELIVERED?CKNOWLEDGED ?????????????????????????????????????????
+  // ?? D-22 DELIVERED->ACKNOWLEDGED ?????????????????????????????????????????
   console.log('D-22) DELIVERED -> ACKNOWLEDGED');
-  const ack = evk.acknowledge(TEST_ROOT, project, d21.eventId, 'DELIVERED');
+  const ack = await evk.acknowledge(TEST_ROOT, project, d21.eventId, 'DELIVERED');
   check(ack.status === 'ACKNOWLEDGED', 'D-22 ACKNOWLEDGED');
 
-  // ?? D-23 PENDING?GNORED ?????????????????????????????????????????????????
+  // ?? D-23 PENDING->IGNORED ?????????????????????????????????????????????????
   console.log('D-23) PENDING -> IGNORED');
   const d23 = await evk.recordRunResultReceived(TEST_ROOT, project, { ...base });
-  const ig = evk.ignore(TEST_ROOT, project, d23.eventId, 'PENDING');
+  const ig = await evk.ignore(TEST_ROOT, project, d23.eventId, 'PENDING');
   check(ig.status === 'IGNORED', 'D-23 IGNORED');
 
   // ?? D-24 illegal delivery transition rejected ????????????????????????????
@@ -213,7 +229,7 @@ async function main() {
   const d24 = await evk.recordRunResultReceived(TEST_ROOT, project, { ...base });
   let illegal = false;
   try {
-    evk.acknowledge(TEST_ROOT, project, d24.eventId, 'PENDING'); // PENDING->ACKNOWLEDGED illegal
+    await evk.acknowledge(TEST_ROOT, project, d24.eventId, 'PENDING'); // PENDING->ACKNOWLEDGED illegal
   } catch { illegal = true; }
   check(illegal, 'D-24 PENDING->ACKNOWLEDGED rejected');
   check(evk.getDelivery(TEST_ROOT, project, d24.eventId).status === 'PENDING', 'D-24 status unchanged');
@@ -222,28 +238,34 @@ async function main() {
   console.log('D-25) stale expected status rejected');
   let stale = false;
   try {
-    evk.markDelivered(TEST_ROOT, project, d24.eventId, 'DELIVERED'); // actual is PENDING
+    await evk.markDelivered(TEST_ROOT, project, d24.eventId, 'DELIVERED'); // actual is PENDING
   } catch { stale = true; }
   check(stale, 'D-25 stale expected rejected');
 
   // ?? D-26 idempotent replay safe ??????????????????????????????????????????
   console.log('D-26) idempotent replay safe');
   const d26 = await evk.recordRunResultReceived(TEST_ROOT, project, { ...base });
-  evk.markDelivered(TEST_ROOT, project, d26.eventId, 'PENDING');
+  await evk.markDelivered(TEST_ROOT, project, d26.eventId, 'PENDING');
   let replayOk = true;
   try {
-    const again = evk.markDelivered(TEST_ROOT, project, d26.eventId, 'DELIVERED');
+    const again = await evk.markDelivered(TEST_ROOT, project, d26.eventId, 'DELIVERED');
     check(again.status === 'DELIVERED', 'D-26 replay no-op returns DELIVERED');
   } catch { replayOk = false; }
   check(replayOk, 'D-26 repeated markDelivered does not throw');
+  // Stale expected on replay must NOT silently succeed just because target==current
+  let staleReplay = false;
+  try {
+    await evk.markDelivered(TEST_ROOT, project, d26.eventId, 'PENDING'); // current is DELIVERED
+  } catch { staleReplay = true; }
+  check(staleReplay, 'D-26 stale expected on replay rejected (strict CAS)');
 
   // ?? D-27 restart reconstructs pending queue from disk ????????????????????
   console.log('D-27) restart reconstructs pending PM queue from disk');
   const rq = await evk.recordQaFailed(TEST_ROOT, project, { ...base });
   const pendingAfterRestart = evk.listPendingPmEvents(TEST_ROOT, project);
   check(pendingAfterRestart.some((r) => r.eventId === rq.eventId), 'D-27 pending event found after fresh disk read');
-  evk.markDelivered(TEST_ROOT, project, rq.eventId, 'PENDING');
-  evk.acknowledge(TEST_ROOT, project, rq.eventId, 'DELIVERED');
+  await evk.markDelivered(TEST_ROOT, project, rq.eventId, 'PENDING');
+  await evk.acknowledge(TEST_ROOT, project, rq.eventId, 'DELIVERED');
   check(!evk.listPendingPmEvents(TEST_ROOT, project).some((r) => r.eventId === rq.eventId), 'D-27 acknowledged no longer pending');
 // ?? D-28/29/30 malformed neighbor isolation ??????????????????????????????
   console.log('D-28/29/30) malformed neighbor isolation');
@@ -289,6 +311,151 @@ async function main() {
   const beforeEventCount = evk.listEvents(TEST_ROOT, project).events.length;
   await evk.recordRuntimeError(TEST_ROOT, project, { ...base });
   check(evk.listEvents(TEST_ROOT, project).events.length === beforeEventCount + 1, 'D-36 event counter preserved after goal/task allocs');
+
+  // ?? CAS-01..07 delivery per-event lock / race safety ?????????????????????
+  console.log('CAS-01..07) delivery CAS race safety');
+
+  function readDeliveryRaw(eventId) {
+    const p = path.join(evk.eventFolder(TEST_ROOT, project, eventId), 'delivery.json');
+    const text = fs.readFileSync(p, 'utf8');
+    const parsed = JSON.parse(text);
+    return { text, parsed };
+  }
+
+  // CAS-01: conflicting PENDING transitions — exactly one succeeds
+  const cas1 = await evk.recordQaFailed(TEST_ROOT, project, { ...base, summary: 'cas-01' });
+  const cas1results = await Promise.allSettled([
+    evk.markDelivered(TEST_ROOT, project, cas1.eventId, 'PENDING'),
+    evk.ignore(TEST_ROOT, project, cas1.eventId, 'PENDING'),
+  ]);
+  const cas1ok = cas1results.filter((r) => r.status === 'fulfilled');
+  const cas1fail = cas1results.filter((r) => r.status === 'rejected');
+  check(cas1ok.length === 1 && cas1fail.length === 1, `CAS-01 exactly one winner (ok=${cas1ok.length} fail=${cas1fail.length})`);
+  const cas1staleMsg = cas1fail[0].status === 'rejected' ? String(cas1fail[0].reason?.message ?? cas1fail[0].reason) : '';
+  check(cas1staleMsg.includes('대기 상태 불일치'), 'CAS-01 loser is stale expected-status conflict');
+
+  // CAS-02: final delivery state is exactly the winner; JSON valid
+  const cas1final = evk.getDelivery(TEST_ROOT, project, cas1.eventId);
+  const winnerStatus = cas1ok[0].status === 'fulfilled' ? cas1ok[0].value.status : null;
+  check(
+    (winnerStatus === 'DELIVERED' || winnerStatus === 'IGNORED') && cas1final.status === winnerStatus,
+    `CAS-02 final status matches winner (${cas1final.status})`,
+  );
+  const { parsed: cas1disk } = readDeliveryRaw(cas1.eventId);
+  check(
+    cas1disk.eventId === cas1.eventId && cas1disk.status === winnerStatus && typeof cas1disk.updatedAt === 'string',
+    'CAS-02 delivery.json valid single winner state',
+  );
+  check(
+    !evk.listPendingPmEvents(TEST_ROOT, project).some((r) => r.eventId === cas1.eventId),
+    'CAS-02 pending PM queue reflects final non-PENDING state',
+  );
+
+  // CAS-03: concurrent duplicate markDelivered(expected=PENDING) — one transition, one stale
+  const cas3 = await evk.recordQaFailed(TEST_ROOT, project, { ...base, summary: 'cas-03' });
+  const cas3results = await Promise.allSettled([
+    evk.markDelivered(TEST_ROOT, project, cas3.eventId, 'PENDING'),
+    evk.markDelivered(TEST_ROOT, project, cas3.eventId, 'PENDING'),
+  ]);
+  const cas3ok = cas3results.filter((r) => r.status === 'fulfilled');
+  const cas3fail = cas3results.filter((r) => r.status === 'rejected');
+  check(cas3ok.length === 1 && cas3fail.length === 1, `CAS-03 duplicate markDelivered one transition (ok=${cas3ok.length})`);
+  check(evk.getDelivery(TEST_ROOT, project, cas3.eventId).status === 'DELIVERED', 'CAS-03 final DELIVERED');
+  check(String(cas3fail[0].reason?.message ?? '').includes('대기 상태 불일치'), 'CAS-03 loser stale-CAS policy');
+
+  // CAS-04: from DELIVERED, acknowledge vs ignore — exactly one succeeds
+  const cas4 = await evk.recordQaFailed(TEST_ROOT, project, { ...base, summary: 'cas-04' });
+  await evk.markDelivered(TEST_ROOT, project, cas4.eventId, 'PENDING');
+  const cas4results = await Promise.allSettled([
+    evk.acknowledge(TEST_ROOT, project, cas4.eventId, 'DELIVERED'),
+    evk.ignore(TEST_ROOT, project, cas4.eventId, 'DELIVERED'),
+  ]);
+  const cas4ok = cas4results.filter((r) => r.status === 'fulfilled');
+  const cas4fail = cas4results.filter((r) => r.status === 'rejected');
+  check(cas4ok.length === 1 && cas4fail.length === 1, `CAS-04 ack vs ignore one winner (ok=${cas4ok.length})`);
+  const cas4final = evk.getDelivery(TEST_ROOT, project, cas4.eventId);
+  check(
+    cas4final.status === 'ACKNOWLEDGED' || cas4final.status === 'IGNORED',
+    `CAS-04 terminal winner status=${cas4final.status}`,
+  );
+
+  // CAS-05: stale expected never writes
+  const cas5 = await evk.recordQaFailed(TEST_ROOT, project, { ...base, summary: 'cas-05' });
+  const beforeCas5 = readDeliveryRaw(cas5.eventId);
+  let cas5rejected = false;
+  try {
+    await evk.ignore(TEST_ROOT, project, cas5.eventId, 'DELIVERED'); // actual PENDING
+  } catch { cas5rejected = true; }
+  const afterCas5 = readDeliveryRaw(cas5.eventId);
+  check(cas5rejected, 'CAS-05 stale expected rejected');
+  check(beforeCas5.text === afterCas5.text, 'CAS-05 stale expected never writes');
+  check(evk.getDelivery(TEST_ROOT, project, cas5.eventId).status === 'PENDING', 'CAS-05 remains PENDING');
+
+  // CAS-06: ACKNOWLEDGED and IGNORED remain terminal under concurrency
+  const cas6a = await evk.recordQaFailed(TEST_ROOT, project, { ...base, summary: 'cas-06a' });
+  await evk.markDelivered(TEST_ROOT, project, cas6a.eventId, 'PENDING');
+  await evk.acknowledge(TEST_ROOT, project, cas6a.eventId, 'DELIVERED');
+  const cas6aResults = await Promise.allSettled([
+    evk.markDelivered(TEST_ROOT, project, cas6a.eventId, 'ACKNOWLEDGED'),
+    evk.ignore(TEST_ROOT, project, cas6a.eventId, 'ACKNOWLEDGED'),
+    evk.acknowledge(TEST_ROOT, project, cas6a.eventId, 'DELIVERED'),
+  ]);
+  check(cas6aResults.every((r) => r.status === 'rejected'), 'CAS-06 ACKNOWLEDGED rejects concurrent exits');
+  check(evk.getDelivery(TEST_ROOT, project, cas6a.eventId).status === 'ACKNOWLEDGED', 'CAS-06 ACKNOWLEDGED unchanged');
+
+  const cas6b = await evk.recordQaFailed(TEST_ROOT, project, { ...base, summary: 'cas-06b' });
+  await evk.ignore(TEST_ROOT, project, cas6b.eventId, 'PENDING');
+  const cas6bResults = await Promise.allSettled([
+    evk.markDelivered(TEST_ROOT, project, cas6b.eventId, 'IGNORED'),
+    evk.acknowledge(TEST_ROOT, project, cas6b.eventId, 'IGNORED'),
+    evk.ignore(TEST_ROOT, project, cas6b.eventId, 'PENDING'),
+  ]);
+  check(cas6bResults.every((r) => r.status === 'rejected'), 'CAS-06 IGNORED rejects concurrent exits');
+  check(evk.getDelivery(TEST_ROOT, project, cas6b.eventId).status === 'IGNORED', 'CAS-06 IGNORED unchanged');
+  // Idempotent terminal replay with matching expected still succeeds
+  const cas6replay = await evk.ignore(TEST_ROOT, project, cas6b.eventId, 'IGNORED');
+  check(cas6replay.status === 'IGNORED', 'CAS-06 terminal idempotent replay with expected=IGNORED');
+
+  // CAS-07: different events mutate independently (no global delivery lock)
+  const cas7a = await evk.recordQaFailed(TEST_ROOT, project, { ...base, summary: 'cas-07a' });
+  const cas7b = await evk.recordRunFailed(TEST_ROOT, project, { ...base, summary: 'cas-07b' });
+  let overlap = false;
+  let inA = false;
+  let inB = false;
+  await Promise.all([
+    evk.withDeliveryLock(project, cas7a.eventId, async () => {
+      inA = true;
+      await new Promise((r) => setTimeout(r, 30));
+      if (inB) overlap = true;
+      inA = false;
+    }),
+    evk.withDeliveryLock(project, cas7b.eventId, async () => {
+      inB = true;
+      await new Promise((r) => setTimeout(r, 30));
+      if (inA) overlap = true;
+      inB = false;
+    }),
+  ]);
+  check(overlap, 'CAS-07 different events may hold locks concurrently');
+  const cas7results = await Promise.allSettled([
+    evk.markDelivered(TEST_ROOT, project, cas7a.eventId, 'PENDING'),
+    evk.ignore(TEST_ROOT, project, cas7b.eventId, 'PENDING'),
+  ]);
+  check(cas7results.every((r) => r.status === 'fulfilled'), 'CAS-07 independent events both succeed');
+  check(evk.getDelivery(TEST_ROOT, project, cas7a.eventId).status === 'DELIVERED', 'CAS-07a DELIVERED');
+  check(evk.getDelivery(TEST_ROOT, project, cas7b.eventId).status === 'IGNORED', 'CAS-07b IGNORED');
+
+  // Restart / disk reconstruction after races
+  console.log('CAS-restart) disk reconstruction after races');
+  for (const id of [cas1.eventId, cas3.eventId, cas4.eventId, cas5.eventId, cas6a.eventId, cas6b.eventId, cas7a.eventId, cas7b.eventId]) {
+    const { parsed } = readDeliveryRaw(id);
+    check(parsed.eventId === id && typeof parsed.status === 'string', `CAS-restart valid delivery.json ${id}`);
+    check(evk.getDelivery(TEST_ROOT, project, id).status === parsed.status, `CAS-restart getDelivery matches disk ${id}`);
+  }
+  const pendingRestart = evk.listPendingPmEvents(TEST_ROOT, project);
+  check(pendingRestart.every((e) => evk.getDelivery(TEST_ROOT, project, e.eventId).status === 'PENDING'), 'CAS-restart pending queue matches PENDING deliveries');
+  check(pendingRestart.some((e) => e.eventId === cas5.eventId), 'CAS-restart cas5 still pending');
+  check(!pendingRestart.some((e) => e.eventId === cas1.eventId), 'CAS-restart cas1 winner no longer pending');
 
   console.log('\nDONE');
 }
