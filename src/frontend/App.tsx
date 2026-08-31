@@ -357,7 +357,12 @@ function AppInner(): React.ReactElement {
     // Route by captureId (preferred, Phase A2) or folder (legacy).
     const key = s.captureId ?? s.folder;
     if (key) {
-      setCaptureMap(prev => new Map(prev).set(key, { ...s }));
+      if (s.phase === 'stopped') {
+        // Remove stopped captures from the map to prevent unbounded growth.
+        setCaptureMap(prev => { const next = new Map(prev); next.delete(key); return next; });
+      } else {
+        setCaptureMap(prev => new Map(prev).set(key, { ...s }));
+      }
     }
     captureHandlerRef.current(s);
   }), []);
@@ -376,7 +381,6 @@ function AppInner(): React.ReactElement {
     const agentName = activeTab?.agent ?? '';
     const adapterId = agentNameToAdapterId(agentName);
     const c = captureRef.current;
-    const tabFolder = activeTab?.folder ?? '';
 
     if (adapterId !== null) {
       setCaptureAgentUnsupported(false);
@@ -451,13 +455,6 @@ function AppInner(): React.ReactElement {
     const rootPath = root ?? dataRoot;
     if (!p || !a || !d || !rootPath) return null;
     return await must<string>({ op: 'run:next', dataRoot: rootPath, project: p, date: d, agent: a });
-  }
-
-  /** 실제 저장 시점에만 호출 — 런 번호를 확정하고 폴더를 생성한다. */
-  async function getNextRun(p: string, a: string, d: string): Promise<RunFolderResult | null> {
-    if (!p || !a || !d || !dataRoot) return null;
-    const next = await must<string>({ op: 'run:next', dataRoot, project: p, date: d, agent: a });
-    return await must<RunFolderResult>({ op: 'run:ensureFolder', dataRoot, project: p, date: d, agent: a, run: next });
   }
 
   // ── Result → GPT 전달 ───────────────────────────────────────────────────────
@@ -756,29 +753,36 @@ function AppInner(): React.ReactElement {
           // result.md was written by capture (fresh write or overwrite-of-empty).
           // Refresh the result pane unless the user has unsaved manual edits.
           setSessions(prev => prev.map(sess => {
-            const idx = s.captureId
-              ? sess.tabs.findIndex(t => t.captureId === s.captureId)
-              : sess.tabs.findIndex(t => t.folder === s.folder);
-            if (idx < 0) return sess;
-            const tab = sess.tabs[idx]!;
-            // Also update folder/run if materialization just happened (Draft → Run).
-            const newFolder = s.folder && s.folder !== tab.folder ? s.folder : undefined;
-            const newRun = s.run && s.run !== tab.run ? s.run : undefined;
-            // Data-safety guard: if the tab has unsaved manual content (user typed
-            // something but did not save it), do not silently destroy it.
-            // resultSaved=true means the pane mirrors a saved file → safe to refresh.
-            // result='' means the pane is empty → safe to populate.
-            if (tab.result && !tab.resultSaved) return sess;
-            const nextTabs = [...sess.tabs];
-            nextTabs[idx] = {
-              ...tab,
-              ...(newFolder ? { folder: newFolder } : {}),
-              ...(newRun ? { run: newRun } : {}),
-              result: rec.result,
-              tags: rec.tags,
-              resultSaved: true,
-            };
-            return { ...sess, tabs: nextTabs };
+            if (s.captureId) {
+              // captureId-based routing: update the ONE matching tab.
+              const idx = sess.tabs.findIndex(t => t.captureId === s.captureId);
+              if (idx < 0) return sess;
+              const tab = sess.tabs[idx]!;
+              if (tab.result && !tab.resultSaved) return sess;
+              const nextTabs = [...sess.tabs];
+              const newFolder = s.folder && s.folder !== tab.folder ? s.folder : undefined;
+              const newRun = s.run && s.run !== tab.run ? s.run : undefined;
+              nextTabs[idx] = {
+                ...tab,
+                ...(newFolder ? { folder: newFolder } : {}),
+                ...(newRun ? { run: newRun } : {}),
+                result: rec.result, tags: rec.tags, resultSaved: true,
+              };
+              return { ...sess, tabs: nextTabs };
+            } else {
+              // Legacy folder-based routing: update ALL tabs referencing this folder
+              // (multiple tabs may open the same historical Run).
+              const nextTabs = [...sess.tabs];
+              let changed = false;
+              for (let i = 0; i < nextTabs.length; i++) {
+                const tab = nextTabs[i]!;
+                if (tab.folder !== s.folder) continue;
+                if (tab.result && !tab.resultSaved) continue;
+                nextTabs[i] = { ...tab, result: rec.result, tags: rec.tags, resultSaved: true };
+                changed = true;
+              }
+              return changed ? { ...sess, tabs: nextTabs } : sess;
+            }
           }));
           notify('ok', `${agentLabel} 결과 자동 수신 완료 — 결과 패널을 확인하세요.`);
         } else {

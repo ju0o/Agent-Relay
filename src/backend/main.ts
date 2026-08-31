@@ -336,7 +336,8 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
         ? req.captureId
         : typeof req.folder === 'string' && req.folder
           ? req.folder
-          : undefined;
+          : null;
+      if (!captureIdOrFolder) throw new Error('disarm에는 captureId 또는 folder가 필요합니다.');
       await captureManager.disarm(captureIdOrFolder);
       return true;
     }

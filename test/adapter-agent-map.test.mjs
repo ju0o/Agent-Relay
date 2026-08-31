@@ -148,7 +148,7 @@ async function main() {
     check(ccWatching.boundSessionId === 'cc-session-1', 'claude-code arm binds CC session, not OC session');
     check(ccWatching.boundSessionId !== 'oc-session-1', 'OC session NOT carried into CC arm');
 
-    await manager.disarm();
+    await manager.disarmAll();
     clearAdapters();
   }
 
@@ -179,7 +179,7 @@ async function main() {
     const w = pushes.find((p) => p.phase === 'watching');
     check(!!w, 'OpenCode regression: watching pushed');
     check(w.boundSessionId === 'reg-ses', 'OpenCode regression: session bound');
-    await manager.disarm();
+    await manager.disarmAll();
     clearAdapters();
   }
 
@@ -208,7 +208,7 @@ async function main() {
     const w = pushes.find((p) => p.phase === 'watching');
     check(!!w, 'Claude regression: watching pushed');
     check(w.boundSessionId === 'cc-reg-ses', 'Claude regression: session bound');
-    await manager.disarm();
+    await manager.disarmAll();
     clearAdapters();
   }
 

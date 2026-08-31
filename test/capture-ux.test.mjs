@@ -228,7 +228,7 @@ async function main() {
     check(watching.bindingReason === 'unique-new', 'binding reason visible');
     check(watching.boundSessionTitle === 'early-task', 'bound title visible');
     check(captureViewState(watching) === 'bound', 'state = bound / WAITING_RESPONSE');
-    await manager.disarm();
+    await manager.disarmAll();
     clearAdapters();
   }
 
@@ -263,7 +263,7 @@ async function main() {
     const bound = pushes.find((p) => p.phase === 'watching' && p.boundSessionId === 'ses_b');
     check(!!bound, 'selection → bound watching state');
     check(bound.boundSessionId === 'ses_b' && bound.bindingReason === 'manual', 'chosen Session is visible + reason manual');
-    await manager.disarm();
+    await manager.disarmAll();
     clearAdapters();
   }
 

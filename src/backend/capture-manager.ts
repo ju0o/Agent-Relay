@@ -22,7 +22,14 @@ import { CaptureCandidateView, CaptureStatusView, MaterializeParams } from '../s
 interface CaptureContext {
   /** Stable identity — never changes after arm, independent of physical folder. */
   readonly captureId: string;
-  /** Physical run folder. null means the Draft has not yet materialized. */
+  /**
+   * Physical run folder. null means the Draft has not yet materialized.
+   *
+   * NOTE: this is the RELAY STORAGE folder — the folder where prompt.md,
+   * result.md and evidence/ are written. It is NOT the coding workspace where
+   * the agent runs (e.g. the source repository). Those are separate concepts.
+   * Do not pass this as WatchTarget.workspaceRoot.
+   */
   folder: string | null;
   readonly adapterId: string;
   handle: WatchHandle;
@@ -45,10 +52,16 @@ export type MaterializeFn = (captureId: string, params: MaterializeParams) => Pr
  * Phase A2: contexts are keyed by captureId (not folder). A Draft can be armed
  * with no physical folder; the folder is set lazily on first meaningful data.
  *
+ * Phase B1 (this file): adds exclusive session ownership so two captures using
+ * the same adapter cannot both persist the same agent session's completion.
+ *
+ *   ONE (adapterId, sessionId) → at most ONE captureId.
+ *
  * Backward compatibility:
- *   arm(folderPath, adapterId)  — legacy; captureId = folderPath, folder = folderPath
- *   arm(captureId, adapterId, { isDraft: true, materializeParams })  — Phase A2 Draft
- *   arm(captureId, adapterId, { folder })                            — Phase A2 materialized
+ *   arm(folderPath, adapterId)  — legacy; captureId = normalized(folderPath),
+ *                                 folder = normalized(folderPath)
+ *   arm(captureId, adapterId, { isDraft: true, materializeParams })  — Draft
+ *   arm(captureId, adapterId, { folder })                            — existing Run
  */
 export class CaptureManager {
   private readonly settleMs: number;
@@ -56,6 +69,17 @@ export class CaptureManager {
 
   /** Active capture contexts, keyed by captureId. */
   private readonly contexts = new Map<string, CaptureContext>();
+
+  /**
+   * Exclusive session ownership registry.
+   * Key:   "${adapterId}::${sessionId}"
+   * Value: captureId that owns that session
+   *
+   * Invariant: at most ONE captureId may appear as the value for any key.
+   * Before any automatic binding or completion acceptance, the context must
+   * successfully claim (or already own) the session here.
+   */
+  private readonly sessionOwners = new Map<string, string>();
 
   constructor(
     private readonly push: (s: CaptureStatusView) => void,
@@ -98,6 +122,9 @@ export class CaptureManager {
   isActive(captureIdOrFolder?: string): boolean {
     if (captureIdOrFolder !== undefined) {
       if (this.contexts.has(captureIdOrFolder)) return true;
+      // Also accept legacy calls with a normalized folder path
+      const norm = this.normalizePath(captureIdOrFolder);
+      if (norm !== captureIdOrFolder && this.contexts.has(norm)) return true;
       return this.findByFolder(captureIdOrFolder) !== undefined;
     }
     return this.contexts.size > 0;
@@ -106,46 +133,58 @@ export class CaptureManager {
   /**
    * Arm a Draft or existing Run.
    *
-   * @param captureId  Stable identity for this capture (passed from the tab).
+   * @param captureId  Stable identity (from the tab or legacy folder path).
    * @param adapterId  Adapter to use (default 'opencode').
-   * @param opts.folder         Physical folder (undefined = derive from captureId for
-   *                            legacy callers; null / opts.isDraft=true = Draft).
-   * @param opts.isDraft        Explicitly arm as Draft (folder = null, no legacy fallback).
-   * @param opts.materializeParams  Required when isDraft=true to enable auto-materialization.
+   * @param opts.folder         Physical Relay storage folder (undefined = derive from
+   *                            captureId for legacy callers; isDraft=true = null/Draft).
+   *                            This is NOT the coding workspace root.
+   * @param opts.isDraft        Arm as a Draft with no physical folder yet.
+   * @param opts.materializeParams  Required when isDraft=true for auto-materialization.
+   * @param opts.workspaceRoot  Optional CODING workspace directory to pass to the adapter
+   *                            so it can scope its session observation. This is the repo
+   *                            the agent is running in — NOT the Relay storage folder.
    *
-   * Backward compatibility: arm(folderPath, adapterId) with no opts treats
-   * folderPath as both captureId AND folder.
+   * Backward compat: arm(folderPath, adapterId) with no opts uses normalized folderPath
+   * as both captureId AND folder.
    */
   async arm(
     captureId: string,
     adapterId = 'opencode',
-    opts?: { folder?: string; isDraft?: boolean; materializeParams?: MaterializeParams },
+    opts?: {
+      folder?: string;
+      isDraft?: boolean;
+      materializeParams?: MaterializeParams;
+      workspaceRoot?: string;
+    },
   ): Promise<void> {
     if (typeof captureId !== 'string' || !captureId.trim()) {
       throw new Error('captureId가 필요합니다.');
     }
 
+    // Normalize legacy folder-path captureIds to avoid trivial path-variant duplicates.
+    const normalizedId = this.normalizePath(captureId);
+
     // Resolve folder:
-    //   isDraft=true  → null (Draft)
-    //   folder given  → use it
-    //   neither       → treat captureId as folder (legacy: arm(folderPath, adapterid))
+    //   isDraft=true  → null (Draft; no physical folder yet)
+    //   folder given  → use it (this is the Relay storage folder, not coding workspace)
+    //   neither       → treat normalizedId as folder (legacy: arm(folderPath, adapterId))
     const folder: string | null =
       opts?.isDraft === true ? null :
       opts?.folder !== undefined ? opts.folder :
-      captureId;
+      normalizedId;   // legacy backward-compat path
 
     // Stop only this captureId's existing context — never touch others.
-    await this.stopById(captureId, false);
+    await this.stopById(normalizedId, false);
 
     const adapter = getAdapter(adapterId);
     if (!adapter) {
-      this.push({ phase: 'error', captureId, folder: folder ?? undefined, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
+      this.push({ phase: 'error', captureId: normalizedId, folder: folder ?? undefined, message: `어댑터를 찾을 수 없습니다: ${adapterId}` });
       throw new Error(`어댑터를 찾을 수 없습니다: ${adapterId}`);
     }
 
     const noopHandle: WatchHandle = { adapterId: adapter.id, stop: async () => undefined };
     const ctx: CaptureContext = {
-      captureId,
+      captureId: normalizedId,
       folder,
       adapterId: adapter.id,
       handle: noopHandle,
@@ -158,47 +197,52 @@ export class CaptureManager {
     };
 
     // Register BEFORE startWatch so synchronous sink events pass the stale-handle guard.
-    this.contexts.set(captureId, ctx);
+    this.contexts.set(normalizedId, ctx);
+
+    // Build the WatchTarget. workspaceRoot is the CODING workspace — if not provided,
+    // pass an empty target (the adapter will observe all accessible sessions).
+    const target = opts?.workspaceRoot ? { workspaceRoot: opts.workspaceRoot } : {};
 
     try {
-      ctx.handle = await adapter.startWatch({}, (e) => this.onEvent(ctx, e));
+      ctx.handle = await adapter.startWatch(target, (e) => this.onEvent(ctx, e));
 
-      if (this.contexts.get(captureId) !== ctx) {
+      if (this.contexts.get(normalizedId) !== ctx) {
         await ctx.handle.stop().catch(() => undefined);
         return;
       }
 
       this.emitToCtx(ctx, {
         phase: 'watching',
-        captureId,
+        captureId: normalizedId,
         folder: folder ?? undefined,
         adapterId: adapter.id,
       });
     } catch (err) {
-      this.contexts.delete(captureId);
+      this.contexts.delete(normalizedId);
       this.clearPending(ctx);
       const message = err instanceof Error ? err.message : String(err);
-      this.push({ phase: 'error', captureId, folder: folder ?? undefined, message });
+      this.push({ phase: 'error', captureId: normalizedId, folder: folder ?? undefined, message });
       throw err instanceof Error ? err : new Error(message);
     }
   }
 
   /**
-   * Assign a physical folder to an existing Draft context without resetting
-   * SessionBindingPolicy. Called when the frontend materializes a Run manually
+   * Assign a physical Relay storage folder to an existing Draft context without
+   * resetting SessionBindingPolicy. Called when the frontend materializes a Run
    * (e.g. on non-empty Prompt save) while capture is already armed.
    *
    * If no context exists for captureId this is a no-op (returns false).
    */
   assignFolder(captureId: string, folder: string): boolean {
-    const ctx = this.contexts.get(captureId);
+    const normalizedId = this.normalizePath(captureId);
+    const ctx = this.contexts.get(normalizedId);
     if (!ctx) return false;
     if (ctx.folder === folder) return true;
     ctx.folder = folder;
     ctx.lastPushKey = '';
     this.emitToCtx(ctx, {
       phase: 'watching',
-      captureId,
+      captureId: normalizedId,
       folder,
       adapterId: ctx.adapterId,
     });
@@ -206,25 +250,29 @@ export class CaptureManager {
   }
 
   /**
-   * Disarm a specific capture (by captureId or folder for legacy callers).
-   * With no argument stops ALL active contexts.
+   * Disarm a specific capture by captureId (preferred) or folder path (legacy).
+   *
+   * REQUIRES a non-empty identifier. To stop ALL captures use disarmAll() or dispose().
+   * Calling disarm() with no argument throws — this prevents accidental mass-disarm
+   * from buggy IPC payloads.
    */
-  async disarm(captureIdOrFolder?: string): Promise<void> {
-    if (captureIdOrFolder !== undefined) {
-      if (this.contexts.has(captureIdOrFolder)) {
-        await this.stopById(captureIdOrFolder, true);
-      } else {
-        const ctx = this.findByFolder(captureIdOrFolder);
-        if (ctx) {
-          await this.stopById(ctx.captureId, true);
-        } else {
-          this.push({ phase: 'stopped', folder: captureIdOrFolder });
-        }
-      }
+  async disarm(captureIdOrFolder: string): Promise<void> {
+    if (!captureIdOrFolder || typeof captureIdOrFolder !== 'string' || !captureIdOrFolder.trim()) {
+      throw new Error(
+        'disarm에는 captureId 또는 folder가 필요합니다. 모든 컨텍스트를 중지하려면 disarmAll()을 사용하세요.',
+      );
+    }
+    const normalizedArg = this.normalizePath(captureIdOrFolder);
+    if (this.contexts.has(normalizedArg)) {
+      await this.stopById(normalizedArg, true);
+    } else if (this.contexts.has(captureIdOrFolder)) {
+      await this.stopById(captureIdOrFolder, true);
     } else {
-      const ids = [...this.contexts.keys()];
-      for (const id of ids) {
-        await this.stopById(id, true).catch(() => undefined);
+      const ctx = this.findByFolder(captureIdOrFolder) ?? this.findByFolder(normalizedArg);
+      if (ctx) {
+        await this.stopById(ctx.captureId, true);
+      } else {
+        this.push({ phase: 'stopped', folder: captureIdOrFolder });
       }
     }
   }
@@ -240,17 +288,31 @@ export class CaptureManager {
   }
 
   /**
-   * Explicit user selection (ambiguity resolution).
+   * Explicit user selection (ambiguity resolution for ONE capture).
    * Accepts captureId (preferred) or folder path (legacy).
+   *
+   * Returns false if:
+   *   - no context found for the given id/folder
+   *   - the requested session is already owned by a different capture
+   *   - the policy rejects the bind (already persisted etc.)
    */
   selectSession(sessionId: string, captureIdOrFolder?: string): boolean {
     let ctx: CaptureContext | undefined;
     if (captureIdOrFolder !== undefined) {
-      ctx = this.contexts.get(captureIdOrFolder) ?? this.findByFolder(captureIdOrFolder);
+      const normArg = this.normalizePath(captureIdOrFolder);
+      ctx = this.contexts.get(normArg)
+        ?? this.contexts.get(captureIdOrFolder)
+        ?? this.findByFolder(captureIdOrFolder)
+        ?? this.findByFolder(normArg);
     } else if (this.contexts.size === 1) {
       ctx = [...this.contexts.values()][0];
     }
     if (!ctx) return false;
+
+    // Exclusive ownership check — another capture may already own this session.
+    if (!this.tryClaimSession(ctx.captureId, ctx.adapterId, sessionId)) {
+      return false; // Owned by a different capture; caller should surface an error.
+    }
 
     const ok = ctx.policy.bindManual(sessionId);
     if (ok) {
@@ -262,18 +324,91 @@ export class CaptureManager {
         adapterId: ctx.adapterId,
         boundSessionId: sessionId,
       });
+    } else {
+      // Policy rejected (already persisted etc.) — release the claim we just made.
+      this.releaseClaim(ctx.captureId, ctx.adapterId, sessionId);
     }
     return ok;
   }
 
-  // ── Internal helpers ──────────────────────────────────────────────────────
+  // ── Session ownership helpers ──────────────────────────────────────────────
 
-  private findByFolder(folder: string): CaptureContext | undefined {
-    for (const ctx of this.contexts.values()) {
-      if (ctx.folder === folder) return ctx;
-    }
-    return undefined;
+  /** Composite key for the ownership registry. */
+  private ownerKey(adapterId: string, sessionId: string): string {
+    return `${adapterId}::${sessionId}`;
   }
+
+  /**
+   * Attempt to claim exclusive ownership of (adapterId, sessionId) for captureId.
+   * Returns true if the claim succeeds (or was already owned by the same captureId).
+   * Returns false if another captureId already owns this session.
+   */
+  private tryClaimSession(captureId: string, adapterId: string, sessionId: string): boolean {
+    if (!sessionId) return true; // no session identity to guard
+    const key = this.ownerKey(adapterId, sessionId);
+    const existing = this.sessionOwners.get(key);
+    if (!existing) {
+      this.sessionOwners.set(key, captureId);
+      return true;
+    }
+    return existing === captureId;
+  }
+
+  /**
+   * Release a specific (adapterId, sessionId) ownership claim held by captureId.
+   * No-op if captureId does not currently own the session.
+   */
+  private releaseClaim(captureId: string, adapterId: string, sessionId: string): void {
+    if (!sessionId) return;
+    const key = this.ownerKey(adapterId, sessionId);
+    if (this.sessionOwners.get(key) === captureId) {
+      this.sessionOwners.delete(key);
+    }
+  }
+
+  /** Release ALL session ownership claims held by captureId (e.g. on disarm). */
+  private releaseSessions(captureId: string): void {
+    for (const [key, owner] of this.sessionOwners) {
+      if (owner === captureId) this.sessionOwners.delete(key);
+    }
+  }
+
+  /**
+   * True when another active, non-persisted context for the SAME adapter is unbound
+   * (or bound to the SAME sessionId), meaning it is a legitimate rival for the session.
+   *
+   * Used to detect multi-context conflict BEFORE claiming: if a rival exists, we must
+   * not automatically assign the session to whichever sink callback runs first.
+   */
+  private hasSameAdapterRival(captureId: string, adapterId: string, sessionId: string): boolean {
+    for (const ctx of this.contexts.values()) {
+      if (ctx.captureId === captureId) continue;           // skip self
+      if (ctx.adapterId !== adapterId) continue;           // different adapter — no conflict
+      if (ctx.policy.isPersisted) continue;                // already done — not a rival
+      const b = ctx.policy.binding;
+      if (b && b.sessionId !== sessionId) continue;        // bound to a DIFFERENT session — no conflict
+      // Unbound context (b === null) or bound to the same session: rival.
+      return true;
+    }
+    return false;
+  }
+
+  // ── Internal path helper ──────────────────────────────────────────────────
+
+  /**
+   * Normalize a string that may be a filesystem path so trivial variants
+   * (mixed separators, trailing slashes, '.' segments) map to the same key.
+   * Non-path strings (UUIDs, 'cid-…') are returned unchanged.
+   */
+  private normalizePath(value: string): string {
+    // Heuristic: contains a path separator → treat as a path.
+    if (value.includes('/') || value.includes('\\')) {
+      try { return path.normalize(value); } catch { /* fall through */ }
+    }
+    return value;
+  }
+
+  // ── Internal stop ─────────────────────────────────────────────────────────
 
   private async stopById(captureId: string, withStatus: boolean): Promise<void> {
     const ctx = this.contexts.get(captureId);
@@ -284,6 +419,8 @@ export class CaptureManager {
     this.contexts.delete(captureId);
     this.clearPending(ctx);
     ctx.lastPhase = null;
+    // Release all session ownership claims this context held.
+    this.releaseSessions(captureId);
     await ctx.handle.stop().catch(() => undefined);
     if (withStatus) {
       this.push({ phase: 'stopped', captureId, folder: ctx.folder ?? undefined });
@@ -312,6 +449,7 @@ export class CaptureManager {
         } else if (e.phase === 'stopped') {
           if (this.contexts.get(ctx.captureId) === ctx) {
             this.contexts.delete(ctx.captureId);
+            this.releaseSessions(ctx.captureId);
             this.emitToCtx(ctx, {
               phase: 'stopped',
               captureId: ctx.captureId,
@@ -345,6 +483,7 @@ export class CaptureManager {
     }
     ctx.policy.note(sessions);
 
+    // Revoke a provisional binding when a rival source appears (within-policy check).
     if (ctx.policy.binding && !ctx.policy.isPersisted) {
       const boundId = ctx.policy.binding.sessionId;
       const rival =
@@ -360,6 +499,26 @@ export class CaptureManager {
 
     if (!ctx.policy.binding) {
       if (ctx.armSnapshotSeeded && ctx.policy.tryAutoBind()) {
+        const sid = ctx.policy.binding!.sessionId;
+
+        // ── Cross-context rivalry check (Phase B1) ──────────────────────────
+        // Before committing an auto-bind, check if another unbound context using the
+        // same adapter could also legitimately claim this session. Assigning by
+        // event-callback ordering would be arbitrary and wrong — surface ambiguity
+        // instead so the user or a stronger identity signal can disambiguate.
+        if (this.hasSameAdapterRival(ctx.captureId, ctx.adapterId, sid)) {
+          // Multiple eligible contexts — revoke this speculative bind and wait.
+          ctx.policy.revoke();
+          return; // Stay unbound; neither context captures the session automatically.
+        }
+
+        // Only this context is eligible: claim exclusive ownership.
+        if (!this.tryClaimSession(ctx.captureId, ctx.adapterId, sid)) {
+          // Another context already claimed it (race after the rival check).
+          ctx.policy.revoke();
+          return;
+        }
+
         this.emitWatchingBound(ctx);
         return;
       }
@@ -382,8 +541,15 @@ export class CaptureManager {
       return;
     }
 
+    // accept — verify exclusive ownership before queuing for settlement.
+    const sid = completion.sessionId ?? '';
+    if (sid && !this.tryClaimSession(ctx.captureId, ctx.adapterId, sid)) {
+      // Session is owned by another capture — silently reject this completion.
+      return;
+    }
+
     if (ctx.pending) {
-      if (ctx.pending.completion.sessionId === completion.sessionId) return;
+      if (ctx.pending.completion.sessionId === completion.sessionId) return; // dup while settling
       this.cancelPendingAndAmbiguate(ctx);
       return;
     }
@@ -401,13 +567,17 @@ export class CaptureManager {
 
   private cancelPendingAndAmbiguate(ctx: CaptureContext): void {
     this.clearPending(ctx);
+    const sid = ctx.policy?.binding?.sessionId;
     ctx.policy?.revoke();
+    if (sid) this.releaseClaim(ctx.captureId, ctx.adapterId, sid);
     this.emitAmbiguous(ctx);
   }
 
   private revokeAndAmbiguate(ctx: CaptureContext): void {
     this.clearPending(ctx);
+    const sid = ctx.policy?.binding?.sessionId;
     ctx.policy?.revoke();
+    if (sid) this.releaseClaim(ctx.captureId, ctx.adapterId, sid);
     this.emitAmbiguous(ctx);
   }
 
@@ -431,8 +601,15 @@ export class CaptureManager {
     const binding = ctx.policy?.binding;
     if (!binding || binding.sessionId !== completion.sessionId) return;
 
+    // Final ownership verification: ensure we still exclusively own the session.
+    const sid = completion.sessionId ?? '';
+    if (sid && !this.tryClaimSession(ctx.captureId, ctx.adapterId, sid)) {
+      // Lost ownership between settle and persist (edge case) — abort.
+      return;
+    }
+
     // ── Lazy materialization (Phase A2) ──────────────────────────────────────
-    // If no physical folder exists yet (Draft arm), atomically create one now.
+    // If no physical Relay storage folder exists yet (Draft arm), create one now.
     let runLabel: string | undefined;
     if (ctx.folder === null) {
       if (!ctx.materializeParams || !this.materializeFn) {
@@ -495,6 +672,14 @@ export class CaptureManager {
       candidates,
       message: '에이전트 세션이 여러 개 후보가 되어 자동 확정할 수 없습니다. 결과를 받을 세션을 선택하세요.',
     });
+  }
+
+  /** Scan by physical folder path (for legacy backward compat). */
+  private findByFolder(folder: string): CaptureContext | undefined {
+    for (const ctx of this.contexts.values()) {
+      if (ctx.folder === folder) return ctx;
+    }
+    return undefined;
   }
 
   private emitToCtx(ctx: CaptureContext, s: CaptureStatusView): void {
