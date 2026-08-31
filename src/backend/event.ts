@@ -1,22 +1,44 @@
-﻿/**
- * Event runtime kernel (Phase D).
+/**
+ * Event runtime kernel (Phase D — contract correction).
  *
- * EVENT ??STATE. Goal/Task/Run/Evidence remain the canonical SSOT. An Event
- * only records that something happened and MAY carry derived PM attention
- * classification. Creating an Event never mutates Goal/Task/Evidence state.
+ * EVENT ≠ STATE, EVENT ≠ EVIDENCE. Goal/Task/Run/Evidence remain the canonical
+ * SSOT. An Event is a reaction/signal fact only and never mutates canonical
+ * state (no automatic B2 transition, retry, or Goal completion).
  *
  * Local-first filesystem SSOT under Project/_relay/events/EVENT-NNNNNN/:
- *   event.json    ??immutable core Event payload (append-only)
- *   event.md      ??human-readable mirror
- *   delivery.json ??mutable delivery/acknowledgement state (operational metadata)
+ *   event.json    — immutable core Event payload (append-only), including the
+ *                   frozen attentionClassifierVersion and persisted
+ *                   pmAttention classification captured at creation time.
+ *   event.md      — human-readable mirror
+ *   delivery.json — mutable delivery/acknowledgement state (operational metadata)
  *
- * Identity is project-scoped monotonic EVENT-NNNNNN ??never a path/timestamp.
- * Source replay is idempotent via sourceEventId (same project ??same Event).
+ * Identity is project-scoped monotonic EVENT-NNNNNN — never a path/timestamp.
+ * Source replay is idempotent via sourceEventId (same project → same Event).
+ *
+ * Classification boundary (MUST 5): severity and pmAttention are ALWAYS derived
+ * internally from the centralized deterministic classifier. Callers may select
+ * the Event type via typed helpers; they can never choose severity or PM
+ * attention. Privileged lifecycle Events (GOAL_COMPLETED, OWNER_DECISION_REQUIRED,
+ * GOAL_COMPLETION_ELIGIBLE) are mintable only through trusted server-side
+ * helpers — never via public/Worker-facing input, and never via a raw
+ * event:create IPC (which does not exist).
+ *
+ * Deferred/orchestrator vocabulary (MUST 3/4): ALL_PARALLEL_RUNS_COMPLETED and
+ * PM_REVIEW_REQUIRED are intentionally NOT in the active Phase D vocabulary.
+ * Phase D records the fact Event + frozen PM classification instead of a
+ * duplicate PM_REVIEW_REQUIRED Event; fan-in/orchestration conditions belong
+ * later near Dispatcher / Closed Loop.
+ *
+ * Delivery model stays simple (MUST 7): PENDING / DELIVERED / ACKNOWLEDGED /
+ * IGNORED only. ACKNOWLEDGED and IGNORED are terminal. No retry counts, no
+ * leases, no subscriptions, no distributed queue.
+ *
  * No MCP / PM Gateway / Dispatcher / event consumer in Phase D (strict non-goals).
  */
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  ATTENTION_CLASSIFIER_VERSION,
   EventCreateInput,
   EventDeliveryRecord,
   EventDeliveryStatus,
@@ -45,7 +67,7 @@ const EVIDENCE_ID_RE = /^EVIDENCE-(\d+)$/;
 /** Serializes concurrent Event ID allocation / sourceEventId dedupe within one process. */
 let _eventAllocLock: Promise<void> = Promise.resolve();
 
-// ?? paths ???????????????????????????????????????????????????????????????????
+// ── paths ───────────────────────────────────────────────────────────────────
 
 export function eventsDir(dataRoot: string, project: string): string {
   return path.join(relayDir(dataRoot, project), 'events');
@@ -67,7 +89,7 @@ function deliveryJsonPath(folder: string): string {
   return path.join(folder, 'delivery.json');
 }
 
-// ?? helpers ?????????????????????????????????????????????????????????????????
+// ── helpers ─────────────────────────────────────────────────────────────────
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -80,7 +102,7 @@ function isValidIsoTimestamp(v: string): boolean {
 
 function requireNonEmptyString(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${field}??媛) ?꾩슂?⑸땲??`);
+    throw new Error(`${field}이(가) 필요합니다.`);
   }
   return value.trim();
 }
@@ -103,8 +125,7 @@ export function isEventDeliveryStatus(v: unknown): v is EventDeliveryStatus {
 
 export function isEventPriority(v: unknown): v is EventPriority {
   return typeof v === 'string' && (EVENT_PRIORITIES as readonly string[]).includes(v);
-}
-// ?? counters (shared counters.json with Goal/Task/Evidence) ?????????????????
+}// ── counters (shared counters.json with Goal/Task/Evidence) ─────────────────
 
 function readCountersRaw(dataRoot: string, project: string): Record<string, unknown> {
   try {
@@ -178,9 +199,15 @@ function allocateEventIdWithCounter(dataRoot: string, project: string): string {
   }
 }
 
-// ?? PM attention / severity classification (centralized, deterministic) ????
+// ── PM attention / severity classification (centralized, deterministic) ────
+//
+// MUST 1: fact-only Events (RUN_RESULT_RECEIVED / EVIDENCE_READY) do NOT wake
+// PM by default. Attention is reserved for failure / blocker / decision /
+// eligibility signals. MUST 2: the resulting classification is frozen onto the
+// Event with attentionClassifierVersion; later rule changes never rewrite
+// historical Events.
 
-/** Default severity per Event type ??deterministic, no caller override for core types. */
+/** Default severity per Event type — deterministic; not caller-selectable. */
 export function defaultSeverityForType(type: EventType): EventSeverity {
   switch (type) {
     case 'RUN_FAILED':
@@ -192,24 +219,28 @@ export function defaultSeverityForType(type: EventType): EventSeverity {
     case 'RUNTIME_ERROR':
       return 'ERROR';
     case 'OWNER_DECISION_REQUIRED':
-    case 'PM_REVIEW_REQUIRED':
     case 'GOAL_COMPLETION_ELIGIBLE':
     case 'RUNTIME_WARNING':
       return 'WARNING';
     case 'RUN_RESULT_RECEIVED':
     case 'EVIDENCE_READY':
     case 'TASK_BECAME_READY':
-    case 'ALL_PARALLEL_RUNS_COMPLETED':
     default:
       return 'INFO';
   }
 }
 
-/** Centralized PM attention classification. Deterministic; no GPT. */
+/**
+ * Centralized deterministic PM attention classification (MUST 1). No GPT.
+ * required=true: QA_FAILED, RUN_FAILED, RUN_BLOCKED, TASK_TIMEOUT,
+ *                TASK_BLOCKED, OWNER_DECISION_REQUIRED, GOAL_COMPLETION_ELIGIBLE,
+ *                RUNTIME_ERROR.
+ * required=false: TASK_BECAME_READY, RUN_RESULT_RECEIVED, EVIDENCE_READY,
+ *                 RUNTIME_WARNING, GOAL_COMPLETED (fact-only).
+ */
 export function derivePmAttention(type: EventType, severity: EventSeverity): PmAttention {
   switch (type) {
     case 'OWNER_DECISION_REQUIRED':
-    case 'PM_REVIEW_REQUIRED':
       return { required: true, reason: 'Owner/PM decision required', priority: 'HIGH' };
     case 'QA_FAILED':
     case 'RUN_FAILED':
@@ -220,23 +251,20 @@ export function derivePmAttention(type: EventType, severity: EventSeverity): PmA
     case 'RUNTIME_ERROR':
       return { required: true, reason: 'Runtime error/blocker', priority: 'NORMAL' };
     case 'GOAL_COMPLETION_ELIGIBLE':
-    case 'GOAL_COMPLETED':
-      return { required: true, reason: 'Goal lifecycle change', priority: 'NORMAL' };
+      return { required: true, reason: 'Goal completion needs review', priority: 'NORMAL' };
     case 'RUN_RESULT_RECEIVED':
     case 'EVIDENCE_READY':
-      return { required: true, reason: 'Result/evidence ready for review', priority: 'NORMAL' };
-    case 'RUNTIME_WARNING':
-    case 'ALL_PARALLEL_RUNS_COMPLETED':
     case 'TASK_BECAME_READY':
+    case 'GOAL_COMPLETED':
+    case 'RUNTIME_WARNING':
     default:
-      return { required: false, reason: 'Informational', priority: 'LOW' };
+      return { required: false, reason: 'Fact-only signal; no PM attention by default', priority: 'LOW' };
   }
-}
-// ?? validation ??????????????????????????????????????????????????????????????
+}// ── validation ──────────────────────────────────────────────────────────────
 
 function normalizeSource(input: unknown): EventSource {
   if (input == null || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('Event source??媛앹껜?ъ빞 ?⑸땲??');
+    throw new Error('Event source는 객체여야 합니다.');
   }
   const obj = input as Record<string, unknown>;
   const kind = requireNonEmptyString(obj.kind, 'source.kind');
@@ -251,7 +279,7 @@ function normalizeSource(input: unknown): EventSource {
 function normalizeMetadata(input: unknown): Record<string, unknown> | undefined {
   if (input == null) return undefined;
   if (typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('metadata??媛앹껜?ъ빞 ?⑸땲??');
+    throw new Error('metadata는 객체여야 합니다.');
   }
   return { ...(input as Record<string, unknown>) };
 }
@@ -259,7 +287,7 @@ function normalizeMetadata(input: unknown): Record<string, unknown> | undefined 
 function normalizeDetails(input: unknown): Record<string, unknown> | undefined {
   if (input == null) return undefined;
   if (typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('details??媛앹껜?ъ빞 ?⑸땲??');
+    throw new Error('details는 객체여야 합니다.');
   }
   return { ...(input as Record<string, unknown>) };
 }
@@ -279,10 +307,10 @@ function validateEventLinkage(
   const runId = input.runId ? requireNonEmptyString(input.runId, 'runId') : undefined;
   const evidenceId = input.evidenceId ? requireNonEmptyString(input.evidenceId, 'evidenceId') : undefined;
 
-  if (goalId !== undefined && !GOAL_ID_RE.test(goalId)) throw new Error(`?섎せ??Goal ID: ${goalId}`);
-  if (taskId !== undefined && !TASK_ID_RE.test(taskId)) throw new Error(`?섎せ??Task ID: ${taskId}`);
+  if (goalId !== undefined && !GOAL_ID_RE.test(goalId)) throw new Error(`잘못된 Goal ID: ${goalId}`);
+  if (taskId !== undefined && !TASK_ID_RE.test(taskId)) throw new Error(`잘못된 Task ID: ${taskId}`);
   if (evidenceId !== undefined && !EVIDENCE_ID_RE.test(evidenceId)) {
-    throw new Error(`?섎せ??Evidence ID: ${evidenceId}`);
+    throw new Error(`잘못된 Evidence ID: ${evidenceId}`);
   }
 
   // Late-bound require to avoid a hard import cycle with goal-task/evidence.
@@ -292,10 +320,10 @@ function validateEventLinkage(
   if (evidenceId !== undefined) {
     const ev = evidenceMod.getEvidence(dataRoot, project, evidenceId); // also rejects cross-project
     if (resolved.taskId && ev.taskId && ev.taskId !== resolved.taskId) {
-      throw new Error(`Evidence/Task 遺덉씪移? evidenceId=${evidenceId}??Task??${ev.taskId}?낅땲??`);
+      throw new Error(`Evidence/Task 불일치: evidenceId=${evidenceId}의 Task는 ${ev.taskId}입니다.`);
     }
     if (resolved.goalId && ev.goalId && ev.goalId !== resolved.goalId) {
-      throw new Error(`Evidence/Goal 遺덉씪移? evidenceId=${evidenceId}??Goal? ${ev.goalId}?낅땲??`);
+      throw new Error(`Evidence/Goal 불일치: evidenceId=${evidenceId}의 Goal은 ${ev.goalId}입니다.`);
     }
   }
 
@@ -309,34 +337,43 @@ function validateEventLinkage(
 
 export function validateEventRecord(e: EventRecord): void {
   if (e.schemaVersion !== EVENT_SCHEMA_VERSION) {
-    throw new Error(`吏?먰븯吏 ?딅뒗 Event schemaVersion: ${e.schemaVersion}`);
+    throw new Error(`지원하지 않는 Event schemaVersion: ${e.schemaVersion}`);
   }
-  if (!EVENT_ID_RE.test(e.eventId)) throw new Error(`?섎せ??Event ID: ${e.eventId}`);
-  if (!e.project) throw new Error('Event project媛 ?꾩슂?⑸땲??');
-  if (!isEventType(e.type)) throw new Error(`?????녿뒗 Event type: ${String(e.type)}`);
-  if (!isEventSeverity(e.severity)) throw new Error(`?????녿뒗 Event severity: ${String(e.severity)}`);
-  if (!e.summary?.trim()) throw new Error('Event summary媛 ?꾩슂?⑸땲??');
-  if (!e.source || typeof e.source !== 'object') throw new Error('Event source媛 ?꾩슂?⑸땲??');
-  if (!e.source.kind?.trim()) throw new Error('Event source.kind媛 ?꾩슂?⑸땲??');
-  if (e.goalId !== undefined && !GOAL_ID_RE.test(e.goalId)) throw new Error(`?섎せ??Goal ID: ${e.goalId}`);
-  if (e.taskId !== undefined && !TASK_ID_RE.test(e.taskId)) throw new Error(`?섎せ??Task ID: ${e.taskId}`);
+  if (!EVENT_ID_RE.test(e.eventId)) throw new Error(`잘못된 Event ID: ${e.eventId}`);
+  if (!e.project) throw new Error('Event project가 필요합니다.');
+  if (!isEventType(e.type)) throw new Error(`알 수 없는 Event type: ${String(e.type)}`);
+  if (!isEventSeverity(e.severity)) throw new Error(`알 수 없는 Event severity: ${String(e.severity)}`);
+  if (!e.summary?.trim()) throw new Error('Event summary가 필요합니다.');
+  if (!e.source || typeof e.source !== 'object') throw new Error('Event source가 필요합니다.');
+  if (!e.source.kind?.trim()) throw new Error('Event source.kind가 필요합니다.');
+  if (e.goalId !== undefined && !GOAL_ID_RE.test(e.goalId)) throw new Error(`잘못된 Goal ID: ${e.goalId}`);
+  if (e.taskId !== undefined && !TASK_ID_RE.test(e.taskId)) throw new Error(`잘못된 Task ID: ${e.taskId}`);
   if (e.evidenceId !== undefined && !EVIDENCE_ID_RE.test(e.evidenceId)) {
-    throw new Error(`?섎せ??Evidence ID: ${e.evidenceId}`);
+    throw new Error(`잘못된 Evidence ID: ${e.evidenceId}`);
   }
   if (e.runId !== undefined && (typeof e.runId !== 'string' || !e.runId.trim())) {
-    throw new Error('runId??鍮꾩뼱 ?덉? ?딆? 臾몄옄?댁씠?댁빞 ?⑸땲??');
+    throw new Error('runId는 비어 있지 않은 문자열이어야 합니다.');
   }
-  if (!e.occurredAt || !isValidIsoTimestamp(e.occurredAt)) throw new Error('occurredAt? ISO timestamp?ъ빞 ?⑸땲??');
-  if (!e.recordedAt || !isValidIsoTimestamp(e.recordedAt)) throw new Error('recordedAt? ISO timestamp?ъ빞 ?⑸땲??');
+  if (!e.occurredAt || !isValidIsoTimestamp(e.occurredAt)) throw new Error('occurredAt은 ISO timestamp여야 합니다.');
+  if (!e.recordedAt || !isValidIsoTimestamp(e.recordedAt)) throw new Error('recordedAt은 ISO timestamp여야 합니다.');
+  // MUST 2: classifier version must be a persisted positive integer (frozen at
+  // creation). Older versions remain readable — classification is never re-derived.
+  if (
+    typeof e.attentionClassifierVersion !== 'number' ||
+    !Number.isInteger(e.attentionClassifierVersion) ||
+    e.attentionClassifierVersion < 1
+  ) {
+    throw new Error('attentionClassifierVersion은 1 이상의 정수여야 합니다.');
+  }
   if (!e.pmAttention || typeof e.pmAttention !== 'object' || typeof e.pmAttention.required !== 'boolean') {
-    throw new Error('pmAttention? required boolean???꾩슂?⑸땲??');
+    throw new Error('pmAttention은 required boolean이 필요합니다.');
   }
-}
-// ?? delivery state machine ?????????????????????????????????????????????????
+}// ── delivery state machine (MUST 7: simple lifecycle, terminal ends) ───────
 
 /**
  * Allowed delivery transitions (CAS-like). Illegal transitions are rejected.
  * `expected` is the status the caller believes the record is currently in.
+ * ACKNOWLEDGED and IGNORED are terminal. No retry/lease/subscription semantics.
  */
 const DELIVERY_TRANSITIONS: Record<EventDeliveryStatus, readonly EventDeliveryStatus[]> = {
   PENDING: ['DELIVERED', 'IGNORED'],
@@ -377,17 +414,17 @@ function transitionDelivery(
   expectedStatus?: EventDeliveryStatus,
 ): EventDeliveryRecord {
   const id = requireNonEmptyString(eventId, 'eventId');
-  if (!EVENT_ID_RE.test(id)) throw new Error(`?섎せ??Event ID: ${id}`);
+  if (!EVENT_ID_RE.test(id)) throw new Error(`잘못된 Event ID: ${id}`);
   const folder = eventFolder(dataRoot, project, id);
   const eventFile = eventJsonPath(folder);
-  if (!fs.existsSync(eventFile)) throw new Error(`議댁옱?섏? ?딅뒗 Event: ${id}`);
+  if (!fs.existsSync(eventFile)) throw new Error(`존재하지 않는 Event: ${id}`);
 
   const current = readDelivery(folder, id) ?? initialDelivery(id, nowIso());
   if (expectedStatus !== undefined && !isEventDeliveryStatus(expectedStatus)) {
-    throw new Error(`?섎せ??expectedStatus: ${String(expectedStatus)}`);
+    throw new Error(`잘못된 expectedStatus: ${String(expectedStatus)}`);
   }
   if (expectedStatus !== undefined && current.status !== expectedStatus) {
-    throw new Error(`?湲??곹깭 遺덉씪移? ?꾩옱 ${current.status}, 湲곕? ${expectedStatus}`);
+    throw new Error(`대기 상태 불일치: 현재 ${current.status}, 기대 ${expectedStatus}`);
   }
 
   const target: EventDeliveryStatus =
@@ -400,7 +437,7 @@ function transitionDelivery(
 
   const allowed = DELIVERY_TRANSITIONS[current.status];
   if (!allowed.includes(target)) {
-    throw new Error(`遺덇??ν븳 delivery ?꾩씠: ${current.status} ??${target}`);
+    throw new Error(`불가능한 delivery 전이: ${current.status} → ${target}`);
   }
 
   const next: EventDeliveryRecord = {
@@ -413,8 +450,7 @@ function transitionDelivery(
   };
   persistDelivery(folder, next);
   return next;
-}
-// ?? markdown mirror ?????????????????????????????????????????????????????????
+}// ── markdown mirror ─────────────────────────────────────────────────────────
 
 export function renderEventMarkdown(e: EventRecord): string {
   const lines = [
@@ -428,6 +464,7 @@ export function renderEventMarkdown(e: EventRecord): string {
     '',
     `- type: ${e.type}`,
     `- severity: ${e.severity}`,
+    `- attentionClassifierVersion: ${e.attentionClassifierVersion}`,
     `- pmAttention.required: ${e.pmAttention.required}`,
     ...(e.pmAttention.reason ? [`- pmAttention.reason: ${e.pmAttention.reason}`] : []),
     ...(e.pmAttention.priority ? [`- pmAttention.priority: ${e.pmAttention.priority}`] : []),
@@ -465,11 +502,11 @@ function persistEventFiles(folder: string, record: EventRecord): void {
     fs.writeFileSync(eventMdPath(folder), renderEventMarkdown(record), 'utf8');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Event JSON? ??λ릱吏留?Markdown ?곌린???ㅽ뙣?덉뒿?덈떎 (蹂듦뎄 媛??: ${msg}`);
+    throw new Error(`Event JSON은 저장됐지만 Markdown 쓰기에 실패했습니다 (복구 가능): ${msg}`);
   }
 }
 
-// ?? idempotency index (rebuildable, not SSOT) ???????????????????????????????
+// ── idempotency index (rebuildable, not SSOT) ───────────────────────────────
 
 function sourceEventIndexPath(dataRoot: string, project: string): string {
   return path.join(eventsDir(dataRoot, project), '_source-event-index.json');
@@ -486,7 +523,7 @@ function loadSourceEventIndex(dataRoot: string, project: string): Record<string,
       return out;
     }
   } catch {
-    /* missing/malformed ??rebuild on demand */
+    /* missing/malformed — rebuild on demand */
   }
   return {};
 }
@@ -502,7 +539,7 @@ function findBySourceEventId(dataRoot: string, project: string, sourceEventId: s
     try {
       return getEvent(dataRoot, project, mapped);
     } catch {
-      // stale index entry ??fall through to scan
+      // stale index entry — fall through to scan
     }
   }
   const { events } = listEvents(dataRoot, project, {});
@@ -516,7 +553,7 @@ function findBySourceEventId(dataRoot: string, project: string, sourceEventId: s
   return null;
 }
 
-// ?? JSON read helpers (malformed-isolated) ?????????????????????????????????
+// ── JSON read helpers (malformed-isolated) ─────────────────────────────────
 
 function readJsonFileUnchecked<T>(filePath: string): T | null {
   try {
@@ -536,22 +573,23 @@ function tryReadEvent(folder: string): EventRecord | null {
     return null;
   }
   return rec;
-}
-// ?? CRUD (internal primitive + typed public helpers) ???????????????????????
+}// ── creation (internal primitive + typed trusted helpers) ──────────────────
 
 /**
- * Internal safe primitive ??accepts resolved pmAttention override for trusted
- * internal callers only. NOT exposed as raw IPC event:create (privileged event
- * types like GOAL_COMPLETED / OWNER_DECISION_REQUIRED / PM_REVIEW_REQUIRED can
- * only be minted through the typed helpers below, never by claiming a type string).
+ * Internal primitive — MUST 5/6: severity and pmAttention are ALWAYS derived
+ * internally (defaultSeverityForType / derivePmAttention); there is no caller
+ * override path. This primitive is intentionally NOT exported as a public API
+ * and NOT exposed via IPC: privileged lifecycle Events (GOAL_COMPLETED,
+ * OWNER_DECISION_REQUIRED, GOAL_COMPLETION_ELIGIBLE) can only be minted through
+ * the typed trusted helpers below from inside the Relay server.
  */
-export function recordEventInternal(
+function recordEventInternal(
   dataRoot: string,
   project: string,
   input: EventCreateInput,
   opts?: { trustedOccurredAt?: string },
 ): Promise<EventRecord> {
-  if (!isEventType(input.type)) throw new Error(`?????녿뒗 Event type: ${String(input.type)}`);
+  if (!isEventType(input.type)) throw new Error(`알 수 없는 Event type: ${String(input.type)}`);
   const summary = requireNonEmptyString(input.summary, 'summary');
   const source = normalizeSource(input.source);
 
@@ -563,7 +601,7 @@ export function recordEventInternal(
   let trustedOccurredAt: string | undefined;
   if (opts?.trustedOccurredAt !== undefined) {
     if (typeof opts.trustedOccurredAt !== 'string' || !isValidIsoTimestamp(opts.trustedOccurredAt)) {
-      throw new Error('trustedOccurredAt??ISO timestamp 臾몄옄?댁씠?댁빞 ?⑸땲??');
+      throw new Error('trustedOccurredAt는 ISO timestamp 문자열이어야 합니다.');
     }
     trustedOccurredAt = opts.trustedOccurredAt;
   }
@@ -581,16 +619,10 @@ export function recordEventInternal(
       evidenceId: input.evidenceId,
     });
 
-    const severity = input.severity !== undefined ? input.severity : defaultSeverityForType(input.type);
-    if (!isEventSeverity(severity)) throw new Error(`?????녿뒗 severity: ${String(severity)}`);
-    const att = input.pmAttention;
-    const pmAttention: PmAttention = att
-      ? {
-          required: !!att.required,
-          ...(att.reason ? { reason: att.reason } : {}),
-          ...(att.priority ? { priority: att.priority } : {}),
-        }
-      : derivePmAttention(input.type, severity);
+    // MUST 5: classification is server-derived only. No caller override exists
+    // in EventCreateInput — even if extra fields are smuggled in they are ignored.
+    const severity = defaultSeverityForType(input.type);
+    const pmAttention = derivePmAttention(input.type, severity);
 
     const eventId = allocateEventIdWithCounter(dataRoot, project);
     const occurredAt =
@@ -609,6 +641,7 @@ export function recordEventInternal(
       summary,
       occurredAt,
       recordedAt,
+      attentionClassifierVersion: ATTENTION_CLASSIFIER_VERSION,
       pmAttention,
       ...(linkage.goalId ? { goalId: linkage.goalId } : {}),
       ...(linkage.taskId ? { taskId: linkage.taskId } : {}),
@@ -635,8 +668,7 @@ export function recordEventInternal(
   });
   _eventAllocLock = work.then(() => undefined, () => undefined);
   return work;
-}
-/** Shared base for typed helpers ??builds EventCreateInput; pmAttention derived server-side. */
+}/** Shared base for typed trusted helpers — builds EventCreateInput; classification derived internally. */
 function baseInput(
   type: EventType,
   p: {
@@ -669,7 +701,13 @@ function baseInput(
   };
 }
 
-/** Typed runtime-facing helpers ??see PHASE D event type list. */
+/**
+ * Typed trusted helper surface (MUST 6: closed vocabulary). Each helper fixes
+ * the Event type; severity and PM attention are derived internally. There is
+ * deliberately NO Worker-safe/public helper for privileged lifecycle Events —
+ * the functions below are server-side Relay runtime surfaces only and none of
+ * them is reachable through raw IPC creation.
+ */
 export function recordRunResultReceived(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
   return recordEventInternal(dataRoot, project, baseInput('RUN_RESULT_RECEIVED', p));
 }
@@ -697,9 +735,6 @@ export function recordTaskBlocked(dataRoot: string, project: string, p: Paramete
 export function recordOwnerDecisionRequired(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
   return recordEventInternal(dataRoot, project, baseInput('OWNER_DECISION_REQUIRED', p));
 }
-export function recordPmReviewRequired(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
-  return recordEventInternal(dataRoot, project, baseInput('PM_REVIEW_REQUIRED', p));
-}
 export function recordGoalCompletionEligible(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
   return recordEventInternal(dataRoot, project, baseInput('GOAL_COMPLETION_ELIGIBLE', p));
 }
@@ -711,15 +746,14 @@ export function recordRuntimeWarning(dataRoot: string, project: string, p: Param
 }
 export function recordRuntimeError(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
   return recordEventInternal(dataRoot, project, baseInput('RUNTIME_ERROR', p));
-}
-// ?? read API ????????????????????????????????????????????????????????????????
+}// ── read API ────────────────────────────────────────────────────────────────
 
 export function getEvent(dataRoot: string, project: string, eventId: string): EventRecord {
   const id = requireNonEmptyString(eventId, 'eventId');
-  if (!EVENT_ID_RE.test(id)) throw new Error(`?섎せ??Event ID: ${id}`);
+  if (!EVENT_ID_RE.test(id)) throw new Error(`잘못된 Event ID: ${id}`);
   const rec = tryReadEvent(eventFolder(dataRoot, project, id));
-  if (!rec) throw new Error(`Event瑜?李얘굅???쎌쓣 ???놁뒿?덈떎: ${id}`);
-  if (rec.project !== project) throw new Error(`援먯감 ?꾨줈?앺듃 Event 李몄“??嫄곕??⑸땲?? ${id}`);
+  if (!rec) throw new Error(`Event를 찾거나 읽을 수 없습니다: ${id}`);
+  if (rec.project !== project) throw new Error(`교차 프로젝트 Event 참조는 거부됩니다: ${id}`);
   return rec;
 }
 
@@ -734,11 +768,11 @@ export function listEvents(dataRoot: string, project: string, filter?: EventList
     const folder = path.join(dir, name);
     const rec = tryReadEvent(folder);
     if (!rec) {
-      warnings.push(`Event ${name} ?쎄린 ?ㅽ뙣`);
+      warnings.push(`Event ${name} 읽기 실패`);
       continue;
     }
     if (rec.project !== project) {
-      warnings.push(`Event ${name} ?꾨줈?앺듃 遺덉씪移???嫄대꼫?`);
+      warnings.push(`Event ${name} 프로젝트 불일치 — 건너뜀`);
       continue;
     }
     if (filter) {
@@ -748,6 +782,7 @@ export function listEvents(dataRoot: string, project: string, filter?: EventList
       if (filter.evidenceId && rec.evidenceId !== filter.evidenceId) continue;
       if (filter.type && rec.type !== filter.type) continue;
       if (filter.severity && rec.severity !== filter.severity) continue;
+      // Reads use the FROZEN persisted classification only (MUST 2) — never re-derived.
       if (filter.pmAttentionRequired !== undefined && rec.pmAttention.required !== filter.pmAttentionRequired) continue;
       if (filter.deliveryStatus !== undefined) {
         const delivery = readDelivery(folder, rec.eventId);
@@ -770,7 +805,11 @@ function comparePendingPm(a: EventRecord, b: EventRecord): number {
   return a.eventId.localeCompare(b.eventId);
 }
 
-/** Pending PM events: pmAttention.required === true AND delivery PENDING. */
+/**
+ * Pending PM queue: Events whose FROZEN persisted pmAttention.required === true
+ * AND delivery PENDING. Ordered severity → occurredAt → eventId. Purely a read
+ * model — nothing is delivered automatically.
+ */
 export function listPendingPmEvents(dataRoot: string, project: string): EventRecord[] {
   const { events } = listEvents(dataRoot, project, { pmAttentionRequired: true, deliveryStatus: 'PENDING' });
   return [...events].sort(comparePendingPm);
@@ -813,7 +852,7 @@ export function getEventRuntimeSummary(dataRoot: string, project: string): Event
   };
 }
 
-// ?? delivery commands ???????????????????????????????????????????????????????????????
+// ── delivery commands ───────────────────────────────────────────────────────
 
 export function markDelivered(dataRoot: string, project: string, eventId: string, expectedStatus?: EventDeliveryStatus): EventDeliveryRecord {
   return transitionDelivery(dataRoot, project, eventId, 'markDelivered', expectedStatus);
@@ -825,11 +864,11 @@ export function ignore(dataRoot: string, project: string, eventId: string, expec
   return transitionDelivery(dataRoot, project, eventId, 'ignore', expectedStatus);
 }
 
-/** ReadCurrent delivery state for an Event (pure read). */
+/** Read current delivery state for an Event (pure read). */
 export function getDelivery(dataRoot: string, project: string, eventId: string): EventDeliveryRecord {
   const id = requireNonEmptyString(eventId, 'eventId');
-  if (!EVENT_ID_RE.test(id)) throw new Error(`?섎せ??Event ID: ${id}`);
+  if (!EVENT_ID_RE.test(id)) throw new Error(`잘못된 Event ID: ${id}`);
   const folder = eventFolder(dataRoot, project, id);
-  if (!fs.existsSync(eventJsonPath(folder))) throw new Error(`議댁옱?섏? ?딅뒗 Event: ${id}`);
+  if (!fs.existsSync(eventJsonPath(folder))) throw new Error(`존재하지 않는 Event: ${id}`);
   return readDelivery(folder, id) ?? initialDelivery(id, nowIso());
 }

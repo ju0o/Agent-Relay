@@ -1002,6 +1002,14 @@ export interface LegacyAdapterEvidenceView {
 
 export const EVENT_SCHEMA_VERSION = 1;
 
+/**
+ * MUST 2 — frozen PM attention classifier version.
+ * Bump when classification rules change; the new version applies only to
+ * newly created Events. Historical Events keep their stamped version and
+ * frozen pmAttention classification forever.
+ */
+export const ATTENTION_CLASSIFIER_VERSION = 1;
+
 /** Event category vocabulary — typed and extensible, but not free-form. */
 export const EVENT_TYPES = [
   'RUN_RESULT_RECEIVED',
@@ -1012,9 +1020,7 @@ export const EVENT_TYPES = [
   'TASK_TIMEOUT',
   'TASK_BECAME_READY',
   'TASK_BLOCKED',
-  'ALL_PARALLEL_RUNS_COMPLETED',
   'OWNER_DECISION_REQUIRED',
-  'PM_REVIEW_REQUIRED',
   'GOAL_COMPLETION_ELIGIBLE',
   'GOAL_COMPLETED',
   'RUNTIME_WARNING',
@@ -1066,9 +1072,16 @@ export interface EventRecord {
   details?: Record<string, unknown>;
   occurredAt: string;
   recordedAt: string;
+  /**
+   * MUST 2 — frozen PM attention classifier version, stamped at creation.
+   * Historical Events never change classification when classifier rules evolve;
+   * a new version applies only to newly created Events.
+   */
+  attentionClassifierVersion: number;
   sourceEventId?: string;
   correlationId?: string;
   causationId?: string;
+  /** Frozen at creation; reads and the pending PM queue use this persisted value. */
   pmAttention: PmAttention;
   metadata?: Record<string, unknown>;
 }
@@ -1083,10 +1096,13 @@ export interface EventDeliveryRecord {
   updatedAt: string;
 }
 
-/** Internal Event creation input — NOT exposed as raw IPC event:create. */
+/**
+ * Internal Event creation input — NOT exposed as raw IPC event:create.
+ * MUST 5: deliberately NO severity / pmAttention fields — classification is
+ * always derived server-side by the centralized deterministic classifier.
+ */
 export interface EventCreateInput {
   type: EventType;
-  severity?: EventSeverity;
   summary: string;
   details?: Record<string, unknown>;
   source: EventSource;
@@ -1098,8 +1114,6 @@ export interface EventCreateInput {
   sourceEventId?: string;
   correlationId?: string;
   causationId?: string;
-  /** Explicit override; otherwise derived from centralized deterministic rules. */
-  pmAttention?: PmAttention;
   metadata?: Record<string, unknown>;
 }
 
