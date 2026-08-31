@@ -104,7 +104,7 @@ export type RelayRequest =
  | { op: 'goal:list'; dataRoot: string; project: string }
  | { op: 'goal:update'; dataRoot: string; project: string; goalId: string; patch: GoalUpdatePatch }
  | { op: 'goal:progress'; dataRoot: string; project: string; goalId: string }
- | { op: 'task:create'; dataRoot: string; project: string; goalId: string; title: string; goal: string; reason: string; scope: string; completionCriteria?: string[]; dependencies?: string[]; status?: TaskStatus }
+ | { op: 'task:create'; dataRoot: string; project: string; goalId: string; title: string; goal: string; reason: string; scope: string; completionCriteria?: string[]; dependencies?: string[]; executionState?: TaskExecutionState; pmState?: TaskPmState }
  | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
  | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
  | { op: 'task:update'; dataRoot: string; project: string; taskId: string; patch: TaskUpdatePatch }
@@ -314,11 +314,35 @@ export const GOAL_STATUSES = [
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
 /**
- * Task lifecycle.
- * Progress semantics (B1): DONE and ACCEPTED both count as complete.
- * ACCEPTED = PM verified; DONE = final closed. Both contribute to doneTasks.
+ * Task execution lifecycle (worker/agent axis).
+ * Distinct from PM verification — RESPONSE_COMPLETE must not imply ACCEPTED.
  */
-export const TASK_STATUSES = [
+export const TASK_EXECUTION_STATES = [
+  'PLANNED',
+  'READY',
+  'DISPATCHED',
+  'RUNNING',
+  'RESULT_RECEIVED',
+  'FAILED',
+  'CANCELLED',
+  'BLOCKED',
+] as const;
+export type TaskExecutionState = (typeof TASK_EXECUTION_STATES)[number];
+
+/** Task PM verification axis (owner/GPT review). */
+export const TASK_PM_STATES = [
+  'PENDING',
+  'VERIFYING',
+  'CHANGES_REQUESTED',
+  'ACCEPTED',
+] as const;
+export type TaskPmState = (typeof TASK_PM_STATES)[number];
+
+/**
+ * Legacy single-axis TaskStatus from schemaVersion=1 (e7e63fe).
+ * Not persisted on schemaVersion=2; used only for read-migration / derived views.
+ */
+export const LEGACY_TASK_STATUSES = [
   'PLANNED',
   'READY',
   'DISPATCHED',
@@ -331,7 +355,7 @@ export const TASK_STATUSES = [
   'DONE',
   'ABANDONED',
 ] as const;
-export type TaskStatus = (typeof TASK_STATUSES)[number];
+export type LegacyTaskStatus = (typeof LEGACY_TASK_STATUSES)[number];
 
 /** Permission modes — structure only; runtime enforcement is deferred. */
 export const PERMISSION_MODES = ['PLAN', 'APPROVE', 'BYPASS'] as const;
@@ -354,7 +378,8 @@ export interface PermissionPolicy {
   overrides?: PermissionOverrides;
 }
 
-export const GOAL_TASK_SCHEMA_VERSION = 1;
+/** Current Goal/Task JSON schema. v1 Task files are read-migrated to v2. */
+export const GOAL_TASK_SCHEMA_VERSION = 2;
 
 /** Persistent Goal record (JSON SSOT companion to goal.md). */
 export interface GoalRecord {
@@ -372,10 +397,16 @@ export interface GoalRecord {
   tags?: string[];
 }
 
-/** One linked physical Run reference on a Task (folder path + logical sequence). */
+/**
+ * Linked Run reference on a Task.
+ * runId is authoritative logical identity; folder is a physical locator/cache.
+ */
 export interface LinkedRunRef {
+  runId: string;
   folder: string;
   taskRunSequence: number;
+  agent?: string;
+  date?: string;
 }
 
 /** Persistent Task record (JSON SSOT companion to task.md). */
@@ -389,11 +420,62 @@ export interface TaskRecord {
   reason: string;
   scope: string;
   completionCriteria: string[];
-  status: TaskStatus;
+  executionState: TaskExecutionState;
+  pmState: TaskPmState;
+  /** Optional winner/verified Run among linkedRuns — does not delete other attempts. */
+  acceptedRunId?: string;
   dependencies: string[];
   linkedRuns: LinkedRunRef[];
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Map legacy v1 TaskStatus → split axes.
+ * DONE/ACCEPTED → pmState ACCEPTED; WORKING → RUNNING; ABANDONED → CANCELLED.
+ */
+export function mapLegacyTaskStatus(status: LegacyTaskStatus): {
+  executionState: TaskExecutionState;
+  pmState: TaskPmState;
+} {
+  switch (status) {
+    case 'PLANNED':
+      return { executionState: 'PLANNED', pmState: 'PENDING' };
+    case 'READY':
+      return { executionState: 'READY', pmState: 'PENDING' };
+    case 'DISPATCHED':
+      return { executionState: 'DISPATCHED', pmState: 'PENDING' };
+    case 'WORKING':
+      return { executionState: 'RUNNING', pmState: 'PENDING' };
+    case 'RESULT_RECEIVED':
+      return { executionState: 'RESULT_RECEIVED', pmState: 'PENDING' };
+    case 'VERIFYING':
+      return { executionState: 'RESULT_RECEIVED', pmState: 'VERIFYING' };
+    case 'CHANGES_REQUESTED':
+      return { executionState: 'RESULT_RECEIVED', pmState: 'CHANGES_REQUESTED' };
+    case 'BLOCKED':
+      return { executionState: 'BLOCKED', pmState: 'PENDING' };
+    case 'ACCEPTED':
+    case 'DONE':
+      return { executionState: 'RESULT_RECEIVED', pmState: 'ACCEPTED' };
+    case 'ABANDONED':
+      return { executionState: 'CANCELLED', pmState: 'PENDING' };
+    default:
+      return { executionState: 'PLANNED', pmState: 'PENDING' };
+  }
+}
+
+/**
+ * Derived compatibility label only — never persisted as authoritative status.
+ * RESPONSE_COMPLETE / RESULT_RECEIVED must not appear as ACCEPTED.
+ */
+export function deriveCompatTaskStatus(t: Pick<TaskRecord, 'executionState' | 'pmState'>): string {
+  if (t.pmState === 'ACCEPTED') return 'ACCEPTED';
+  if (t.pmState === 'VERIFYING') return 'VERIFYING';
+  if (t.pmState === 'CHANGES_REQUESTED') return 'CHANGES_REQUESTED';
+  if (t.executionState === 'RUNNING') return 'WORKING';
+  if (t.executionState === 'CANCELLED') return 'ABANDONED';
+  return t.executionState;
 }
 
 /** Derived Goal progress — never authoritative on disk. */
@@ -417,9 +499,20 @@ export type GoalUpdatePatch = Partial<
 export type TaskUpdatePatch = Partial<
   Pick<
     TaskRecord,
-    'title' | 'goal' | 'reason' | 'scope' | 'completionCriteria' | 'status' | 'dependencies'
+    | 'title'
+    | 'goal'
+    | 'reason'
+    | 'scope'
+    | 'completionCriteria'
+    | 'executionState'
+    | 'pmState'
+    | 'acceptedRunId'
+    | 'dependencies'
   >
->;
+> & {
+  /** Pass null to clear acceptedRunId when reopening a Task. */
+  clearAcceptedRunId?: boolean;
+};
 
 // ── Agent adapter auto-capture (vNext foundation) ───────────────────────────
 //

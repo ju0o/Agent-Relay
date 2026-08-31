@@ -412,7 +412,8 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
         scope: req.scope,
         completionCriteria: req.completionCriteria,
         dependencies: req.dependencies,
-        status: req.status,
+        executionState: req.executionState,
+        pmState: req.pmState,
       });
 
     case 'task:get':

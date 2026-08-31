@@ -5,6 +5,7 @@
  * where NN is a zero-padded run number. Only markdown files are ever written.
  * Existing files are never overwritten unless the caller explicitly opts in.
  */
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -239,14 +240,22 @@ export function writeMarkdown(
 /**
  * Run folder meta.json.
  * Legacy files with only `{ tags }` remain valid.
- * Optional goalId / taskId / taskRunSequence link a materialized Run back to a Task.
+ * runId is the immutable logical identity (UUID); physical folder path may change.
+ * Optional goalId / taskId / taskRunSequence link a Run back to a Task.
  * Physical Run number is NOT taskRunSequence.
  */
 export interface RunMeta {
   tags: string[];
+  /** Stable logical Run identity — never changes after assignment. */
+  runId?: string;
   goalId?: string;
   taskId?: string;
   taskRunSequence?: number;
+}
+
+/** Allocate a new collision-resistant runId (UUID). */
+export function newRunId(): string {
+  return crypto.randomUUID();
 }
 
 /** Read meta.json from a run folder. Returns empty defaults when missing/malformed. */
@@ -255,6 +264,7 @@ export function readRunMeta(folder: string): RunMeta {
     const raw = JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8')) as Partial<RunMeta>;
     const tags = Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : [];
     const meta: RunMeta = { tags };
+    if (typeof raw.runId === 'string' && raw.runId) meta.runId = raw.runId;
     if (typeof raw.goalId === 'string') meta.goalId = raw.goalId;
     if (typeof raw.taskId === 'string') meta.taskId = raw.taskId;
     if (typeof raw.taskRunSequence === 'number' && Number.isFinite(raw.taskRunSequence)) {
@@ -269,16 +279,30 @@ export function readRunMeta(folder: string): RunMeta {
 /**
  * Write meta.json to a run folder.
  * Callers should pass the full desired meta object (read-merge-write for partial updates).
+ * Once runId is present it must be preserved by callers (never rewritten to a new value).
  */
 export function writeRunMeta(folder: string, meta: RunMeta): void {
   fs.mkdirSync(folder, { recursive: true });
   const out: RunMeta = { tags: Array.isArray(meta.tags) ? meta.tags : [] };
+  if (typeof meta.runId === 'string' && meta.runId) out.runId = meta.runId;
   if (typeof meta.goalId === 'string') out.goalId = meta.goalId;
   if (typeof meta.taskId === 'string') out.taskId = meta.taskId;
   if (typeof meta.taskRunSequence === 'number' && Number.isFinite(meta.taskRunSequence)) {
     out.taskRunSequence = meta.taskRunSequence;
   }
   fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify(out, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * Ensure a Run folder has an immutable runId.
+ * Legacy Runs without runId receive one opportunistically; existing runId is never changed.
+ */
+export function ensureRunId(folder: string): string {
+  const meta = readRunMeta(folder);
+  if (meta.runId) return meta.runId;
+  const runId = newRunId();
+  writeRunMeta(folder, { ...meta, runId });
+  return runId;
 }
 
 // ── run operations ───────────────────────────────────────────────────────────
@@ -750,18 +774,23 @@ let _materializeLock: Promise<void> = Promise.resolve();
  * Uses only synchronous fs operations inside the chain to guarantee atomicity
  * within Node.js's single-threaded event loop.
  *
- * @returns { folder: absolute path, run: zero-padded number string }
+ * New Runs also receive an immutable logical runId in meta.json.
+ *
+ * @returns { folder, run, runId }
  */
 export function atomicMaterializeRun(
   dataRoot: string,
   project: string,
   date: string,
   agent: string,
-): Promise<{ folder: string; run: string }> {
-  const result = _materializeLock.then((): { folder: string; run: string } => {
+): Promise<{ folder: string; run: string; runId: string }> {
+  const result = _materializeLock.then((): { folder: string; run: string; runId: string } => {
     const run = nextRunNumber(dataRoot, project, date, agent);
     const folder = ensureRunFolder(dataRoot, project, date, agent, run);
-    return { folder, run };
+    const existing = readRunMeta(folder);
+    const runId = existing.runId || newRunId();
+    writeRunMeta(folder, { ...existing, runId });
+    return { folder, run, runId };
   });
   // Advance the shared lock to the tail of this operation (swallowing its value).
   _materializeLock = result.then(
