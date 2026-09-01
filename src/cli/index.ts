@@ -20,29 +20,40 @@ Usage:
 Commands:
   status              Show project status snapshot
   doctor              Run infrastructure health checks
+  init                Initialize project (interactive or --yes)
+  connect <client>    Configure PM MCP (claude-code)
 
 Options:
   --help, -h          Show this help
   --version, -v       Show version
-  --json              JSON output (for status, doctor)
+  --json              JSON output (for status, doctor, init)
   --no-tui            Headless status entry (no TUI)
+  --yes               Non-interactive defaults (for init)
+  --force             Overwrite existing config/worker
 
 Examples:
   agent-relay status
   agent-relay status --json
   agent-relay doctor
   agent-relay doctor --json
+  agent-relay init
+  agent-relay init --yes
+  agent-relay init --yes --json
+  agent-relay connect claude-code
   agent-relay --no-tui
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
+  let sub: string | null = null;
   let json = false;
   let noTui = false;
   let help = false;
   let version = false;
+  let yes = false;
+  let force = false;
   let unknown: string | null = null;
 
   for (const a of args) {
@@ -50,25 +61,26 @@ function parseArgs(argv: string[]): { command: string | null; json: boolean; noT
     else if (a === '--version' || a === '-v') version = true;
     else if (a === '--json') json = true;
     else if (a === '--no-tui') noTui = true;
+    else if (a === '--yes') yes = true;
+    else if (a === '--force') force = true;
     else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'init' || a === 'connect')) {
       command = a;
-    } else if (!command && a === 'init') {
-      // init not implemented yet — treat as known but forward UX
-      command = a;
+    } else if (command === 'connect' && !sub) {
+      sub = a;
     } else {
       unknown = a;
       break;
     }
   }
 
-  return { command, json, noTui, help, version, unknown };
+  return { command, sub, json, noTui, help, version, yes, force, unknown };
 }
 
-function main(): void {
-  const { command, json, noTui, help, version, unknown } = parseArgs(process.argv);
+async function main(): Promise<void> {
+  const { command, sub, json, noTui, help, version, yes, force, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -141,15 +153,52 @@ function main(): void {
   }
 
   if (command === 'init') {
-    // init not implemented yet
-    const msg = 'agent-relay init is not implemented yet.';
-    if (json) {
-      console.log(JSON.stringify({ schemaVersion: 'cli.init.v1', ok: false, error: msg }, null, 2));
-    } else {
-      console.log(msg);
-      console.log('Future: creates .agent-relay/config.json');
+    const { runInit, renderInitHuman, INIT_SCHEMA_VERSION } = await import('./init.js');
+    try {
+      const result = await runInit({ cwd, yes, force, json });
+      if (json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(renderInitHuman(result));
+        // Run doctor internally then print summary
+        const { runDoctor, renderDoctorHuman } = await import('./doctor.js');
+        const doc = runDoctor(cwd);
+        console.log('');
+        console.log(renderDoctorHuman(doc));
+      }
+      process.exit(0);
+    } catch (e) {
+      const err = e as Error & { code?: string };
+      const msg = err.message ?? String(e);
+      if (json) {
+        console.log(JSON.stringify({ schemaVersion: INIT_SCHEMA_VERSION, ok: false, error: msg, code: err.code }, null, 2));
+      } else {
+        console.error(msg);
+        if (err.code === 'ALREADY_INITIALIZED') {
+          console.error('Use --force to overwrite (runtime history preserved).');
+        }
+      }
+      process.exit(1);
     }
-    process.exit(1);
+  }
+
+  if (command === 'connect') {
+    const { runConnect } = await import('./connect.js');
+    const client = sub ?? '';
+    if (!client) {
+      const msg = 'Usage: agent-relay connect <client>  (supported: claude-code)';
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.connect.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const res = runConnect(cwd, client);
+    if (json) console.log(JSON.stringify(res, null, 2));
+    else {
+      console.log(res.message);
+      if (res.mcpCommand) console.log(`\nMCP: ${res.mcpCommand}`);
+      if (res.configPath) console.log(`Config: ${res.configPath}`);
+    }
+    process.exit(res.ok ? 0 : 1);
   }
 
   // Bare agent-relay (no command)
@@ -190,4 +239,4 @@ function main(): void {
   process.exit(1);
 }
 
-main();
+void main();
