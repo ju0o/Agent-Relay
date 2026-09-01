@@ -114,10 +114,11 @@ interface LiveDispatch {
   exitHandled?: boolean;
 }
 
-/** In-memory live dispatches: key = project::taskId */
+/** In-memory live dispatches: key = resolve(dataRoot)@@project::taskId */
 const activeDispatches = new Map<string, LiveDispatch>();
 
-/** Process-local orphan / recovery registry — NOT Task SSOT. */
+/** Process-local orphan / recovery registry — NOT Task SSOT.
+ *  Key: resolve(dataRoot)@@project::taskId  */
 const recoveryRegistry = new Map<string, RecoveryRecord>();
 
 /** Optional spawn injection for tests. */
@@ -126,7 +127,10 @@ let spawnImpl: typeof spawn = spawn;
 /** Optional hook after link / before READY→DISPATCHED CAS (tests only). */
 let afterLinkHook: (() => Promise<void>) | null = null;
 
-/** Lazy one-shot recovery keys already scanned: project@dataRoot */
+/** Optional hook after spawn success + exit listener / before DISPATCHED→RUNNING CAS (tests only). */
+let afterSpawnHook: (() => Promise<void>) | null = null;
+
+/** Lazy one-shot recovery keys already scanned: resolve(dataRoot)@@project */
 const recoveryScanned = new Set<string>();
 
 export function _setSpawnImplForTests(fn: typeof spawn | null): void {
@@ -135,6 +139,10 @@ export function _setSpawnImplForTests(fn: typeof spawn | null): void {
 
 export function _setAfterLinkHookForTests(fn: (() => Promise<void>) | null): void {
   afterLinkHook = fn;
+}
+
+export function _setAfterSpawnHookForTests(fn: (() => Promise<void>) | null): void {
+  afterSpawnHook = fn;
 }
 
 export function _resetDispatcherStateForTests(): void {
@@ -151,6 +159,7 @@ export function _resetDispatcherStateForTests(): void {
   recoveryScanned.clear();
   spawnImpl = spawn;
   afterLinkHook = null;
+  afterSpawnHook = null;
 }
 
 async function ensureRecoveryScanned(dataRoot: string, project: string): Promise<void> {
@@ -160,8 +169,9 @@ async function ensureRecoveryScanned(dataRoot: string, project: string): Promise
   await initializeDispatcherRecovery(dataRoot, project);
 }
 
-function dispatchKey(project: string, taskId: string): string {
-  return `${project}::${taskId}`;
+/** Process-local dispatch key including canonical dataRoot to prevent cross-dataRoot collisions. */
+function dispatchKey(dataRoot: string, project: string, taskId: string): string {
+  return `${path.resolve(dataRoot)}@@${project}::${taskId}`;
 }
 
 function nowIso(): string {
@@ -216,7 +226,7 @@ export async function initializeDispatcherRecovery(
   const tasks = listTasks(root, proj);
   for (const task of tasks) {
     if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') continue;
-    const key = dispatchKey(proj, task.taskId);
+    const key = dispatchKey(root, proj, task.taskId);
     const live = activeDispatches.get(key);
     if (live && live.phase !== 'preparing' && live.child && live.child.exitCode === null) {
       continue; // live process present
@@ -251,12 +261,12 @@ export async function initializeDispatcherRecovery(
   return created;
 }
 
-export function isDispatchBlocked(project: string, taskId: string): boolean {
-  return recoveryRegistry.has(dispatchKey(project, taskId));
+export function isDispatchBlocked(dataRoot: string, project: string, taskId: string): boolean {
+  return recoveryRegistry.has(dispatchKey(dataRoot, project, taskId));
 }
 
-export function getRecoveryRecord(project: string, taskId: string): RecoveryRecord | undefined {
-  return recoveryRegistry.get(dispatchKey(project, taskId));
+export function getRecoveryRecord(dataRoot: string, project: string, taskId: string): RecoveryRecord | undefined {
+  return recoveryRegistry.get(dispatchKey(dataRoot, project, taskId));
 }
 
 // ── Status / list ────────────────────────────────────────────────────────────
@@ -293,7 +303,7 @@ export async function getDispatchStatus(
 ): Promise<DispatchStatusView> {
   await ensureRecoveryScanned(dataRoot, project);
   const id = requireNonEmpty(taskId, 'taskId');
-  const key = dispatchKey(project, id);
+  const key = dispatchKey(dataRoot, project, id);
   let executionState: TaskExecutionState | undefined;
   try {
     executionState = getTask(dataRoot, project, id).executionState;
@@ -417,7 +427,7 @@ export async function dispatchTask(
     );
   }
 
-  const key = dispatchKey(proj, taskId);
+  const key = dispatchKey(root, proj, taskId);
 
   // Lazy process-local orphan scan (never mutates Task SSOT; never guesses FAILED)
   await ensureRecoveryScanned(root, proj);
@@ -615,11 +625,18 @@ export async function dispatchTask(
       throw new DispatcherError('LAUNCH_FAILED', `Spawn failed: ${launchError.message}`);
     }
 
+    // Spawn confirmed: install exit listener before yielding to event loop.
     live.child = child;
     live.pid = child.pid;
     child.on('exit', (code, signal) => {
       void handleChildExit(live, code, signal);
     });
+
+    // Test-only hook: runs after child is tracked + exit listener installed,
+    // before DISPATCHED→RUNNING CAS. Allows tests to inject a state race.
+    if (afterSpawnHook) {
+      await afterSpawnHook();
+    }
 
     // 10. Spawn success → Dispatcher CAS DISPATCHED → RUNNING
     try {
@@ -630,8 +647,28 @@ export async function dispatchTask(
       });
       live.phase = 'running';
     } catch (err) {
-      // Process is running but CAS failed — keep handle; surface conflict
+      // Process is alive and tracked, but RUNNING CAS failed (concurrent state change).
+      // Keep child in activeDispatches — exit handler is installed and WILL clean up.
+      // Emit a durable RUNTIME_WARNING so operators can observe the ambiguity.
       const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await recordRuntimeWarning(root, proj, {
+          summary: `DISPATCH_RUNNING_CAS_FAILED: worker process pid=${child.pid ?? 'unknown'} spawned for Task ${taskId} but DISPATCHED→RUNNING CAS failed. Child is tracked; manual review required.`,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          source: { kind: 'dispatcher', subsystem: 'spawn' },
+          details: {
+            reason: 'DISPATCH_RUNNING_CAS_FAILED',
+            workerId,
+            pid: child.pid,
+            casError: msg,
+            runId: createdRunId,
+          },
+        });
+      } catch {
+        // Event emission failure must NOT lose child tracking or mask the CAS conflict.
+      }
       throw new DispatcherError('CONFLICT', `Spawned but RUNNING transition failed: ${msg}`);
     }
 

@@ -385,7 +385,7 @@ console.log('\n── G-25..G-28 restart orphan safety ──');
   const orphans2 = await disp.initializeDispatcherRecovery(TEST_ROOT, project);
   check(
     orphans2.some((o) => o.taskId === t2.taskId && o.status === 'ORPHAN_SUSPECTED')
-      || disp.getRecoveryRecord(project, t2.taskId)?.status === 'ORPHAN_SUSPECTED',
+      || disp.getRecoveryRecord(TEST_ROOT, project, t2.taskId)?.status === 'ORPHAN_SUSPECTED',
     'G-26 restart stale RUNNING → orphan suspected',
   );
   check(gt.getTask(TEST_ROOT, project, t2.taskId).executionState === 'RUNNING', 'G-26 not FAILED');
