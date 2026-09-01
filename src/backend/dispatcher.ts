@@ -267,18 +267,28 @@ function mapRegistryError(err: unknown): never {
   throw err;
 }
 
-/** Build Dispatcher-owned dynamic argv — never from Task narrative fields. */
+/**
+ * Build Dispatcher-owned dynamic argv — never from Task narrative fields.
+ *
+ * Phase I: includes --workspaceRoot for the relay wrapper protocol.
+ * The wrapper consumes it and uses it only as spawn cwd; it is never
+ * forwarded directly as arbitrary Claude CLI syntax.
+ */
 export function buildDispatchArgv(
   launchArgsPrefix: string[],
-  binding: { dataRoot: string; project: string; taskId: string; runId: string },
+  binding: { dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot?: string },
 ): string[] {
-  return [
+  const argv = [
     ...launchArgsPrefix,
     '--dataRoot', binding.dataRoot,
     '--project', binding.project,
     '--taskId', binding.taskId,
     '--runId', binding.runId,
   ];
+  if (binding.workspaceRoot) {
+    argv.push('--workspaceRoot', binding.workspaceRoot);
+  }
+  return argv;
 }
 
 // ── Recovery ─────────────────────────────────────────────────────────────────
@@ -743,11 +753,14 @@ export async function dispatchTask(
     }
 
     // 9. Spawn child process (shell:false mandatory)
+    // Phase I: pass workspaceRoot to relay wrapper protocol so wrapper can
+    // use it as spawn cwd for Claude. Never forwarded as arbitrary CLI syntax.
     const argv = buildDispatchArgv(worker.launchArgsPrefix, {
       dataRoot: root,
       project: proj,
       taskId,
       runId: createdRunId,
+      workspaceRoot,
     });
 
     const spawnOpts: Parameters<typeof spawn>[2] = {

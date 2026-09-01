@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "Phase I — Claude Code Dogfood Worker Registry Example.",
+    "",
+    "Copy this file to {dataRoot}/_relay/workers/claude-dogfood.json",
+    "and replace <REPLACE_WITH_ABSOLUTE_WRAPPER_PATH> with the",
+    "absolute path to scripts/relay-worker-claude.mjs in your checkout.",
+    "",
+    "Windows example:",
+    "  C:\\Users\\you\\repos\\agent-relay-log-dev01\\scripts\\relay-worker-claude.mjs",
+    "",
+    "launchCommand must be 'node' (allowlisted basename).",
+    "launchArgsPrefix[0] must be the absolute path to relay-worker-claude.mjs.",
+    "",
+    "observationAdapterId must be 'claude-code' — the registered Phase H adapter.",
+    "capabilities: ['coding'] marks this worker as a general coding executor.",
+    "",
+    "Do NOT include secrets, tokens, or personal paths in this file.",
+    "Do NOT commit the live registry file to the repository.",
+    "",
+    "Remove _comment before deploying (JSON spec forbids comments).",
+    "Or keep it — the registry validator rejects unknown fields.",
+    "This example file is docs-only and is never loaded by the registry."
+  ],
+  "schemaVersion": "G.2",
+  "workerId": "claude-dogfood",
+  "displayName": "Claude Code Dogfood",
+  "launchCommand": "node",
+  "launchArgsPrefix": [
+    "<REPLACE_WITH_ABSOLUTE_WRAPPER_PATH>"
+  ],
+  "observationAdapterId": "claude-code",
+  "capabilities": ["coding"]
+}
