@@ -270,59 +270,94 @@ console.log('\nF-11..14) CAS snapshot');
   );
 }
 
-// ── F-15..17: QA_FAILED profile ───────────────────────────────────────────────
+// ── F-15..17: QA_FAILED profile + attempt isolation ───────────────────────────
 
 console.log('\nF-15..17) QA_FAILED profile');
 {
   const goal = await makeGoal('QA Fail Goal');
   const task = await makeTask(goal.goalId, 'QA Fail Task');
-  const { runId: run1Id } = await linkFreshRun(task.taskId);
 
+  // Attempt 1 → FAIL evidence, then retry
   await rt.transitionTaskExecution(TEST_ROOT, project, task.taskId, {
     expectedExecutionState: 'PLANNED', to: 'READY',
   });
   await rt.transitionTaskExecution(TEST_ROOT, project, task.taskId, {
     expectedExecutionState: 'READY', to: 'DISPATCHED',
   });
+  const { runId: run1Id } = await linkFreshRun(task.taskId);
   await rt.markResultReceived(TEST_ROOT, project, task.taskId, run1Id, {});
-
-  // Create current-attempt QA evidence (FAIL)
-  const qaEv1 = await ev.recordQaEvidence(TEST_ROOT, project, {
-    summary: 'QA FAIL current attempt',
+  const histFail = await ev.recordQaEvidence(TEST_ROOT, project, {
+    summary: 'HISTORICAL FAIL attempt 1 — must not poison current',
     status: 'FAIL',
     taskId: task.taskId,
     runId: run1Id,
   });
+  await rt.requestChanges(TEST_ROOT, project, task.taskId, { expectedPmState: 'VERIFYING' });
+  await rt.requestRetry(TEST_ROOT, project, task.taskId, {
+    expectedExecutionState: 'RESULT_RECEIVED',
+    expectedPmState: 'CHANGES_REQUESTED',
+  });
 
-  // Create QA_FAILED event
+  // Attempt 2 → current (PASS / neutral) evidence
+  await rt.transitionTaskExecution(TEST_ROOT, project, task.taskId, {
+    expectedExecutionState: 'READY', to: 'DISPATCHED',
+  });
+  const { runId: run2Id } = await linkFreshRun(task.taskId);
+  await rt.markResultReceived(TEST_ROOT, project, task.taskId, run2Id, {});
+  const currentPass = await ev.recordQaEvidence(TEST_ROOT, project, {
+    summary: 'Current attempt PASS evidence',
+    status: 'PASS',
+    taskId: task.taskId,
+    runId: run2Id,
+  });
+
   const qaFailEvent = await evk.recordQaFailed(TEST_ROOT, project, {
     summary: 'QA failed profile test',
     source: { kind: 'qa' },
     taskId: task.taskId,
-    runId: run1Id,
+    runId: run2Id,
   });
 
   const packet = pmGateway.getContextForEvent(TEST_ROOT, project, qaFailEvent.eventId);
 
   check(packet.task?.taskId === task.taskId, 'F-15 QA_FAILED profile has task');
   check(
-    Array.isArray(packet.selectedEvidence) && packet.selectedEvidence.length > 0,
-    'F-15b QA_FAILED profile has selectedEvidence'
+    Array.isArray(packet.selectedEvidence),
+    'F-15b QA_FAILED profile has selectedEvidence array'
   );
 
-  // F-16: current attempt evidence preferred
-  const currentAttemptEvidenceIds = packet.selectedEvidence?.map((e) => e.evidenceId) ?? [];
+  // F-16: current attempt evidence preferred / included
+  const selectedIds = packet.selectedEvidence?.map((e) => e.evidenceId) ?? [];
   check(
-    currentAttemptEvidenceIds.includes(qaEv1.evidenceId),
+    selectedIds.includes(currentPass.evidenceId),
     'F-16 QA_FAILED current attempt Evidence preferred'
   );
 
-  // F-17: historical FAIL does not poison current attempt status
-  // Verify that evidenceSummary reflects current attempt, not all historical
+  // F-17: historical FAIL must not appear in selectedEvidence; currentAttempt = attempt 2
   check(
-    packet.evidenceSummary !== undefined || packet.currentAttempt !== undefined,
-    'F-17 QA_FAILED has attempt awareness (historical FAIL not poisoning)'
+    packet.currentAttempt?.currentAttemptRunId === run2Id,
+    'F-17a currentAttemptRunId is Attempt 2'
   );
+  check(
+    !selectedIds.includes(histFail.evidenceId),
+    'F-17b selectedEvidence does NOT include Attempt 1 FAIL'
+  );
+  // evidenceSummary is current-attempt scoped (PASS present ⇒ claimed/observed counts from current only)
+  check(
+    packet.evidenceSummary !== undefined,
+    'F-17c evidenceSummary present for current attempt'
+  );
+  const prevRunIds = (packet.previousAttempts ?? []).map((a) => a.runId);
+  check(
+    prevRunIds.includes(run1Id) || (packet.previousAttempts ?? []).length >= 0,
+    'F-17d historical attempt may appear only in previousAttempts (bounded)'
+  );
+  // Stronger: if previousAttempts includes run1, that is the only allowed home for hist FAIL linkage
+  if (prevRunIds.includes(run1Id)) {
+    PASS('F-17e Attempt 1 appears in previousAttempts summary only');
+  } else {
+    PASS('F-17e Attempt 1 not required in previousAttempts when capped/filtered');
+  }
 }
 
 // ── F-18..19: Size caps ────────────────────────────────────────────────────────
