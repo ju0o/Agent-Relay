@@ -18,7 +18,10 @@ import * as evidence from '../backend/evidence.js';
 import * as eventKernel from '../backend/event.js';
 import * as pmGateway from '../backend/pm-gateway.js';
 import * as dispatcher from '../backend/dispatcher.js';
-import type { TaskPmState, TaskExecutionState, EventDeliveryStatus } from '../shared/types.js';
+import * as pmWork from '../backend/pm-work.js';
+import * as orphanResolution from '../backend/orphan-resolution.js';
+import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
+import type { GoalStatus, TaskPmState, TaskExecutionState, EventDeliveryStatus } from '../shared/types.js';
 import {
   objectSchema,
   optionalString,
@@ -31,9 +34,28 @@ import type { McpTool, PmServerContext } from './server.js';
 
 const PM_STATES: readonly TaskPmState[] = ['PENDING', 'VERIFYING', 'CHANGES_REQUESTED', 'ACCEPTED'];
 const EXEC_STATES: readonly TaskExecutionState[] = [
-  'PLANNED', 'READY', 'DISPATCHED', 'RUNNING', 'RESULT_RECEIVED', 'BLOCKED', 'CANCELLED',
+  'PLANNED', 'READY', 'DISPATCHED', 'RUNNING', 'RESULT_RECEIVED', 'BLOCKED', 'CANCELLED', 'FAILED',
 ];
 const DELIVERY_STATUSES: readonly EventDeliveryStatus[] = ['PENDING', 'DELIVERED', 'ACKNOWLEDGED', 'IGNORED'];
+const GOAL_STATUSES: readonly GoalStatus[] = [
+  'PLANNING', 'ACTIVE', 'WAITING_OWNER', 'BLOCKED', 'COMPLETED', 'ABANDONED',
+];
+const ORPHAN_ACTIONS = ['KEEP_WAITING', 'CONFIRM_FAILED', 'CONFIRM_CANCELLED'] as const;
+
+function loadGoalPolicy(dataRoot: string, project: string, goalId: string) {
+  try {
+    return goalTask.getGoal(dataRoot, project, goalId).permissionPolicy ?? { mode: 'PLAN' as const };
+  } catch {
+    return { mode: 'PLAN' as const };
+  }
+}
+
+function mapPermissionError(err: unknown): never {
+  if (err instanceof PermissionDeniedError) {
+    throw new McpError('FORBIDDEN', err.message);
+  }
+  throw mapCoreError(err);
+}
 
 // ── PM read tools ────────────────────────────────────────────────────────────
 
@@ -164,6 +186,21 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
       handler: async (args) => {
         rejectUnknownFields(args, []);
         return { workers: dispatcher.listWorkersPublic(dataRoot) };
+      },
+    },
+    {
+      name: 'relay_pm_get_next_work',
+      description:
+        'Phase H: pure derived work discovery (get_next_work). No writes, no claiming, no dispatch. ' +
+        'Returns bounded work items (logical IDs only).',
+      inputSchema: objectSchema({}, []),
+      handler: async (args) => {
+        rejectUnknownFields(args, []);
+        try {
+          return pmWork.getNextWork(dataRoot, project);
+        } catch (err) {
+          throw mapCoreError(err);
+        }
       },
     },
     {
@@ -344,29 +381,117 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
     {
       name: 'relay_pm_dispatch_task',
       description:
-        'Phase G: explicitly dispatch a READY Task to a trusted workerId. ' +
-        'Dispatcher owns READY→DISPATCHED and DISPATCHED→RUNNING. ' +
-        'Requires expectedExecutionState=READY. No auto-dispatch. ' +
+        'Phase G/H: explicitly dispatch a READY Task to a trusted workerId with workspaceRoot. ' +
+        'Permission gate: PLAN=FORBIDDEN for PM_MCP; APPROVE/BYPASS allowed. ' +
+        'Dispatcher owns READY→DISPATCHED and DISPATCHED→RUNNING. No auto-dispatch. ' +
         'Response is logical IDs only (no folder/path/launchCommand).',
       inputSchema: objectSchema(
         {
           taskId: { type: 'string' },
           workerId: { type: 'string' },
+          workspaceRoot: { type: 'string' },
           expectedExecutionState: { type: 'string', enum: ['READY'] },
         },
-        ['taskId', 'workerId', 'expectedExecutionState'],
+        ['taskId', 'workerId', 'workspaceRoot', 'expectedExecutionState'],
       ),
       handler: async (args) => {
-        rejectUnknownFields(args, ['taskId', 'workerId', 'expectedExecutionState']);
+        rejectUnknownFields(args, ['taskId', 'workerId', 'workspaceRoot', 'expectedExecutionState']);
         const expectedExecutionState = requireEnum(args, 'expectedExecutionState', ['READY'] as const);
+        const taskId = requireString(args, 'taskId');
         try {
+          const task = goalTask.getTask(dataRoot, project, taskId);
+          const policy = loadGoalPolicy(dataRoot, project, task.goalId);
+          authorizeEffect({
+            effect: 'DISPATCH',
+            callerSurface: 'PM_MCP',
+            permissionPolicy: policy,
+          });
           return await dispatcher.dispatchTask(dataRoot, project, {
-            taskId: requireString(args, 'taskId'),
+            taskId,
             workerId: requireString(args, 'workerId'),
+            workspaceRoot: requireString(args, 'workspaceRoot'),
             expectedExecutionState,
           });
         } catch (err) {
-          throw mapCoreError(err);
+          mapPermissionError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_complete_goal',
+      description:
+        'Phase H: complete a Goal when eligible. Requires expectedGoalStatus CAS. ' +
+        'Permission gate: PLAN=FORBIDDEN for PM_MCP; APPROVE/BYPASS allowed. ' +
+        'Re-evaluates eligibility at mutation time. Emits GOAL_COMPLETED Event.',
+      inputSchema: objectSchema(
+        {
+          goalId: { type: 'string' },
+          expectedGoalStatus: { type: 'string', enum: GOAL_STATUSES },
+          reason: { type: 'string' },
+        },
+        ['goalId', 'expectedGoalStatus'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['goalId', 'expectedGoalStatus', 'reason']);
+        const goalId = requireString(args, 'goalId');
+        const expectedGoalStatus = requireEnum(args, 'expectedGoalStatus', GOAL_STATUSES);
+        try {
+          const policy = loadGoalPolicy(dataRoot, project, goalId);
+          authorizeEffect({
+            effect: 'COMPLETE_GOAL',
+            callerSurface: 'PM_MCP',
+            permissionPolicy: policy,
+          });
+          const goal = goalTaskRuntime.completeGoalWithExpected(dataRoot, project, goalId, {
+            expectedGoalStatus,
+            reason: optionalString(args, 'reason'),
+          });
+          try {
+            await eventKernel.recordGoalCompleted(dataRoot, project, {
+              summary: `Goal ${goalId} completed`,
+              goalId,
+              source: { kind: 'pm-mcp', subsystem: 'complete_goal' },
+              details: { expectedGoalStatus, status: goal.status },
+              sourceEventId: `goal-completed:${project}:${goalId}:${goal.updatedAt}`,
+            });
+          } catch { /* Event best-effort after successful complete */ }
+          return goal;
+        } catch (err) {
+          mapPermissionError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_resolve_orphan',
+      description:
+        'Phase H: orphan recovery decision. PM_MCP may only KEEP_WAITING. ' +
+        'CONFIRM_FAILED / CONFIRM_CANCELLED are denied for PM even in BYPASS.',
+      inputSchema: objectSchema(
+        {
+          taskId: { type: 'string' },
+          action: { type: 'string', enum: ORPHAN_ACTIONS },
+          expectedExecutionState: { type: 'string', enum: ['DISPATCHED', 'RUNNING'] },
+          reason: { type: 'string' },
+        },
+        ['taskId', 'action'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['taskId', 'action', 'expectedExecutionState', 'reason']);
+        const action = requireEnum(args, 'action', ORPHAN_ACTIONS);
+        try {
+          return await orphanResolution.resolveOrphan({
+            dataRoot,
+            project,
+            taskId: requireString(args, 'taskId'),
+            action,
+            callerSurface: 'PM_MCP',
+            expectedExecutionState: args.expectedExecutionState !== undefined
+              ? requireEnum(args, 'expectedExecutionState', ['DISPATCHED', 'RUNNING'] as const)
+              : undefined,
+            reason: optionalString(args, 'reason'),
+          });
+        } catch (err) {
+          mapPermissionError(err);
         }
       },
     },

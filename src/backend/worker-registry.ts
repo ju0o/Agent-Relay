@@ -10,7 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-export const WORKER_REGISTRY_SCHEMA_VERSION = 'G.1' as const;
+export const WORKER_REGISTRY_SCHEMA_VERSION = 'G.2' as const;
 
 /** Allowlisted executable basenames (PATH-resolved). Absolute paths are also accepted. */
 export const ALLOWED_EXECUTABLE_BASENAMES: ReadonlySet<string> = new Set([
@@ -26,13 +26,20 @@ export interface WorkerRegistryRecord {
   launchArgsPrefix: string[];
   workingDirectory?: string;
   capabilities?: string[];
+  /**
+   * Phase H G.2 — registered observation adapter id for CLOSED-LOOP / AUTO-OBSERVED dispatch.
+   * Required for normal H dispatch; may be omitted for explicitly non-observed internal/test workers.
+   * NEVER derived from workerId; NEVER accepted from Task/Goal narrative.
+   */
+  observationAdapterId?: string;
 }
 
-/** Safe public view — never includes launchCommand / cwd / env. */
+/** Safe public view — never includes launchCommand / cwd / env / absolute paths. */
 export interface WorkerRegistryPublicView {
   workerId: string;
   displayName?: string;
   capabilities?: string[];
+  observationAdapterId?: string;
 }
 
 export class WorkerRegistryError extends Error {
@@ -180,6 +187,12 @@ export function validateWorkerRegistryRecord(
     capabilities = obj.capabilities.map((s) => String(s));
   }
 
+  let observationAdapterId: string | undefined;
+  if (obj.observationAdapterId !== undefined && obj.observationAdapterId !== null) {
+    observationAdapterId = requireNonEmptyString(obj.observationAdapterId, 'observationAdapterId');
+    // Do not hard-code adapter allowlist here — dispatch validates via adapter registry.
+  }
+
   // Reject unknown fields that look like executable overrides from untrusted authors.
   const allowed = new Set([
     'schemaVersion',
@@ -189,6 +202,7 @@ export function validateWorkerRegistryRecord(
     'launchArgsPrefix',
     'workingDirectory',
     'capabilities',
+    'observationAdapterId',
   ]);
   for (const key of Object.keys(obj)) {
     if (!allowed.has(key)) {
@@ -204,6 +218,7 @@ export function validateWorkerRegistryRecord(
     ...(displayName ? { displayName } : {}),
     ...(workingDirectory ? { workingDirectory } : {}),
     ...(capabilities ? { capabilities } : {}),
+    ...(observationAdapterId ? { observationAdapterId } : {}),
   };
 }
 
@@ -252,6 +267,7 @@ export function toPublicWorkerView(rec: WorkerRegistryRecord): WorkerRegistryPub
     workerId: rec.workerId,
     ...(rec.displayName ? { displayName: rec.displayName } : {}),
     ...(rec.capabilities ? { capabilities: [...rec.capabilities] } : {}),
+    ...(rec.observationAdapterId ? { observationAdapterId: rec.observationAdapterId } : {}),
   };
 }
 

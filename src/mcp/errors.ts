@@ -41,6 +41,28 @@ export function mapCoreError(err: unknown): McpError {
   const name = err instanceof Error ? err.name : '';
   const msg = err instanceof Error ? err.message : String(err);
 
+  // Phase H permission / orphan typed errors
+  if (name === 'PermissionDeniedError') {
+    return new McpError('FORBIDDEN', msg);
+  }
+  if (name === 'OrphanResolutionError' || name === 'ObservationLockError' || name === 'ResultBridgeError') {
+    const hCode = (err as { code?: string } | null)?.code;
+    switch (hCode) {
+      case 'FORBIDDEN':
+        return new McpError('FORBIDDEN', msg);
+      case 'NOT_FOUND':
+        return new McpError('NOT_FOUND', msg);
+      case 'CONFLICT':
+        return new McpError('CONFLICT', msg);
+      case 'INVALID_STATE':
+        return new McpError('INVALID_STATE', msg);
+      case 'INVALID_ARGUMENT':
+        return new McpError('INVALID_ARGUMENT', msg);
+      default:
+        return new McpError('INTERNAL_ERROR', msg);
+    }
+  }
+
   // Phase G Dispatcher / WorkerRegistry typed errors
   const code = (err as { code?: string } | null)?.code;
   if (name === 'DispatcherError' || name === 'WorkerRegistryError') {

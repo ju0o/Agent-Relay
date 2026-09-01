@@ -38,6 +38,10 @@ const disp = await import('../dist/server/backend/dispatcher.js');
 const pmTools = await import('../dist/server/mcp/pm-tools.js');
 const workerTools = await import('../dist/server/mcp/worker-tools.js');
 const evidence = await import('../dist/server/backend/evidence.js');
+const testFix = await import('../dist/server/integrations/test-fixture/watch.js');
+testFix.ensureTestFixtureAdapterRegistered();
+const WORKSPACE = path.join(TEST_ROOT, '_workspace');
+fs.mkdirSync(WORKSPACE, { recursive: true });
 
 const project = 'PhaseGProj';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +59,8 @@ async function makeGoal(title = 'G Goal') {
     title,
     goalStatement: 'phase g',
     completionCriteria: ['done'],
+    // Phase H: PM MCP DISPATCH requires APPROVE/BYPASS (PLAN denies).
+    permissionPolicy: { mode: 'BYPASS' },
   });
 }
 
@@ -73,12 +79,13 @@ async function makeReadyTask(goalId, title = 'Ready Task') {
 
 function registerWorker(workerId, scriptPath, extra = {}) {
   return wr.writeWorkerRegistryRecord(TEST_ROOT, {
-    schemaVersion: 'G.1',
+    schemaVersion: 'G.2',
     workerId,
     displayName: extra.displayName || workerId,
     launchCommand: NODE,
     launchArgsPrefix: [scriptPath],
     capabilities: extra.capabilities || ['fixture'],
+    observationAdapterId: extra.observationAdapterId || 'test-fixture',
     ...(extra.workingDirectory ? { workingDirectory: extra.workingDirectory } : {}),
   });
 }
@@ -116,7 +123,7 @@ console.log('\n── G-01..G-06 registry + launch security ──');
   fs.writeFileSync(
     path.join(projWorkers, 'evil.json'),
     JSON.stringify({
-      schemaVersion: 'G.1',
+      schemaVersion: 'G.2',
       workerId: 'evil',
       launchCommand: NODE,
       launchArgsPrefix: [FIX_ZERO],
@@ -167,11 +174,9 @@ registerWorker('w-alive', FIX_ALIVE, { displayName: 'Alive' });
 {
   const task = await makeReadyTask(goal.goalId, 'Dispatch OK');
   const beforeRuns = task.linkedRuns.length;
-  const result = await disp.dispatchTask(TEST_ROOT, project, {
-    taskId: task.taskId,
+  const result = await disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId,
     workerId: 'w-alive',
-    expectedExecutionState: 'READY',
-  });
+    expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   check(result.executionState === 'RUNNING', 'G-07 READY Task dispatch succeeds');
   check(result.runId && result.taskId === task.taskId, 'G-07 returns logical ids');
   const after = gt.getTask(TEST_ROOT, project, task.taskId);
@@ -190,11 +195,9 @@ registerWorker('w-alive', FIX_ALIVE, { displayName: 'Alive' });
     expectedExecutionState: 'READY', to: 'BLOCKED', reason: 'hold',
   });
   await shouldThrow(
-    async () => disp.dispatchTask(TEST_ROOT, project, {
-      taskId: task.taskId,
+    async () => disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId,
       workerId: 'w-alive',
-      expectedExecutionState: 'READY',
-    }),
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE }),
     'G-08 non-READY dispatch rejected',
     'READY',
   );
@@ -232,11 +235,9 @@ console.log('\n── G-15..G-20 rollback + spawn failure ──');
 
   let threw = false;
   try {
-    await disp.dispatchTask(TEST_ROOT, project, {
-      taskId: task.taskId,
+    await disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId,
       workerId: 'w-alive',
-      expectedExecutionState: 'READY',
-    });
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   } catch {
     threw = true;
   }
@@ -273,20 +274,19 @@ console.log('\n── G-15..G-20 rollback + spawn failure ──');
   // Spawn failure via nonexistent absolute executable in registry
   const badId = 'w-missing';
   wr.writeWorkerRegistryRecord(TEST_ROOT, {
-    schemaVersion: 'G.1',
+    schemaVersion: 'G.2',
     workerId: badId,
     launchCommand: path.join(TEST_ROOT, 'no-such-worker-bin.exe'),
     launchArgsPrefix: [],
+    observationAdapterId: 'test-fixture',
   });
   // Unblock previous blocked path — fresh task
   const task = await makeReadyTask(goal.goalId, 'Spawn fail');
   let errCode;
   try {
-    await disp.dispatchTask(TEST_ROOT, project, {
-      taskId: task.taskId,
+    await disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId,
       workerId: badId,
-      expectedExecutionState: 'READY',
-    });
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   } catch (err) {
     errCode = err.code;
   }
@@ -310,11 +310,9 @@ console.log('\n── G-21..G-24 process exit + RESULT boundary ──');
 {
   registerWorker('w-nonzero', FIX_NONZERO);
   const task = await makeReadyTask(goal.goalId, 'Nonzero exit');
-  await disp.dispatchTask(TEST_ROOT, project, {
-    taskId: task.taskId,
+  await disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId,
     workerId: 'w-nonzero',
-    expectedExecutionState: 'READY',
-  });
+    expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   const failedTask = await waitForState(task.taskId, 'FAILED', 8000);
   check(failedTask.pmState !== 'ACCEPTED', 'G-21 non-zero observed exit does not ACCEPT Task');
   check(failedTask.executionState === 'FAILED', 'G-21 non-zero exit → FAILED (not ACCEPTED)');
@@ -324,11 +322,9 @@ console.log('\n── G-21..G-24 process exit + RESULT boundary ──');
 {
   registerWorker('w-zero2', FIX_ZERO);
   const task = await makeReadyTask(goal.goalId, 'Zero exit');
-  await disp.dispatchTask(TEST_ROOT, project, {
-    taskId: task.taskId,
+  await disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId,
     workerId: 'w-zero2',
-    expectedExecutionState: 'READY',
-  });
+    expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   await sleep(600);
   const after = gt.getTask(TEST_ROOT, project, task.taskId);
   check(after.executionState !== 'RESULT_RECEIVED', 'G-22 zero exit does not mark RESULT_RECEIVED');
@@ -391,11 +387,9 @@ console.log('\n── G-25..G-28 restart orphan safety ──');
   check(gt.getTask(TEST_ROOT, project, t2.taskId).executionState === 'RUNNING', 'G-26 not FAILED');
 
   await shouldThrow(
-    async () => disp.dispatchTask(TEST_ROOT, project, {
-      taskId: t2.taskId,
+    async () => disp.dispatchTask(TEST_ROOT, project, {taskId: t2.taskId,
       workerId: 'w-alive',
-      expectedExecutionState: 'READY',
-    }),
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE }),
     'G-27 orphan-suspected Task blocks redispatch',
     'ORPHAN_SUSPECTED',
   );
@@ -415,12 +409,8 @@ console.log('\n── G-29..G-32 concurrency + retry ──');
   registerWorker('w-alive2', FIX_ALIVE);
   const task = await makeReadyTask(goal.goalId, 'Double dispatch');
   const results = await Promise.allSettled([
-    disp.dispatchTask(TEST_ROOT, project, {
-      taskId: task.taskId, workerId: 'w-alive2', expectedExecutionState: 'READY',
-    }),
-    disp.dispatchTask(TEST_ROOT, project, {
-      taskId: task.taskId, workerId: 'w-alive2', expectedExecutionState: 'READY',
-    }),
+    disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId, workerId: 'w-alive2', expectedExecutionState: 'READY', workspaceRoot: WORKSPACE }),
+    disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId, workerId: 'w-alive2', expectedExecutionState: 'READY', workspaceRoot: WORKSPACE }),
   ]);
   const oks = results.filter((r) => r.status === 'fulfilled');
   const fails = results.filter((r) => r.status === 'rejected');
@@ -445,9 +435,7 @@ console.log('\n── G-29..G-32 concurrency + retry ──');
   // Retry path: drive to RESULT_RECEIVED + CHANGES_REQUESTED → requestRetry → dispatch new run
   const task = await makeReadyTask(goal.goalId, 'Retry fresh');
   registerWorker('w-retry', FIX_ALIVE);
-  const d1 = await disp.dispatchTask(TEST_ROOT, project, {
-    taskId: task.taskId, workerId: 'w-retry', expectedExecutionState: 'READY',
-  });
+  const d1 = await disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId, workerId: 'w-retry', expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   const run1 = d1.runId;
   // Force result received for retry precondition
   await rt.markResultReceived(TEST_ROOT, project, task.taskId, run1, {
@@ -462,9 +450,7 @@ console.log('\n── G-29..G-32 concurrency + retry ──');
   });
   disp._resetDispatcherStateForTests();
   const before = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.map((r) => r.runId);
-  const d2 = await disp.dispatchTask(TEST_ROOT, project, {
-    taskId: task.taskId, workerId: 'w-retry', expectedExecutionState: 'READY',
-  });
+  const d2 = await disp.dispatchTask(TEST_ROOT, project, {taskId: task.taskId, workerId: 'w-retry', expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   check(d2.runId !== run1, 'G-31 retry after READY creates new Run');
   const afterIds = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.map((r) => r.runId);
   check(afterIds.includes(run1) && afterIds.includes(d2.runId), 'G-32 prior Run preserved');
@@ -486,8 +472,10 @@ console.log('\n── G-33..G-39 MCP surface + no auto loops ──');
     'G-34 dispatch MCP requires workerId',
   );
   check(
-    Array.isArray(schema.required) && schema.required.includes('expectedExecutionState'),
-    'G-35 dispatch MCP requires expectedExecutionState',
+    Array.isArray(schema.required)
+      && schema.required.includes('expectedExecutionState')
+      && schema.required.includes('workspaceRoot'),
+    'G-35 dispatch MCP requires expectedExecutionState + workspaceRoot',
   );
 
   const task = await makeReadyTask(goal.goalId, 'MCP dispatch');
@@ -495,6 +483,7 @@ console.log('\n── G-33..G-39 MCP surface + no auto loops ──');
   const result = await byName.relay_pm_dispatch_task.handler({
     taskId: task.taskId,
     workerId: 'w-mcp',
+    workspaceRoot: WORKSPACE,
     expectedExecutionState: 'READY',
   });
   const json = JSON.stringify(result);
@@ -557,6 +546,7 @@ console.log('\n── G-40..G-45 phase regressions (smoke) ──');
 }
 
 disp._resetDispatcherStateForTests();
+await (await import('../dist/server/backend/capture-service.js'))._resetCaptureServiceForTests();
 
 console.log(`\nPhase G tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

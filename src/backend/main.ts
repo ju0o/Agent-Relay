@@ -14,7 +14,12 @@ import * as goalTask from './goal-task.js';
 import * as goalTaskRuntime from './goal-task-runtime.js';
 import * as evidenceKernel from './evidence.js';
 import * as eventKernel from './event.js';
+import * as dispatcher from './dispatcher.js';
+import * as pmWork from './pm-work.js';
+import * as orphanResolution from './orphan-resolution.js';
+import { authorizeEffect } from './permission-gate.js';
 import { CaptureManager } from './capture-manager.js';
+import { setCaptureManager } from './capture-service.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
@@ -415,8 +420,63 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'goal:transition':
       return goalTaskRuntime.transitionGoalStatus(req.dataRoot, req.project, req.goalId, req.to, req.reason);
 
-    case 'goal:complete':
-      return goalTaskRuntime.completeGoal(req.dataRoot, req.project, req.goalId, req.reason);
+    case 'goal:complete': {
+      const goal = goalTask.getGoal(req.dataRoot, req.project, req.goalId);
+      authorizeEffect({
+        effect: 'COMPLETE_GOAL',
+        callerSurface: 'OWNER_IPC',
+        permissionPolicy: goal.permissionPolicy ?? { mode: 'PLAN' },
+      });
+      const completed = req.expectedGoalStatus
+        ? goalTaskRuntime.completeGoalWithExpected(req.dataRoot, req.project, req.goalId, {
+            expectedGoalStatus: req.expectedGoalStatus,
+            reason: req.reason,
+          })
+        : goalTaskRuntime.completeGoal(req.dataRoot, req.project, req.goalId, req.reason);
+      try {
+        await eventKernel.recordGoalCompleted(req.dataRoot, req.project, {
+          summary: `Goal ${req.goalId} completed`,
+          goalId: req.goalId,
+          source: { kind: 'owner-ipc', subsystem: 'goal:complete' },
+          details: { status: completed.status },
+          sourceEventId: `goal-completed:${req.project}:${req.goalId}:${completed.updatedAt}`,
+        });
+      } catch { /* best-effort */ }
+      return completed;
+    }
+
+    case 'task:dispatch': {
+      const task = goalTask.getTask(req.dataRoot, req.project, req.taskId);
+      const goal = goalTask.getGoal(req.dataRoot, req.project, task.goalId);
+      authorizeEffect({
+        effect: 'DISPATCH',
+        callerSurface: 'OWNER_IPC',
+        permissionPolicy: goal.permissionPolicy ?? { mode: 'PLAN' },
+      });
+      return dispatcher.dispatchTask(req.dataRoot, req.project, {
+        taskId: req.taskId,
+        workerId: req.workerId,
+        workspaceRoot: req.workspaceRoot,
+        expectedExecutionState: req.expectedExecutionState,
+      });
+    }
+
+    case 'task:resolveOrphan':
+      return orphanResolution.resolveOrphan({
+        dataRoot: req.dataRoot,
+        project: req.project,
+        taskId: req.taskId,
+        action: req.action,
+        callerSurface: 'OWNER_IPC',
+        expectedExecutionState: req.expectedExecutionState,
+        reason: req.reason,
+      });
+
+    case 'pm:getNextWork':
+      return pmWork.getNextWork(req.dataRoot, req.project);
+
+    case 'workers:list':
+      return dispatcher.listWorkersPublic(req.dataRoot);
 
     case 'task:create':
       return goalTask.createTask(req.dataRoot, req.project, {
@@ -732,6 +792,7 @@ app.whenReady().then(() => {
       return relay.atomicMaterializeRun(params.dataRoot, params.project, params.date, params.agent);
     },
   });
+  setCaptureManager(captureManager);
 
   // ── Updater ──
   // 시작 후 조용히 1회 확인(정책상 자동 다운로드/설치 없음). 새 버전이 있으면

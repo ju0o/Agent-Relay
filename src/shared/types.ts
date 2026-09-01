@@ -107,8 +107,12 @@ export type RelayRequest =
  | { op: 'goal:getRuntimeState'; dataRoot: string; project: string; goalId: string }
  | { op: 'goal:evaluateCompletion'; dataRoot: string; project: string; goalId: string }
  | { op: 'goal:transition'; dataRoot: string; project: string; goalId: string; to: GoalStatus; reason?: string }
- | { op: 'goal:complete'; dataRoot: string; project: string; goalId: string; reason?: string }
+ | { op: 'goal:complete'; dataRoot: string; project: string; goalId: string; reason?: string; expectedGoalStatus?: GoalStatus }
  | { op: 'task:create'; dataRoot: string; project: string; goalId: string; title: string; goal: string; reason: string; scope: string; completionCriteria?: string[]; dependencies?: string[]; executionState?: TaskExecutionState; pmState?: TaskPmState }
+ | { op: 'task:dispatch'; dataRoot: string; project: string; taskId: string; workerId: string; workspaceRoot: string; expectedExecutionState: 'READY' }
+ | { op: 'task:resolveOrphan'; dataRoot: string; project: string; taskId: string; action: 'KEEP_WAITING' | 'CONFIRM_FAILED' | 'CONFIRM_CANCELLED'; expectedExecutionState?: TaskExecutionState; reason?: string }
+ | { op: 'pm:getNextWork'; dataRoot: string; project: string }
+ | { op: 'workers:list'; dataRoot: string }
  | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
  | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
  | { op: 'task:update'; dataRoot: string; project: string; taskId: string; patch: TaskUpdatePatch }

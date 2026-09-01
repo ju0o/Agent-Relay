@@ -37,9 +37,10 @@
     "test:mcp-phase-f-correction": "node test/mcp-phase-f-correction.test.mjs",
     "test:phase-g-dispatcher": "node test/phase-g-dispatcher.test.mjs",
     "test:phase-g-hardening": "node test/phase-g-hardening.test.mjs",
+    "test:phase-h-closed-loop": "node test/phase-h-closed-loop.test.mjs",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
     "mcp:worker": "node dist/server/mcp/index.js --surface worker",
-    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh && npm run test:adapter-agent-map && npm run test:parallel-capture && npm run test:draft-materialization && npm run test:session-ownership && npm run test:draft-idempotency && npm run test:goal-task-kernel && npm run test:b1-corrections && npm run test:b2-runtime && npm run test:evidence-kernel && npm run test:event-kernel && npm run test:event-contract && npm run test:mcp-phase-e && npm run test:mcp-smoke && npm run test:mcp-phase-f && npm run test:mcp-phase-f-bounds && npm run test:mcp-phase-f-correction && npm run test:phase-g-dispatcher && npm run test:phase-g-hardening",
+    "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:adapter && npm run test:binding && npm run test:claude && npm run test:capture-ux && npm run test:capture-result-refresh && npm run test:adapter-agent-map && npm run test:parallel-capture && npm run test:draft-materialization && npm run test:session-ownership && npm run test:draft-idempotency && npm run test:goal-task-kernel && npm run test:b1-corrections && npm run test:b2-runtime && npm run test:evidence-kernel && npm run test:event-kernel && npm run test:event-contract && npm run test:mcp-phase-e && npm run test:mcp-smoke && npm run test:mcp-phase-f && npm run test:mcp-phase-f-bounds && npm run test:mcp-phase-f-correction && npm run test:phase-g-dispatcher && npm run test:phase-g-hardening && npm run test:phase-h-closed-loop",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml"
   },
   "main": "dist/server/backend/main.js",

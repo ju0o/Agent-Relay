@@ -49,6 +49,12 @@ const disp = await import('../dist/server/backend/dispatcher.js');
 const pmTools = await import('../dist/server/mcp/pm-tools.js');
 const workerTools = await import('../dist/server/mcp/worker-tools.js');
 const evidence = await import('../dist/server/backend/evidence.js');
+const testFix = await import('../dist/server/integrations/test-fixture/watch.js');
+testFix.ensureTestFixtureAdapterRegistered();
+const WORKSPACE = path.join(ROOT_A, '_workspace');
+const WORKSPACE_B = path.join(ROOT_B, '_workspace');
+fs.mkdirSync(WORKSPACE, { recursive: true });
+fs.mkdirSync(WORKSPACE_B, { recursive: true });
 
 const project = 'GHardenProj';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,6 +74,7 @@ async function makeGoal(dataRoot, proj = project, title = 'GH Goal') {
     title,
     goalStatement: 'hardening',
     completionCriteria: ['done'],
+    permissionPolicy: { mode: 'BYPASS' },
   });
 }
 
@@ -86,12 +93,13 @@ async function makeReadyTask(dataRoot, goalId, title = 'GH Task', proj = project
 
 function registerWorker(dataRoot, workerId, scriptPath, extra = {}) {
   return wr.writeWorkerRegistryRecord(dataRoot, {
-    schemaVersion: 'G.1',
+    schemaVersion: 'G.2',
     workerId,
     displayName: extra.displayName || workerId,
     launchCommand: NODE,
     launchArgsPrefix: [scriptPath],
     capabilities: extra.capabilities || ['fixture'],
+    observationAdapterId: extra.observationAdapterId || 'test-fixture',
   });
 }
 
@@ -136,11 +144,9 @@ console.log('\n── GH-01..07  post-spawn RUNNING CAS race ──');
 
   let conflictErr;
   try {
-    await disp.dispatchTask(ROOT_A, project, {
-      taskId: task.taskId,
+    await disp.dispatchTask(ROOT_A, project, {taskId: task.taskId,
       workerId: 'gh-alive',
-      expectedExecutionState: 'READY',
-    });
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   } catch (err) {
     conflictErr = err;
   } finally {
@@ -160,11 +166,9 @@ console.log('\n── GH-01..07  post-spawn RUNNING CAS race ──');
 
   // GH-03: redispatch is blocked while child is alive
   await shouldThrow(
-    async () => disp.dispatchTask(ROOT_A, project, {
-      taskId: task.taskId,
+    async () => disp.dispatchTask(ROOT_A, project, {taskId: task.taskId,
       workerId: 'gh-alive',
-      expectedExecutionState: 'READY',
-    }),
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE }),
     'GH-03 redispatch blocked while child tracked',
     'CONFLICT',
   );
@@ -234,16 +238,12 @@ console.log('\n── GH-08..10  cross-dataRoot key isolation ──');
 
   // GH-09: dispatch both concurrently — both should succeed independently
   const [resA, resB] = await Promise.all([
-    disp.dispatchTask(ROOT_A, project, {
-      taskId: taskA.taskId,
+    disp.dispatchTask(ROOT_A, project, {taskId: taskA.taskId,
       workerId: 'gh-cross-a',
-      expectedExecutionState: 'READY',
-    }),
-    disp.dispatchTask(ROOT_B, project, {
-      taskId: taskB.taskId,
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE }),
+    disp.dispatchTask(ROOT_B, project, {taskId: taskB.taskId,
       workerId: 'gh-cross-b',
-      expectedExecutionState: 'READY',
-    }),
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE_B }),
   ]);
 
   check(resA.executionState === 'RUNNING', 'GH-09 ROOT_A dispatch succeeds independently');
@@ -303,11 +303,9 @@ console.log('\n── GH-08..10  cross-dataRoot key isolation ──');
   );
 
   // Dispatch ROOT_B clean task — should succeed regardless of ROOT_A orphan
-  const resClean = await disp.dispatchTask(ROOT_B, project, {
-    taskId: cleanTask.taskId,
+  const resClean = await disp.dispatchTask(ROOT_B, project, {taskId: cleanTask.taskId,
     workerId: 'gh-orphan-b',
-    expectedExecutionState: 'READY',
-  });
+    expectedExecutionState: 'READY', workspaceRoot: WORKSPACE_B });
   check(resClean.executionState === 'RUNNING', 'GH-10 ROOT_B dispatch succeeds despite ROOT_A orphan');
 
   disp._resetDispatcherStateForTests();
@@ -322,11 +320,9 @@ console.log('\n── GH-11..13  instant zero-exit stress ──');
 
   const goalInst = await makeGoal(ROOT_A, project, 'Goal Instant');
   const instTask0 = await makeReadyTask(ROOT_A, goalInst.goalId, 'Instant Check');
-  const res0 = await disp.dispatchTask(ROOT_A, project, {
-    taskId: instTask0.taskId,
+  const res0 = await disp.dispatchTask(ROOT_A, project, {taskId: instTask0.taskId,
     workerId: 'gh-instant',
-    expectedExecutionState: 'READY',
-  });
+    expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
   check(res0.executionState === 'RUNNING', 'GH-11 instant zero-exit fixture dispatches successfully');
 
   // Wait for the child to exit and tracking to clear (it exits immediately)
@@ -354,11 +350,9 @@ console.log('\n── GH-11..13  instant zero-exit stress ──');
   for (let i = 0; i < CYCLES; i++) {
     disp._resetDispatcherStateForTests();
     const t = await makeReadyTask(ROOT_A, stressGoal.goalId, `Stress ${i}`);
-    await disp.dispatchTask(ROOT_A, project, {
-      taskId: t.taskId,
+    await disp.dispatchTask(ROOT_A, project, {taskId: t.taskId,
       workerId: 'gh-stress',
-      expectedExecutionState: 'READY',
-    });
+      expectedExecutionState: 'READY', workspaceRoot: WORKSPACE });
     // Allow up to 500ms for the instant exit to be processed
     await sleep(200);
     const st = await disp.getDispatchStatus(ROOT_A, project, t.taskId);

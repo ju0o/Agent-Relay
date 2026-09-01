@@ -251,6 +251,11 @@ export interface RunMeta {
   goalId?: string;
   taskId?: string;
   taskRunSequence?: number;
+  /**
+   * Phase H audit-only: coding workspace used at dispatch time.
+   * NOT authority for future dispatch; do not expose via PM Context Packet.
+   */
+  workspaceRoot?: string;
 }
 
 /** Allocate a new collision-resistant runId (UUID). */
@@ -269,6 +274,9 @@ export function readRunMeta(folder: string): RunMeta {
     if (typeof raw.taskId === 'string') meta.taskId = raw.taskId;
     if (typeof raw.taskRunSequence === 'number' && Number.isFinite(raw.taskRunSequence)) {
       meta.taskRunSequence = raw.taskRunSequence;
+    }
+    if (typeof raw.workspaceRoot === 'string' && raw.workspaceRoot) {
+      meta.workspaceRoot = raw.workspaceRoot;
     }
     return meta;
   } catch {
@@ -289,6 +297,9 @@ export function writeRunMeta(folder: string, meta: RunMeta): void {
   if (typeof meta.taskId === 'string') out.taskId = meta.taskId;
   if (typeof meta.taskRunSequence === 'number' && Number.isFinite(meta.taskRunSequence)) {
     out.taskRunSequence = meta.taskRunSequence;
+  }
+  if (typeof meta.workspaceRoot === 'string' && meta.workspaceRoot) {
+    out.workspaceRoot = meta.workspaceRoot;
   }
   fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify(out, null, 2) + '\n', 'utf8');
 }

@@ -10,6 +10,13 @@ import { createCommandCodeAdapter } from '../integrations/commandcode/watch.js';
 import { createClineAdapter } from '../integrations/cline/watch.js';
 import { createGrokAdapter } from '../integrations/grok/watch.js';
 import { CaptureCandidateView, CaptureStatusView, MaterializeParams } from '../shared/types.js';
+import {
+  promoteObservedResult,
+  type ExecutionBinding,
+} from './result-bridge.js';
+import { releaseObservationLockByBinding } from './observation-lock.js';
+
+export type { ExecutionBinding };
 
 /**
  * Per-capture context — holds ALL mutable state for one Draft or materialized Run.
@@ -41,6 +48,14 @@ interface CaptureContext {
   pending: { completion: AgentCompletion; timer: ReturnType<typeof setTimeout> } | null;
   /** Parameters for on-demand folder creation when folder is null. */
   materializeParams?: MaterializeParams;
+  /**
+   * Phase H — trusted Dispatcher execution binding.
+   * When present: folder MUST already exist; materializeOnce MUST NOT run;
+   * RESULT_RECEIVED promotion goes only through Result Bridge for RESPONSE_COMPLETE.
+   */
+  executionBinding?: ExecutionBinding;
+  /** Coding workspace used for observation scoping + observation lock release. */
+  workspaceRoot?: string;
 }
 
 /** Callback that atomically creates a physical Run folder for a Draft. */
@@ -172,6 +187,7 @@ export class CaptureManager {
       isDraft?: boolean;
       materializeParams?: MaterializeParams;
       workspaceRoot?: string;
+      executionBinding?: ExecutionBinding;
     },
   ): Promise<void> {
     if (typeof captureId !== 'string' || !captureId.trim()) {
@@ -181,14 +197,37 @@ export class CaptureManager {
     // Normalize legacy folder-path captureIds to avoid trivial path-variant duplicates.
     const normalizedId = this.normalizePath(captureId);
 
+    const executionBinding = opts?.executionBinding;
+
     // Resolve folder:
     //   isDraft=true  → null (Draft; no physical folder yet)
     //   folder given  → use it (this is the Relay storage folder, not coding workspace)
     //   neither       → treat normalizedId as folder (legacy: arm(folderPath, adapterId))
-    const folder: string | null =
+    let folder: string | null =
       opts?.isDraft === true ? null :
       opts?.folder !== undefined ? opts.folder :
       normalizedId;   // legacy backward-compat path
+
+    // Phase H invariant: executionBinding present → folder MUST already exist
+    // and MUST NOT create another Run via materializeOnce.
+    if (executionBinding) {
+      if (!folder) {
+        throw new Error(
+          'executionBinding present: folder MUST already exist (Dispatcher Run).',
+        );
+      }
+      const resolvedFolder = path.resolve(folder);
+      const fs = await import('node:fs');
+      if (!fs.existsSync(resolvedFolder) || !fs.statSync(resolvedFolder).isDirectory()) {
+        throw new Error(
+          `executionBinding present: bound Run folder does not exist: ${resolvedFolder}`,
+        );
+      }
+      folder = resolvedFolder;
+      if (opts?.isDraft === true) {
+        throw new Error('executionBinding present: isDraft MUST be false.');
+      }
+    }
 
     // Stop only this captureId's existing context — never touch others.
     await this.stopById(normalizedId, false);
@@ -215,7 +254,9 @@ export class CaptureManager {
       lastPhase: null,
       lastPushKey: '',
       pending: null,
-      materializeParams: opts?.materializeParams,
+      materializeParams: executionBinding ? undefined : opts?.materializeParams,
+      ...(executionBinding ? { executionBinding } : {}),
+      ...(opts?.workspaceRoot ? { workspaceRoot: opts.workspaceRoot } : {}),
     };
 
     // Register BEFORE startWatch so synchronous sink events pass the stale-handle guard.
@@ -246,6 +287,27 @@ export class CaptureManager {
       this.push({ phase: 'error', captureId: normalizedId, folder: folder ?? undefined, message });
       throw err instanceof Error ? err : new Error(message);
     }
+  }
+
+  /**
+   * Test/helper: inject a completion into an armed capture (bypasses adapter watch).
+   * Still subject to SessionBindingPolicy + ownership + Result Bridge rules.
+   */
+  injectCompletionForTests(captureId: string, completion: AgentCompletion): void {
+    const normalizedId = this.normalizePath(captureId);
+    const ctx = this.contexts.get(normalizedId) ?? this.contexts.get(captureId);
+    if (!ctx) {
+      throw new Error(`No armed capture for injectCompletionForTests: ${captureId}`);
+    }
+    this.onCompletion(ctx, completion);
+  }
+
+  /** Force-bind a session for deterministic synthetic E2E (no ambiguity). */
+  forceBindSessionForTests(captureId: string, sessionId: string): boolean {
+    const normalizedId = this.normalizePath(captureId);
+    const ctx = this.contexts.get(normalizedId) ?? this.contexts.get(captureId);
+    if (!ctx) return false;
+    return this.selectSession(sessionId, ctx.captureId);
   }
 
   /**
@@ -725,13 +787,26 @@ export class CaptureManager {
       return;
     }
 
+    // Ambiguity: never promote via Result Bridge.
+    if (ctx.policy.isAmbiguous || ctx.policy.candidatesNeedSelection()) {
+      this.emitAmbiguous(ctx);
+      return;
+    }
+
     // ── Lazy materialization (Phase A2, idempotent via materializeOnce) ─────────
-    // If no physical Relay storage folder exists yet (Draft arm), allocate one now.
-    // materializeOnce() guarantees at most ONE physical Run per captureId: if the
-    // UI already called run:materialize for this same captureId (concurrent prompt-
-    // save race), both paths share the SAME Promise and resolve to the SAME folder.
+    // Phase H: executionBinding present → NEVER materializeOnce; folder must exist.
     let runLabel: string | undefined;
-    if (ctx.folder === null) {
+    if (ctx.executionBinding) {
+      if (!ctx.folder) {
+        this.emitToCtx(ctx, {
+          phase: 'error',
+          captureId: ctx.captureId,
+          message: 'executionBinding persist requires existing Run folder (materializeOnce forbidden).',
+        });
+        return;
+      }
+    } else if (ctx.folder === null) {
+      // Legacy Draft path only
       if (!ctx.materializeParams) {
         this.emitToCtx(ctx, {
           phase: 'error',
@@ -769,7 +844,28 @@ export class CaptureManager {
       });
       return;
     }
-    if (outcome.duplicate) return;
+    if (outcome.duplicate) {
+      // Idempotent capture replay — still allow Result Bridge idempotent promote for RESPONSE_COMPLETE.
+      if (ctx.executionBinding && completion.completionKind === 'RESPONSE_COMPLETE') {
+        try {
+          await promoteObservedResult({
+            dataRoot: ctx.executionBinding.dataRoot,
+            project: ctx.executionBinding.project,
+            goalId: ctx.executionBinding.goalId,
+            taskId: ctx.executionBinding.taskId,
+            runId: ctx.executionBinding.runId,
+            completion,
+            boundFolder: folder,
+            observationAdapterId: ctx.adapterId,
+            workspaceRoot: ctx.workspaceRoot,
+            artifactRefs: outcome.written,
+          });
+        } catch {
+          // Soft: duplicate path already persisted; bridge rejection is non-fatal here.
+        }
+      }
+      return;
+    }
     this.emitToCtx(ctx, {
       phase: 'captured',
       captureId: ctx.captureId,
@@ -779,6 +875,42 @@ export class CaptureManager {
       files: outcome.written,
       boundSessionId: binding.sessionId,
     });
+
+    // Phase H: Result Bridge ONLY for RESPONSE_COMPLETE on bound execution.
+    // PROCESS_FAILED / INTERRUPTED / BLOCKED / UNKNOWN may persist artifacts but MUST NOT promote.
+    if (ctx.executionBinding && completion.completionKind === 'RESPONSE_COMPLETE') {
+      try {
+        await promoteObservedResult({
+          dataRoot: ctx.executionBinding.dataRoot,
+          project: ctx.executionBinding.project,
+          goalId: ctx.executionBinding.goalId,
+          taskId: ctx.executionBinding.taskId,
+          runId: ctx.executionBinding.runId,
+          completion,
+          boundFolder: folder,
+          observationAdapterId: ctx.adapterId,
+          workspaceRoot: ctx.workspaceRoot,
+          artifactRefs: outcome.written,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.emitToCtx(ctx, {
+          phase: 'error',
+          captureId: ctx.captureId,
+          folder,
+          message: `Result Bridge promotion failed: ${message}`,
+        });
+      }
+    } else if (ctx.executionBinding && ctx.workspaceRoot) {
+      // Non-response terminal: release observation lock without RESULT_RECEIVED.
+      releaseObservationLockByBinding({
+        observationAdapterId: ctx.adapterId,
+        workspaceRoot: ctx.workspaceRoot,
+        taskId: ctx.executionBinding.taskId,
+        runId: ctx.executionBinding.runId,
+      });
+    }
+
     void this.stopById(ctx.captureId, false);
   }
 

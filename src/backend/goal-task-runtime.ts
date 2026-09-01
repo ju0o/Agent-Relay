@@ -435,6 +435,17 @@ export function transitionTaskPm(
   });
 }
 
+/**
+ * Current attempt runId:
+ *   acceptedRunId ?? latest linked Run by taskRunSequence
+ */
+export function resolveCurrentAttemptRunId(task: TaskRecord): string | undefined {
+  if (task.acceptedRunId) return task.acceptedRunId;
+  if (!task.linkedRuns.length) return undefined;
+  const latest = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
+  return latest?.runId;
+}
+
 export function markResultReceived(
   dataRoot: string,
   project: string,
@@ -748,6 +759,39 @@ export function completeGoal(
   reason?: string,
 ): GoalRecord {
   return transitionGoalStatus(dataRoot, project, goalId, 'COMPLETED', reason);
+}
+
+/**
+ * Phase H — CAS-guarded Goal completion.
+ * Re-evaluates eligibility at mutation time.
+ */
+export function completeGoalWithExpected(
+  dataRoot: string,
+  project: string,
+  goalId: string,
+  opts: { expectedGoalStatus: GoalStatus; reason?: string },
+): GoalRecord {
+  const id = requireNonEmptyString(goalId, 'goalId');
+  const expected = opts.expectedGoalStatus;
+  if (!expected) {
+    throw new Error('expectedGoalStatus이(가) 필요합니다.');
+  }
+  const goal = getGoal(dataRoot, project, id);
+  if (goal.status !== expected) {
+    throw new RuntimeConflictError(
+      `CONFLICT: expectedGoalStatus=${expected} but found ${goal.status}`,
+    );
+  }
+  if (goal.status === 'COMPLETED') {
+    return goal; // idempotent
+  }
+  const evaluation = evaluateGoalCompletion(goal, listTasks(dataRoot, project, goal.goalId));
+  if (!evaluation.eligible) {
+    throw new Error(
+      `INVALID_STATE: Goal 완료 불가: ${evaluation.reasons.join(' / ') || 'eligibility failed'}`,
+    );
+  }
+  return completeGoal(dataRoot, project, id, opts.reason);
 }
 
 // ── Runtime state / PM context ──────────────────────────────────────────────

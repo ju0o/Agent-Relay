@@ -1,17 +1,21 @@
 /**
- * Phase G — Explicit PM-controlled Worker Dispatcher.
+ * Phase G + H — Explicit PM-controlled Worker Dispatcher.
  *
  * Owns READY→DISPATCHED and DISPATCHED→RUNNING.
- * Worker never mutates canonical Task state.
+ * Phase H: workspaceRoot + observationAdapterId + Capture arm before spawn +
+ * observation concurrency lock. Worker never mutates canonical Task state.
  * No auto-dispatch / auto-retry / auto worker selection.
  * Restart does NOT guess FAILED — orphans are process-local ORPHAN_SUSPECTED.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   deleteRun,
   atomicMaterializeRun,
   todayString,
+  readRunMeta,
+  writeRunMeta,
 } from './fs.js';
 import {
   getTask,
@@ -35,6 +39,16 @@ import {
   type WorkerRegistryPublicView,
   WorkerRegistryError,
 } from './worker-registry.js';
+import { getAdapter } from '../integrations/core/registry.js';
+import { ensureDispatchCaptureManager } from './capture-service.js';
+import {
+  tryAcquireObservationLock,
+  releaseObservationLock,
+  _resetObservationLocksForTests,
+  type ObservationLockHandle,
+  ObservationLockError,
+} from './observation-lock.js';
+import type { ExecutionBinding } from './result-bridge.js';
 import type { TaskExecutionState, TaskRecord } from '../shared/types.js';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -43,6 +57,8 @@ export interface DispatchRequest {
   taskId: string;
   workerId: string;
   expectedExecutionState: 'READY';
+  /** Coding repository / Adapter observation scope — NOT Relay Run folder. */
+  workspaceRoot: string;
 }
 
 export interface DispatchResult {
@@ -160,6 +176,53 @@ export function _resetDispatcherStateForTests(): void {
   spawnImpl = spawn;
   afterLinkHook = null;
   afterSpawnHook = null;
+  _resetObservationLocksForTests();
+}
+
+/**
+ * Narrow trusted helper — clear recovery registry entry after successful
+ * owner-authorized orphan transition. Do NOT expose arbitrary mutation.
+ */
+export function clearRecoveryRecordTrusted(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+): boolean {
+  const key = dispatchKey(dataRoot, project, taskId);
+  return recoveryRegistry.delete(key);
+}
+
+/** Validate workspaceRoot as observation scope (NOT Relay Run / dataRoot inference). */
+export function validateWorkspaceRoot(workspaceRoot: unknown): string {
+  if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) {
+    throw new DispatcherError('INVALID_ARGUMENT', 'workspaceRoot이(가) 필요합니다.');
+  }
+  const raw = workspaceRoot.trim();
+  if (raw.includes('\0')) {
+    throw new DispatcherError('INVALID_ARGUMENT', 'workspaceRoot must not contain NUL.');
+  }
+  if (!path.isAbsolute(raw)) {
+    throw new DispatcherError('INVALID_ARGUMENT', 'workspaceRoot must be an absolute path.');
+  }
+  let resolved: string;
+  try {
+    resolved = path.resolve(raw);
+  } catch {
+    throw new DispatcherError('INVALID_ARGUMENT', 'workspaceRoot could not be resolved.');
+  }
+  if (!fs.existsSync(resolved)) {
+    throw new DispatcherError('INVALID_ARGUMENT', `workspaceRoot does not exist: ${resolved}`);
+  }
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(resolved);
+  } catch {
+    throw new DispatcherError('INVALID_ARGUMENT', `workspaceRoot is not accessible: ${resolved}`);
+  }
+  if (!st.isDirectory()) {
+    throw new DispatcherError('INVALID_ARGUMENT', `workspaceRoot must be a directory: ${resolved}`);
+  }
+  return resolved;
 }
 
 async function ensureRecoveryScanned(dataRoot: string, project: string): Promise<void> {
@@ -427,6 +490,9 @@ export async function dispatchTask(
     );
   }
 
+  // Phase H: workspaceRoot required + validated
+  const workspaceRoot = validateWorkspaceRoot(request?.workspaceRoot);
+
   const key = dispatchKey(root, proj, taskId);
 
   // Lazy process-local orphan scan (never mutates Task SSOT; never guesses FAILED)
@@ -458,6 +524,9 @@ export async function dispatchTask(
   let createdFolder: string | undefined;
   let createdRunId: string | undefined;
   let committedDispatch = false;
+  let observationLock: ObservationLockHandle | undefined;
+  let captureArmed = false;
+  let observationAdapterId: string | undefined;
 
   try {
     // 2. Validate Task + READY
@@ -475,8 +544,7 @@ export async function dispatchTask(
       );
     }
 
-    // 3. Orphan block already checked
-    // 4. Trusted worker registry
+    // 3. Trusted worker registry + observation adapter resolution
     let worker;
     try {
       worker = loadWorkerRegistryRecord(root, workerId);
@@ -484,11 +552,34 @@ export async function dispatchTask(
       mapRegistryError(err);
     }
 
+    observationAdapterId = worker.observationAdapterId?.trim();
+    if (!observationAdapterId) {
+      throw new DispatcherError(
+        'WORKER_UNAVAILABLE',
+        `Worker '${workerId}' has no observationAdapterId (required for H observed dispatch).`,
+      );
+    }
+    // Ensure CaptureManager adapter registry is initialized, then validate.
+    ensureDispatchCaptureManager();
+    if (!getAdapter(observationAdapterId)) {
+      throw new DispatcherError(
+        'INVALID_ARGUMENT',
+        `Unknown observation adapter '${observationAdapterId}' for worker '${workerId}'.`,
+      );
+    }
+
+    // 4. workspaceRoot already validated above
     // 5. Materialize NEW Run
     const agentLabel = `worker-${worker.workerId}`;
     const materialized = await atomicMaterializeRun(root, proj, todayString(), agentLabel);
     createdFolder = materialized.folder;
     createdRunId = materialized.runId;
+
+    // Audit-only: persist workspaceRoot on Run meta (not authority for future dispatch).
+    try {
+      const meta = readRunMeta(createdFolder);
+      writeRunMeta(createdFolder, { ...meta, workspaceRoot });
+    } catch { /* audit best-effort */ }
 
     // 6. Link Run to Task
     await linkRunToTask(root, proj, taskId, materialized.folder);
@@ -498,7 +589,7 @@ export async function dispatchTask(
       await afterLinkHook();
     }
 
-    // 7. CAS READY → DISPATCHED
+    // 7. CAS READY → DISPATCHED  ← commitment
     try {
       task = await transitionTaskExecution(root, proj, taskId, {
         expectedExecutionState: 'READY',
@@ -506,7 +597,7 @@ export async function dispatchTask(
         reason: `dispatch:${workerId}`,
       });
     } catch (err) {
-      // 8. CAS failure → rollback new Run only
+      // Pre-commit failure → rollback new Run only (no Capture armed, no spawn)
       await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
       createdFolder = undefined;
       createdRunId = undefined;
@@ -522,6 +613,83 @@ export async function dispatchTask(
 
     committedDispatch = true;
     live.phase = 'dispatched';
+
+    // 8. Acquire observation lock THEN arm CaptureManager against SAME Run
+    try {
+      observationLock = tryAcquireObservationLock({
+        observationAdapterId,
+        workspaceRoot,
+        taskId,
+        runId: createdRunId,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await transitionTaskExecution(root, proj, taskId, {
+          expectedExecutionState: 'DISPATCHED',
+          to: 'FAILED',
+          reason: `observation lock: ${msg}`,
+        });
+      } catch { /* ignore */ }
+      try {
+        await recordRuntimeError(root, proj, {
+          summary: `RUNTIME_ERROR: observation concurrency lock failed for Task ${taskId}`,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          source: { kind: 'dispatcher', subsystem: 'observation-lock' },
+          details: { workerId, observationAdapterId, error: msg },
+        });
+      } catch { /* ignore */ }
+      activeDispatches.delete(key);
+      if (err instanceof ObservationLockError) {
+        throw new DispatcherError('CONFLICT', msg);
+      }
+      throw new DispatcherError('CONFLICT', msg);
+    }
+
+    const executionBinding: ExecutionBinding = {
+      dataRoot: root,
+      project: proj,
+      goalId: task.goalId,
+      taskId,
+      runId: createdRunId,
+    };
+
+    try {
+      const cm = ensureDispatchCaptureManager();
+      await cm.arm(createdFolder, observationAdapterId, {
+        folder: createdFolder,
+        isDraft: false,
+        workspaceRoot,
+        executionBinding,
+      });
+      captureArmed = true;
+    } catch (err) {
+      // Post-commit arm failure: DISPATCHED → FAILED, preserve Run, no spawn
+      releaseObservationLock(observationLock);
+      observationLock = undefined;
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await transitionTaskExecution(root, proj, taskId, {
+          expectedExecutionState: 'DISPATCHED',
+          to: 'FAILED',
+          reason: `capture arm failure: ${msg}`,
+        });
+      } catch { /* ignore */ }
+      try {
+        await recordRuntimeError(root, proj, {
+          summary: `RUN_FAILED: Capture arm failed for Task ${taskId}; Run preserved; no spawn.`,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          source: { kind: 'dispatcher', subsystem: 'capture-arm' },
+          details: { workerId, observationAdapterId, error: msg },
+        });
+      } catch { /* ignore */ }
+      activeDispatches.delete(key);
+      throw new DispatcherError('LAUNCH_FAILED', `Capture arm failed: ${msg}`);
+    }
 
     // 9. Spawn child process (shell:false mandatory)
     const argv = buildDispatchArgv(worker.launchArgsPrefix, {
@@ -546,6 +714,8 @@ export async function dispatchTask(
     } catch (err) {
       // Known spawn failure after DISPATCHED — preserve Run, CAS → FAILED
       const msg = err instanceof Error ? err.message : String(err);
+      await cleanupBoundCapture(createdFolder, observationLock, observationAdapterId, workspaceRoot, taskId, createdRunId);
+      observationLock = undefined;
       try {
         await transitionTaskExecution(root, proj, taskId, {
           expectedExecutionState: 'DISPATCHED',
@@ -604,6 +774,8 @@ export async function dispatchTask(
     });
 
     if (launchError) {
+      await cleanupBoundCapture(createdFolder, observationLock, observationAdapterId, workspaceRoot, taskId, createdRunId);
+      observationLock = undefined;
       try {
         await transitionTaskExecution(root, proj, taskId, {
           expectedExecutionState: 'DISPATCHED',
@@ -672,6 +844,10 @@ export async function dispatchTask(
       throw new DispatcherError('CONFLICT', `Spawned but RUNNING transition failed: ${msg}`);
     }
 
+    // Do NOT release observation lock merely after spawn success — held until capture terminal.
+    void captureArmed;
+    void observationLock;
+
     // 11. Safe result — no folder / path / launchCommand
     return {
       taskId,
@@ -685,6 +861,9 @@ export async function dispatchTask(
     if (!committedDispatch && createdFolder && createdRunId) {
       await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
     }
+    if (!committedDispatch && observationLock) {
+      releaseObservationLock(observationLock);
+    }
     if (activeDispatches.get(key)?.phase === 'preparing') {
       activeDispatches.delete(key);
     }
@@ -694,6 +873,34 @@ export async function dispatchTask(
     }
     const msg = err instanceof Error ? err.message : String(err);
     throw new DispatcherError('INTERNAL_ERROR', msg);
+  }
+}
+
+async function cleanupBoundCapture(
+  folder: string | undefined,
+  lock: ObservationLockHandle | undefined,
+  adapterId: string | undefined,
+  workspaceRoot: string,
+  taskId: string,
+  runId: string,
+): Promise<void> {
+  try {
+    if (folder) {
+      const cm = ensureDispatchCaptureManager();
+      await cm.disarm(folder).catch(() => undefined);
+    }
+  } catch { /* ignore */ }
+  if (lock) {
+    releaseObservationLock(lock);
+  } else if (adapterId) {
+    releaseObservationLock({
+      key: `${adapterId}@@${path.resolve(workspaceRoot)}`,
+      observationAdapterId: adapterId,
+      workspaceRoot: path.resolve(workspaceRoot),
+      taskId,
+      runId,
+      acquiredAt: '',
+    });
   }
 }
 
