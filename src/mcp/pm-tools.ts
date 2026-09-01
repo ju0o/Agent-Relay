@@ -1,5 +1,5 @@
 /**
- * PM-facing MCP tool registration (Phase E).
+ * PM-facing MCP tool registration (Phase E + Phase F).
  *
  * Read tools + explicit B2 CAS commands only.
  *   NO relay_pm_transition_pm (Architecture Review: defer generic transition).
@@ -9,11 +9,14 @@
  *
  * CAS fields (expectedPmState, expectedExecutionState, expectedStatus) are
  * REQUIRED at the MCP boundary. Stale expected state → CONFLICT.
+ *
+ * Phase F: relay_pm_get_context_for_event — pure read facade over pm-gateway.
  */
 import * as goalTask from '../backend/goal-task.js';
 import * as goalTaskRuntime from '../backend/goal-task-runtime.js';
 import * as evidence from '../backend/evidence.js';
 import * as eventKernel from '../backend/event.js';
+import * as pmGateway from '../backend/pm-gateway.js';
 import type { TaskPmState, TaskExecutionState, EventDeliveryStatus } from '../shared/types.js';
 import {
   objectSchema,
@@ -137,6 +140,18 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
       handler: async (args) => {
         rejectUnknownFields(args, ['goalId']);
         return goalTaskRuntime.getGoalRuntimeState(dataRoot, project, requireString(args, 'goalId'));
+      },
+    },
+    {
+      name: 'relay_pm_get_context_for_event',
+      description:
+        'Phase F PM Gateway: compose a deterministic read-only PM context packet for the given eventId. ' +
+        'Returns Event, delivery snapshot, CAS, allowedActions, and profile-driven context. ' +
+        'PURE READ — does NOT mark the event as delivered, mutate Task/Goal/Evidence, or invoke GPT.',
+      inputSchema: objectSchema({ eventId: { type: 'string' } }, ['eventId']),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['eventId']);
+        return pmGateway.getContextForEvent(dataRoot, project, requireString(args, 'eventId'));
       },
     },
   ];
