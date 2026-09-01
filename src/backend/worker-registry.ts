@@ -18,6 +18,43 @@ export const ALLOWED_EXECUTABLE_BASENAMES: ReadonlySet<string> = new Set([
   'node.exe',
 ]);
 
+/**
+ * Phase I — Claude-driver permission mode.
+ *
+ * Controls which --permission-mode flag is passed to the Claude CLI.
+ * Only a narrow typed enum is accepted — arbitrary CLI flags are not allowed.
+ *
+ * 'default'     → no --permission-mode flag; Claude uses its own default (least privilege).
+ * 'acceptEdits' → passes --permission-mode acceptEdits; Claude auto-accepts file edits.
+ *
+ * 'dangerously-skip-permissions' is intentionally NOT supported.
+ */
+export type ClaudePermissionMode = 'default' | 'acceptEdits';
+
+/** Strongly typed Claude driver options. Never allows arbitrary flags or shell fragments. */
+export interface ClaudeDriverOptions {
+  /**
+   * Claude CLI permission mode (optional).
+   * If absent, preserves existing Claude default (least privilege).
+   */
+  permissionMode?: ClaudePermissionMode;
+}
+
+/**
+ * Driver-specific execution options, keyed by driver name.
+ * Stored in trusted Worker Registry only — never from Task/Goal/PM narrative.
+ */
+export interface WorkerDriverOptions {
+  /** Options specific to the 'claude-code' driver (relay-worker-claude.mjs). */
+  claude?: ClaudeDriverOptions;
+}
+
+/** Allowed permissionMode enum values for Claude driver. */
+export const ALLOWED_CLAUDE_PERMISSION_MODES: ReadonlySet<ClaudePermissionMode> = new Set([
+  'default',
+  'acceptEdits',
+]);
+
 export interface WorkerRegistryRecord {
   schemaVersion: typeof WORKER_REGISTRY_SCHEMA_VERSION;
   workerId: string;
@@ -32,6 +69,11 @@ export interface WorkerRegistryRecord {
    * NEVER derived from workerId; NEVER accepted from Task/Goal narrative.
    */
   observationAdapterId?: string;
+  /**
+   * Phase I — driver-specific execution options (trusted registry only).
+   * Contains only narrowly typed configuration; never arbitrary CLI flags.
+   */
+  driverOptions?: WorkerDriverOptions;
 }
 
 /** Safe public view — never includes launchCommand / cwd / env / absolute paths. */
@@ -193,6 +235,65 @@ export function validateWorkerRegistryRecord(
     // Do not hard-code adapter allowlist here — dispatch validates via adapter registry.
   }
 
+  // Phase I: validate driverOptions (narrowly typed — no arbitrary flags).
+  let driverOptions: WorkerDriverOptions | undefined;
+  if (obj.driverOptions !== undefined && obj.driverOptions !== null) {
+    if (typeof obj.driverOptions !== 'object' || Array.isArray(obj.driverOptions)) {
+      throw new WorkerRegistryError('INVALID_ARGUMENT', 'driverOptions must be an object.');
+    }
+    const doObj = obj.driverOptions as Record<string, unknown>;
+
+    // Only 'claude' key allowed under driverOptions.
+    for (const key of Object.keys(doObj)) {
+      if (key !== 'claude') {
+        throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown driverOptions key: '${key}'. Only 'claude' is allowed.`);
+      }
+    }
+
+    let claudeDriverOpts: ClaudeDriverOptions | undefined;
+    if (doObj.claude !== undefined && doObj.claude !== null) {
+      if (typeof doObj.claude !== 'object' || Array.isArray(doObj.claude)) {
+        throw new WorkerRegistryError('INVALID_ARGUMENT', 'driverOptions.claude must be an object.');
+      }
+      const claudeObj = doObj.claude as Record<string, unknown>;
+
+      // Only 'permissionMode' allowed under driverOptions.claude.
+      for (const key of Object.keys(claudeObj)) {
+        if (key !== 'permissionMode') {
+          throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown driverOptions.claude key: '${key}'. Only 'permissionMode' is allowed.`);
+        }
+      }
+
+      if (claudeObj.permissionMode !== undefined && claudeObj.permissionMode !== null) {
+        const pm = claudeObj.permissionMode;
+        // Narrow enum check — explicit rejection of dangerous bypass.
+        if (pm === 'dangerously-skip-permissions') {
+          throw new WorkerRegistryError(
+            'INVALID_ARGUMENT',
+            "driverOptions.claude.permissionMode 'dangerously-skip-permissions' is not supported. " +
+            "Allowed values: 'default', 'acceptEdits'.",
+          );
+        }
+        if (!ALLOWED_CLAUDE_PERMISSION_MODES.has(pm as ClaudePermissionMode)) {
+          throw new WorkerRegistryError(
+            'INVALID_ARGUMENT',
+            `Invalid driverOptions.claude.permissionMode: '${String(pm)}'. ` +
+            "Allowed values: 'default', 'acceptEdits'.",
+          );
+        }
+        claudeDriverOpts = { permissionMode: pm as ClaudePermissionMode };
+      } else {
+        claudeDriverOpts = {};
+      }
+    }
+
+    if (claudeDriverOpts !== undefined) {
+      driverOptions = { claude: claudeDriverOpts };
+    } else {
+      driverOptions = {};
+    }
+  }
+
   // Reject unknown fields that look like executable overrides from untrusted authors.
   const allowed = new Set([
     'schemaVersion',
@@ -203,6 +304,7 @@ export function validateWorkerRegistryRecord(
     'workingDirectory',
     'capabilities',
     'observationAdapterId',
+    'driverOptions',
   ]);
   for (const key of Object.keys(obj)) {
     if (!allowed.has(key)) {
@@ -219,6 +321,7 @@ export function validateWorkerRegistryRecord(
     ...(workingDirectory ? { workingDirectory } : {}),
     ...(capabilities ? { capabilities } : {}),
     ...(observationAdapterId ? { observationAdapterId } : {}),
+    ...(driverOptions !== undefined ? { driverOptions } : {}),
   };
 }
 

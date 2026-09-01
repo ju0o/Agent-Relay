@@ -15,6 +15,15 @@
     "observationAdapterId must be 'claude-code' — the registered Phase H adapter.",
     "capabilities: ['coding'] marks this worker as a general coding executor.",
     "",
+    "driverOptions.claude.permissionMode:",
+    "  'acceptEdits' — Claude auto-accepts file edits in --print (non-interactive) mode.",
+    "  Required for Claude to create/modify files without a human-in-the-loop.",
+    "  'default' or absent — Claude uses its own default (least privilege).",
+    "  'dangerously-skip-permissions' is NOT supported by this driver.",
+    "",
+    "driverOptions is trusted Worker Registry configuration only.",
+    "Task/Goal/PM narrative CANNOT override or supply permissionMode.",
+    "",
     "Do NOT include secrets, tokens, or personal paths in this file.",
     "Do NOT commit the live registry file to the repository.",
     "",
@@ -30,5 +39,10 @@
     "<REPLACE_WITH_ABSOLUTE_WRAPPER_PATH>"
   ],
   "observationAdapterId": "claude-code",
-  "capabilities": ["coding"]
+  "capabilities": ["coding"],
+  "driverOptions": {
+    "claude": {
+      "permissionMode": "acceptEdits"
+    }
+  }
 }

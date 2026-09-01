@@ -38,7 +38,14 @@ const RELAY_ARGS = new Set([
   '--taskId',
   '--runId',
   '--workspaceRoot',
+  '--permissionMode',
 ]);
+
+/**
+ * Allowed Claude permission mode values (narrow enum).
+ * 'dangerously-skip-permissions' is intentionally absent.
+ */
+const VALID_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
 
 // ── argv parsing ──────────────────────────────────────────────────────────────
 
@@ -49,9 +56,12 @@ const RELAY_ARGS = new Set([
  *   - No shell parsing, no eval, no exec, no command concatenation.
  *   - process.argv array only.
  *   - Rejects: missing required arg, duplicate key, empty value.
+ *   - Optional: --permissionMode (enum: 'default' | 'acceptEdits').
+ *     Duplicate, empty, or invalid enum values are rejected.
+ *     'dangerously-skip-permissions' is explicitly rejected.
  *
  * @param {string[]} argv  Slice of process.argv (caller provides slice(2)).
- * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string }}
+ * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; permissionMode?: string }}
  */
 function parseRelayArgs(argv) {
   const result = {};
@@ -88,7 +98,23 @@ function parseRelayArgs(argv) {
     }
   }
 
-  return /** @type {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string }} */ (result);
+  // Validate optional --permissionMode (narrow enum — no arbitrary Claude flags).
+  if (result.permissionMode !== undefined) {
+    const pm = result.permissionMode;
+    if (pm === 'dangerously-skip-permissions') {
+      throw new ArgError(
+        "--permissionMode 'dangerously-skip-permissions' is not supported by this driver. " +
+        "Allowed values: 'default', 'acceptEdits'.",
+      );
+    }
+    if (!VALID_PERMISSION_MODES.has(pm)) {
+      throw new ArgError(
+        `Invalid --permissionMode value: '${pm}'. Allowed values: 'default', 'acceptEdits'.`,
+      );
+    }
+  }
+
+  return /** @type {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; permissionMode?: string }} */ (result);
 }
 
 class ArgError extends Error {
@@ -373,6 +399,7 @@ async function main() {
     const args = parseRelayArgs(process.argv.slice(2));
     taskId = args.taskId;
     runId = args.runId;
+    const permissionMode = args.permissionMode; // 'default' | 'acceptEdits' | undefined
 
     // ── 2. Validate workspaceRoot (security) ──────────────────────────────────
     const workspaceRoot = validateWorkspaceRoot(args.workspaceRoot);
@@ -443,6 +470,8 @@ async function main() {
       runId,
       claudeExecutableResolved: claudeExe,
       workspaceRoot,
+      // Safe normalized field — not an env dump or raw token
+      permissionMode: permissionMode ?? 'default',
       phase: 'spawning',
     });
 
@@ -451,12 +480,22 @@ async function main() {
     // The prompt is passed as a direct argv element — NOT through a shell.
     // No shell interpolation, no command concatenation, no eval.
     //
-    // Claude CLI: `claude --print <prompt>` (--print is boolean flag; prompt is positional)
+    // Claude CLI: `claude --print [--permission-mode acceptEdits] <prompt>`
+    //   --print is a boolean flag; prompt is positional.
+    //   --permission-mode acceptEdits is injected ONLY when registry specifies 'acceptEdits'.
     //
     // Relay args (--dataRoot etc.) are NOT forwarded here.
     // workspaceRoot is used only as spawn cwd.
     //
-    const claudeArgs = ['--print', prompt];
+    // Permission mode → Claude CLI flag mapping (narrow enum, no arbitrary injection):
+    //   'acceptEdits' → --permission-mode acceptEdits
+    //   'default' / undefined → no --permission-mode flag (least privilege)
+    //
+    const claudeArgs = ['--print'];
+    if (permissionMode === 'acceptEdits') {
+      claudeArgs.push('--permission-mode', 'acceptEdits');
+    }
+    claudeArgs.push(prompt);
 
     let exitCode = 1;
     try {
@@ -504,6 +543,8 @@ async function main() {
       taskId,
       runId,
       claudeExecutableResolved: claudeExe,
+      // Safe normalized field — records what was used, not a raw arg
+      permissionMode: permissionMode ?? 'default',
       phase: 'completed',
       // exitCode=0 does NOT mean RESULT_RECEIVED.
       // The claude-code adapter observes RESPONSE_COMPLETE independently.

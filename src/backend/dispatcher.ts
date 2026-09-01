@@ -37,6 +37,7 @@ import {
   listWorkerRegistryRecords,
   toPublicWorkerView,
   type WorkerRegistryPublicView,
+  type ClaudePermissionMode,
   WorkerRegistryError,
 } from './worker-registry.js';
 import { getAdapter } from '../integrations/core/registry.js';
@@ -273,10 +274,22 @@ function mapRegistryError(err: unknown): never {
  * Phase I: includes --workspaceRoot for the relay wrapper protocol.
  * The wrapper consumes it and uses it only as spawn cwd; it is never
  * forwarded directly as arbitrary Claude CLI syntax.
+ *
+ * Phase I correction: includes --permissionMode when worker registry specifies
+ * a Claude driver permission mode. Only 'acceptEdits' is injected (by enum);
+ * 'default' and absent mode are equivalent (no flag → least privilege).
  */
 export function buildDispatchArgv(
   launchArgsPrefix: string[],
-  binding: { dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot?: string },
+  binding: {
+    dataRoot: string;
+    project: string;
+    taskId: string;
+    runId: string;
+    workspaceRoot?: string;
+    /** Trusted worker registry permission mode — never from Task/Goal/PM narrative. */
+    permissionMode?: ClaudePermissionMode;
+  },
 ): string[] {
   const argv = [
     ...launchArgsPrefix,
@@ -287,6 +300,11 @@ export function buildDispatchArgv(
   ];
   if (binding.workspaceRoot) {
     argv.push('--workspaceRoot', binding.workspaceRoot);
+  }
+  // Only inject --permissionMode when explicitly set to 'acceptEdits'.
+  // 'default' and absent are equivalent (no flag); omitting preserves least privilege.
+  if (binding.permissionMode === 'acceptEdits') {
+    argv.push('--permissionMode', 'acceptEdits');
   }
   return argv;
 }
@@ -755,12 +773,16 @@ export async function dispatchTask(
     // 9. Spawn child process (shell:false mandatory)
     // Phase I: pass workspaceRoot to relay wrapper protocol so wrapper can
     // use it as spawn cwd for Claude. Never forwarded as arbitrary CLI syntax.
+    // Phase I correction: pass permissionMode from trusted worker registry only.
+    // Task/Goal/PM narrative cannot supply or override this value.
+    const permissionMode = worker.driverOptions?.claude?.permissionMode;
     const argv = buildDispatchArgv(worker.launchArgsPrefix, {
       dataRoot: root,
       project: proj,
       taskId,
       runId: createdRunId,
       workspaceRoot,
+      ...(permissionMode ? { permissionMode } : {}),
     });
 
     const spawnOpts: Parameters<typeof spawn>[2] = {

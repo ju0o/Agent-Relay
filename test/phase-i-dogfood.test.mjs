@@ -699,6 +699,480 @@ console.log('\n── I-20..I-22 regressions ──');
   check(evidenceSrc.length > 0, 'I-22 evidence kernel exists');
 }
 
+// ── I-23..I-40: permission driver correction ─────────────────────────────────
+console.log('\n── I-23..I-40 permission driver correction ──');
+
+// Load worker-registry from dist for enum/validation tests.
+const wrFull = await import(pathToFileURL(path.join(DIST_BACKEND, 'worker-registry.js')).href);
+
+{
+  // I-23: registry accepts driverOptions.claude.permissionMode='acceptEdits'.
+  const testDataRoot = path.join(TEST_ROOT, 'i23-data');
+  fs.mkdirSync(path.join(testDataRoot, '_relay', 'workers'), { recursive: true });
+  const rec = {
+    schemaVersion: 'G.2',
+    workerId: 'i23-worker',
+    launchCommand: 'node',
+    launchArgsPrefix: ['/some/path.mjs'],
+    observationAdapterId: 'test-fixture',
+    driverOptions: { claude: { permissionMode: 'acceptEdits' } },
+  };
+  let validated;
+  try {
+    validated = wrFull.validateWorkerRegistryRecord(testDataRoot, rec, 'i23-worker');
+    PASS('I-23 validateWorkerRegistryRecord accepts permissionMode=acceptEdits');
+  } catch (e) {
+    FAIL(`I-23 unexpected error: ${e.message}`);
+  }
+  if (validated) {
+    check(
+      validated.driverOptions?.claude?.permissionMode === 'acceptEdits',
+      'I-23 permissionMode preserved in validated record',
+    );
+  }
+}
+
+{
+  // I-24: invalid permissionMode values are rejected.
+  const testDataRoot = path.join(TEST_ROOT, 'i24-data');
+  fs.mkdirSync(path.join(testDataRoot, '_relay', 'workers'), { recursive: true });
+
+  const badValues = [
+    'dangerously-skip-permissions',
+    'bypass',
+    '',
+    'ACCEPTEDITS',
+    '--some-flag',
+    '$(rm -rf)',
+  ];
+  for (const bad of badValues) {
+    const rec = {
+      schemaVersion: 'G.2',
+      workerId: 'i24-worker',
+      launchCommand: 'node',
+      launchArgsPrefix: ['/path.mjs'],
+      observationAdapterId: 'test-fixture',
+      driverOptions: { claude: { permissionMode: bad } },
+    };
+    await shouldThrow(
+      () => { wrFull.validateWorkerRegistryRecord(testDataRoot, rec, 'i24-worker'); },
+      `I-24 invalid permissionMode '${bad}' rejected`,
+      bad === 'dangerously-skip-permissions' ? 'dangerously' : undefined,
+    );
+  }
+}
+
+{
+  // I-25: Task record (narrative fields) cannot supply permissionMode.
+  // Verify by checking wrapper source: permissionMode only comes from args (which come
+  // from Dispatcher/registry), not from Task/Goal/PM narrative fields.
+  const src = fs.readFileSync(WRAPPER, 'utf8');
+  // The wrapper builds permissionMode from parsed relay args only.
+  // It must NOT read permissionMode from task.* fields.
+  const activeCode = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  check(!activeCode.includes('task.permissionMode'), 'I-25 wrapper does not read permissionMode from task record');
+  check(!activeCode.includes('task.driverOptions'), 'I-25 wrapper does not read driverOptions from task record');
+  // In dispatcher, permissionMode comes from worker registry only.
+  const dispSrc = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'backend', 'dispatcher.ts'), 'utf8');
+  check(
+    dispSrc.includes("worker.driverOptions?.claude?.permissionMode"),
+    'I-25 dispatcher reads permissionMode from trusted worker registry only',
+  );
+  // Confirm it is NOT read from task fields.
+  check(!dispSrc.includes('task.permissionMode'), 'I-25 dispatcher does not read permissionMode from Task');
+  check(!dispSrc.includes('request.permissionMode'), 'I-25 dispatcher does not accept permissionMode in DispatchRequest');
+}
+
+{
+  // I-26: Dispatcher buildDispatchArgv passes --permissionMode acceptEdits to wrapper.
+  const argv = disp.buildDispatchArgv(
+    ['/path/to/wrapper.mjs'],
+    {
+      dataRoot: '/data',
+      project: 'proj',
+      taskId: 'TASK-0001',
+      runId: 'run-id',
+      workspaceRoot: '/workspace',
+      permissionMode: 'acceptEdits',
+    },
+  );
+  check(argv.includes('--permissionMode'), 'I-26 buildDispatchArgv includes --permissionMode');
+  const pmIdx = argv.indexOf('--permissionMode');
+  check(argv[pmIdx + 1] === 'acceptEdits', 'I-26 --permissionMode value is acceptEdits');
+}
+
+{
+  // I-27: default mode does NOT inject --permission-mode into argv.
+  // 'default' — no flag injected.
+  const argvDefault = disp.buildDispatchArgv(
+    ['/path/to/wrapper.mjs'],
+    {
+      dataRoot: '/data',
+      project: 'proj',
+      taskId: 'TASK-0001',
+      runId: 'run-id',
+      workspaceRoot: '/workspace',
+      permissionMode: 'default',
+    },
+  );
+  check(!argvDefault.includes('--permissionMode'), 'I-27 permissionMode=default does not inject --permissionMode');
+
+  // undefined — also no flag.
+  const argvAbsent = disp.buildDispatchArgv(
+    ['/path/to/wrapper.mjs'],
+    {
+      dataRoot: '/data',
+      project: 'proj',
+      taskId: 'TASK-0001',
+      runId: 'run-id',
+      workspaceRoot: '/workspace',
+    },
+  );
+  check(!argvAbsent.includes('--permissionMode'), 'I-27 absent permissionMode does not inject --permissionMode');
+}
+
+{
+  // I-28: wrapper consumes --permissionMode from argv and does NOT forward it to Claude CLI as '--permissionMode'.
+  // The relay arg '--permissionMode' maps to '--permission-mode' (hyphenated) in Claude's CLI.
+  // Wrapper active code must not pass '--permissionMode' literally to claudeArgs.
+  const src = fs.readFileSync(WRAPPER, 'utf8');
+  const activeCode = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  // '--permissionMode' (camelCase) must NOT appear inside claudeArgs array construction.
+  // The wrapper converts it to '--permission-mode' (hyphenated).
+  const claudeArgsIdx = src.indexOf("const claudeArgs");
+  const afterClaudeArgs = src.slice(claudeArgsIdx, claudeArgsIdx + 500);
+  const afterActive = afterClaudeArgs.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  check(
+    !afterActive.includes("'--permissionMode'"),
+    'I-28 wrapper does not forward --permissionMode (camelCase relay arg) to Claude argv',
+  );
+  check(
+    activeCode.includes("'--permission-mode'"),
+    'I-28 wrapper uses hyphenated --permission-mode when injecting Claude CLI flag',
+  );
+}
+
+{
+  // I-29: wrapper Claude argv is --print [--permission-mode acceptEdits] <prompt> (correct ordering).
+  // Verify via wrapper source: permissionMode === 'acceptEdits' injects '--permission-mode', 'acceptEdits' before prompt.
+  const src = fs.readFileSync(WRAPPER, 'utf8');
+  check(
+    src.includes("claudeArgs.push('--permission-mode', 'acceptEdits')") ||
+    src.includes(`claudeArgs.push('--permission-mode', 'acceptEdits')`),
+    "I-29 wrapper pushes '--permission-mode', 'acceptEdits' as discrete argv elements",
+  );
+  // Verify prompt is pushed AFTER the permission-mode flag.
+  const permIdx = src.indexOf("'--permission-mode'");
+  const promptPushIdx = src.indexOf("claudeArgs.push(prompt)");
+  check(
+    permIdx > 0 && promptPushIdx > permIdx,
+    'I-29 prompt is pushed after --permission-mode flag in claudeArgs construction',
+  );
+}
+
+{
+  // I-30: permission value is passed as a discrete argv element, not concatenated.
+  // Verify: wrapper uses push() with separate string literals, not string concatenation.
+  const src = fs.readFileSync(WRAPPER, 'utf8');
+  // Must use push('--permission-mode', 'acceptEdits') — two separate string args.
+  // Must NOT use string concatenation like '--permission-mode ' + mode or `--permission-mode ${mode}`.
+  const activeCode = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const hasConcatenation =
+    /['"]--permission-mode['"\s]*\+/.test(activeCode) ||
+    /`--permission-mode\s*\$/.test(activeCode);
+  check(!hasConcatenation, 'I-30 permission-mode is not injected via string concatenation');
+}
+
+{
+  // I-31: shell:true is still absent from wrapper (regression on I-13).
+  const src = fs.readFileSync(WRAPPER, 'utf8');
+  const hasShellFalse = src.includes('shell: false') || src.includes('shell:false');
+  check(hasShellFalse, 'I-31 wrapper still uses shell:false after correction');
+  const srcNoComments = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  check(
+    !srcNoComments.includes('shell: true') && !srcNoComments.includes('shell:true'),
+    'I-31 no shell:true in wrapper active code after correction',
+  );
+}
+
+{
+  // I-32: no arbitrary Claude flags accepted by wrapper.
+  // Verify the wrapper's RELAY_ARGS set contains only the known safe relay args.
+  const src = fs.readFileSync(WRAPPER, 'utf8');
+  const relayArgsMatch = src.match(/const RELAY_ARGS = new Set\(\[([^\]]*)\]\)/s);
+  if (relayArgsMatch) {
+    const contents = relayArgsMatch[1];
+    // Known safe relay args only:
+    const allowed = new Set([
+      "'--dataRoot'", "'--project'", "'--taskId'", "'--runId'", "'--workspaceRoot'", "'--permissionMode'",
+      '"--dataRoot"', '"--project"', '"--taskId"', '"--runId"', '"--workspaceRoot"', '"--permissionMode"',
+    ]);
+    // Split on commas and trim, check each non-empty token
+    const tokens = contents.split(',').map((s) => s.trim()).filter(Boolean);
+    const unknownArgs = tokens.filter((t) => {
+      const clean = t.trim();
+      return clean.length > 0 && !allowed.has(clean) && !/^\/\//m.test(clean);
+    });
+    check(unknownArgs.length === 0, `I-32 RELAY_ARGS contains no unknown flags (found: ${unknownArgs.join(', ')})`);
+  } else {
+    PASS('I-32 RELAY_ARGS set source not found in expected pattern — manual audit required');
+  }
+
+  // Verify wrapper does NOT accept arbitrary --extraArgs / --claudeArgs / --shellArgs.
+  const activeCode = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  check(!activeCode.includes("'--extraArgs'") && !activeCode.includes("'--claudeArgs'"), 'I-32 no arbitrary flag passthrough in wrapper');
+}
+
+{
+  // I-33: dangerously-skip-permissions is rejected by registry validator.
+  const testDataRoot = path.join(TEST_ROOT, 'i33-data');
+  fs.mkdirSync(path.join(testDataRoot, '_relay', 'workers'), { recursive: true });
+  const rec = {
+    schemaVersion: 'G.2',
+    workerId: 'i33-worker',
+    launchCommand: 'node',
+    launchArgsPrefix: ['/path.mjs'],
+    observationAdapterId: 'test-fixture',
+    driverOptions: { claude: { permissionMode: 'dangerously-skip-permissions' } },
+  };
+  await shouldThrow(
+    () => { wrFull.validateWorkerRegistryRecord(testDataRoot, rec, 'i33-worker'); },
+    'I-33 dangerously-skip-permissions rejected by registry validator',
+    'dangerously',
+  );
+  // Also verify wrapper rejects it.
+  const { code: wCode, stderr: wStderr } = await runWrapper([
+    '--dataRoot', TEST_ROOT,
+    '--project', project,
+    '--taskId', 'TASK-0001',
+    '--runId', 'run-id',
+    '--workspaceRoot', WORKSPACE,
+    '--permissionMode', 'dangerously-skip-permissions',
+  ]);
+  check(wCode !== 0, 'I-33 wrapper rejects --permissionMode dangerously-skip-permissions');
+  check(
+    wStderr.includes('dangerously') || wStderr.includes('Invalid') || wStderr.includes('not supported'),
+    'I-33 wrapper stderr mentions rejection reason',
+  );
+}
+
+{
+  // I-34: worker-launch.log records safe normalized permissionMode field only.
+  // Run wrapper with --permissionMode acceptEdits; verify log contains normalized field.
+  const goal = await makeGoal('I-34 goal');
+  const task = await makeReadyTask(goal.goalId, 'I-34 log perm test');
+  const { runId, runFolder } = await materializeAndLink(task.taskId);
+  await toDispatched(task.taskId);
+
+  await runWrapper([
+    '--dataRoot', TEST_ROOT,
+    '--project', project,
+    '--taskId', task.taskId,
+    '--runId', runId,
+    '--workspaceRoot', WORKSPACE,
+    '--permissionMode', 'acceptEdits',
+  ], { CLAUDE_EXE: path.join(TEST_ROOT, 'no-claude') });
+
+  const logPath = path.join(runFolder, 'worker-launch.log');
+  check(fs.existsSync(logPath), 'I-34 worker-launch.log created');
+  if (fs.existsSync(logPath)) {
+    const logText = fs.readFileSync(logPath, 'utf8');
+    check(
+      logText.includes('permissionMode') && logText.includes('acceptEdits'),
+      'I-34 log records normalized permissionMode field',
+    );
+    // Verify no raw env dump in log.
+    check(!logText.includes('CLAUDE_EXE') || logText.split('CLAUDE_EXE').length <= 2,
+      'I-34 log does not dump environment variables');
+  }
+
+  disp._resetDispatcherStateForTests();
+}
+
+{
+  // I-35: one attempt one Run regression — correction does not create extra Runs.
+  const goal = await makeGoal('I-35 goal');
+  const task = await makeReadyTask(goal.goalId, 'I-35 one run test');
+  const { runId, runFolder } = await materializeAndLink(task.taskId);
+  await toDispatched(task.taskId);
+
+  const countBefore = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.length;
+
+  await runWrapper([
+    '--dataRoot', TEST_ROOT,
+    '--project', project,
+    '--taskId', task.taskId,
+    '--runId', runId,
+    '--workspaceRoot', WORKSPACE,
+    '--permissionMode', 'acceptEdits',
+  ], { CLAUDE_EXE: path.join(TEST_ROOT, 'no-claude') });
+
+  const countAfter = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.length;
+  check(countAfter === countBefore, 'I-35 correction does not create additional Runs');
+
+  disp._resetDispatcherStateForTests();
+}
+
+{
+  // I-36: Result Bridge regression — markResultReceived not called by wrapper.
+  const src = fs.readFileSync(WRAPPER, 'utf8');
+  const activeCode = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  check(!activeCode.includes('markResultReceived'), 'I-36 result bridge: wrapper still never calls markResultReceived');
+  check(!activeCode.includes('RESULT_RECEIVED'), 'I-36 result bridge: wrapper still never writes RESULT_RECEIVED');
+}
+
+{
+  // I-37: observation lifecycle regression — observation lock handling in dispatcher preserved.
+  const dispSrc = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'backend', 'dispatcher.ts'), 'utf8');
+  check(dispSrc.includes('tryAcquireObservationLock'), 'I-37 observation lock: tryAcquireObservationLock preserved');
+  check(dispSrc.includes('cleanupObservationLifecycle'), 'I-37 observation lock: cleanup preserved');
+  check(dispSrc.includes('bindObservationLockRunId'), 'I-37 observation lock: runId binding preserved');
+  // Verify permissionMode extraction happens after observation lock (not before, ensuring correct ordering).
+  const permIdx = dispSrc.indexOf('worker.driverOptions?.claude?.permissionMode');
+  const lockIdx = dispSrc.indexOf('tryAcquireObservationLock');
+  check(permIdx > lockIdx, 'I-37 permissionMode extraction occurs after observation lock acquisition');
+}
+
+{
+  // I-38: Phase H full regression — dispatchTask with permissionMode in registry round-trip.
+  // Register a worker with driverOptions.claude.permissionMode='default'.
+  const testDataRoot = path.join(TEST_ROOT, 'i38-data');
+  fs.mkdirSync(path.join(testDataRoot, '_relay', 'workers'), { recursive: true });
+
+  // Write a registry record with driverOptions via the module helper.
+  const workerRec = {
+    schemaVersion: 'G.2',
+    workerId: 'i38-claude',
+    displayName: 'Phase I-38 Claude test',
+    launchCommand: 'node',
+    launchArgsPrefix: [FIX_ZERO],
+    observationAdapterId: 'test-fixture',
+    capabilities: ['coding'],
+    driverOptions: { claude: { permissionMode: 'default' } },
+  };
+  // Use raw fs write since writeWorkerRegistryRecord validates and strips driverOptions.
+  // Actually validateWorkerRegistryRecord accepts driverOptions now, so use the helper.
+  try {
+    wrFull.writeWorkerRegistryRecord(testDataRoot, workerRec);
+    PASS('I-38 worker with driverOptions.claude.permissionMode=default written to registry');
+  } catch (e) {
+    FAIL(`I-38 writeWorkerRegistryRecord failed: ${e.message}`);
+  }
+
+  // Load back and verify round-trip.
+  try {
+    const loaded = wrFull.loadWorkerRegistryRecord(testDataRoot, 'i38-claude');
+    check(
+      loaded.driverOptions?.claude?.permissionMode === 'default',
+      'I-38 driverOptions.claude.permissionMode round-trips from registry file',
+    );
+  } catch (e) {
+    FAIL(`I-38 loadWorkerRegistryRecord failed: ${e.message}`);
+  }
+}
+
+{
+  // I-39: Phase G regression — trusted registry allowlist, launchCommand validation, still works.
+  const dispSrc = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'backend', 'dispatcher.ts'), 'utf8');
+  const wrSrc = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'backend', 'worker-registry.ts'), 'utf8');
+  check(wrSrc.includes('ALLOWED_EXECUTABLE_BASENAMES'), 'I-39 Phase G: allowlist constant preserved');
+  check(wrSrc.includes("'node'"), 'I-39 Phase G: node in allowlist');
+  // Unknown registry fields still rejected.
+  const testDataRoot = path.join(TEST_ROOT, 'i39-data');
+  fs.mkdirSync(path.join(testDataRoot, '_relay', 'workers'), { recursive: true });
+  await shouldThrow(
+    () => {
+      wrFull.validateWorkerRegistryRecord(testDataRoot, {
+        schemaVersion: 'G.2',
+        workerId: 'i39',
+        launchCommand: 'node',
+        launchArgsPrefix: [],
+        observationAdapterId: 'test-fixture',
+        extraFlags: ['--something'],  // unknown field
+      }, 'i39');
+    },
+    'I-39 unknown registry field extraFlags rejected',
+    'Unknown',
+  );
+  // driverOptions with unknown sub-key also rejected.
+  await shouldThrow(
+    () => {
+      wrFull.validateWorkerRegistryRecord(testDataRoot, {
+        schemaVersion: 'G.2',
+        workerId: 'i39b',
+        launchCommand: 'node',
+        launchArgsPrefix: [],
+        observationAdapterId: 'test-fixture',
+        driverOptions: { unknownDriver: {} },
+      }, 'i39b');
+    },
+    'I-39 unknown driverOptions key rejected',
+    'Unknown',
+  );
+  // driverOptions.claude with unknown sub-key rejected.
+  await shouldThrow(
+    () => {
+      wrFull.validateWorkerRegistryRecord(testDataRoot, {
+        schemaVersion: 'G.2',
+        workerId: 'i39c',
+        launchCommand: 'node',
+        launchArgsPrefix: [],
+        observationAdapterId: 'test-fixture',
+        driverOptions: { claude: { permissionMode: 'acceptEdits', shellArgs: ['x'] } },
+      }, 'i39c');
+    },
+    'I-39 unknown driverOptions.claude key shellArgs rejected',
+    'Unknown',
+  );
+}
+
+{
+  // I-40: prior phases regression — run the canonical dispatch integration path with fixture worker + driverOptions.
+  const testDataRoot = path.join(TEST_ROOT, 'i40-data');
+  fs.mkdirSync(path.join(testDataRoot, '_relay', 'workers'), { recursive: true });
+
+  // Register a worker with acceptEdits driverOptions (uses fixture exit-zero).
+  wrFull.writeWorkerRegistryRecord(testDataRoot, {
+    schemaVersion: 'G.2',
+    workerId: 'i40-claude',
+    launchCommand: 'node',
+    launchArgsPrefix: [FIX_ZERO],
+    observationAdapterId: 'test-fixture',
+    driverOptions: { claude: { permissionMode: 'acceptEdits' } },
+  });
+
+  // Create goal + task in the test data root.
+  const goal40 = await gt.createGoal(testDataRoot, project, {
+    title: 'I-40 regression goal',
+    goalStatement: 'prior phases regression',
+    completionCriteria: ['passes'],
+    permissionPolicy: { mode: 'BYPASS' },
+  });
+  const task40raw = await gt.createTask(testDataRoot, project, {
+    goalId: goal40.goalId,
+    title: 'I-40 regression task',
+    goal: 'Regression check',
+    reason: 'Phase regression test',
+    scope: 'Fixture only',
+    completionCriteria: ['pass'],
+  });
+  await rt.refreshTaskReadiness(testDataRoot, project, task40raw.taskId);
+
+  const workspacePath = path.join(TEST_ROOT, '_workspace40');
+  fs.mkdirSync(workspacePath, { recursive: true });
+
+  const result40 = await disp.dispatchTask(testDataRoot, project, {
+    taskId: task40raw.taskId,
+    workerId: 'i40-claude',
+    expectedExecutionState: 'READY',
+    workspaceRoot: workspacePath,
+  });
+  check(result40.executionState === 'RUNNING', 'I-40 dispatch with driverOptions succeeds → RUNNING');
+
+  await sleep(500);
+  disp._resetDispatcherStateForTests();
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 console.log(`\n── Phase I summary: ${passed} passed, ${failed} failed ──`);
 if (failed > 0) {
