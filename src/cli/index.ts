@@ -187,16 +187,22 @@ async function main(): Promise<void> {
     const client = sub ?? '';
     if (!client) {
       const msg = 'Usage: agent-relay connect <client>  (supported: claude-code)';
-      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.connect.v1', ok: false, error: msg }, null, 2));
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.connect.v1', ok: false, client: '', configured: false, method: 'manual', message: msg }, null, 2));
       else console.error(msg);
       process.exit(1);
     }
-    const res = runConnect(cwd, client);
+    const res = runConnect(cwd, client, { force });
     if (json) console.log(JSON.stringify(res, null, 2));
     else {
       console.log(res.message);
       if (res.mcpCommand) console.log(`\nMCP: ${res.mcpCommand}`);
       if (res.configPath) console.log(`Config: ${res.configPath}`);
+      if (res.scope) console.log(`Scope: ${res.scope}`);
+      if (res.warnings && res.warnings.length) {
+        console.log('\nWarnings:');
+        for (const w of res.warnings) console.log(`  ! ${w}`);
+      }
+      if (res.diagnostic) console.log(`\nDiagnostic: ${res.diagnostic.slice(0, 400)}`);
     }
     process.exit(res.ok ? 0 : 1);
   }

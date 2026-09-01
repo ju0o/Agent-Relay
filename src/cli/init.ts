@@ -438,6 +438,14 @@ export function renderInitHuman(result: InitResult): string {
   lines.push('MCP setup: add to your PM client config, e.g. Claude Code:');
   lines.push(`  { "mcpServers": { "agent-relay-pm": { "command": "${process.execPath}", "args": ["${result.mcp.entry}", "--surface", "pm", "--dataRoot", "${result.dataRoot}", "--project", "${result.project}"] } } }`);
   lines.push('');
+  // I3C: distinguish Relay/Worker/PM readiness clearly; do not fail init if PM auto-connect unavailable
+  const relayReady = result.config ? 'YES' : 'NO';
+  const workerReady = result.worker?.installed ? 'YES' : (result.claudeDetection.status === 'DETECTED' ? 'WARN' : 'WARN');
+  const pmRegistered = 'NO'; // PM MCP not auto-registered; manual or `agent-relay connect claude-code`
+  lines.push(`Relay Ready: ${relayReady}`);
+  lines.push(`Worker Ready: ${workerReady}`);
+  lines.push(`PM MCP Registered: ${pmRegistered} (run: agent-relay connect claude-code)`);
+  lines.push('');
   if (result.warnings.length) {
     lines.push('Warnings:');
     for (const w of result.warnings) lines.push(`  ! ${w}`);
