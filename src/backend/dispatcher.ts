@@ -126,6 +126,9 @@ let spawnImpl: typeof spawn = spawn;
 /** Optional hook after link / before READY→DISPATCHED CAS (tests only). */
 let afterLinkHook: (() => Promise<void>) | null = null;
 
+/** Lazy one-shot recovery keys already scanned: project@dataRoot */
+const recoveryScanned = new Set<string>();
+
 export function _setSpawnImplForTests(fn: typeof spawn | null): void {
   spawnImpl = fn ?? spawn;
 }
@@ -145,8 +148,16 @@ export function _resetDispatcherStateForTests(): void {
   }
   activeDispatches.clear();
   recoveryRegistry.clear();
+  recoveryScanned.clear();
   spawnImpl = spawn;
   afterLinkHook = null;
+}
+
+async function ensureRecoveryScanned(dataRoot: string, project: string): Promise<void> {
+  const key = `${path.resolve(dataRoot)}@@${project}`;
+  if (recoveryScanned.has(key)) return;
+  recoveryScanned.add(key);
+  await initializeDispatcherRecovery(dataRoot, project);
 }
 
 function dispatchKey(project: string, taskId: string): string {
@@ -275,11 +286,12 @@ export function listActiveDispatches(project?: string): ActiveDispatchRecord[] {
   return out;
 }
 
-export function getDispatchStatus(
+export async function getDispatchStatus(
   dataRoot: string,
   project: string,
   taskId: string,
-): DispatchStatusView {
+): Promise<DispatchStatusView> {
+  await ensureRecoveryScanned(dataRoot, project);
   const id = requireNonEmpty(taskId, 'taskId');
   const key = dispatchKey(project, id);
   let executionState: TaskExecutionState | undefined;
@@ -406,6 +418,9 @@ export async function dispatchTask(
   }
 
   const key = dispatchKey(proj, taskId);
+
+  // Lazy process-local orphan scan (never mutates Task SSOT; never guesses FAILED)
+  await ensureRecoveryScanned(root, proj);
 
   // 1. Acquire per-task dispatch lock (synchronous claim)
   if (activeDispatches.has(key)) {
