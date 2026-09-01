@@ -17,6 +17,7 @@ import * as goalTaskRuntime from '../backend/goal-task-runtime.js';
 import * as evidence from '../backend/evidence.js';
 import * as eventKernel from '../backend/event.js';
 import * as pmGateway from '../backend/pm-gateway.js';
+import * as dispatcher from '../backend/dispatcher.js';
 import type { TaskPmState, TaskExecutionState, EventDeliveryStatus } from '../shared/types.js';
 import {
   objectSchema,
@@ -25,7 +26,7 @@ import {
   requireEnum,
   requireString,
 } from './schemas.js';
-import { McpError } from './errors.js';
+import { McpError, mapCoreError } from './errors.js';
 import type { McpTool, PmServerContext } from './server.js';
 
 const PM_STATES: readonly TaskPmState[] = ['PENDING', 'VERIFYING', 'CHANGES_REQUESTED', 'ACCEPTED'];
@@ -152,6 +153,28 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
       handler: async (args) => {
         rejectUnknownFields(args, ['eventId']);
         return pmGateway.getContextForEvent(dataRoot, project, requireString(args, 'eventId'));
+      },
+    },
+    {
+      name: 'relay_pm_list_workers',
+      description:
+        'Phase G: list trusted Worker Registry entries (public safe view). ' +
+        'Does NOT expose launchCommand, workingDirectory, or environment.',
+      inputSchema: objectSchema({}),
+      handler: async (args) => {
+        rejectUnknownFields(args, []);
+        return { workers: dispatcher.listWorkersPublic(dataRoot) };
+      },
+    },
+    {
+      name: 'relay_pm_get_dispatch_status',
+      description:
+        'Phase G: read Dispatcher status for a Task (active dispatch + process-local recovery). ' +
+        'Logical IDs only — no folder/path/launchCommand.',
+      inputSchema: objectSchema({ taskId: { type: 'string' } }, ['taskId']),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['taskId']);
+        return dispatcher.getDispatchStatus(dataRoot, project, requireString(args, 'taskId'));
       },
     },
   ];
@@ -316,6 +339,35 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
           requireString(args, 'eventId'),
           requireEnum(args, 'expectedStatus', DELIVERY_STATUSES),
         );
+      },
+    },
+    {
+      name: 'relay_pm_dispatch_task',
+      description:
+        'Phase G: explicitly dispatch a READY Task to a trusted workerId. ' +
+        'Dispatcher owns READY→DISPATCHED and DISPATCHED→RUNNING. ' +
+        'Requires expectedExecutionState=READY. No auto-dispatch. ' +
+        'Response is logical IDs only (no folder/path/launchCommand).',
+      inputSchema: objectSchema(
+        {
+          taskId: { type: 'string' },
+          workerId: { type: 'string' },
+          expectedExecutionState: { type: 'string', enum: ['READY'] },
+        },
+        ['taskId', 'workerId', 'expectedExecutionState'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['taskId', 'workerId', 'expectedExecutionState']);
+        const expectedExecutionState = requireEnum(args, 'expectedExecutionState', ['READY'] as const);
+        try {
+          return await dispatcher.dispatchTask(dataRoot, project, {
+            taskId: requireString(args, 'taskId'),
+            workerId: requireString(args, 'workerId'),
+            expectedExecutionState,
+          });
+        } catch (err) {
+          throw mapCoreError(err);
+        }
       },
     },
   ];

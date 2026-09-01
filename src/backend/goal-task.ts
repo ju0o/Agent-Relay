@@ -1284,6 +1284,47 @@ export function unlinkRunFromTask(
   });
 }
 
+/**
+ * Narrow helper: unlink exactly one linked Run by runId (Phase G pre-commit rollback).
+ * Does not delete the Run folder — caller decides deletion.
+ */
+export function unlinkRunFromTaskByRunId(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  runId: string,
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
+    const link = task.linkedRuns.find((r) => r.runId === rid);
+    if (!link) {
+      throw new Error('해당 Run은 이 Task에 연결되어 있지 않습니다.');
+    }
+    const folder = link.folder;
+    task.linkedRuns = task.linkedRuns.filter((r) => r.runId !== rid);
+    if (task.acceptedRunId && !task.linkedRuns.some((r) => r.runId === task.acceptedRunId)) {
+      delete task.acceptedRunId;
+    }
+    task.updatedAt = nowIso();
+    validateTaskRecord(task);
+    persistTaskFiles(taskFolder(dataRoot, project, task.taskId), task);
+    if (fs.existsSync(folder)) {
+      try {
+        const meta = readRunMeta(folder);
+        if (!meta.taskId || meta.taskId === task.taskId) {
+          writeRunMeta(folder, {
+            tags: meta.tags,
+            ...(meta.runId ? { runId: meta.runId } : {}),
+          });
+        }
+      } catch { /* folder may be incomplete during rollback */ }
+    }
+    return task;
+  });
+}
+
 // ── Progress (derived) ──────────────────────────────────────────────────────
 
 /**

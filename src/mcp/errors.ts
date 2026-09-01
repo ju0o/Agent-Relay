@@ -41,6 +41,29 @@ export function mapCoreError(err: unknown): McpError {
   const name = err instanceof Error ? err.name : '';
   const msg = err instanceof Error ? err.message : String(err);
 
+  // Phase G Dispatcher / WorkerRegistry typed errors
+  const code = (err as { code?: string } | null)?.code;
+  if (name === 'DispatcherError' || name === 'WorkerRegistryError') {
+    switch (code) {
+      case 'NOT_FOUND':
+        return new McpError('NOT_FOUND', msg);
+      case 'CONFLICT':
+        return new McpError('CONFLICT', msg);
+      case 'INVALID_STATE':
+        return new McpError('INVALID_STATE', msg);
+      case 'INVALID_ARGUMENT':
+        return new McpError('INVALID_ARGUMENT', msg);
+      case 'ORPHAN_SUSPECTED':
+        return new McpError('CONFLICT', msg);
+      case 'WORKER_UNAVAILABLE':
+        return new McpError('NOT_FOUND', msg);
+      case 'LAUNCH_FAILED':
+        return new McpError('INTERNAL_ERROR', msg);
+      default:
+        return new McpError('INTERNAL_ERROR', msg);
+    }
+  }
+
   if (name === 'RuntimeConflictError' || msg.includes('CONFLICT:')) {
     return new McpError('CONFLICT', msg);
   }
