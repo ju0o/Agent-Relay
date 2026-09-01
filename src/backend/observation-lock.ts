@@ -34,7 +34,8 @@ export function tryAcquireObservationLock(input: {
   observationAdapterId: string;
   workspaceRoot: string;
   taskId: string;
-  runId: string;
+  /** May be provisional before Run materialization; update via bindObservationLockRunId. */
+  runId?: string;
 }): ObservationLockHandle {
   const adapterId = String(input.observationAdapterId || '').trim();
   const workspace = String(input.workspaceRoot || '').trim();
@@ -57,11 +58,28 @@ export function tryAcquireObservationLock(input: {
     observationAdapterId: adapterId,
     workspaceRoot: path.resolve(workspace),
     taskId: input.taskId,
-    runId: input.runId,
+    runId: input.runId?.trim() || `pending:${input.taskId}`,
     acquiredAt: new Date().toISOString(),
   };
   locks.set(key, handle);
   return handle;
+}
+
+/**
+ * After a provisional reservation, bind the real runId so Result Bridge /
+ * exit cleanup can match the same lock entry.
+ */
+export function bindObservationLockRunId(
+  handle: ObservationLockHandle,
+  runId: string,
+): ObservationLockHandle {
+  const rid = String(runId || '').trim();
+  if (!rid) return handle;
+  const existing = locks.get(handle.key);
+  if (!existing || existing.taskId !== handle.taskId) return handle;
+  const updated: ObservationLockHandle = { ...existing, runId: rid };
+  locks.set(handle.key, updated);
+  return updated;
 }
 
 export function releaseObservationLock(keyOrHandle: string | ObservationLockHandle | null | undefined): void {

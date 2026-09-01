@@ -44,6 +44,8 @@ import { ensureDispatchCaptureManager } from './capture-service.js';
 import {
   tryAcquireObservationLock,
   releaseObservationLock,
+  releaseObservationLockByBinding,
+  bindObservationLockRunId,
   _resetObservationLocksForTests,
   type ObservationLockHandle,
   ObservationLockError,
@@ -128,6 +130,13 @@ interface LiveDispatch {
   dispatchedAt: string;
   phase: 'preparing' | 'dispatched' | 'running';
   exitHandled?: boolean;
+  /** Process-local H observation lifecycle — never exposed in public dispatch result. */
+  observationAdapterId?: string;
+  workspaceRoot?: string;
+  captureFolder?: string;
+  observationLock?: ObservationLockHandle;
+  /** Idempotent cleanup guard for capture disarm + observation lock release. */
+  observationCleanupDone?: boolean;
 }
 
 /** In-memory live dispatches: key = resolve(dataRoot)@@project::taskId */
@@ -398,6 +407,38 @@ export function listWorkersPublic(dataRoot: string): WorkerRegistryPublicView[] 
   return listWorkerRegistryRecords(dataRoot).map(toPublicWorkerView);
 }
 
+// ── Observation lifecycle cleanup (idempotent) ───────────────────────────────
+
+/**
+ * Stop Dispatcher-bound Capture and release observation lock.
+ * Safe to call multiple times (exit race vs Adapter completion / Result Bridge).
+ * Does NOT mutate Task SSOT.
+ */
+async function cleanupObservationLifecycle(live: LiveDispatch): Promise<void> {
+  if (live.observationCleanupDone) return;
+  live.observationCleanupDone = true;
+
+  const folder = live.captureFolder;
+  try {
+    if (folder) {
+      const cm = ensureDispatchCaptureManager();
+      await cm.disarm(folder).catch(() => undefined);
+    }
+  } catch { /* ignore */ }
+
+  if (live.observationLock) {
+    releaseObservationLock(live.observationLock);
+    live.observationLock = undefined;
+  } else if (live.observationAdapterId && live.workspaceRoot) {
+    releaseObservationLockByBinding({
+      observationAdapterId: live.observationAdapterId,
+      workspaceRoot: live.workspaceRoot,
+      taskId: live.taskId,
+      ...(live.runId ? { runId: live.runId } : {}),
+    });
+  }
+}
+
 // ── Exit handling ────────────────────────────────────────────────────────────
 
 async function handleChildExit(
@@ -420,11 +461,20 @@ async function handleChildExit(
   try {
     task = getTask(live.dataRoot, live.project, live.taskId);
   } catch {
+    // Still release observation resources if Task record is gone.
+    if (exitCode !== 0) {
+      await cleanupObservationLifecycle(live);
+    }
     return;
   }
 
   // Never set RESULT_RECEIVED / ACCEPTED from process exit.
   if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') {
+    // Already terminal / advanced (e.g. FAILED via arm/spawn, or RESULT_RECEIVED via bridge).
+    // Non-zero exit still must not leak observation slot if still held.
+    if (exitCode !== 0) {
+      await cleanupObservationLifecycle(live);
+    }
     return;
   }
 
@@ -448,10 +498,14 @@ async function handleChildExit(
         details: { exitCode, signal, runId: live.runId, workerId: live.workerId },
       });
     } catch { /* ignore */ }
+
+    // Non-zero: disarm capture + release observation lock (idempotent).
+    await cleanupObservationLifecycle(live);
     return;
   }
 
-  // Zero exit: clear tracking only — no RESULT_RECEIVED, no FAILED guess.
+  // Zero exit: clear process tracking only — no RESULT_RECEIVED, no FAILED,
+  // and do NOT release observation lock (Adapter may still observe RESPONSE_COMPLETE).
 }
 
 // ── Rollback ─────────────────────────────────────────────────────────────────
@@ -569,11 +623,35 @@ export async function dispatchTask(
     }
 
     // 4. workspaceRoot already validated above
-    // 5. Materialize NEW Run
+    // 5. Acquire/reserve observation lock BEFORE any Run / DISPATCHED commitment.
+    //    Contention → CONFLICT; Task remains READY; no Run; no spawn.
+    try {
+      observationLock = tryAcquireObservationLock({
+        observationAdapterId,
+        workspaceRoot,
+        taskId,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      activeDispatches.delete(key);
+      if (err instanceof ObservationLockError) {
+        throw new DispatcherError('CONFLICT', msg);
+      }
+      throw new DispatcherError('CONFLICT', msg);
+    }
+    live.observationAdapterId = observationAdapterId;
+    live.workspaceRoot = workspaceRoot;
+    live.observationLock = observationLock;
+
+    // 6. Materialize NEW Run
     const agentLabel = `worker-${worker.workerId}`;
     const materialized = await atomicMaterializeRun(root, proj, todayString(), agentLabel);
     createdFolder = materialized.folder;
     createdRunId = materialized.runId;
+    observationLock = bindObservationLockRunId(observationLock, createdRunId);
+    live.observationLock = observationLock;
+    live.runId = createdRunId;
+    live.captureFolder = createdFolder;
 
     // Audit-only: persist workspaceRoot on Run meta (not authority for future dispatch).
     try {
@@ -581,15 +659,14 @@ export async function dispatchTask(
       writeRunMeta(createdFolder, { ...meta, workspaceRoot });
     } catch { /* audit best-effort */ }
 
-    // 6. Link Run to Task
+    // 7. Link Run to Task
     await linkRunToTask(root, proj, taskId, materialized.folder);
-    live.runId = createdRunId;
 
     if (afterLinkHook) {
       await afterLinkHook();
     }
 
-    // 7. CAS READY → DISPATCHED  ← commitment
+    // 8. CAS READY → DISPATCHED  ← commitment
     try {
       task = await transitionTaskExecution(root, proj, taskId, {
         expectedExecutionState: 'READY',
@@ -597,10 +674,17 @@ export async function dispatchTask(
         reason: `dispatch:${workerId}`,
       });
     } catch (err) {
-      // Pre-commit failure → rollback new Run only (no Capture armed, no spawn)
+      // Pre-commit failure → rollback new Run + release observation reservation
       await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
       createdFolder = undefined;
       createdRunId = undefined;
+      live.captureFolder = undefined;
+      live.runId = undefined;
+      if (observationLock) {
+        releaseObservationLock(observationLock);
+        observationLock = undefined;
+        live.observationLock = undefined;
+      }
       if (err instanceof RuntimeConflictError) {
         throw new DispatcherError('CONFLICT', err.message);
       }
@@ -614,40 +698,7 @@ export async function dispatchTask(
     committedDispatch = true;
     live.phase = 'dispatched';
 
-    // 8. Acquire observation lock THEN arm CaptureManager against SAME Run
-    try {
-      observationLock = tryAcquireObservationLock({
-        observationAdapterId,
-        workspaceRoot,
-        taskId,
-        runId: createdRunId,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      try {
-        await transitionTaskExecution(root, proj, taskId, {
-          expectedExecutionState: 'DISPATCHED',
-          to: 'FAILED',
-          reason: `observation lock: ${msg}`,
-        });
-      } catch { /* ignore */ }
-      try {
-        await recordRuntimeError(root, proj, {
-          summary: `RUNTIME_ERROR: observation concurrency lock failed for Task ${taskId}`,
-          taskId,
-          runId: createdRunId,
-          goalId: task.goalId,
-          source: { kind: 'dispatcher', subsystem: 'observation-lock' },
-          details: { workerId, observationAdapterId, error: msg },
-        });
-      } catch { /* ignore */ }
-      activeDispatches.delete(key);
-      if (err instanceof ObservationLockError) {
-        throw new DispatcherError('CONFLICT', msg);
-      }
-      throw new DispatcherError('CONFLICT', msg);
-    }
-
+    // 9. Arm CaptureManager against SAME Run (post-commit)
     const executionBinding: ExecutionBinding = {
       dataRoot: root,
       project: proj,
@@ -666,8 +717,8 @@ export async function dispatchTask(
       });
       captureArmed = true;
     } catch (err) {
-      // Post-commit arm failure: DISPATCHED → FAILED, preserve Run, no spawn
-      releaseObservationLock(observationLock);
+      // Post-commit arm failure: DISPATCHED → FAILED, preserve Run, release observation, no spawn
+      await cleanupObservationLifecycle(live);
       observationLock = undefined;
       const msg = err instanceof Error ? err.message : String(err);
       try {
@@ -714,7 +765,7 @@ export async function dispatchTask(
     } catch (err) {
       // Known spawn failure after DISPATCHED — preserve Run, CAS → FAILED
       const msg = err instanceof Error ? err.message : String(err);
-      await cleanupBoundCapture(createdFolder, observationLock, observationAdapterId, workspaceRoot, taskId, createdRunId);
+      await cleanupObservationLifecycle(live);
       observationLock = undefined;
       try {
         await transitionTaskExecution(root, proj, taskId, {
@@ -774,7 +825,7 @@ export async function dispatchTask(
     });
 
     if (launchError) {
-      await cleanupBoundCapture(createdFolder, observationLock, observationAdapterId, workspaceRoot, taskId, createdRunId);
+      await cleanupObservationLifecycle(live);
       observationLock = undefined;
       try {
         await transitionTaskExecution(root, proj, taskId, {
@@ -844,9 +895,9 @@ export async function dispatchTask(
       throw new DispatcherError('CONFLICT', `Spawned but RUNNING transition failed: ${msg}`);
     }
 
-    // Do NOT release observation lock merely after spawn success — held until capture terminal.
+    // Do NOT release observation lock merely after spawn success — held until
+    // trusted capture terminal (RESPONSE_COMPLETE / non-response persist) or non-zero exit.
     void captureArmed;
-    void observationLock;
 
     // 11. Safe result — no folder / path / launchCommand
     return {
@@ -863,6 +914,7 @@ export async function dispatchTask(
     }
     if (!committedDispatch && observationLock) {
       releaseObservationLock(observationLock);
+      live.observationLock = undefined;
     }
     if (activeDispatches.get(key)?.phase === 'preparing') {
       activeDispatches.delete(key);
@@ -873,34 +925,6 @@ export async function dispatchTask(
     }
     const msg = err instanceof Error ? err.message : String(err);
     throw new DispatcherError('INTERNAL_ERROR', msg);
-  }
-}
-
-async function cleanupBoundCapture(
-  folder: string | undefined,
-  lock: ObservationLockHandle | undefined,
-  adapterId: string | undefined,
-  workspaceRoot: string,
-  taskId: string,
-  runId: string,
-): Promise<void> {
-  try {
-    if (folder) {
-      const cm = ensureDispatchCaptureManager();
-      await cm.disarm(folder).catch(() => undefined);
-    }
-  } catch { /* ignore */ }
-  if (lock) {
-    releaseObservationLock(lock);
-  } else if (adapterId) {
-    releaseObservationLock({
-      key: `${adapterId}@@${path.resolve(workspaceRoot)}`,
-      observationAdapterId: adapterId,
-      workspaceRoot: path.resolve(workspaceRoot),
-      taskId,
-      runId,
-      acquiredAt: '',
-    });
   }
 }
 

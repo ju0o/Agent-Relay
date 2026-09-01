@@ -43,6 +43,7 @@ const perm = await import('../dist/server/backend/permission-gate.js');
 const orphan = await import('../dist/server/backend/orphan-resolution.js');
 const bridge = await import('../dist/server/backend/result-bridge.js');
 const captureSvc = await import('../dist/server/backend/capture-service.js');
+const obsLock = await import('../dist/server/backend/observation-lock.js');
 const evidence = await import('../dist/server/backend/evidence.js');
 const pmTools = await import('../dist/server/mcp/pm-tools.js');
 const workerTools = await import('../dist/server/mcp/worker-tools.js');
@@ -52,6 +53,7 @@ testFix.ensureTestFixtureAdapterRegistered();
 const project = 'PhaseHProj';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIX_ZERO = path.resolve(__dirname, 'fixtures/workers/exit-zero.mjs');
+const FIX_NONZERO = path.resolve(__dirname, 'fixtures/workers/exit-nonzero.mjs');
 const FIX_ALIVE = path.resolve(__dirname, 'fixtures/workers/stay-alive.mjs');
 const NODE = process.execPath;
 
@@ -243,6 +245,7 @@ console.log('\n── H-09..H-16 Capture arm + observation concurrency ──');
   await disp.dispatchTask(TEST_ROOT, project, {
     taskId: t1.taskId, workerId: 'h-lock', workspaceRoot: WORKSPACE, expectedExecutionState: 'READY',
   });
+  const linksBefore = gt.getTask(TEST_ROOT, project, t2.taskId).linkedRuns.length;
   await shouldThrow(
     async () => disp.dispatchTask(TEST_ROOT, project, {
       taskId: t2.taskId, workerId: 'h-lock', workspaceRoot: WORKSPACE, expectedExecutionState: 'READY',
@@ -250,7 +253,11 @@ console.log('\n── H-09..H-16 Capture arm + observation concurrency ──');
     'H-15 same adapter/workspace concurrency blocked',
     'CONFLICT',
   );
-  // t2 may be FAILED after post-commit lock rejection — use fresh t3 for different workspace.
+  const t2After = gt.getTask(TEST_ROOT, project, t2.taskId);
+  check(t2After.executionState === 'READY', 'H-15 contending Task remains READY (not FAILED)');
+  check(t2After.pmState === 'PENDING', 'H-15 contending Task pmState remains PENDING');
+  check(t2After.linkedRuns.length === linksBefore, 'H-15 no linked Run for rejected observation contention');
+  // Different workspace may proceed while t1 still holds WORKSPACE slot.
   const other = await disp.dispatchTask(TEST_ROOT, project, {
     taskId: t3.taskId, workerId: 'h-lock', workspaceRoot: WORKSPACE2, expectedExecutionState: 'READY',
   });
@@ -626,6 +633,162 @@ console.log('\n── MCP Real Interop + Worker exclusion ──');
   check(!wNames.includes('relay_pm_get_next_work'), 'Worker surface excludes get_next_work');
   check(!wNames.includes('relay_pm_complete_goal'), 'Worker surface excludes complete_goal');
   check(!wNames.includes('relay_pm_dispatch_task'), 'Worker surface excludes dispatch_task');
+  await resetAll();
+}
+
+// ── H-FIX-01..14 Observation lifecycle safety correction ────────────────────
+console.log('\n── H-FIX-01..14 Observation lifecycle safety ──');
+
+{
+  registerWorker('h-fix-cont', FIX_ALIVE);
+  const g = await makeGoal('BYPASS', 'fix cont');
+  const holder = await makeReadyTask(g.goalId, 'holder');
+  const contender = await makeReadyTask(g.goalId, 'contender');
+  const beforeLinks = contender.linkedRuns.length;
+
+  await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: holder.taskId,
+    workerId: 'h-fix-cont',
+    workspaceRoot: WORKSPACE,
+    expectedExecutionState: 'READY',
+  });
+  check(!!obsLock.getObservationLock('test-fixture', WORKSPACE), 'observation slot held by first dispatch');
+
+  await shouldThrow(
+    async () => disp.dispatchTask(TEST_ROOT, project, {
+      taskId: contender.taskId,
+      workerId: 'h-fix-cont',
+      workspaceRoot: WORKSPACE,
+      expectedExecutionState: 'READY',
+    }),
+    'H-FIX-01 same adapter/workspace contention → CONFLICT',
+    'CONFLICT',
+  );
+
+  const cAfter = gt.getTask(TEST_ROOT, project, contender.taskId);
+  check(cAfter.executionState === 'READY', 'H-FIX-02 contending Task remains READY');
+  check(cAfter.pmState === 'PENDING', 'H-FIX-03 pmState remains PENDING');
+  check(cAfter.linkedRuns.length === beforeLinks, 'H-FIX-04 no new linked Run committed for rejected attempt');
+  check(
+    !disp.listActiveDispatches(project).some((a) => a.taskId === contender.taskId && a.pid),
+    'H-FIX-05 no child spawned for contender',
+  );
+
+  // Release slot by resetting live dispatcher/observation state (holder child killed).
+  await resetAll();
+  const retry = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: contender.taskId,
+    workerId: 'h-fix-cont',
+    workspaceRoot: WORKSPACE,
+    expectedExecutionState: 'READY',
+  });
+  check(!!retry.runId && gt.getTask(TEST_ROOT, project, contender.taskId).executionState === 'RUNNING',
+    'H-FIX-06 retry succeeds after first observation slot is released');
+  await resetAll();
+}
+
+{
+  registerWorker('h-fix-nz', FIX_NONZERO);
+  const g = await makeGoal('BYPASS', 'fix nonzero');
+  const t = await makeReadyTask(g.goalId, 'nonzero exit');
+  const res = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: t.taskId,
+    workerId: 'h-fix-nz',
+    workspaceRoot: WORKSPACE,
+    expectedExecutionState: 'READY',
+  });
+  const folder = gt.getTask(TEST_ROOT, project, t.taskId).linkedRuns.find((r) => r.runId === res.runId)?.folder;
+  check(!!folder, 'nonzero fixture has bound Run folder');
+
+  // Wait for non-zero exit → FAILED
+  const start = Date.now();
+  let failedTask = null;
+  while (Date.now() - start < 8000) {
+    const cur = gt.getTask(TEST_ROOT, project, t.taskId);
+    if (cur.executionState === 'FAILED') {
+      failedTask = cur;
+      break;
+    }
+    await sleep(40);
+  }
+  check(!!failedTask && failedTask.executionState === 'FAILED', 'H-FIX-07 non-zero process exit → Task FAILED');
+  await sleep(80); // allow async cleanup to settle
+
+  const cm = captureSvc.ensureDispatchCaptureManager({ settleMs: 0 });
+  check(!cm.isActive(folder), 'H-FIX-08 non-zero exit → capture no longer active');
+  check(!obsLock.getObservationLock('test-fixture', WORKSPACE), 'H-FIX-09 non-zero exit → observation slot released');
+
+  check(
+    gt.getTask(TEST_ROOT, project, t.taskId).linkedRuns.some((r) => r.runId === res.runId)
+      && fs.existsSync(folder),
+    'H-FIX-11 committed failed Run preserved',
+  );
+  check(failedTask.executionState !== 'RESULT_RECEIVED', 'H-FIX-12 non-zero exit does not RESULT_RECEIVED');
+  check(failedTask.pmState !== 'ACCEPTED', 'H-FIX-13 non-zero exit does not ACCEPT');
+
+  // Idempotent cleanup: stale RESPONSE_COMPLETE after FAILED must not promote.
+  const promoted = await bridge.promoteObservedResult({
+    dataRoot: TEST_ROOT,
+    project,
+    goalId: g.goalId,
+    taskId: t.taskId,
+    runId: res.runId,
+    boundFolder: folder,
+    observationAdapterId: 'test-fixture',
+    workspaceRoot: WORKSPACE,
+    completion: {
+      adapterId: 'test-fixture',
+      agentName: 'TestFixture',
+      sessionId: 'ses-stale',
+      workspace: WORKSPACE,
+      observedAt: new Date().toISOString(),
+      terminalSignal: 'test.complete',
+      rawFinalText: 'stale after fail',
+      completionKind: 'RESPONSE_COMPLETE',
+    },
+  });
+  check(promoted === null, 'H-FIX-14 cleanup idempotent — stale completion does not promote FAILED Task');
+  check(!obsLock.getObservationLock('test-fixture', WORKSPACE), 'H-FIX-14 observation slot still free after idempotent path');
+
+  const t2 = await makeReadyTask(g.goalId, 'after fail redispatch');
+  const again = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: t2.taskId,
+    workerId: 'h-fix-nz',
+    workspaceRoot: WORKSPACE,
+    expectedExecutionState: 'READY',
+  });
+  check(!!again.runId, 'H-FIX-10 same adapter/workspace new Task can dispatch after failure cleanup');
+  await resetAll();
+}
+
+{
+  // Zero exit must NOT prematurely release observation while capture may still complete.
+  registerWorker('h-fix-zero', FIX_ZERO);
+  const g = await makeGoal('BYPASS', 'fix zero');
+  const t = await makeReadyTask(g.goalId, 'zero exit hold');
+  const res = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: t.taskId,
+    workerId: 'h-fix-zero',
+    workspaceRoot: WORKSPACE,
+    expectedExecutionState: 'READY',
+  });
+  await sleep(400); // process likely exited 0
+  const cur = gt.getTask(TEST_ROOT, project, t.taskId);
+  check(cur.executionState !== 'RESULT_RECEIVED' && cur.executionState !== 'FAILED',
+    'zero exit does not RESULT_RECEIVED / FAILED');
+  // Observation may still be held OR already released if capture settled — either is OK
+  // as long as we did not force FAILED. Prefer: if still RUNNING/DISPATCHED, lock may remain.
+  if (cur.executionState === 'RUNNING' || cur.executionState === 'DISPATCHED') {
+    check(
+      !!obsLock.getObservationLock('test-fixture', WORKSPACE)
+        || captureSvc.ensureDispatchCaptureManager({ settleMs: 0 }).isActive(
+          cur.linkedRuns.find((r) => r.runId === res.runId)?.folder,
+        ),
+      'Zero Exit Observation Regression: observation/capture may remain until trusted completion',
+    );
+  } else {
+    check(true, 'Zero Exit Observation Regression: process cleared without FAILED/RESULT_RECEIVED');
+  }
   await resetAll();
 }
 
