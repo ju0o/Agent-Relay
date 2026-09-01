@@ -253,7 +253,8 @@ console.log('\n── CLI-16 bare invocation does not start fake TUI ───')
   const r = runCli([], { cwd: workspaceRoot });
   check(r.status === 0, `CLI-16 bare exit 0`);
   const out = r.stdout;
-  check(out.includes('TUI is not installed') || out.includes('not installed'), `CLI-16 bare mentions TUI not installed`);
+  // Phase I3D: bare initialized in non-TTY falls back to headless status, not "TUI not installed"; in TTY it would launch TUI (not testable via spawnSync)
+  check(out.includes('TUI is not installed') || out.includes('not installed') || out.includes('headless') || out.includes('Agent Relay'), `CLI-16 bare mentions TUI not installed or headless fallback`);
   check(!out.includes('TUI started') && !out.includes('dashboard'), `CLI-16 bare does not claim TUI started`);
   // Not initialized case
   const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-cli16b-'));

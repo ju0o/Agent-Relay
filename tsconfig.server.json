@@ -14,5 +14,5 @@
     "rootDir": "src",
     "types": ["node"]
   },
-  "include": ["src/backend/**/*.ts", "src/shared/**/*.ts", "src/integrations/**/*.ts", "src/mcp/**/*.ts", "src/cli/**/*.ts"]
+  "include": ["src/backend/**/*.ts", "src/shared/**/*.ts", "src/integrations/**/*.ts", "src/mcp/**/*.ts", "src/cli/**/*.ts", "src/tui/**/*.ts"]
 }

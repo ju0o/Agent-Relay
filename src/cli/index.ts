@@ -215,24 +215,36 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(snap, null, 2));
       process.exit(0);
     }
+    // Non-TTY fallback: behave like --no-tui, no escape sequences, no hang
+    const isTTY = !!process.stdout.isTTY && !!process.stdin.isTTY;
+    if (noTui || !isTTY) {
+      if (discovered.initialized) {
+        console.log(renderStatusHuman(snap));
+        console.log('');
+        console.log('[headless] --no-tui mode: status shown, exiting.');
+      } else {
+        console.log(notInitializedMessage());
+        if (snap.warnings.length > 0 || snap.error) {
+          console.log('');
+          console.log(renderStatusHuman(snap));
+        }
+      }
+      process.exit(0);
+    }
+    // TTY + initialized → launch TUI
     if (discovered.initialized) {
-      console.log(renderStatusHuman(snap));
-      console.log('');
-      console.log('TUI is not installed in this build yet.');
+      const { launchTui } = await import('../tui/tui.js');
+      await launchTui({ cwd });
+      // launchTui never returns normally (exits on q/Ctrl-C)
+      process.exit(0);
     } else {
-      // Not initialized
       console.log(notInitializedMessage());
-      // Also show brief status for context
       if (snap.warnings.length > 0 || snap.error) {
         console.log('');
         console.log(renderStatusHuman(snap));
       }
+      process.exit(0);
     }
-    if (noTui) {
-      console.log('');
-      console.log('[headless] --no-tui mode: status shown, exiting.');
-    }
-    process.exit(0);
   }
 
   // Fallback unknown
