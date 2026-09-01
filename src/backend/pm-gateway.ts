@@ -21,6 +21,9 @@ import type {
   EventDeliveryRecord,
   EventDeliveryStatus,
   EventType,
+  EventSeverity,
+  EventSource,
+  PmAttention,
   TaskRecord,
   TaskExecutionState,
   TaskPmState,
@@ -50,6 +53,25 @@ import {
 // ── Phase F schema version ──────────────────────────────────────────────────
 
 export const PM_GATEWAY_SCHEMA_VERSION = 'F.1' as const;
+
+// ── Phase F size contract bounds ─────────────────────────────────────────────
+
+/** Maximum string length for bounded string fields in the PM context packet. */
+const MAX_BOUNDED_STRING = 512;
+/** Maximum evidenceIds exposed in refs. */
+const MAX_REFS_EVIDENCE_IDS = 10;
+/** Maximum rawRefs exposed in refs. */
+const MAX_REFS_RAW = 5;
+/** Maximum artifactRefs exposed in refs. */
+const MAX_REFS_ARTIFACT = 5;
+/** Maximum artifactRefs per BoundedEvidenceRecord. */
+const MAX_EVIDENCE_ARTIFACT_REFS = 5;
+/** Maximum items in arrays within bounded details. */
+const MAX_DETAILS_ARRAY_ITEMS = 10;
+/** Maximum keys in objects within bounded details. */
+const MAX_DETAILS_OBJECT_KEYS = 20;
+/** Maximum nesting depth for bounded details sanitizer. */
+const MAX_DETAILS_DEPTH = 3;
 
 // ── Allowed actions vocabulary ──────────────────────────────────────────────
 
@@ -105,6 +127,77 @@ export interface CompactTaskSummary {
   linkedRunsCount: number;
 }
 
+/**
+ * Bounded PM Task context snapshot — replaces full TaskRecord in the packet.
+ *
+ * Deliberately excludes:
+ *   - linkedRuns (full attempt history)
+ *   - folder paths
+ *   - audit timestamps (createdAt / updatedAt) unless essential
+ *   - large narrative fields (goal / reason / scope text) unless documented
+ * Includes latestRunId as a logical-ID convenience.
+ */
+export interface PmTaskContext {
+  taskId: string;
+  goalId: string;
+  title: string;
+  executionState: TaskExecutionState;
+  pmState: TaskPmState;
+  acceptedRunId?: string;
+  dependencies: string[];
+  completionCriteriaCount: number;
+  blockedReason?: string;
+  retryCount?: number;
+  /** Logical run ID of the most-recent linked run (no folder path). */
+  latestRunId?: string;
+}
+
+/**
+ * Bounded run reference for the packet — physical folder path excluded.
+ *
+ * Physical locator (folder) remains internal Relay data and MUST NOT appear
+ * in the PM context packet.
+ */
+export interface BoundedRunRef {
+  runId: string;
+  taskRunSequence: number;
+  agent?: string;
+  date?: string;
+  // folder intentionally excluded — physical locator is internal
+}
+
+/**
+ * Bounded Event record for the packet — details sanitized and metadata stripped.
+ *
+ * Preserves identity / classification / linkage fields.
+ * details is recursively bounded to prevent large prompt/result payloads.
+ * metadata intentionally excluded — may be oversized.
+ */
+export interface BoundedEventRecord {
+  schemaVersion: number;
+  eventId: string;
+  project: string;
+  type: EventType;
+  severity: EventSeverity;
+  goalId?: string;
+  taskId?: string;
+  runId?: string;
+  evidenceId?: string;
+  source: EventSource;
+  /** Bounded to MAX_BOUNDED_STRING characters. */
+  summary: string;
+  /** Sanitized details — large strings truncated, large arrays capped. */
+  details?: Record<string, unknown>;
+  occurredAt: string;
+  recordedAt: string;
+  attentionClassifierVersion: number;
+  sourceEventId?: string;
+  correlationId?: string;
+  causationId?: string;
+  pmAttention: PmAttention;
+  // metadata intentionally excluded — may be oversized
+}
+
 /** Bounded evidence record: metadata stripped to avoid oversized blobs. */
 export interface BoundedEvidenceRecord {
   evidenceId: string;
@@ -113,14 +206,20 @@ export interface BoundedEvidenceRecord {
   trustLevel: EvidenceTrustLevel;
   status: EvidenceStatus;
   source: EvidenceSource;
+  /** Bounded to MAX_BOUNDED_STRING characters. */
   summary: string;
   createdAt: string;
   goalId?: string;
   taskId?: string;
   runId?: string;
-  /** Type-specific structured details (no prompt/result raw text). */
+  /**
+   * Type-specific structured details — recursively bounded.
+   * Large strings are truncated; large arrays are capped.
+   * No prompt/result raw text can pass through.
+   */
   details?: EvidenceDetails;
   rawRef?: string;
+  /** Capped at MAX_EVIDENCE_ARTIFACT_REFS. */
   artifactRefs?: string[];
   /** metadata intentionally excluded — may be oversized. */
 }
@@ -157,8 +256,11 @@ export interface PmContextPacket {
   /** Always 'F.1'. */
   schemaVersion: typeof PM_GATEWAY_SCHEMA_VERSION;
   project: string;
-  /** Bounded Event record (the triggering event). */
-  event: EventRecord;
+  /**
+   * Bounded Event record (the triggering event).
+   * details are sanitized; metadata excluded to prevent unbounded payload.
+   */
+  event: BoundedEventRecord;
   /** Current delivery snapshot at packet generation time. */
   eventDelivery: EventDeliveryRecord;
   /** Advisory actions — map to existing Phase E commands. MUST NOT invent new commands. */
@@ -178,10 +280,16 @@ export interface PmContextPacket {
   // ── Profile-driven optional fields ──────────────────────────────────────
   /** Compact Goal summary (profile-driven). */
   goal?: CompactGoalSummary;
-  /** Full Task record (profile-driven, present when Task-linked). */
-  task?: TaskRecord;
-  /** Linked Run for the current attempt (profile-driven). */
-  run?: LinkedRunRef;
+  /**
+   * Bounded PM Task context snapshot (profile-driven, present when Task-linked).
+   * Does NOT expose linkedRuns, folder paths, or full audit history.
+   */
+  task?: PmTaskContext;
+  /**
+   * Bounded run reference for the current attempt (profile-driven).
+   * Physical folder path excluded — only logical IDs and metadata.
+   */
+  run?: BoundedRunRef;
   /** Evidence summary for the current attempt (profile-driven). */
   evidenceSummary?: EvidenceSummary;
   /** Selected judgment-relevant Evidence records (max 5, no prompt/result text). */
@@ -271,10 +379,139 @@ function deriveAllowedActions(
   return [...actions];
 }
 
+// ── Bounded details sanitizer ────────────────────────────────────────────────
+
+/**
+ * Recursively sanitize an arbitrary value to enforce Phase F size bounds.
+ *
+ * Guarantees:
+ *   - Strings capped at MAX_BOUNDED_STRING characters
+ *   - Arrays capped at MAX_DETAILS_ARRAY_ITEMS items
+ *   - Objects capped at MAX_DETAILS_OBJECT_KEYS keys
+ *   - Nesting capped at MAX_DETAILS_DEPTH levels
+ *
+ * This ensures prompt/result/raw log bodies cannot be embedded through
+ * an arbitrary details payload.
+ */
+function sanitizeDetailsValue(value: unknown, depth = 0): unknown {
+  if (depth > MAX_DETAILS_DEPTH) return '[depth-limit]';
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') {
+    return value.length > MAX_BOUNDED_STRING
+      ? value.slice(0, MAX_BOUNDED_STRING) + '…'
+      : value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const capped = value.slice(0, MAX_DETAILS_ARRAY_ITEMS);
+    return capped.map((v) => sanitizeDetailsValue(v, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const entries = Object.entries(obj);
+    const out: Record<string, unknown> = {};
+    let count = 0;
+    for (const [k, v] of entries) {
+      if (count >= MAX_DETAILS_OBJECT_KEYS) {
+        out['…'] = '[truncated]';
+        break;
+      }
+      out[k] = sanitizeDetailsValue(v, depth + 1);
+      count++;
+    }
+    return out;
+  }
+  return String(value);
+}
+
+/** Sanitize evidence details field — no prompt/result raw body can pass through. */
+function boundEvidenceDetails(details: EvidenceDetails | undefined): EvidenceDetails | undefined {
+  if (details === undefined) return undefined;
+  return sanitizeDetailsValue(details, 0) as EvidenceDetails;
+}
+
+/** Sanitize event details record — prevents arbitrarily large payloads in the packet. */
+function boundEventDetails(details: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (details === undefined) return undefined;
+  return sanitizeDetailsValue(details, 0) as Record<string, unknown>;
+}
+
+// ── Bounded entity converters ────────────────────────────────────────────────
+
+/** Convert a full EventRecord to a bounded packet-safe record. */
+function toBoundedEventRecord(event: EventRecord): BoundedEventRecord {
+  return {
+    schemaVersion: event.schemaVersion,
+    eventId: event.eventId,
+    project: event.project,
+    type: event.type,
+    severity: event.severity,
+    ...(event.goalId ? { goalId: event.goalId } : {}),
+    ...(event.taskId ? { taskId: event.taskId } : {}),
+    ...(event.runId ? { runId: event.runId } : {}),
+    ...(event.evidenceId ? { evidenceId: event.evidenceId } : {}),
+    source: event.source,
+    summary: event.summary.length > MAX_BOUNDED_STRING
+      ? event.summary.slice(0, MAX_BOUNDED_STRING) + '…'
+      : event.summary,
+    ...(event.details !== undefined ? { details: boundEventDetails(event.details) } : {}),
+    occurredAt: event.occurredAt,
+    recordedAt: event.recordedAt,
+    attentionClassifierVersion: event.attentionClassifierVersion,
+    ...(event.sourceEventId ? { sourceEventId: event.sourceEventId } : {}),
+    ...(event.correlationId ? { correlationId: event.correlationId } : {}),
+    ...(event.causationId ? { causationId: event.causationId } : {}),
+    pmAttention: event.pmAttention,
+    // metadata intentionally excluded — may be oversized
+  };
+}
+
+/**
+ * Convert a full TaskRecord to a bounded PM Task context snapshot.
+ *
+ * Excludes: linkedRuns (full attempt history), folder paths, audit timestamps,
+ * and large narrative fields that are not needed for PM judgment.
+ */
+function toTaskContext(task: TaskRecord): PmTaskContext {
+  const sortedRuns = [...task.linkedRuns].sort(
+    (a, b) => a.taskRunSequence - b.taskRunSequence,
+  );
+  const latestRun = sortedRuns.length ? sortedRuns[sortedRuns.length - 1] : undefined;
+  return {
+    taskId: task.taskId,
+    goalId: task.goalId,
+    title: task.title,
+    executionState: task.executionState,
+    pmState: task.pmState,
+    ...(task.acceptedRunId ? { acceptedRunId: task.acceptedRunId } : {}),
+    dependencies: [...task.dependencies],
+    completionCriteriaCount: task.completionCriteria.length,
+    ...(task.blockedReason ? { blockedReason: task.blockedReason } : {}),
+    ...(task.retryCount !== undefined ? { retryCount: task.retryCount } : {}),
+    ...(latestRun ? { latestRunId: latestRun.runId } : {}),
+  };
+}
+
+/**
+ * Convert a LinkedRunRef to a bounded run reference — physical folder excluded.
+ *
+ * Physical locator (folder) is internal Relay data and MUST NOT appear in the
+ * PM context packet.
+ */
+function toBoundedRunRef(link: LinkedRunRef): BoundedRunRef {
+  return {
+    runId: link.runId,
+    taskRunSequence: link.taskRunSequence,
+    ...(link.agent ? { agent: link.agent } : {}),
+    ...(link.date ? { date: link.date } : {}),
+    // folder intentionally excluded
+  };
+}
+
 // ── Bounded evidence converter ───────────────────────────────────────────────
 
 function boundEvidence(e: EvidenceRecord): BoundedEvidenceRecord {
-  // Strip metadata (may be oversized), keep structured details + refs
+  // Strip metadata (may be oversized); sanitize details to prevent embedded payloads
   return {
     evidenceId: e.evidenceId,
     project: e.project,
@@ -282,14 +519,18 @@ function boundEvidence(e: EvidenceRecord): BoundedEvidenceRecord {
     trustLevel: e.trustLevel,
     status: e.status,
     source: e.source,
-    summary: e.summary,
+    summary: e.summary.length > MAX_BOUNDED_STRING
+      ? e.summary.slice(0, MAX_BOUNDED_STRING) + '…'
+      : e.summary,
     createdAt: e.createdAt,
     ...(e.goalId ? { goalId: e.goalId } : {}),
     ...(e.taskId ? { taskId: e.taskId } : {}),
     ...(e.runId ? { runId: e.runId } : {}),
-    ...(e.details !== undefined ? { details: e.details } : {}),
+    ...(e.details !== undefined ? { details: boundEvidenceDetails(e.details) } : {}),
     ...(e.rawRef ? { rawRef: e.rawRef } : {}),
-    ...(e.artifactRefs?.length ? { artifactRefs: e.artifactRefs } : {}),
+    ...(e.artifactRefs?.length
+      ? { artifactRefs: e.artifactRefs.slice(0, MAX_EVIDENCE_ARTIFACT_REFS) }
+      : {}),
     // metadata intentionally excluded
   };
 }
@@ -508,7 +749,8 @@ function buildQaFailedProfile(
 
   const task = tryGetTask(dataRoot, project, taskId, warnings);
   if (!task) return out;
-  out.task = task;
+  // Bounded task context snapshot — no linkedRuns, no folder paths
+  out.task = toTaskContext(task);
 
   // Goal
   const goal = tryGetGoal(dataRoot, project, task.goalId, warnings);
@@ -518,11 +760,11 @@ function buildQaFailedProfile(
   const attemptInfo = buildAttemptInfo(task);
   out.currentAttempt = attemptInfo;
 
-  // Current run
+  // Current run — bounded ref (no folder)
   const currentRunId = attemptInfo.currentAttemptRunId;
   if (currentRunId) {
     const link = task.linkedRuns.find((r) => r.runId === currentRunId);
-    if (link) out.run = link;
+    if (link) out.run = toBoundedRunRef(link);
   }
 
   // Evidence
@@ -559,16 +801,17 @@ function buildRunFailedProfile(
 
   const task = tryGetTask(dataRoot, project, taskId, warnings);
   if (!task) return out;
-  out.task = task;
+  // Bounded task context snapshot — no linkedRuns, no folder paths
+  out.task = toTaskContext(task);
 
   const goal = tryGetGoal(dataRoot, project, task.goalId, warnings);
   if (goal) out.goal = toCompactGoal(goal);
 
-  // Current run
+  // Current run — bounded ref (no folder)
   const runId = event.runId ?? task.linkedRuns[task.linkedRuns.length - 1]?.runId;
   if (runId) {
     const link = task.linkedRuns.find((r) => r.runId === runId);
-    if (link) out.run = link;
+    if (link) out.run = toBoundedRunRef(link);
   }
 
   // Relevant failure evidence (limited)
@@ -606,7 +849,8 @@ function buildBlockedProfile(
 
   const task = tryGetTask(dataRoot, project, taskId, warnings);
   if (!task) return out;
-  out.task = task;
+  // Bounded task context snapshot — no linkedRuns, no folder paths
+  out.task = toTaskContext(task);
 
   const goal = tryGetGoal(dataRoot, project, task.goalId, warnings);
   if (goal) out.goal = toCompactGoal(goal);
@@ -644,7 +888,8 @@ function buildOwnerDecisionProfile(
   if (taskId) {
     const task = tryGetTask(dataRoot, project, taskId, warnings);
     if (task) {
-      out.task = task;
+      // Bounded task context snapshot — no linkedRuns, no folder paths
+      out.task = toTaskContext(task);
       const goal = tryGetGoal(dataRoot, project, task.goalId, warnings);
       if (goal) out.goal = toCompactGoal(goal);
     }
@@ -721,7 +966,8 @@ function buildRuntimeErrorProfile(
   if (event.taskId) {
     const task = tryGetTask(dataRoot, project, event.taskId, warnings);
     if (task) {
-      out.task = task;
+      // Bounded task context snapshot — no linkedRuns, no folder paths
+      out.task = toTaskContext(task);
       if (event.goalId ?? task.goalId) {
         const goal = tryGetGoal(dataRoot, project, event.goalId ?? task.goalId, warnings);
         if (goal) out.goal = toCompactGoal(goal);
@@ -849,7 +1095,7 @@ export function getContextForEvent(
     }
   }
 
-  // ── 8. Build refs ─────────────────────────────────────────────────────────
+  // ── 8. Build refs (bounded) ───────────────────────────────────────────────
   const task = profileFields.task ?? undefined;
   const selectedEvidence = profileFields.selectedEvidence;
   const allTaskEvidence =
@@ -857,15 +1103,23 @@ export function getContextForEvent(
       ? tryListTaskEvidence(dataRoot, project, task.taskId, warnings)
       : [];
 
-  const evidenceIds =
+  // Cap evidenceIds to MAX_REFS_EVIDENCE_IDS — only selected or top-N task evidence
+  const rawEvidenceIds =
     selectedEvidence?.map((e) => e.evidenceId) ??
     allTaskEvidence.slice(0, 5).map((e) => e.evidenceId);
+  const evidenceIds = rawEvidenceIds.slice(0, MAX_REFS_EVIDENCE_IDS);
+
+  // Collect rawRefs and artifactRefs from selected evidence only; apply hard caps
   const rawRefs: string[] = [];
   const artifactRefs: string[] = [];
-
   for (const e of selectedEvidence ?? []) {
-    if (e.rawRef) rawRefs.push(e.rawRef);
-    if (e.artifactRefs) artifactRefs.push(...e.artifactRefs);
+    if (e.rawRef && rawRefs.length < MAX_REFS_RAW) rawRefs.push(e.rawRef);
+    if (e.artifactRefs) {
+      for (const ref of e.artifactRefs) {
+        if (artifactRefs.length >= MAX_REFS_ARTIFACT) break;
+        artifactRefs.push(ref);
+      }
+    }
   }
 
   const refs: PmContextRefs = {
@@ -882,7 +1136,8 @@ export function getContextForEvent(
   const packet: PmContextPacket = {
     schemaVersion: PM_GATEWAY_SCHEMA_VERSION,
     project,
-    event,
+    // Bounded event record — details sanitized, metadata excluded
+    event: toBoundedEventRecord(event),
     eventDelivery: delivery,
     allowedActions,
     cas,
