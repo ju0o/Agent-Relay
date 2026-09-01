@@ -79,19 +79,17 @@ export function taskFolder(dataRoot: string, project: string, taskId: string): s
 
 // ── atomic JSON write ───────────────────────────────────────────────────────
 
-/** Write JSON via temp file + rename. Avoids leaving a truncated JSON on crash mid-write. */
+/** Write JSON via temp file + rename. Avoids leaving a truncated JSON on crash mid-write.
+ *  Atomic: write complete tmp in same dir, then renameSync over destination.
+ *  If rename fails, cleanup tmp and FAIL — never copyFileSync over live file.
+ */
 export function writeJsonAtomic(filePath: string, data: unknown): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-    try {
-      fs.renameSync(tmp, filePath);
-    } catch {
-      fs.copyFileSync(tmp, filePath);
-      fs.unlinkSync(tmp);
-    }
+    fs.renameSync(tmp, filePath);
   } catch (err) {
     try { fs.unlinkSync(tmp); } catch { /* ignore cleanup */ }
     throw err;

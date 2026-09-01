@@ -159,6 +159,144 @@ console.log('\n── STAB-05: persistent corrupt JSON → parse error (not NOT_
   );
 }
 
+// ── STAB-06: concurrent writeRunMeta + readRunMeta polling → only full records ──
+console.log('\n── STAB-06: atomic writeRunMeta — concurrent polling sees only full old/new ──');
+{
+  const runFolder = path.join(TEST_ROOT, 'run-stab-06');
+  fs.mkdirSync(runFolder, { recursive: true });
+  // Seed initial
+  fsMod.writeRunMeta(runFolder, { tags: ['init'], runId: 'run-id-0' });
+
+  const snapshots = [];
+  let pollErrors = 0;
+  let inconsistent = 0;
+
+  // Interleaved writer + polling: each write yields to let poller run
+  for (let i = 1; i <= 80; i++) {
+    fsMod.writeRunMeta(runFolder, { tags: [`v-${i}`], runId: `run-id-${i}` });
+    // Immediate poll after each write — should see either old or new, never truncated
+    try {
+      const raw = fs.readFileSync(path.join(runFolder, 'meta.json'), 'utf8');
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.runId !== 'string' || !Array.isArray(parsed.tags)) {
+        pollErrors++;
+        FAIL(`STAB-06 polling saw malformed parsed object at i=${i}: ${JSON.stringify(parsed)}`);
+      } else {
+        const m = /^run-id-(\d+)$/.exec(parsed.runId);
+        if (!m) { inconsistent++; }
+        else {
+          const n = parseInt(m[1], 10);
+          const expectedTag = n === 0 ? 'init' : `v-${n}`;
+          if (!parsed.tags.includes(expectedTag) || parsed.tags.length !== 1) inconsistent++;
+        }
+        snapshots.push(parsed);
+      }
+      // Also verify readRunMeta returns same consistent view
+      const meta = fsMod.readRunMeta(runFolder);
+      if (meta.runId !== parsed.runId || JSON.stringify(meta.tags) !== JSON.stringify(parsed.tags)) {
+        // readRunMeta sanitizes but should match raw for our controlled values
+        if (meta.runId !== parsed.runId) {
+          pollErrors++;
+          FAIL(`STAB-06 readRunMeta mismatch raw runId at i=${i}: meta=${meta.runId} raw=${parsed.runId}`);
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('Unexpected') || msg.includes('JSON') || msg.includes('parse')) {
+        pollErrors++;
+        FAIL(`STAB-06 polling saw JSON parse error (truncated) at i=${i}: ${msg}`);
+      }
+    }
+    // Yield to event loop to allow any async fs flushing (and simulate concurrent reader)
+    if (i % 10 === 0) await new Promise((r) => setTimeout(r, 1));
+  }
+
+  check(pollErrors === 0, `STAB-06 no poll parse errors (truncated JSON) — got ${pollErrors}`);
+  check(inconsistent === 0, `STAB-06 all ${snapshots.length} snapshots are full old/new records — inconsistent=${inconsistent}`);
+  check(snapshots.length >= 80, `STAB-06 collected ${snapshots.length} snapshots during writes`);
+
+  // No stray tmps
+  const entries = fs.readdirSync(runFolder);
+  check(entries.filter((e) => e.endsWith('.tmp')).length === 0, `STAB-06 no stray .tmp after concurrent writes`);
+}
+
+// ── STAB-07: writeRunMeta rename failure — preserves old file, reports error, cleans tmp ──
+console.log('\n── STAB-07: writeRunMeta rename failure preserves old file ────────────');
+{
+  const runFolder = path.join(TEST_ROOT, 'run-stab-07');
+  fs.mkdirSync(runFolder, { recursive: true });
+  const filePath = path.join(runFolder, 'meta.json');
+  // Seed known good content
+  fsMod.writeRunMeta(runFolder, { tags: ['original'], runId: 'run-orig-07' });
+  const originalContent = fs.readFileSync(filePath, 'utf8');
+  const originalParsed = JSON.parse(originalContent);
+  check(originalParsed.runId === 'run-orig-07', `STAB-07 seed written`);
+
+  // Inject rename failure via CJS fs patch (ESM namespace is read-only)
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const fsCjs = require('node:fs');
+  const realRenameSync = fsCjs.renameSync;
+  let renameCalled = false;
+  fsCjs.renameSync = function patchedRename() { renameCalled = true; throw Object.assign(new Error('injected rename failure'), { code: 'EPERM' }); };
+  let threw = false;
+  try {
+    fsMod.writeRunMeta(runFolder, { tags: ['new-value'], runId: 'run-new-07' });
+  } catch (e) {
+    threw = true;
+    const msg = e instanceof Error ? e.message : String(e);
+    check(msg.includes('injected rename failure') || msg.includes('EPERM'), `STAB-07 writeRunMeta throws injected error`);
+  } finally {
+    fsCjs.renameSync = realRenameSync;
+  }
+  check(renameCalled, `STAB-07 injected rename was called`);
+  check(threw, `STAB-07 writeRunMeta reported failure on rename error`);
+
+  // Original destination must remain intact — valid JSON, old content
+  const afterContent = fs.readFileSync(filePath, 'utf8');
+  check(afterContent === originalContent, `STAB-07 original destination preserved exactly`);
+  let afterParsed;
+  try { afterParsed = JSON.parse(afterContent); } catch { afterParsed = null; }
+  check(afterParsed !== null && afterParsed.runId === 'run-orig-07', `STAB-07 destination still valid original JSON`);
+  check(afterParsed !== null && afterParsed.tags[0] === 'original', `STAB-07 destination tags still original`);
+
+  // No partial destination, no stray tmp (best-effort cleanup)
+  const entries = fs.readdirSync(runFolder);
+  const tmps = entries.filter((e) => e.endsWith('.tmp'));
+  check(tmps.length === 0, `STAB-07 tmp cleaned up after failure (found ${tmps.length})`);
+  // Ensure destination is not truncated / empty
+  check(afterContent.length > 10 && afterContent.includes('run-orig-07'), `STAB-07 destination not truncated`);
+}
+
+// ── STAB-08: writeJsonAtomic rename failure — same guarantees ─────────────────
+console.log('\n── STAB-08: writeJsonAtomic rename failure preserves old file ────────');
+{
+  const folder = path.join(TEST_ROOT, 'run-stab-08');
+  fs.mkdirSync(folder, { recursive: true });
+  const filePath = path.join(folder, 'data.json');
+  gt.writeJsonAtomic(filePath, { v: 'original', n: 1 });
+  const originalContent = fs.readFileSync(filePath, 'utf8');
+  const { createRequire } = await import('node:module');
+  const require2 = createRequire(import.meta.url);
+  const fsCjs2 = require2('node:fs');
+  const realRenameSync = fsCjs2.renameSync;
+  let renameCalled = false;
+  fsCjs2.renameSync = function patchedRename2() { renameCalled = true; throw Object.assign(new Error('injected rename failure 2'), { code: 'EACCES' }); };
+  let threw = false;
+  try {
+    gt.writeJsonAtomic(filePath, { v: 'new', n: 2 });
+  } catch (e) { threw = true; }
+  finally { fsCjs2.renameSync = realRenameSync; }
+  check(renameCalled, `STAB-08 injected rename was called`);
+  check(threw, `STAB-08 writeJsonAtomic reported failure`);
+  const afterContent = fs.readFileSync(filePath, 'utf8');
+  check(afterContent === originalContent, `STAB-08 original file preserved exactly`);
+  let parsed; try { parsed = JSON.parse(afterContent); } catch { parsed = null; }
+  check(parsed !== null && parsed.v === 'original', `STAB-08 destination still valid original JSON`);
+  const entries = fs.readdirSync(folder);
+  check(entries.filter((e) => e.endsWith('.tmp')).length === 0, `STAB-08 tmp cleaned up`);
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\nSTAB: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

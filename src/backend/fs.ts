@@ -312,12 +312,7 @@ export function writeRunMeta(folder: string, meta: RunMeta): void {
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n', 'utf8');
-    try {
-      fs.renameSync(tmp, filePath);
-    } catch {
-      fs.copyFileSync(tmp, filePath);
-      fs.unlinkSync(tmp);
-    }
+    fs.renameSync(tmp, filePath);
   } catch (err) {
     try { fs.unlinkSync(tmp); } catch { /* ignore cleanup */ }
     throw err;
