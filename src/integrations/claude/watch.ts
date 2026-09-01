@@ -115,8 +115,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
               failures++;
               continue;
             }
-            const summary = summarizeClaudeTranscript(raw);
-            statCache.set(f.sessionId, { size: f.size, mtimeMs: f.mtimeMs, summary });
+            // WATCH-01: summarizeClaudeTranscript must be guarded per-file so
+            // a malformed transcript cannot abort observations for other sessions.
+            let summary: ReturnType<typeof summarizeClaudeTranscript>;
+            try {
+              summary = summarizeClaudeTranscript(raw);
+              statCache.set(f.sessionId, { size: f.size, mtimeMs: f.mtimeMs, summary });
+            } catch (err) {
+              reportOnce(`트랜스크립트 분석 실패(${f.sessionId}): ${err instanceof Error ? err.message : String(err)}`);
+              failures++;
+              continue;
+            }
 
             const sessionId = summary.sessionId ?? f.sessionId;
 

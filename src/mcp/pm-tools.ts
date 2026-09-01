@@ -238,6 +238,36 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
   const { dataRoot, project } = ctx;
   return [
     {
+      name: 'relay_pm_activate_goal',
+      description:
+        'Phase I3: transition a PLANNING Goal to ACTIVE. ' +
+        'Requires expectedGoalStatus="PLANNING" CAS guard — any other value is rejected. ' +
+        'Stale expected state → CONFLICT. ' +
+        'Does NOT dispatch Tasks, create Tasks, complete the Goal, or start any automated loop. ' +
+        'The PM remains in full control of subsequent dispatch decisions.',
+      inputSchema: objectSchema(
+        {
+          goalId: { type: 'string' },
+          expectedGoalStatus: { type: 'string', enum: ['PLANNING'] },
+          reason: { type: 'string' },
+        },
+        ['goalId', 'expectedGoalStatus'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['goalId', 'expectedGoalStatus', 'reason']);
+        const goalId = requireString(args, 'goalId');
+        const expectedGoalStatus = requireEnum(args, 'expectedGoalStatus', ['PLANNING'] as const);
+        try {
+          return goalTaskRuntime.activateGoal(dataRoot, project, goalId, {
+            expectedGoalStatus,
+            reason: optionalString(args, 'reason'),
+          });
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    },
+    {
       name: 'relay_pm_accept_result',
       description:
         'Accept a Task result by runId. Requires expectedPmState and expectedExecutionState CAS guards. ' +

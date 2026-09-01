@@ -98,17 +98,53 @@ export function writeJsonAtomic(filePath: string, data: unknown): void {
   }
 }
 
+/**
+ * Synchronous ~50 ms sleep using Atomics.wait (avoids async in read path).
+ * Used only by the parse-race retry below — not for general use.
+ */
+function sleepSyncMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Read and parse a JSON file.
+ *
+ * Parse-race guard (STAB-01 / STAB-02): on Windows, `renameSync` inside
+ * `writeJsonAtomic` briefly exposes an empty/absent file to concurrent
+ * readers. If `JSON.parse` fails we do ONE bounded retry after ~50 ms.
+ *
+ * Semantics:
+ *   - File missing (ENOENT) on FIRST read → throws "파일을 찾을 수 없습니다"
+ *     (NOT_FOUND). Never retried — NOT_FOUND must stay NOT_FOUND.
+ *   - JSON.parse failure on first read → sleepSync(50 ms) then re-read.
+ *     - If re-read succeeds and parses → return value.
+ *     - Otherwise → throws "잘못된 JSON 형식입니다" (corrupt).
+ */
 function readJsonFile<T>(filePath: string): T {
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch {
+    // File not found on first try — do NOT retry; preserve NOT_FOUND semantics.
     throw new Error(`파일을 찾을 수 없습니다: ${filePath}`);
   }
   try {
     return JSON.parse(raw) as T;
   } catch {
-    throw new Error(`잘못된 JSON 형식입니다: ${filePath}`);
+    // Parse failure may be a transient renameSync race — one bounded retry.
+    sleepSyncMs(50);
+    let raw2: string;
+    try {
+      raw2 = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      // File disappeared between retries; surface as corrupt (file WAS present).
+      throw new Error(`잘못된 JSON 형식입니다: ${filePath}`);
+    }
+    try {
+      return JSON.parse(raw2) as T;
+    } catch {
+      throw new Error(`잘못된 JSON 형식입니다: ${filePath}`);
+    }
   }
 }
 

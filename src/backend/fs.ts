@@ -285,9 +285,16 @@ export function readRunMeta(folder: string): RunMeta {
 }
 
 /**
- * Write meta.json to a run folder.
- * Callers should pass the full desired meta object (read-merge-write for partial updates).
- * Once runId is present it must be preserved by callers (never rewritten to a new value).
+ * Write meta.json to a run folder atomically (temp file + rename).
+ *
+ * meta.json is read concurrently by linkRunToTask, readRunMeta, and the
+ * result-bridge during dispatch. Using a plain writeFileSync here would
+ * expose a window where a concurrent reader sees a truncated or empty file.
+ * Callers should pass the full desired meta object (read-merge-write for
+ * partial updates). Once runId is present it must be preserved by callers
+ * (never rewritten to a new value).
+ *
+ * STAB-03: changed from fs.writeFileSync to atomic temp+rename.
  */
 export function writeRunMeta(folder: string, meta: RunMeta): void {
   fs.mkdirSync(folder, { recursive: true });
@@ -301,7 +308,20 @@ export function writeRunMeta(folder: string, meta: RunMeta): void {
   if (typeof meta.workspaceRoot === 'string' && meta.workspaceRoot) {
     out.workspaceRoot = meta.workspaceRoot;
   }
-  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify(out, null, 2) + '\n', 'utf8');
+  const filePath = path.join(folder, 'meta.json');
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n', 'utf8');
+    try {
+      fs.renameSync(tmp, filePath);
+    } catch {
+      fs.copyFileSync(tmp, filePath);
+      fs.unlinkSync(tmp);
+    }
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore cleanup */ }
+    throw err;
+  }
 }
 
 /**

@@ -794,6 +794,44 @@ export function completeGoalWithExpected(
   return completeGoal(dataRoot, project, id, opts.reason);
 }
 
+/**
+ * Phase I3 — CAS-guarded PLANNING → ACTIVE transition.
+ *
+ * Narrowly scoped: ONLY transitions a PLANNING Goal to ACTIVE.
+ * Does NOT dispatch Tasks, complete Goals, create Tasks, or start any
+ * automated loop.  The PM remains in full control after activation.
+ *
+ * CAS semantics: expectedGoalStatus MUST equal 'PLANNING'.
+ * Any other expected value → INVALID_ARGUMENT.
+ * Stale (status already changed) → CONFLICT via RuntimeConflictError.
+ * Idempotent: PLANNING→ACTIVE if already ACTIVE returns the current record.
+ */
+export function activateGoal(
+  dataRoot: string,
+  project: string,
+  goalId: string,
+  opts: { expectedGoalStatus: 'PLANNING'; reason?: string },
+): GoalRecord {
+  const id = requireNonEmptyString(goalId, 'goalId');
+  if (opts.expectedGoalStatus !== 'PLANNING') {
+    throw new Error(
+      `activateGoal에서는 expectedGoalStatus='PLANNING'만 허용됩니다. (got: ${String(opts.expectedGoalStatus)})`,
+    );
+  }
+  const goal = getGoal(dataRoot, project, id);
+  if (goal.status !== 'PLANNING') {
+    throw new RuntimeConflictError(
+      `CONFLICT: expectedGoalStatus=PLANNING but found ${goal.status}`,
+    );
+  }
+  // PLANNING → ACTIVE is legal per GOAL_TRANSITIONS
+  assertLegalGoalTransition(goal.status, 'ACTIVE');
+  goal.status = 'ACTIVE';
+  goal.updatedAt = nowIso();
+  void opts.reason;
+  return persistGoalRecord(dataRoot, project, goal);
+}
+
 // ── Runtime state / PM context ──────────────────────────────────────────────
 
 function toTaskSummary(task: TaskRecord, goalTasks: readonly TaskRecord[]): TaskRuntimeSummary {

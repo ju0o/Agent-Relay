@@ -233,6 +233,10 @@ export function getNextWork(dataRoot: string, project: string): GetNextWorkResul
   // GOAL_COMPLETION
   for (const goal of goals) {
     if (goal.status === 'COMPLETED' || goal.status === 'ABANDONED') continue;
+    // GOAL-03: PLANNING→COMPLETED is illegal (GOAL_TRANSITIONS: PLANNING → ['ACTIVE','ABANDONED']).
+    // A PLANNING goal must not surface as GOAL_COMPLETION work — the PM would receive a CAS
+    // that fails at mutation time.  Only ACTIVE / WAITING_OWNER / BLOCKED can complete.
+    if (goal.status === 'PLANNING') continue;
     const scoped = tasks.filter((t) => t.goalId === goal.goalId);
     const evaluation = evaluateGoalCompletion(goal, scoped);
     if (evaluation.eligible) {
