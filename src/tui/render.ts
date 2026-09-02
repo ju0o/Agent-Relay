@@ -1,5 +1,7 @@
 import type { TuiSnapshot } from './snapshot.js';
 import { deriveRelayVisualState, animationFramePosition, type RelayVisualState } from './relay-visual.js';
+import { deriveAvailableActions, type ActionAvailability } from './actions.js';
+import type { TaskExecutionState, TaskPmState } from '../shared/types.js';
 
 // Legacy diagnostic panels — preserved only for backward file-search compatibility, not rendered by default.
 // Previous layout: A. Goal / Task, B. Workers, C. Project Tree, D. Events — replaced by framed Relay visualization.
@@ -150,6 +152,47 @@ export function animationFrame(snapshot: TuiSnapshot, frameIndex: number): { sta
   return { state, promptMarkerPos: p, resultMarkerPos: p };
 }
 
+/**
+ * Display-only action bar segment. Dimming is a hint, never a gate — Core
+ * (task-actions.ts / goal-task-runtime.ts) remains authoritative on every
+ * mutation attempt regardless of what this renders.
+ *
+ * currentRunId reuses the same field status.ts already computes (latest
+ * linkedRun by taskRunSequence) instead of re-deriving a run-selection law:
+ * for the VERIFYING/CHANGES_REQUESTED states that gate Accept/Changes/Retry,
+ * acceptedRunId is guaranteed absent, so this equals
+ * goal-task-runtime.resolveCurrentAttemptRunId()'s result exactly.
+ */
+function buildActionBar(snapshot: TuiSnapshot): { actionLine: string; actionHint: string } {
+  const active = snapshot.status.activeTasks[0];
+  const availability = deriveAvailableActions(active ? {
+    executionState: active.executionState as TaskExecutionState,
+    pmState: active.pmState as TaskPmState,
+    currentRunId: active.runId,
+  } : null);
+
+  const seg = (key: string, label: string, avail: ActionAvailability): string =>
+    avail.state === 'ENABLED' ? `[${key}] ${label}` : `(${key.toLowerCase()}) ${label.toLowerCase()}`;
+
+  const actionLine = [
+    '[T] Task',
+    '[M] Memo',
+    seg('R', 'Retry', availability.RETRY),
+    seg('A', 'Accept', availability.ACCEPT),
+    seg('C', 'Changes', availability.REQUEST_CHANGES),
+    '[E] Events',
+    '[Q] Quit',
+  ].join('  ');
+
+  const disabledReason = [availability.RETRY, availability.ACCEPT, availability.REQUEST_CHANGES]
+    .find((a): a is Extract<ActionAvailability, { state: 'DISABLED' }> => a.state === 'DISABLED')?.reason;
+  const actionHint = disabledReason
+    ? `R/A/C: ${disabledReason}`
+    : 'R/A/C ready · T/M/E always available · Q:quit';
+
+  return { actionLine, actionHint };
+}
+
 export function renderRelayFrame(snapshot: TuiSnapshot, frameIndex: number, size: { cols: number; rows: number }, refreshError?: string): string {
   const cols = Math.max(20, size.cols);
   const rows = Math.max(10, size.rows);
@@ -192,8 +235,7 @@ export function renderRelayFrame(snapshot: TuiSnapshot, frameIndex: number, size
   // remove dash only entries? keep as above but omit if no value -> we already have dash, but spec says omit rather than many (none). We'll keep short.
   const statusLine = statusParts.join(' · ');
 
-  const actionLine = '[T] Task  [M] Memo  [R] Retry  [A] Accept  [C] Changes  [E] Events  [Q] Quit';
-  const actionHint = 'T/M/E ready · R/A/C disabled · Q:quit  r:refresh';
+  const { actionLine, actionHint } = buildActionBar(snapshot);
   const footer = 'support · instagram @ju0o___ · GitHub @ju0o';
 
   // Build framed lines

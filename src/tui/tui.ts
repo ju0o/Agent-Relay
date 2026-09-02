@@ -11,13 +11,24 @@ import { renderEventsView } from './views/events.js';
 import { discoverConfig } from '../cli/config.js';
 import * as taskMemo from '../backend/task-memo.js';
 import * as eventKernel from '../backend/event.js';
+import { resolveCurrentAttemptRunId } from '../backend/goal-task-runtime.js';
+import {
+  deriveAvailableActions,
+  executeOwnerAction,
+  reduceReasonInput,
+  type OwnerActionContext,
+  type OwnerActionResult,
+  type OwnerActionCode,
+  type ReasonInputState,
+} from './actions.js';
+import type { TaskRecord } from '../shared/types.js';
 
 export interface TuiOptions {
   cwd: string;
   refreshMs?: number;
 }
 
-type ViewState = 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS';
+type ViewState = 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS' | 'CHANGES_INPUT';
 
 function isTTY(): boolean {
   return !!process.stdout.isTTY && !!process.stdin.isTTY;
@@ -60,6 +71,13 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
   let memoError: string | undefined;
   let banner: string | undefined;
   let bannerUntil = 0;
+  // Phase I3F-3: Owner judgment action state. changesReasonState/pendingChangesCtx
+  // are the bounded Reason input widget + the CAS context captured when [C] was
+  // pressed (spec #21 — captured at open, never re-read at submit). actionBusy
+  // guards against double-submit while an Owner action await is in flight.
+  let changesReasonState: ReasonInputState = { draft: '', error: undefined };
+  let pendingChangesCtx: OwnerActionContext | null = null;
+  let actionBusy = false;
 
   function enterAlt(): void {
     try {
@@ -110,16 +128,231 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
     }
   }
 
+  /** Same "current Task" resolution as Task Detail (resolveDetailTask) — full record, for the action bridge. */
+  function resolveActionTask(): { dataRoot?: string; project?: string; task?: TaskRecord } {
+    try {
+      const discovered = discoverConfig(cwd);
+      const dataRoot = discovered.config?.dataRoot;
+      const project = discovered.config?.project;
+      if (!dataRoot || !project || !discovered.initialized) return {};
+      const snap = cachedSnapshot ?? buildTuiSnapshot(cwd);
+      const model = resolveDetailTask(snap, dataRoot, project);
+      return { dataRoot, project, task: model.task ?? undefined };
+    } catch {
+      return {};
+    }
+  }
+
+  function showBanner(text: string, ms: number): void {
+    banner = text;
+    bannerUntil = Date.now() + ms;
+    setTimeout(() => {
+      if (Date.now() >= bannerUntil) {
+        bannerUntil = 0;
+        banner = undefined;
+        if (running) renderToScreen();
+      }
+    }, ms + 100);
+  }
+
+  function bannerForActionError(code: OwnerActionCode, message: string): string {
+    switch (code) {
+      case 'CONFLICT': return 'Task changed. Review current state and try again.';
+      case 'FORBIDDEN': return 'Action not allowed by current permission mode.';
+      case 'INVALID_STATE': return 'Action is no longer available.';
+      default: return truncate(message, 120);
+    }
+  }
+
+  /** Refresh snapshot (Core remains authoritative) + show the outcome banner. No mutation retry. */
+  function handleActionResult(result: OwnerActionResult, successBanner: string): void {
+    if (result.ok) {
+      showBanner(successBanner, 3000);
+    } else {
+      showBanner(bannerForActionError(result.code, result.message), 3500);
+    }
+    doSnapshotRefresh();
+  }
+
+  async function handleAcceptKey(): Promise<void> {
+    if (actionBusy) return;
+    const { dataRoot, project, task } = resolveActionTask();
+    if (!dataRoot || !project || !task) {
+      showBanner('No active Task.', 2500);
+      renderToScreen();
+      return;
+    }
+    const availability = deriveAvailableActions({
+      executionState: task.executionState,
+      pmState: task.pmState,
+      acceptedRunId: task.acceptedRunId,
+      currentRunId: resolveCurrentAttemptRunId(task),
+    });
+    if (availability.ACCEPT.state !== 'ENABLED') {
+      showBanner(availability.ACCEPT.state === 'DISABLED' ? availability.ACCEPT.reason : 'Accept unavailable.', 2500);
+      renderToScreen();
+      return;
+    }
+    const ctx: OwnerActionContext = {
+      dataRoot, project,
+      goalId: task.goalId,
+      taskId: task.taskId,
+      runId: resolveCurrentAttemptRunId(task),
+      expectedExecutionState: task.executionState,
+      expectedPmState: task.pmState,
+    };
+    actionBusy = true;
+    try {
+      const result = await executeOwnerAction('ACCEPT', ctx);
+      handleActionResult(result, `✓ Result accepted · ${ctx.taskId}`);
+    } finally {
+      actionBusy = false;
+    }
+  }
+
+  async function handleRetryKey(): Promise<void> {
+    if (actionBusy) return;
+    const { dataRoot, project, task } = resolveActionTask();
+    if (!dataRoot || !project || !task) {
+      showBanner('No active Task.', 2500);
+      renderToScreen();
+      return;
+    }
+    const availability = deriveAvailableActions({
+      executionState: task.executionState,
+      pmState: task.pmState,
+      acceptedRunId: task.acceptedRunId,
+      currentRunId: resolveCurrentAttemptRunId(task),
+    });
+    if (availability.RETRY.state !== 'ENABLED') {
+      showBanner(availability.RETRY.state === 'DISABLED' ? availability.RETRY.reason : 'Retry unavailable.', 2500);
+      renderToScreen();
+      return;
+    }
+    const ctx: OwnerActionContext = {
+      dataRoot, project,
+      goalId: task.goalId,
+      taskId: task.taskId,
+      expectedExecutionState: task.executionState,
+      expectedPmState: task.pmState,
+    };
+    actionBusy = true;
+    try {
+      const result = await executeOwnerAction('RETRY', ctx);
+      handleActionResult(result, `Retry ready · ${ctx.taskId}`);
+    } finally {
+      actionBusy = false;
+    }
+  }
+
+  /** [C] on MAIN: capture CAS context now, open the bounded Reason input. */
+  function handleChangesKeyOpen(): void {
+    if (actionBusy) return;
+    const { dataRoot, project, task } = resolveActionTask();
+    if (!dataRoot || !project || !task) {
+      showBanner('No active Task.', 2500);
+      renderToScreen();
+      return;
+    }
+    const availability = deriveAvailableActions({
+      executionState: task.executionState,
+      pmState: task.pmState,
+      acceptedRunId: task.acceptedRunId,
+      currentRunId: resolveCurrentAttemptRunId(task),
+    });
+    if (availability.REQUEST_CHANGES.state !== 'ENABLED') {
+      showBanner(
+        availability.REQUEST_CHANGES.state === 'DISABLED' ? availability.REQUEST_CHANGES.reason : 'Changes unavailable.',
+        2500,
+      );
+      renderToScreen();
+      return;
+    }
+    pendingChangesCtx = {
+      dataRoot, project,
+      goalId: task.goalId,
+      taskId: task.taskId,
+      runId: resolveCurrentAttemptRunId(task),
+      expectedExecutionState: task.executionState,
+      expectedPmState: task.pmState,
+    };
+    changesReasonState = { draft: '', error: undefined };
+    view = 'CHANGES_INPUT';
+    renderToScreen();
+  }
+
+  async function submitChanges(reason: string): Promise<void> {
+    if (!pendingChangesCtx || actionBusy) return;
+    const ctx = pendingChangesCtx;
+    actionBusy = true;
+    view = 'MAIN';
+    pendingChangesCtx = null;
+    changesReasonState = { draft: '', error: undefined };
+    renderToScreen();
+    try {
+      const result = await executeOwnerAction('REQUEST_CHANGES', ctx, { reason });
+      handleActionResult(result, 'Changes requested');
+    } finally {
+      actionBusy = false;
+    }
+  }
+
+  /** CHANGES_INPUT keys — intercepted before the global q/Esc handling below so typed text stays literal. */
+  function handleChangesInputKey(s: string): void {
+    if (s === '\x1b') { // Esc cancel — no mutation call at all.
+      view = 'MAIN';
+      pendingChangesCtx = null;
+      changesReasonState = { draft: '', error: undefined };
+      renderToScreen();
+      return;
+    }
+    if (s === '\r' || s === '\n') { // Enter submit
+      const effect = reduceReasonInput(changesReasonState, { type: 'submit' });
+      if (effect.action === 'update') {
+        changesReasonState = effect.state;
+        renderToScreen();
+        return;
+      }
+      if (effect.action === 'submit') {
+        void submitChanges(effect.reason);
+      }
+      return;
+    }
+    if (s === '\x7f' || s === '\x08') { // Backspace
+      const effect = reduceReasonInput(changesReasonState, { type: 'backspace' });
+      if (effect.action === 'update') changesReasonState = effect.state;
+      renderToScreen();
+      return;
+    }
+    if (s.startsWith('\x1b[')) return; // arrow keys ignored
+    for (const ch of s) {
+      const code = ch.charCodeAt(0);
+      if (code < 32 || code === 127) continue; // control chars ignored (q included — literal text here)
+      const effect = reduceReasonInput(changesReasonState, { type: 'char', value: ch });
+      if (effect.action === 'update') changesReasonState = effect.state;
+    }
+    renderToScreen();
+  }
+
   const onData = (buf: Buffer) => {
     const s = buf.toString('utf8');
 
-    // Global Ctrl-C / q quit (presentation: q always quits per spec "Esc=back q=global quit")
+    // Ctrl-C is a global escape hatch even inside bounded input (raw-mode safety net).
     if (s === '\u0003') {
       cleanup();
       process.exit(0);
     }
+
+    // CHANGES_INPUT: intercepted before the global q-quit below -- typed q is
+    // literal Reason text here, not a shortcut (spec I3F-3 #20).
+    if (view === 'CHANGES_INPUT') {
+      handleChangesInputKey(s);
+      return;
+    }
+
+    // Global q quit (presentation: q always quits per spec "Esc=back q=global quit")
     if (s === 'q' || s === 'Q') {
-      // In all views, q is global quit (not back)
+      // In all other views, q is global quit (not back)
       cleanup();
       process.exit(0);
     }
@@ -253,11 +486,20 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
         renderToScreen();
         return;
       }
-      if (s === 'r' || s === 'R') {
-        doSnapshotRefresh();
+      // I3F-3: [A] Accept / [C] Changes / [R] Retry — canonical Owner action bridge only.
+      // No lifecycle mutation logic here; see src/tui/actions.ts + task-actions.ts.
+      if (s === 'a' || s === 'A') {
+        void handleAcceptKey();
         return;
       }
-      // R/A/C are disabled in this phase — no action
+      if (s === 'c' || s === 'C') {
+        handleChangesKeyOpen();
+        return;
+      }
+      if (s === 'r' || s === 'R') {
+        void handleRetryKey();
+        return;
+      }
     } else if (view === 'TASK_DETAIL') {
       if (s === 'm' || s === 'M') {
         view = 'MEMO_HISTORY';
@@ -351,6 +593,25 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
           inputLines.push('│' + padRight(truncate('! ' + memoError, inner), inner) + '│');
         } else {
           inputLines.push('│' + padRight(`${memoDraft.length}/2000 chars · Enter:save  Esc:cancel  Backspace:edit`, inner) + '│');
+        }
+        inputLines.push('└' + '─'.repeat(inner) + '┘');
+        out = inputLines.join('\n');
+      } else if (view === 'CHANGES_INPUT') {
+        // Bounded Reason input for canonical Request Changes (min 10 / max 2000 chars).
+        const inner = size.cols - 2;
+        const draft = changesReasonState.draft;
+        const preview = draft.length > inner - 14 ? draft.slice(-(inner - 14)) : draft;
+        const cursor = '█';
+        const inputLines: string[] = [];
+        inputLines.push('┌' + '─'.repeat(inner) + '┐');
+        inputLines.push('│' + padCenter('Request Changes', inner) + '│');
+        inputLines.push('│' + ' '.repeat(inner) + '│');
+        const prompt = `Reason > ${preview}${cursor}`;
+        inputLines.push('│' + padRight(truncate(prompt, inner), inner) + '│');
+        if (changesReasonState.error) {
+          inputLines.push('│' + padRight(truncate('! ' + changesReasonState.error, inner), inner) + '│');
+        } else {
+          inputLines.push('│' + padRight(`${draft.length}/2000 chars (min 10) · Enter:submit  Esc:cancel  Backspace:edit`, inner) + '│');
         }
         inputLines.push('└' + '─'.repeat(inner) + '┘');
         out = inputLines.join('\n');
