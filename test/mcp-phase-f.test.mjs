@@ -255,8 +255,10 @@ console.log('\nF-11..14) CAS snapshot');
   const packet1 = pmGateway.getContextForEvent(TEST_ROOT, project, casEvent.eventId);
   // Change pmState (VERIFYING already from markResultReceived)
   // Request changes to move to CHANGES_REQUESTED
-  await rt.requestChanges(TEST_ROOT, project, task.taskId, {
-    reason: 'test stale CAS',
+  await rt.requestChanges(TEST_ROOT, project, task.taskId, runId, {
+    goalId: goal.goalId,
+    reason: 'test stale CAS fixture reason',
+    expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'VERIFYING',
   });
   // Generate packet again — it reflects NEW state, not the old snapshot
@@ -292,8 +294,14 @@ console.log('\nF-15..17) QA_FAILED profile');
     taskId: task.taskId,
     runId: run1Id,
   });
-  await rt.requestChanges(TEST_ROOT, project, task.taskId, { expectedPmState: 'VERIFYING' });
+  await rt.requestChanges(TEST_ROOT, project, task.taskId, run1Id, {
+    goalId: goal.goalId,
+    reason: 'historical attempt fixture reason',
+    expectedExecutionState: 'RESULT_RECEIVED',
+    expectedPmState: 'VERIFYING',
+  });
   await rt.requestRetry(TEST_ROOT, project, task.taskId, {
+    goalId: goal.goalId,
     expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'CHANGES_REQUESTED',
   });
@@ -381,10 +389,14 @@ console.log('\nF-18..19) Size caps');
     runIds.push(runId);
     if (i < 4) {
       // Request retry to allow next attempt (except last)
-      await rt.requestChanges(TEST_ROOT, project, task.taskId, {
+      await rt.requestChanges(TEST_ROOT, project, task.taskId, runId, {
+        goalId: goal.goalId,
+        reason: 'size cap fixture reason for retry cycle',
+        expectedExecutionState: 'RESULT_RECEIVED',
         expectedPmState: 'VERIFYING',
       });
       await rt.requestRetry(TEST_ROOT, project, task.taskId, {
+        goalId: goal.goalId,
         expectedExecutionState: 'RESULT_RECEIVED',
         expectedPmState: 'CHANGES_REQUESTED',
       });
@@ -488,7 +500,10 @@ console.log('\nF-22..24) Action eligibility');
   );
 
   // Move to CHANGES_REQUESTED → REQUEST_RETRY should be available
-  await rt.requestChanges(TEST_ROOT, project, task.taskId, {
+  await rt.requestChanges(TEST_ROOT, project, task.taskId, runId, {
+    goalId: goal.goalId,
+    reason: 'action eligibility fixture reason',
+    expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'VERIFYING',
   });
 
@@ -508,6 +523,7 @@ console.log('\nF-22..24) Action eligibility');
   // F-23: ACCEPT_RESULT only when B2 legal
   // First retry to get back to VERIFYING
   await rt.requestRetry(TEST_ROOT, project, task.taskId, {
+    goalId: goal.goalId,
     expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'CHANGES_REQUESTED',
   });

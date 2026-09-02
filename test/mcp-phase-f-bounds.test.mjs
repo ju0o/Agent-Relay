@@ -158,8 +158,12 @@ console.log('\nFB-01..05) Task and run bounded-context contract');
     const { runId } = await linkFreshRun(task.taskId);
     await rt.markResultReceived(TEST_ROOT, project, task.taskId, runId, {});
     if (i < 3) {
-      await rt.requestChanges(TEST_ROOT, project, task.taskId, { expectedPmState: 'VERIFYING' });
+      await rt.requestChanges(TEST_ROOT, project, task.taskId, runId, {
+        goalId: goal.goalId, reason: 'bounded context fixture reason',
+        expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+      });
       await rt.requestRetry(TEST_ROOT, project, task.taskId, {
+        goalId: goal.goalId,
         expectedExecutionState: 'RESULT_RECEIVED',
         expectedPmState: 'CHANGES_REQUESTED',
       });
@@ -487,8 +491,12 @@ console.log('\nFB-15) Packet size does not grow linearly with run history');
 
     // Retry all but the last attempt
     if (i < NUM_ATTEMPTS - 1) {
-      await rt.requestChanges(TEST_ROOT, project, task.taskId, { expectedPmState: 'VERIFYING' });
+      await rt.requestChanges(TEST_ROOT, project, task.taskId, runId, {
+        goalId: goal.goalId, reason: 'scaling fixture reason for retry cycle',
+        expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+      });
       await rt.requestRetry(TEST_ROOT, project, task.taskId, {
+        goalId: goal.goalId,
         expectedExecutionState: 'RESULT_RECEIVED',
         expectedPmState: 'CHANGES_REQUESTED',
       });

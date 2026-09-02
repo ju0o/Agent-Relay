@@ -85,7 +85,9 @@ async function main() {
 
   // Accept A — must NOT auto-mutate B
   const { runId: aRun } = await driveToResultReceived(tA.taskId, 'AgentA');
-  const aAccepted = await rt.acceptResult(TEST_ROOT, project, tA.taskId, aRun);
+  const aAccepted = await rt.acceptResult(TEST_ROOT, project, tA.taskId, aRun, {
+    goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   check(aAccepted.pmState === 'ACCEPTED', 'accept A');
   const bAfterAccept = gt.getTask(TEST_ROOT, project, tB.taskId);
   check(bAfterAccept.executionState === 'PLANNED', 'B2-03/C9 ACCEPTED dep does NOT auto-mutate dependent');
@@ -206,12 +208,14 @@ async function main() {
   } catch { illegalExec = true; }
   check(illegalExec, 'B2-11 RESULT_RECEIVED→DISPATCHED rejected (use requestRetry)');
 
-  await rt.requestChanges(TEST_ROOT, project, tFlow.taskId, {
-    expectedPmState: 'VERIFYING', reason: 'nits',
+  await rt.requestChanges(TEST_ROOT, project, tFlow.taskId, flowRun, {
+    goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'nits: please address',
   });
   check(gt.getTask(TEST_ROOT, project, tFlow.taskId).pmState === 'CHANGES_REQUESTED', 'B2-12 requestChanges');
 
-  const retried = await rt.requestRetry(TEST_ROOT, project, tFlow.taskId);
+  const retried = await rt.requestRetry(TEST_ROOT, project, tFlow.taskId, {
+    goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'CHANGES_REQUESTED',
+  });
   check(
     retried.executionState === 'READY' && retried.pmState === 'PENDING' && (retried.retryCount ?? 0) >= 1,
     'B2-20/C7 requestRetry → READY+PENDING',
@@ -247,8 +251,11 @@ async function main() {
   check(afterResult.executionState === 'RESULT_RECEIVED' && afterResult.pmState !== 'ACCEPTED', 'B2-14 RESULT ≠ ACCEPTED');
 
   let badLink = false;
-  try { await rt.acceptResult(TEST_ROOT, project, tAcc.taskId, 'not-linked-run'); }
-  catch { badLink = true; }
+  try {
+    await rt.acceptResult(TEST_ROOT, project, tAcc.taskId, 'not-linked-run', {
+      goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    });
+  } catch { badLink = true; }
   check(badLink, 'B2-15 acceptResult requires linked run');
 
   const tEarly = await gt.createTask(TEST_ROOT, project, {
@@ -257,25 +264,42 @@ async function main() {
   await rt.refreshTaskReadiness(TEST_ROOT, project, tEarly.taskId);
   const { runId: earlyRun } = await linkFreshRun(tEarly.taskId, 'EarlyAgent');
   let badState = false;
-  try { await rt.acceptResult(TEST_ROOT, project, tEarly.taskId, earlyRun); }
-  catch { badState = true; }
+  try {
+    await rt.acceptResult(TEST_ROOT, project, tEarly.taskId, earlyRun, {
+      goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    });
+  } catch { badState = true; }
   check(badState, 'B2-16 acceptResult requires RESULT_RECEIVED');
 
-  const accepted = await rt.acceptResult(TEST_ROOT, project, tAcc.taskId, accRun);
+  const accepted = await rt.acceptResult(TEST_ROOT, project, tAcc.taskId, accRun, {
+    goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   check(accepted.pmState === 'ACCEPTED' && accepted.acceptedRunId === accRun, 'B2-17 accept sets fields');
-  const accepted2 = await rt.acceptResult(TEST_ROOT, project, tAcc.taskId, accRun);
-  check(accepted2.pmState === 'ACCEPTED', 'B2-18 repeated acceptResult idempotent');
+  let repeatedConflict = false;
+  try {
+    await rt.acceptResult(TEST_ROOT, project, tAcc.taskId, accRun, {
+      goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    });
+  } catch (e) { repeatedConflict = String(e.message).includes('CONFLICT'); }
+  check(repeatedConflict, 'B2-18 repeated acceptResult with stale CAS now CONFLICTs (no silent retry, I3F-2)');
 
   const tCh = await gt.createTask(TEST_ROOT, project, {
     goalId: goal.goalId, title: 'Changes', goal: 'g', reason: 'r', scope: 's',
   });
   const { runId: chRun1 } = await driveToResultReceived(tCh.taskId, 'Ch1');
   const beforeRuns = gt.getTask(TEST_ROOT, project, tCh.taskId).linkedRuns.length;
-  await rt.requestChanges(TEST_ROOT, project, tCh.taskId, { reason: 'please fix' });
+  await rt.requestChanges(TEST_ROOT, project, tCh.taskId, chRun1, {
+    goalId: goal.goalId, reason: 'please fix', expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   const afterCh = gt.getTask(TEST_ROOT, project, tCh.taskId);
   check(afterCh.pmState === 'CHANGES_REQUESTED' && afterCh.linkedRuns.length === beforeRuns, 'B2-19 requestChanges preserves Runs');
-  await rt.requestChanges(TEST_ROOT, project, tCh.taskId, { reason: 'please fix' });
-  void chRun1;
+  let chReplayConflict = false;
+  try {
+    await rt.requestChanges(TEST_ROOT, project, tCh.taskId, chRun1, {
+      goalId: goal.goalId, reason: 'please fix', expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    });
+  } catch (e) { chReplayConflict = String(e.message).includes('CONFLICT'); }
+  check(chReplayConflict, 'requestChanges stale CAS replay now CONFLICTs (no silent retry, I3F-2)');
 
   // ── Goal completion (no auto-write) ───────────────────────────────────────
   console.log('B2-21..27 / C11) goal completion');
@@ -293,9 +317,13 @@ async function main() {
   check(!ev.eligible, 'B2-21 unfinished → not eligible');
 
   const { runId: c1run } = await driveToResultReceived(c1.taskId, 'C1a');
-  await rt.acceptResult(TEST_ROOT, project, c1.taskId, c1run);
+  await rt.acceptResult(TEST_ROOT, project, c1.taskId, c1run, {
+    goalId: g2.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   const { runId: c2run } = await driveToResultReceived(c2.taskId, 'C2a');
-  await rt.acceptResult(TEST_ROOT, project, c2.taskId, c2run);
+  await rt.acceptResult(TEST_ROOT, project, c2.taskId, c2run, {
+    goalId: g2.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   ev = rt.evaluateGoalCompletionForId(TEST_ROOT, project, g2.goalId);
   check(ev.eligible && ev.acceptedTasks === 2, 'B2-22 all ACCEPTED → eligible');
   check(gt.getGoal(TEST_ROOT, project, g2.goalId).status === 'ACTIVE', 'C11 all ACCEPTED does NOT auto-write COMPLETED');
@@ -317,7 +345,9 @@ async function main() {
     executionState: 'CANCELLED', pmState: 'PENDING',
   });
   const { runId: keepRun } = await driveToResultReceived(keep.taskId, 'KeepA');
-  await rt.acceptResult(TEST_ROOT, project, keep.taskId, keepRun);
+  await rt.acceptResult(TEST_ROOT, project, keep.taskId, keepRun, {
+    goalId: gAbd.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   const evAbd = rt.evaluateGoalCompletionForId(TEST_ROOT, project, gAbd.goalId);
   check(evAbd.eligible && evAbd.abandonedTasks.includes(drop.taskId), 'B2-24 abandoned semantics');
 
@@ -423,8 +453,12 @@ async function main() {
 
   // C1: acceptResult vs requestChanges — serialized; one full winner
   const c1results = await Promise.allSettled([
-    rt.acceptResult(TEST_ROOT, project, tRace.taskId, raceRun, { expectedPmState: 'VERIFYING' }),
-    rt.requestChanges(TEST_ROOT, project, tRace.taskId, { expectedPmState: 'VERIFYING', reason: 'race' }),
+    rt.acceptResult(TEST_ROOT, project, tRace.taskId, raceRun, {
+      goalId: gRace.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    }),
+    rt.requestChanges(TEST_ROOT, project, tRace.taskId, raceRun, {
+      goalId: gRace.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'race condition test reason',
+    }),
   ]);
   const c1ok = c1results.filter((r) => r.status === 'fulfilled').length;
   const c1fail = c1results.filter((r) => r.status === 'rejected').length;
@@ -497,7 +531,9 @@ async function main() {
   });
   const { runId: depRun } = await driveToResultReceived(tDep.taskId, 'DepP');
   await Promise.all([
-    rt.acceptResult(TEST_ROOT, project, tDep.taskId, depRun),
+    rt.acceptResult(TEST_ROOT, project, tDep.taskId, depRun, {
+      goalId: gRace.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    }),
     rt.refreshTaskReadiness(TEST_ROOT, project, tChild.taskId),
   ]);
   const childAfter = gt.getTask(TEST_ROOT, project, tChild.taskId);
@@ -515,6 +551,7 @@ async function main() {
   let c7 = false;
   try {
     await rt.requestRetry(TEST_ROOT, project, tMark.taskId, {
+      goalId: gRace.goalId,
       expectedExecutionState: 'RESULT_RECEIVED',
       expectedPmState: 'CHANGES_REQUESTED',
     });

@@ -219,6 +219,7 @@ console.log('\n── E-10..14: PM CAS boundary ──');
     // After markResultReceived: executionState=RESULT_RECEIVED, pmState=VERIFYING
 
     const result = await get('relay_pm_accept_result').handler({
+      goalId: goal.goalId,
       taskId: task.taskId,
       runId,
       expectedPmState: 'VERIFYING',
@@ -232,12 +233,16 @@ console.log('\n── E-10..14: PM CAS boundary ──');
   {
     const goal = await makeGoal('Changes Goal');
     const task = await makeTask(goal.goalId, 'Changes Task');
-    await driveToResultReceived(task.taskId);
+    const { runId } = await driveToResultReceived(task.taskId);
     // pmState=VERIFYING after markResultReceived
 
     const result = await get('relay_pm_request_changes').handler({
+      goalId: goal.goalId,
       taskId: task.taskId,
+      runId,
+      reason: 'phase e regression fixture reason',
       expectedPmState: 'VERIFYING',
+      expectedExecutionState: 'RESULT_RECEIVED',
     });
     check(result && result.pmState === 'CHANGES_REQUESTED', 'E-11 relay_pm_request_changes CAS succeeds');
   }
@@ -246,13 +251,17 @@ console.log('\n── E-10..14: PM CAS boundary ──');
   {
     const goal = await makeGoal('Retry Goal');
     const task = await makeTask(goal.goalId, 'Retry Task');
-    await driveToResultReceived(task.taskId);
+    const { runId } = await driveToResultReceived(task.taskId);
     // pmState=VERIFYING after markResultReceived
 
     // Drive to CHANGES_REQUESTED
-    await rt.requestChanges(TEST_ROOT, project, task.taskId, { expectedPmState: 'VERIFYING' });
+    await rt.requestChanges(TEST_ROOT, project, task.taskId, runId, {
+      goalId: goal.goalId, reason: 'phase e regression fixture reason',
+      expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    });
 
     const result = await get('relay_pm_request_retry').handler({
+      goalId: goal.goalId,
       taskId: task.taskId,
       expectedPmState: 'CHANGES_REQUESTED',
       expectedExecutionState: 'RESULT_RECEIVED',
@@ -282,18 +291,32 @@ console.log('\n── E-10..14: PM CAS boundary ──');
   }
 
   // E-14: Stale PM CAS → CONFLICT
-  // After driveToResultReceived: pmState=VERIFYING. Pass ACCEPTED → CONFLICT.
+  // Phase I3F-2: expectedPmState is a frozen single-value enum (VERIFYING only) —
+  // a caller can no longer express an out-of-enum "wrong" expected value at the
+  // schema layer, so staleness is exercised by a Task whose ACTUAL state has not
+  // reached VERIFYING yet (still RUNNING) while the caller (schema-legally)
+  // still expects VERIFYING/RESULT_RECEIVED.
   {
     const goal = await makeGoal('Conflict Goal');
     const task = await makeTask(goal.goalId, 'Conflict Task');
-    const { runId } = await driveToResultReceived(task.taskId);
+    let t = await rt.transitionTaskExecution(TEST_ROOT, project, task.taskId, {
+      expectedExecutionState: 'PLANNED', to: 'READY',
+    });
+    t = await rt.transitionTaskExecution(TEST_ROOT, project, task.taskId, {
+      expectedExecutionState: 'READY', to: 'DISPATCHED',
+    });
+    await rt.transitionTaskExecution(TEST_ROOT, project, task.taskId, {
+      expectedExecutionState: 'DISPATCHED', to: 'RUNNING',
+    });
+    const { runId } = await linkFreshRun(task.taskId);
 
     await shouldThrow(
       () => get('relay_pm_accept_result').handler({
+        goalId: goal.goalId,
         taskId: task.taskId,
         runId,
-        expectedPmState: 'ACCEPTED',       // wrong — task is VERIFYING
-        expectedExecutionState: 'RESULT_RECEIVED',
+        expectedPmState: 'VERIFYING',
+        expectedExecutionState: 'RESULT_RECEIVED', // wrong — task is still RUNNING
       }),
       'E-14 stale PM CAS → CONFLICT error',
       null, // any error is acceptable (core throws CONFLICT or INVALID_STATE)

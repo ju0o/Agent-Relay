@@ -196,14 +196,20 @@ async function main() {
   // ── acceptedRunId (I13–I15, I20) ───────────────────────────────────────────
   console.log('I13–I15/I20) acceptedRunId');
   const acceptTask = gt.getTask(TEST_ROOT, project, 'TASK-0001');
-  const pickId = acceptTask.linkedRuns[0].runId;
+  // Accept must target the current (latest) attempt — historical Run rejected (I3F-2).
+  const pickId = rt.resolveCurrentAttemptRunId(acceptTask);
   let badAccept = false;
-  try { await rt.acceptResult(TEST_ROOT, project, 'TASK-0001', 'not-a-real-run'); }
-  catch { badAccept = true; }
+  try {
+    await rt.acceptResult(TEST_ROOT, project, 'TASK-0001', 'not-a-real-run', {
+      goalId: 'GOAL-0001', expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    });
+  } catch { badAccept = true; }
   check(badAccept, 'I13 acceptedRunId must reference linked Run');
 
   // TASK-0001 is already RESULT_RECEIVED/VERIFYING from I19
-  const withAccept = await rt.acceptResult(TEST_ROOT, project, 'TASK-0001', pickId);
+  const withAccept = await rt.acceptResult(TEST_ROOT, project, 'TASK-0001', pickId, {
+    goalId: 'GOAL-0001', expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   check(withAccept.acceptedRunId === pickId && withAccept.pmState === 'ACCEPTED', 'I20 PM ACCEPTED + acceptedRunId');
   check(withAccept.linkedRuns.length > 1, 'I14 other attempts still linked');
   const cleared = await rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', {
@@ -217,8 +223,9 @@ async function main() {
   await rt.transitionTaskPm(TEST_ROOT, project, 'TASK-0001', {
     expectedPmState: 'PENDING', to: 'VERIFYING',
   });
-  await rt.requestChanges(TEST_ROOT, project, 'TASK-0001', {
-    expectedPmState: 'VERIFYING', reason: 'progress fixture',
+  await rt.requestChanges(TEST_ROOT, project, 'TASK-0001', pickId, {
+    goalId: 'GOAL-0001', expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    reason: 'progress fixture reset for testing',
   });
   await rt.transitionTaskExecution(TEST_ROOT, project, t2.taskId, {
     expectedExecutionState: 'PLANNED', to: 'BLOCKED', reason: 'fixture',

@@ -220,7 +220,9 @@ console.log('\n── F1-14 ACCEPTED Task permits Memo ──');
   // before accept
   const m1 = await taskMemo.createMemo(dr, pr, tt.taskId, { body: 'before accept' });
   check(m1.noteId.includes('NOTE-'), 'F1-14 before accept memo');
-  await rt.acceptResult(dr, pr, tt.taskId, run.runId);
+  await rt.acceptResult(dr, pr, tt.taskId, run.runId, {
+    goalId: gg.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+  });
   const m2 = await taskMemo.createMemo(dr, pr, tt.taskId, { body: 'after accept memo' });
   check(m2.noteId.includes('NOTE-'), 'F1-14 after accept memo');
   cleanup(g4.tmp);

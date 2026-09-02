@@ -503,129 +503,200 @@ export function markResultReceived(
   });
 }
 
+/**
+ * Phase I3F-2 canonical Accept Result input.
+ * expectedExecutionState/expectedPmState are REQUIRED and fixed by contract —
+ * no optional CAS, no permissive PENDING compatibility. goalId is required
+ * and is verified against the Task's actual goalId (defense in depth).
+ */
+export interface AcceptResultInput {
+  goalId: string;
+  expectedExecutionState: TaskExecutionState;
+  expectedPmState: TaskPmState;
+  reason?: string;
+}
+
+/**
+ * Canonical Accept Result correction (frozen I3F-2 contract).
+ * Precondition: executionState=RESULT_RECEIVED, pmState=VERIFYING.
+ * runId must be linked AND be the current (latest) attempt — historical/stale
+ * Run acceptance is rejected. No force flag. No silent retry: a stale CAS
+ * always CONFLICTs, including a second accept call after the first succeeded.
+ */
 export function acceptResult(
   dataRoot: string,
   project: string,
   taskId: string,
   runId: string,
-  opts?: {
-    reason?: string;
-    expectedPmState?: TaskPmState;
-    expectedExecutionState?: TaskExecutionState;
-  },
+  opts: AcceptResultInput,
 ): Promise<TaskRecord> {
   const id = requireNonEmptyString(taskId, 'taskId');
   const rid = requireNonEmptyString(runId, 'runId');
+  if (!opts || typeof opts !== 'object') {
+    throw new Error('잘못된 입력: acceptResult에는 goalId/expectedExecutionState/expectedPmState가 필요합니다.');
+  }
+  const goalId = requireNonEmptyString(opts.goalId, 'goalId');
+  if (opts.expectedExecutionState !== 'RESULT_RECEIVED') {
+    throw new Error('잘못된 입력: acceptResult의 expectedExecutionState는 RESULT_RECEIVED만 허용됩니다.');
+  }
+  if (opts.expectedPmState !== 'VERIFYING') {
+    throw new Error('잘못된 입력: acceptResult의 expectedPmState는 VERIFYING만 허용됩니다.');
+  }
   return withTaskLinkLock(project, id, () => {
     const task = getTask(dataRoot, project, id);
 
+    if (task.goalId !== goalId) {
+      throw new Error(`잘못된 goalId: Task ${id}의 goalId는 ${task.goalId}입니다.`);
+    }
     if (!task.linkedRuns.some((r) => r.runId === rid)) {
       throw new Error('runId는 이 Task에 연결된 Run이어야 합니다.');
     }
 
-    // Idempotent same accept
-    if (task.pmState === 'ACCEPTED' && task.acceptedRunId === rid) {
-      if (opts?.expectedPmState && opts.expectedPmState !== 'ACCEPTED') {
-        // Replay of accept after success: treat as idempotent success when already accepted same run
-        // unless caller insisted on a different expected — then conflict
-        throw new RuntimeConflictError(
-          `CONFLICT: expectedPmState=${opts.expectedPmState} but found ACCEPTED`,
-        );
-      }
-      return task;
-    }
+    // Strict CAS — no idempotent replay path. Once ACCEPTED, expectedPmState
+    // (fixed at VERIFYING) can never match current state again; a second
+    // accept call is a stale CAS and CONFLICTs (no silent retry).
+    assertExpectedExecution(task.executionState, 'RESULT_RECEIVED');
+    assertExpectedPm(task.pmState, 'VERIFYING');
 
-    const expectedExec = opts?.expectedExecutionState ?? 'RESULT_RECEIVED';
-    assertExpectedExecution(task.executionState, expectedExec);
-
-    const expectedPm = opts?.expectedPmState ?? task.pmState;
-    assertExpectedPm(task.pmState, expectedPm);
-
-    if (task.pmState === 'CHANGES_REQUESTED') {
-      throw new RuntimeConflictError(
-        'CONFLICT: CHANGES_REQUESTED 상태에서는 acceptResult할 수 없습니다.',
+    // Run binding: only the current (latest) attempt may be accepted.
+    // acceptedRunId is guaranteed absent here (pmState===VERIFYING).
+    const currentAttemptRunId = resolveCurrentAttemptRunId(task);
+    if (currentAttemptRunId !== rid) {
+      throw new Error(
+        '잘못된 runId: 현재 시도(current attempt)가 아닌 과거/오래된 Run은 accept할 수 없습니다.',
       );
     }
-    if (task.pmState === 'ACCEPTED' && task.acceptedRunId !== rid) {
-      throw new Error('이미 다른 Run이 ACCEPTED되어 있습니다. 재개방 후 다시 시도하세요.');
-    }
 
-    if (task.pmState === 'PENDING') {
-      assertLegalPmTransition('PENDING', 'VERIFYING');
-      assertLegalPmTransition('VERIFYING', 'ACCEPTED');
-    } else {
-      assertLegalPmTransition(task.pmState, 'ACCEPTED');
-    }
+    assertLegalPmTransition('VERIFYING', 'ACCEPTED');
 
     task.acceptedRunId = rid;
     task.pmState = 'ACCEPTED';
-    if (opts?.reason?.trim()) task.lastTransitionReason = opts.reason.trim();
-    else task.lastTransitionReason = `acceptResult:${rid}`;
+    task.lastTransitionReason = opts.reason?.trim() || `acceptResult:${rid}`;
     task.updatedAt = nowIso();
     // No eager dependent mutation
     return persistTaskRecord(dataRoot, project, task);
   });
 }
 
+/**
+ * Phase I3F-2 canonical Request Changes input.
+ * runId + dual CAS + bounded reason are all REQUIRED — no optional CAS.
+ */
+export interface RequestChangesInput {
+  goalId: string;
+  reason: string;
+  expectedExecutionState: TaskExecutionState;
+  expectedPmState: TaskPmState;
+}
+
+/**
+ * Canonical Request Changes correction (frozen I3F-2 contract).
+ * Precondition: executionState=RESULT_RECEIVED, pmState=VERIFYING (dual CAS).
+ * VERIFYING → CHANGES_REQUESTED; execution axis is left at RESULT_RECEIVED
+ * (Changes != Retry — no automatic READY transition here).
+ * runId must be linked AND be the current (latest) attempt.
+ */
 export function requestChanges(
   dataRoot: string,
   project: string,
   taskId: string,
-  opts?: { reason?: string; expectedPmState?: TaskPmState },
+  runId: string,
+  opts: RequestChangesInput,
 ): Promise<TaskRecord> {
   const id = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  if (!opts || typeof opts !== 'object') {
+    throw new Error('잘못된 입력: requestChanges에는 goalId/reason/expectedExecutionState/expectedPmState가 필요합니다.');
+  }
+  const goalId = requireNonEmptyString(opts.goalId, 'goalId');
+  const reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
+  if (reason.length < 10 || reason.length > 2000) {
+    throw new Error('잘못된 reason: 10자 이상 2000자 이하이어야 합니다.');
+  }
+  if (opts.expectedExecutionState !== 'RESULT_RECEIVED') {
+    throw new Error('잘못된 입력: requestChanges의 expectedExecutionState는 RESULT_RECEIVED만 허용됩니다.');
+  }
+  if (opts.expectedPmState !== 'VERIFYING') {
+    throw new Error('잘못된 입력: requestChanges의 expectedPmState는 VERIFYING만 허용됩니다.');
+  }
   return withTaskLinkLock(project, id, () => {
     const task = getTask(dataRoot, project, id);
 
-    if (task.pmState === 'CHANGES_REQUESTED') {
-      if (opts?.expectedPmState && opts.expectedPmState !== 'CHANGES_REQUESTED') {
-        throw new RuntimeConflictError(
-          `CONFLICT: expectedPmState=${opts.expectedPmState} but found CHANGES_REQUESTED`,
-        );
-      }
-      if (opts?.reason?.trim() && opts.reason.trim() !== task.lastTransitionReason) {
-        task.lastTransitionReason = opts.reason.trim();
-        task.updatedAt = nowIso();
-        return persistTaskRecord(dataRoot, project, task);
-      }
-      return task; // idempotent
+    if (task.goalId !== goalId) {
+      throw new Error(`잘못된 goalId: Task ${id}의 goalId는 ${task.goalId}입니다.`);
+    }
+    if (!task.linkedRuns.some((r) => r.runId === rid)) {
+      throw new Error('runId는 이 Task에 연결된 Run이어야 합니다.');
     }
 
-    const expectedPm = opts?.expectedPmState ?? 'VERIFYING';
-    assertExpectedPm(task.pmState, expectedPm);
-    assertLegalPmTransition(task.pmState, 'CHANGES_REQUESTED');
+    // Dual CAS — strict, no idempotent replay path (no silent retry).
+    assertExpectedExecution(task.executionState, 'RESULT_RECEIVED');
+    assertExpectedPm(task.pmState, 'VERIFYING');
+
+    const currentAttemptRunId = resolveCurrentAttemptRunId(task);
+    if (currentAttemptRunId !== rid) {
+      throw new Error(
+        '잘못된 runId: 현재 시도(current attempt)가 아닌 과거/오래된 Run에는 changes를 요청할 수 없습니다.',
+      );
+    }
+
+    assertLegalPmTransition('VERIFYING', 'CHANGES_REQUESTED');
 
     delete task.acceptedRunId;
     task.pmState = 'CHANGES_REQUESTED';
-    if (opts?.reason?.trim()) task.lastTransitionReason = opts.reason.trim();
+    task.lastTransitionReason = reason;
     task.updatedAt = nowIso();
+    // Execution axis untouched — Changes != Retry, no automatic READY here.
     return persistTaskRecord(dataRoot, project, task);
   });
 }
 
 /**
- * Explicit correction retry loop.
+ * Phase I3F-2 canonical Retry input. Dual CAS REQUIRED — no defaulting.
+ */
+export interface RequestRetryInput {
+  goalId: string;
+  expectedExecutionState: TaskExecutionState;
+  expectedPmState: TaskPmState;
+  reason?: string;
+}
+
+/**
+ * Explicit correction retry loop (frozen I3F-2 contract).
  * RESULT_RECEIVED + CHANGES_REQUESTED → READY + PENDING.
  * Preserves all linkedRuns; next attempt requires a NEW linked Run.
+ * Does NOT create a new Run, does NOT dispatch, does NOT retry FAILED.
  */
 export function requestRetry(
   dataRoot: string,
   project: string,
   taskId: string,
-  opts?: {
-    reason?: string;
-    expectedExecutionState?: TaskExecutionState;
-    expectedPmState?: TaskPmState;
-  },
+  opts: RequestRetryInput,
 ): Promise<TaskRecord> {
   const id = requireNonEmptyString(taskId, 'taskId');
+  if (!opts || typeof opts !== 'object') {
+    throw new Error('잘못된 입력: requestRetry에는 goalId/expectedExecutionState/expectedPmState가 필요합니다.');
+  }
+  const goalId = requireNonEmptyString(opts.goalId, 'goalId');
+  if (opts.expectedExecutionState !== 'RESULT_RECEIVED') {
+    throw new Error('잘못된 입력: requestRetry의 expectedExecutionState는 RESULT_RECEIVED만 허용됩니다.');
+  }
+  if (opts.expectedPmState !== 'CHANGES_REQUESTED') {
+    throw new Error('잘못된 입력: requestRetry의 expectedPmState는 CHANGES_REQUESTED만 허용됩니다.');
+  }
+  if (opts.reason !== undefined && opts.reason.length > 500) {
+    throw new Error('잘못된 reason: 500자 이하이어야 합니다.');
+  }
   return withTaskLinkLock(project, id, () => {
     const task = getTask(dataRoot, project, id);
-    const expectedExec = opts?.expectedExecutionState ?? 'RESULT_RECEIVED';
-    const expectedPm = opts?.expectedPmState ?? 'CHANGES_REQUESTED';
 
-    assertExpectedExecution(task.executionState, expectedExec);
-    assertExpectedPm(task.pmState, expectedPm);
+    if (task.goalId !== goalId) {
+      throw new Error(`잘못된 goalId: Task ${id}의 goalId는 ${task.goalId}입니다.`);
+    }
+
+    // Dual CAS — strict, no silent retry.
+    assertExpectedExecution(task.executionState, 'RESULT_RECEIVED');
+    assertExpectedPm(task.pmState, 'CHANGES_REQUESTED');
 
     if (task.executionState !== 'RESULT_RECEIVED' || task.pmState !== 'CHANGES_REQUESTED') {
       throw new Error('requestRetry는 RESULT_RECEIVED + CHANGES_REQUESTED에서만 가능합니다.');
@@ -637,7 +708,7 @@ export function requestRetry(
     task.executionState = 'READY';
     task.pmState = 'PENDING';
     task.retryCount = (task.retryCount ?? 0) + 1;
-    task.lastTransitionReason = opts?.reason?.trim() || 'requestRetry';
+    task.lastTransitionReason = opts.reason?.trim() || 'requestRetry';
     task.updatedAt = nowIso();
     return persistTaskRecord(dataRoot, project, task);
   });

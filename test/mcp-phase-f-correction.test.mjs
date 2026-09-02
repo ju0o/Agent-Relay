@@ -465,9 +465,11 @@ console.log('\nFC-21..25) Missing Event hard-fail + live stale CAS CONFLICT');
   check(beforeD === hashFile(deliveryFile) && beforeT === hashFile(taskFile), 'Read purity regression around CAS');
 
   // FC-23 mutate Task via legitimate B2
-  await rt.requestChanges(TEST_ROOT, project, task.taskId, {
+  await rt.requestChanges(TEST_ROOT, project, task.taskId, runId, {
+    goalId: goal.goalId,
     expectedPmState: packet.cas.expectedPmState,
-    reason: 'stale cas test',
+    expectedExecutionState: packet.cas.expectedExecutionState,
+    reason: 'stale cas test fixture reason',
   });
   check(
     gt.getTask(TEST_ROOT, project, task.taskId).pmState === 'CHANGES_REQUESTED',
@@ -478,6 +480,7 @@ console.log('\nFC-21..25) Missing Event hard-fail + live stale CAS CONFLICT');
   let conflicted = false;
   try {
     await rt.acceptResult(TEST_ROOT, project, task.taskId, runId, {
+      goalId: goal.goalId,
       expectedPmState: packet.cas.expectedPmState,
       expectedExecutionState: packet.cas.expectedExecutionState,
     });
@@ -499,8 +502,11 @@ console.log('\nFC-21..25) Missing Event hard-fail + live stale CAS CONFLICT');
     runId: runId2,
   });
   const packet2 = pmGateway.getContextForEvent(TEST_ROOT, project, casEvent2.eventId);
-  await rt.requestChanges(TEST_ROOT, project, task2.taskId, {
+  await rt.requestChanges(TEST_ROOT, project, task2.taskId, runId2, {
+    goalId: goal.goalId,
+    expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'VERIFYING',
+    reason: 'stale cas mcp fixture reason',
   });
 
   let mcpClient = null;
@@ -515,6 +521,7 @@ console.log('\nFC-21..25) Missing Event hard-fail + live stale CAS CONFLICT');
     const result = await mcpClient.callTool({
       name: 'relay_pm_accept_result',
       arguments: {
+        goalId: goal.goalId,
         taskId: task2.taskId,
         runId: runId2,
         expectedPmState: packet2.cas.expectedPmState,

@@ -441,10 +441,11 @@ console.log('\n── G-29..G-32 concurrency + retry ──');
   await rt.markResultReceived(TEST_ROOT, project, task.taskId, run1, {
     expectedExecutionState: 'RUNNING',
   });
-  await rt.requestChanges(TEST_ROOT, project, task.taskId, {
-    expectedPmState: 'VERIFYING', reason: 'nits',
+  await rt.requestChanges(TEST_ROOT, project, task.taskId, run1, {
+    goalId: goal.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'nits: please address',
   });
   await rt.requestRetry(TEST_ROOT, project, task.taskId, {
+    goalId: goal.goalId,
     expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'CHANGES_REQUESTED',
   });

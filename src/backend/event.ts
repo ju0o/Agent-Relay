@@ -244,6 +244,9 @@ export function defaultSeverityForType(type: EventType): EventSeverity {
     case 'RUN_RESULT_RECEIVED':
     case 'EVIDENCE_READY':
     case 'TASK_BECAME_READY':
+    case 'TASK_RESULT_ACCEPTED':
+    case 'TASK_CHANGES_REQUESTED':
+    case 'TASK_RETRY_REQUESTED':
     default:
       return 'INFO';
   }
@@ -256,6 +259,11 @@ export function defaultSeverityForType(type: EventType): EventSeverity {
  *                RUNTIME_ERROR.
  * required=false: TASK_BECAME_READY, RUN_RESULT_RECEIVED, EVIDENCE_READY,
  *                 RUNTIME_WARNING, GOAL_COMPLETED (fact-only).
+ *
+ * Phase I3F-2: TASK_RESULT_ACCEPTED / TASK_CHANGES_REQUESTED / TASK_RETRY_REQUESTED
+ * are audit FACT events (a canonical mutation occurred) — required=false by design.
+ * They must not unnecessarily re-wake PM; PM already discovers the resulting
+ * state (VERIFYING/CHANGES_REQUESTED/READY+PENDING) via get_next_work / reads.
  */
 export function derivePmAttention(type: EventType, severity: EventSeverity): PmAttention {
   switch (type) {
@@ -276,6 +284,9 @@ export function derivePmAttention(type: EventType, severity: EventSeverity): PmA
     case 'TASK_BECAME_READY':
     case 'GOAL_COMPLETED':
     case 'RUNTIME_WARNING':
+    case 'TASK_RESULT_ACCEPTED':
+    case 'TASK_CHANGES_REQUESTED':
+    case 'TASK_RETRY_REQUESTED':
     default:
       return { required: false, reason: 'Fact-only signal; no PM attention by default', priority: 'LOW' };
   }
@@ -785,7 +796,23 @@ export function recordRuntimeWarning(dataRoot: string, project: string, p: Param
 }
 export function recordRuntimeError(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
   return recordEventInternal(dataRoot, project, baseInput('RUNTIME_ERROR', p));
-}// ── read API ────────────────────────────────────────────────────────────────
+}
+
+/**
+ * Phase I3F-2 canonical Task Action audit facts. Each records that a
+ * mutation ALREADY happened (see task-actions.ts) — never a replacement for
+ * Evidence, never a Worker claim, never a trustLevel upgrade.
+ */
+export function recordTaskResultAccepted(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
+  return recordEventInternal(dataRoot, project, baseInput('TASK_RESULT_ACCEPTED', p));
+}
+export function recordTaskChangesRequested(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
+  return recordEventInternal(dataRoot, project, baseInput('TASK_CHANGES_REQUESTED', p));
+}
+export function recordTaskRetryRequested(dataRoot: string, project: string, p: Parameters<typeof baseInput>[1]): Promise<EventRecord> {
+  return recordEventInternal(dataRoot, project, baseInput('TASK_RETRY_REQUESTED', p));
+}
+// ── read API ────────────────────────────────────────────────────────────────
 
 export function getEvent(dataRoot: string, project: string, eventId: string): EventRecord {
   const id = requireNonEmptyString(eventId, 'eventId');

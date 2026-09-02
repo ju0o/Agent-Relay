@@ -20,8 +20,9 @@ import * as pmGateway from '../backend/pm-gateway.js';
 import * as dispatcher from '../backend/dispatcher.js';
 import * as pmWork from '../backend/pm-work.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
+import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
-import type { GoalStatus, TaskPmState, TaskExecutionState, EventDeliveryStatus } from '../shared/types.js';
+import type { GoalStatus, EventDeliveryStatus } from '../shared/types.js';
 import {
   objectSchema,
   optionalString,
@@ -32,10 +33,11 @@ import {
 import { McpError, mapCoreError } from './errors.js';
 import type { McpTool, PmServerContext } from './server.js';
 
-const PM_STATES: readonly TaskPmState[] = ['PENDING', 'VERIFYING', 'CHANGES_REQUESTED', 'ACCEPTED'];
-const EXEC_STATES: readonly TaskExecutionState[] = [
-  'PLANNED', 'READY', 'DISPATCHED', 'RUNNING', 'RESULT_RECEIVED', 'BLOCKED', 'CANCELLED', 'FAILED',
-];
+// Phase I3F-2: accept/changes/retry CAS values are frozen single-value enums
+// (no permissive multi-state compatibility) — see ACCEPT_EXEC_ONLY etc. below.
+const ACCEPT_EXEC_ONLY = ['RESULT_RECEIVED'] as const;
+const ACCEPT_PM_ONLY = ['VERIFYING'] as const;
+const RETRY_PM_ONLY = ['CHANGES_REQUESTED'] as const;
 const DELIVERY_STATUSES: readonly EventDeliveryStatus[] = ['PENDING', 'DELIVERED', 'ACKNOWLEDGED', 'IGNORED'];
 const GOAL_STATUSES: readonly GoalStatus[] = [
   'PLANNING', 'ACTIVE', 'WAITING_OWNER', 'BLOCKED', 'COMPLETED', 'ABANDONED',
@@ -270,82 +272,105 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
     {
       name: 'relay_pm_accept_result',
       description:
-        'Accept a Task result by runId. Requires expectedPmState and expectedExecutionState CAS guards. ' +
-        'Stale expected state → CONFLICT.',
+        'Phase I3F-2: canonical Accept Result. Requires goalId + runId + REQUIRED dual CAS ' +
+        '(expectedExecutionState=RESULT_RECEIVED, expectedPmState=VERIFYING). No optional CAS. ' +
+        'runId must be the current (latest) attempt — historical/stale Run is rejected. ' +
+        'Permission gate: PLAN/APPROVE/BYPASS all allow PM_MCP. Stale CAS → CONFLICT (no write).',
       inputSchema: objectSchema(
         {
+          goalId: { type: 'string' },
           taskId: { type: 'string' },
           runId: { type: 'string' },
           reason: { type: 'string' },
-          expectedPmState: { type: 'string', enum: PM_STATES },
-          expectedExecutionState: { type: 'string', enum: EXEC_STATES },
+          expectedPmState: { type: 'string', enum: ACCEPT_PM_ONLY },
+          expectedExecutionState: { type: 'string', enum: ACCEPT_EXEC_ONLY },
         },
-        ['taskId', 'runId', 'expectedPmState', 'expectedExecutionState'],
+        ['goalId', 'taskId', 'runId', 'expectedPmState', 'expectedExecutionState'],
       ),
       handler: async (args) => {
-        rejectUnknownFields(args, ['taskId', 'runId', 'reason', 'expectedPmState', 'expectedExecutionState']);
-        return goalTaskRuntime.acceptResult(
-          dataRoot, project,
-          requireString(args, 'taskId'),
-          requireString(args, 'runId'),
-          {
+        rejectUnknownFields(args, ['goalId', 'taskId', 'runId', 'reason', 'expectedPmState', 'expectedExecutionState']);
+        try {
+          return await taskActions.acceptTaskResult({
+            dataRoot, project,
+            goalId: requireString(args, 'goalId'),
+            taskId: requireString(args, 'taskId'),
+            runId: requireString(args, 'runId'),
             reason: optionalString(args, 'reason'),
-            expectedPmState: requireEnum(args, 'expectedPmState', PM_STATES),
-            expectedExecutionState: requireEnum(args, 'expectedExecutionState', EXEC_STATES),
-          },
-        );
+            expectedPmState: requireEnum(args, 'expectedPmState', ACCEPT_PM_ONLY),
+            expectedExecutionState: requireEnum(args, 'expectedExecutionState', ACCEPT_EXEC_ONLY),
+            callerSurface: 'PM_MCP',
+          });
+        } catch (err) {
+          mapPermissionError(err);
+        }
       },
     },
     {
       name: 'relay_pm_request_changes',
       description:
-        'Request changes for a Task. Resets to CHANGES_REQUESTED. Requires expectedPmState CAS guard. ' +
-        'Stale expected state → CONFLICT.',
+        'Phase I3F-2: canonical Request Changes. Resets VERIFYING → CHANGES_REQUESTED (execution stays ' +
+        'RESULT_RECEIVED — Changes != Retry). Requires goalId + runId + REQUIRED dual CAS + bounded ' +
+        'reason (10..2000 chars). runId must be the current attempt. Stale CAS → CONFLICT (no write).',
       inputSchema: objectSchema(
         {
+          goalId: { type: 'string' },
           taskId: { type: 'string' },
-          reason: { type: 'string' },
-          expectedPmState: { type: 'string', enum: PM_STATES },
+          runId: { type: 'string' },
+          reason: { type: 'string', minLength: 10, maxLength: 2000 },
+          expectedPmState: { type: 'string', enum: ACCEPT_PM_ONLY },
+          expectedExecutionState: { type: 'string', enum: ACCEPT_EXEC_ONLY },
         },
-        ['taskId', 'expectedPmState'],
+        ['goalId', 'taskId', 'runId', 'reason', 'expectedPmState', 'expectedExecutionState'],
       ),
       handler: async (args) => {
-        rejectUnknownFields(args, ['taskId', 'reason', 'expectedPmState']);
-        return goalTaskRuntime.requestChanges(
-          dataRoot, project,
-          requireString(args, 'taskId'),
-          {
-            reason: optionalString(args, 'reason'),
-            expectedPmState: requireEnum(args, 'expectedPmState', PM_STATES),
-          },
-        );
+        rejectUnknownFields(args, ['goalId', 'taskId', 'runId', 'reason', 'expectedPmState', 'expectedExecutionState']);
+        try {
+          return await taskActions.requestTaskChanges({
+            dataRoot, project,
+            goalId: requireString(args, 'goalId'),
+            taskId: requireString(args, 'taskId'),
+            runId: requireString(args, 'runId'),
+            reason: requireString(args, 'reason'),
+            expectedPmState: requireEnum(args, 'expectedPmState', ACCEPT_PM_ONLY),
+            expectedExecutionState: requireEnum(args, 'expectedExecutionState', ACCEPT_EXEC_ONLY),
+            callerSurface: 'PM_MCP',
+          });
+        } catch (err) {
+          mapPermissionError(err);
+        }
       },
     },
     {
       name: 'relay_pm_request_retry',
       description:
-        'Reset RESULT_RECEIVED+CHANGES_REQUESTED Task back to READY+PENDING for a fresh attempt. ' +
-        'Requires expectedPmState + expectedExecutionState CAS guards. Stale → CONFLICT.',
+        'Phase I3F-2: canonical Retry. Reset RESULT_RECEIVED+CHANGES_REQUESTED Task back to READY+PENDING ' +
+        'for a fresh attempt. Does NOT create a new Run or dispatch. Requires goalId + REQUIRED dual CAS ' +
+        '(expectedExecutionState=RESULT_RECEIVED, expectedPmState=CHANGES_REQUESTED). Stale → CONFLICT.',
       inputSchema: objectSchema(
         {
+          goalId: { type: 'string' },
           taskId: { type: 'string' },
-          reason: { type: 'string' },
-          expectedExecutionState: { type: 'string', enum: EXEC_STATES },
-          expectedPmState: { type: 'string', enum: PM_STATES },
+          reason: { type: 'string', maxLength: 500 },
+          expectedExecutionState: { type: 'string', enum: ACCEPT_EXEC_ONLY },
+          expectedPmState: { type: 'string', enum: RETRY_PM_ONLY },
         },
-        ['taskId', 'expectedPmState', 'expectedExecutionState'],
+        ['goalId', 'taskId', 'expectedPmState', 'expectedExecutionState'],
       ),
       handler: async (args) => {
-        rejectUnknownFields(args, ['taskId', 'reason', 'expectedExecutionState', 'expectedPmState']);
-        return goalTaskRuntime.requestRetry(
-          dataRoot, project,
-          requireString(args, 'taskId'),
-          {
+        rejectUnknownFields(args, ['goalId', 'taskId', 'reason', 'expectedExecutionState', 'expectedPmState']);
+        try {
+          return await taskActions.requestTaskRetry({
+            dataRoot, project,
+            goalId: requireString(args, 'goalId'),
+            taskId: requireString(args, 'taskId'),
             reason: optionalString(args, 'reason'),
-            expectedExecutionState: requireEnum(args, 'expectedExecutionState', EXEC_STATES),
-            expectedPmState: requireEnum(args, 'expectedPmState', PM_STATES),
-          },
-        );
+            expectedExecutionState: requireEnum(args, 'expectedExecutionState', ACCEPT_EXEC_ONLY),
+            expectedPmState: requireEnum(args, 'expectedPmState', RETRY_PM_ONLY),
+            callerSurface: 'PM_MCP',
+          });
+        } catch (err) {
+          mapPermissionError(err);
+        }
       },
     },
     {

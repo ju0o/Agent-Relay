@@ -313,8 +313,11 @@ async function main() {
     await gt.linkRunToTask(TEST_ROOT, project, t.taskId, r1.folder);
     await gt.linkRunToTask(TEST_ROOT, project, t.taskId, r2.folder);
     let rec = gt.getTask(TEST_ROOT, project, t.taskId);
-    const pick = rec.linkedRuns[0].runId;
-    await rt.acceptResult(TEST_ROOT, project, t.taskId, pick);
+    // Accept must target the current (latest) attempt — historical Run rejected (I3F-2).
+    const pick = rec.linkedRuns[rec.linkedRuns.length - 1].runId;
+    await rt.acceptResult(TEST_ROOT, project, t.taskId, pick, {
+      goalId: g.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING',
+    });
     rec = gt.getTask(TEST_ROOT, project, t.taskId);
     check(rec.acceptedRunId === pick, 'F17 accepted set');
     const pickFolder = rec.linkedRuns.find(r => r.runId === pick).folder;

@@ -123,9 +123,9 @@ export type RelayRequest =
  | { op: 'task:transitionExecution'; dataRoot: string; project: string; taskId: string; expectedExecutionState: TaskExecutionState; to: TaskExecutionState; reason?: string }
  | { op: 'task:transitionPm'; dataRoot: string; project: string; taskId: string; expectedPmState: TaskPmState; to: TaskPmState; reason?: string; acceptedRunId?: string }
  | { op: 'task:markResultReceived'; dataRoot: string; project: string; taskId: string; runId: string; expectedExecutionState?: TaskExecutionState }
- | { op: 'task:acceptResult'; dataRoot: string; project: string; taskId: string; runId: string; reason?: string; expectedPmState?: TaskPmState; expectedExecutionState?: TaskExecutionState }
- | { op: 'task:requestChanges'; dataRoot: string; project: string; taskId: string; reason?: string; expectedPmState?: TaskPmState }
- | { op: 'task:requestRetry'; dataRoot: string; project: string; taskId: string; reason?: string; expectedExecutionState?: TaskExecutionState; expectedPmState?: TaskPmState }
+ | { op: 'task:acceptResult'; dataRoot: string; project: string; goalId: string; taskId: string; runId: string; reason?: string; expectedPmState: TaskPmState; expectedExecutionState: TaskExecutionState }
+ | { op: 'task:requestChanges'; dataRoot: string; project: string; goalId: string; taskId: string; runId: string; reason: string; expectedPmState: TaskPmState; expectedExecutionState: TaskExecutionState }
+ | { op: 'task:requestRetry'; dataRoot: string; project: string; goalId: string; taskId: string; reason?: string; expectedExecutionState: TaskExecutionState; expectedPmState: TaskPmState }
   | { op: 'evidence:recordWorkerClaim'; dataRoot: string; project: string; input: EvidenceWorkerClaimInput }
   | { op: 'evidence:recordAdapterObservation'; dataRoot: string; project: string; input: EvidenceAdapterObservationInput }
   | { op: 'evidence:recordGit'; dataRoot: string; project: string; input: EvidenceGitInput }
@@ -1029,6 +1029,10 @@ export const EVENT_TYPES = [
   'GOAL_COMPLETED',
   'RUNTIME_WARNING',
   'RUNTIME_ERROR',
+  // Phase I3F-2 — canonical Task Action audit facts (mutation occurred; NOT Evidence).
+  'TASK_RESULT_ACCEPTED',
+  'TASK_CHANGES_REQUESTED',
+  'TASK_RETRY_REQUESTED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

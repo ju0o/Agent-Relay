@@ -17,6 +17,7 @@ import * as eventKernel from './event.js';
 import * as dispatcher from './dispatcher.js';
 import * as pmWork from './pm-work.js';
 import * as orphanResolution from './orphan-resolution.js';
+import * as taskActions from './task-actions.js';
 import { authorizeEffect } from './permission-gate.js';
 import { CaptureManager } from './capture-manager.js';
 import { setCaptureManager } from './capture-service.js';
@@ -533,23 +534,41 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       });
 
     case 'task:acceptResult':
-      return goalTaskRuntime.acceptResult(req.dataRoot, req.project, req.taskId, req.runId, {
+      return taskActions.acceptTaskResult({
+        dataRoot: req.dataRoot,
+        project: req.project,
+        goalId: req.goalId,
+        taskId: req.taskId,
+        runId: req.runId,
         reason: req.reason,
         expectedPmState: req.expectedPmState,
         expectedExecutionState: req.expectedExecutionState,
+        callerSurface: 'OWNER_IPC',
       });
 
     case 'task:requestChanges':
-      return goalTaskRuntime.requestChanges(req.dataRoot, req.project, req.taskId, {
-        reason: req.reason,
-        expectedPmState: req.expectedPmState,
-      });
-
-    case 'task:requestRetry':
-      return goalTaskRuntime.requestRetry(req.dataRoot, req.project, req.taskId, {
+      return taskActions.requestTaskChanges({
+        dataRoot: req.dataRoot,
+        project: req.project,
+        goalId: req.goalId,
+        taskId: req.taskId,
+        runId: req.runId,
         reason: req.reason,
         expectedExecutionState: req.expectedExecutionState,
         expectedPmState: req.expectedPmState,
+        callerSurface: 'OWNER_IPC',
+      });
+
+    case 'task:requestRetry':
+      return taskActions.requestTaskRetry({
+        dataRoot: req.dataRoot,
+        project: req.project,
+        goalId: req.goalId,
+        taskId: req.taskId,
+        reason: req.reason,
+        expectedExecutionState: req.expectedExecutionState,
+        expectedPmState: req.expectedPmState,
+        callerSurface: 'OWNER_IPC',
       });
 
     case 'evidence:recordWorkerClaim':

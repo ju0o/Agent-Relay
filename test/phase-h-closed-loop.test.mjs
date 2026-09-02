@@ -319,8 +319,11 @@ console.log('\n── H-18..H-30 Trusted Result Bridge ──');
   });
   await injectResponseComplete(r1.runId, 'ses-r1');
   cur = gt.getTask(TEST_ROOT, project, t4.taskId);
-  await rt.requestChanges(TEST_ROOT, project, t4.taskId, { expectedPmState: 'VERIFYING' });
+  await rt.requestChanges(TEST_ROOT, project, t4.taskId, r1.runId, {
+    goalId: g.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'historical attempt isolation fixture',
+  });
   await rt.requestRetry(TEST_ROOT, project, t4.taskId, {
+    goalId: g.goalId,
     expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'CHANGES_REQUESTED',
   });
@@ -487,6 +490,7 @@ console.log('\n── H-40..H-55 Permission gate + orphan + complete_goal ──
   });
   await rt.markResultReceived(TEST_ROOT, project, tDone.taskId, run.runId);
   await rt.acceptResult(TEST_ROOT, project, tDone.taskId, run.runId, {
+    goalId: g2.goalId,
     expectedPmState: 'VERIFYING',
     expectedExecutionState: 'RESULT_RECEIVED',
   });
@@ -530,10 +534,13 @@ console.log('\n── H-56..H-58 retry / no auto ──');
     taskId: t.taskId, workerId: 'h-retry', workspaceRoot: WORKSPACE, expectedExecutionState: 'READY',
   });
   await injectResponseComplete(res.runId, 'ses-retry');
-  await rt.requestChanges(TEST_ROOT, project, t.taskId, { expectedPmState: 'VERIFYING' });
+  await rt.requestChanges(TEST_ROOT, project, t.taskId, res.runId, {
+    goalId: g.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'retry semantics fixture reason',
+  });
   const afterChanges = gt.getTask(TEST_ROOT, project, t.taskId);
   check(afterChanges.executionState === 'RESULT_RECEIVED', 'H-56 requestChanges no retry (stays RESULT_RECEIVED)');
   await rt.requestRetry(TEST_ROOT, project, t.taskId, {
+    goalId: g.goalId,
     expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'CHANGES_REQUESTED',
   });
@@ -562,8 +569,11 @@ console.log('\n── H-60 Synthetic closed-loop E2E ──');
   let work = pmWork.getNextWork(TEST_ROOT, project);
   check(work.items.some((i) => i.kind === 'TASK_VERIFY'), 'E2E TASK_VERIFY appears');
 
-  await rt.requestChanges(TEST_ROOT, project, t.taskId, { expectedPmState: 'VERIFYING' });
+  await rt.requestChanges(TEST_ROOT, project, t.taskId, d1.runId, {
+    goalId: g.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'e2e retry fixture reason',
+  });
   await rt.requestRetry(TEST_ROOT, project, t.taskId, {
+    goalId: g.goalId,
     expectedExecutionState: 'RESULT_RECEIVED',
     expectedPmState: 'CHANGES_REQUESTED',
   });
@@ -580,6 +590,7 @@ console.log('\n── H-60 Synthetic closed-loop E2E ──');
   await injectResponseComplete(d2.runId, 'ses-e2e-2');
   cur = gt.getTask(TEST_ROOT, project, t.taskId);
   await rt.acceptResult(TEST_ROOT, project, t.taskId, d2.runId, {
+    goalId: g.goalId,
     expectedPmState: 'VERIFYING',
     expectedExecutionState: 'RESULT_RECEIVED',
   });
