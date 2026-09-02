@@ -1,14 +1,23 @@
 /**
- * Phase I3E Relay TUI — single framed dashboard, alternate screen, stable redraw.
- * Read-only, no mutations. Animation derived from Core state only.
+ * Phase I3F-1 Relay TUI — single framed dashboard, alternate screen, stable redraw.
+ * I3F-1 adds read-only subviews: Task Detail, Memo History, Events, plus bounded Memo input.
+ * Main Relay visualization remains primary; subviews are presentation-only.
  */
 import { buildTuiSnapshot, TUI_REFRESH_MS } from './snapshot.js';
 import { renderRelayFrame, renderCompact } from './render.js';
+import { resolveDetailTask, renderTaskDetail } from './views/task-detail.js';
+import { renderMemoHistory } from './views/memo-history.js';
+import { renderEventsView } from './views/events.js';
+import { discoverConfig } from '../cli/config.js';
+import * as taskMemo from '../backend/task-memo.js';
+import * as eventKernel from '../backend/event.js';
 
 export interface TuiOptions {
   cwd: string;
   refreshMs?: number;
 }
+
+type ViewState = 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS';
 
 function isTTY(): boolean {
   return !!process.stdout.isTTY && !!process.stdin.isTTY;
@@ -46,10 +55,14 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
   let frameIndex = 0;
   let cachedSnapshot: ReturnType<typeof buildTuiSnapshot> | null = null;
   let enteredAlt = false;
+  let view: ViewState = 'MAIN';
+  let memoDraft = '';
+  let memoError: string | undefined;
+  let banner: string | undefined;
+  let bannerUntil = 0;
 
   function enterAlt(): void {
     try {
-      // Alternate screen buffer (safe on Windows Terminal / PowerShell)
       stdout.write('\x1b[?1049h');
       enteredAlt = true;
     } catch {}
@@ -74,7 +87,6 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
     try { stdin.pause(); } catch {}
     try { stdin.removeAllListeners('data'); } catch {}
     try { stdout.removeAllListeners('resize'); } catch {}
-    // remove signal listeners to avoid duplicate
     try { (process as any).removeListener('SIGINT', onExit); } catch {}
     try { (process as any).removeListener('SIGTERM', onExit); } catch {}
   }
@@ -84,35 +96,280 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
     process.exit(0);
   };
 
+  function getResolvedTaskInfo(): { dataRoot?: string; project?: string; taskId?: string; taskExists: boolean } {
+    try {
+      const discovered = discoverConfig(cwd);
+      const dataRoot = discovered.config?.dataRoot;
+      const project = discovered.config?.project;
+      if (!dataRoot || !project || !discovered.initialized) return { taskExists: false };
+      const snap = cachedSnapshot ?? buildTuiSnapshot(cwd);
+      const model = resolveDetailTask(snap, dataRoot, project);
+      return { dataRoot, project, taskId: model.task?.taskId, taskExists: !!model.task };
+    } catch {
+      return { taskExists: false };
+    }
+  }
+
   const onData = (buf: Buffer) => {
     const s = buf.toString('utf8');
-    if (s === '\u0003' || s === 'q' || s === 'Q') {
+
+    // Global Ctrl-C / q quit (presentation: q always quits per spec "Esc=back q=global quit")
+    if (s === '\u0003') {
       cleanup();
       process.exit(0);
     }
-    if (s === 'r' || s === 'R') {
-      doSnapshotRefresh();
+    if (s === 'q' || s === 'Q') {
+      // In all views, q is global quit (not back)
+      cleanup();
+      process.exit(0);
     }
-    // Tab focus removed — intentionally no handling
+
+    // MEMO_INPUT mode: handle typing separately
+    if (view === 'MEMO_INPUT') {
+      if (s === '\x1b') { // Esc cancel
+        view = 'MAIN';
+        memoDraft = '';
+        memoError = undefined;
+        cachedSnapshot = null;
+        renderToScreen();
+        return;
+      }
+      if (s === '\r' || s === '\n') { // Enter save
+        const draft = memoDraft.trim();
+        if (!draft) {
+          memoError = 'Memo body is empty.';
+          renderToScreen();
+          return;
+        }
+        if (draft.length > 2000) {
+          memoError = 'Memo body exceeds 2000 chars.';
+          renderToScreen();
+          return;
+        }
+        // Try save — need dataRoot/project/taskId
+        const info = getResolvedTaskInfo();
+        if (!info.dataRoot || !info.project || !info.taskId) {
+          memoError = 'No active Task to attach memo.';
+          // stay in input to allow cancel
+          renderToScreen();
+          return;
+        }
+        // Async save
+        const toSave = draft;
+        taskMemo.createMemo(info.dataRoot, info.project, info.taskId, { body: toSave, authorSurface: 'OWNER_IPC' }).then((rec) => {
+          memoDraft = '';
+          memoError = undefined;
+          banner = `Memo saved \u00b7 ${rec.noteId}`;
+          bannerUntil = Date.now() + 3000;
+          view = 'MAIN';
+          // schedule banner clear
+          setTimeout(() => {
+            bannerUntil = 0;
+            banner = undefined;
+            if (running) renderToScreen();
+          }, 3100);
+          doSnapshotRefresh();
+        }).catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          memoError = msg.slice(0, 120);
+          renderToScreen();
+        });
+        return;
+      }
+      if (s === '\x7f' || s === '\x08') { // Backspace
+        memoDraft = memoDraft.slice(0, -1);
+        memoError = undefined;
+        renderToScreen();
+        return;
+      }
+      // Filter: printable single char without escape sequence; ignore \x1b[ sequences
+      if (s.startsWith('\x1b[')) return; // arrow keys ignored
+      // For multi-char paste, process each printable char bounded to 2000
+      let appended = '';
+      for (const ch of s) {
+        const code = ch.charCodeAt(0);
+        if (code < 32 || code === 127) continue; // control
+        if (memoDraft.length + appended.length >= 2000) {
+          memoError = 'Memo body max 2000 chars.';
+          break;
+        }
+        appended += ch;
+      }
+      if (appended) {
+        memoDraft += appended;
+        memoError = undefined;
+        renderToScreen();
+      }
+      return;
+    }
+
+    // Non-input views: handle navigation
+    if (s === '\x1b') { // Esc
+      if (view === 'MAIN') {
+        // Esc on main does nothing (or could be no-op); keep consistent: stay on main
+        return;
+      }
+      if (view === 'TASK_DETAIL') {
+        view = 'MAIN';
+        renderToScreen();
+        return;
+      }
+      if (view === 'MEMO_HISTORY') {
+        view = 'TASK_DETAIL';
+        renderToScreen();
+        return;
+      }
+      if (view === 'EVENTS') {
+        view = 'MAIN';
+        renderToScreen();
+        return;
+      }
+    }
+
+    if (view === 'MAIN') {
+      if (s === 't' || s === 'T') {
+        view = 'TASK_DETAIL';
+        renderToScreen();
+        return;
+      }
+      if (s === 'm' || s === 'M') {
+        // Open memo input — validate task exists first
+        const info = getResolvedTaskInfo();
+        if (!info.taskExists) {
+          banner = 'No active Task.';
+          bannerUntil = Date.now() + 2500;
+          setTimeout(() => { bannerUntil = 0; banner = undefined; if (running) renderToScreen(); }, 2600);
+          renderToScreen();
+          return;
+        }
+        view = 'MEMO_INPUT';
+        memoDraft = '';
+        memoError = undefined;
+        renderToScreen();
+        return;
+      }
+      if (s === 'e' || s === 'E') {
+        view = 'EVENTS';
+        renderToScreen();
+        return;
+      }
+      if (s === 'r' || s === 'R') {
+        doSnapshotRefresh();
+        return;
+      }
+      // R/A/C are disabled in this phase — no action
+    } else if (view === 'TASK_DETAIL') {
+      if (s === 'm' || s === 'M') {
+        view = 'MEMO_HISTORY';
+        renderToScreen();
+        return;
+      }
+      if (s === 'r' || s === 'R') {
+        doSnapshotRefresh();
+        return;
+      }
+    } else if (view === 'MEMO_HISTORY') {
+      if (s === 'r' || s === 'R') {
+        doSnapshotRefresh();
+        return;
+      }
+    } else if (view === 'EVENTS') {
+      if (s === 'r' || s === 'R') {
+        doSnapshotRefresh();
+        return;
+      }
+    }
   };
 
   function renderToScreen(): void {
     if (!running) return;
     try {
       const snap = cachedSnapshot ?? buildTuiSnapshot(cwd);
-      // cache if not yet
       if (!cachedSnapshot) {
         try { cachedSnapshot = buildTuiSnapshot(cwd); } catch {}
       }
       const actualSnap = cachedSnapshot ?? snap;
       const size = getTermSize();
       const compact = size.cols < 80 || size.rows < 20;
-      const out = compact ? renderCompact(actualSnap, size) : renderRelayFrame(actualSnap, frameIndex, size, lastError);
-      lastError = undefined;
-      // Stable redraw: home + clear to end, not full clear + scroll
+      let out: string;
+
+      if (compact) {
+        out = renderCompact(actualSnap, size);
+      } else if (view === 'TASK_DETAIL') {
+        const discovered = discoverConfig(cwd);
+        const dataRoot = discovered.config?.dataRoot;
+        const project = discovered.config?.project;
+        const model = resolveDetailTask(actualSnap, dataRoot, project);
+        out = renderTaskDetail(model, size);
+        if (banner && Date.now() < bannerUntil) {
+          out += '\n' + banner;
+        }
+        if (lastError) out += '\n! ' + lastError.slice(0, 80);
+      } else if (view === 'MEMO_HISTORY') {
+        const discovered = discoverConfig(cwd);
+        const dataRoot = discovered.config?.dataRoot;
+        const project = discovered.config?.project;
+        const model = resolveDetailTask(actualSnap, dataRoot, project);
+        let memos: ReturnType<typeof taskMemo.listMemos> = [];
+        try {
+          if (dataRoot && project && model.task) {
+            memos = taskMemo.listMemos(dataRoot, project, model.task.taskId);
+          }
+        } catch (e) {
+          lastError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
+        }
+        out = renderMemoHistory(memos, model.task?.taskId, size);
+        if (lastError) out += '\n! ' + lastError.slice(0, 80);
+      } else if (view === 'EVENTS') {
+        const discovered = discoverConfig(cwd);
+        const dataRoot = discovered.config?.dataRoot;
+        const project = discovered.config?.project;
+        let events: ReturnType<typeof eventKernel.listEvents>['events'] = [];
+        try {
+          if (dataRoot && project && discovered.initialized) {
+            const res = eventKernel.listEvents(dataRoot, project);
+            events = res.events;
+          }
+        } catch (e) {
+          lastError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
+        }
+        out = renderEventsView(events, size);
+        if (lastError) out += '\n! ' + lastError.slice(0, 80);
+      } else if (view === 'MEMO_INPUT') {
+        // Render memo input overlay on top of main frame? Show simple prompt
+        const inner = size.cols - 2;
+        const preview = memoDraft.length > inner - 12 ? memoDraft.slice(- (inner - 12)) : memoDraft;
+        const cursor = '█';
+        // Show main frame dimmed + input line at bottom? For simplicity, show bounded input frame
+        const inputLines: string[] = [];
+        inputLines.push('┌' + '─'.repeat(inner) + '┐');
+        inputLines.push('│' + padCenter('Memo', inner) + '│');
+        inputLines.push('│' + ' '.repeat(inner) + '│');
+        const prompt = `Memo > ${preview}${cursor}`;
+        inputLines.push('│' + padRight(truncate(prompt, inner), inner) + '│');
+        if (memoError) {
+          inputLines.push('│' + padRight(truncate('! ' + memoError, inner), inner) + '│');
+        } else {
+          inputLines.push('│' + padRight(`${memoDraft.length}/2000 chars · Enter:save  Esc:cancel  Backspace:edit`, inner) + '│');
+        }
+        inputLines.push('└' + '─'.repeat(inner) + '┘');
+        out = inputLines.join('\n');
+      } else {
+        // MAIN
+        out = renderRelayFrame(actualSnap, frameIndex, size, lastError);
+        // Overlay transient banner
+        if (banner && Date.now() < bannerUntil) {
+          out += '\n' + banner;
+        }
+        lastError = undefined;
+      }
+
+      if (view !== 'MEMO_INPUT') {
+        lastError = undefined;
+      }
+      // Stable redraw: home + clear to end
       stdout.write('\x1b[H\x1b[J');
       stdout.write(out);
-      // keep cursor hidden
       stdout.write('\x1b[?25l');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -140,7 +397,24 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
   function doAnimTick(): void {
     if (!running) return;
     frameIndex = (frameIndex + 1) % 1000000;
-    renderToScreen();
+    // Only animate MAIN; subviews are static — avoid unnecessary redraw flicker
+    if (view === 'MAIN') {
+      renderToScreen();
+    }
+  }
+
+  function padRight(s: string, n: number): string {
+    if (s.length >= n) return s.slice(0, n);
+    return s + ' '.repeat(n - s.length);
+  }
+  function padCenter(s: string, n: number): string {
+    if (s.length >= n) return s.slice(0, n);
+    const left = Math.floor((n - s.length) / 2);
+    return ' '.repeat(left) + s + ' '.repeat(n - s.length - left);
+  }
+  function truncate(s: string, n: number): string {
+    if (s.length <= n) return s;
+    return s.slice(0, n - 1) + '…';
   }
 
   try {
@@ -160,7 +434,6 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
   process.on('SIGTERM', onExit);
 
   enterAlt();
-  // Initial snapshot load
   try {
     cachedSnapshot = buildTuiSnapshot(cwd);
   } catch (e) {
@@ -172,7 +445,6 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
     doSnapshotRefresh();
   }, refreshMs);
 
-  // lightweight animation ~ 250ms (4fps) — pure visual, no state mutation
   animInterval = setInterval(() => {
     doAnimTick();
   }, 250);

@@ -192,8 +192,8 @@ export function renderRelayFrame(snapshot: TuiSnapshot, frameIndex: number, size
   // remove dash only entries? keep as above but omit if no value -> we already have dash, but spec says omit rather than many (none). We'll keep short.
   const statusLine = statusParts.join(' · ');
 
-  const actionLine = '[T] Task  [M] Memo  [R] Retry  [S] Stop  [E] Events              [Q] Quit';
-  const actionHint = 'T/M/R/S/E future · Q:quit  r:refresh';
+  const actionLine = '[T] Task  [M] Memo  [R] Retry  [A] Accept  [C] Changes  [E] Events  [Q] Quit';
+  const actionHint = 'T/M/E ready · R/A/C disabled · Q:quit  r:refresh';
   const footer = 'support · instagram @ju0o___ · GitHub @ju0o';
 
   // Build framed lines

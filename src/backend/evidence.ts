@@ -183,6 +183,11 @@ function allocateEvidenceIdWithCounter(dataRoot: string, project: string): strin
         ...(typeof raw.nextEventNumber === 'number' && Number.isInteger(raw.nextEventNumber) && raw.nextEventNumber >= 1
           ? { nextEventNumber: raw.nextEventNumber }
           : {}),
+        ...(typeof raw.nextNoteNumber === 'number' && Number.isInteger(raw.nextNoteNumber) && raw.nextNoteNumber >= 1
+          ? { nextNoteNumber: raw.nextNoteNumber }
+          : typeof latest.nextNoteNumber === 'number' && Number.isInteger(latest.nextNoteNumber) && latest.nextNoteNumber >= 1
+            ? { nextNoteNumber: latest.nextNoteNumber as number }
+            : {}),
       };
       writeJsonAtomic(countersPath(dataRoot, project), next);
       return id;

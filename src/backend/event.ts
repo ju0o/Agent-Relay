@@ -180,6 +180,7 @@ function allocateEventIdWithCounter(dataRoot: string, project: string): string {
       let nextTask = 1;
       let nextEvidence = 1;
       let nextEvent = 1;
+      let nextNote: number | undefined;
       if (typeof latest.nextGoalNumber === 'number' && Number.isInteger(latest.nextGoalNumber) && latest.nextGoalNumber >= 1) {
         nextGoal = latest.nextGoalNumber;
       }
@@ -192,11 +193,17 @@ function allocateEventIdWithCounter(dataRoot: string, project: string): string {
       if (typeof latest.nextEventNumber === 'number' && Number.isInteger(latest.nextEventNumber) && latest.nextEventNumber >= 1) {
         nextEvent = latest.nextEventNumber;
       }
+      if (typeof latest.nextNoteNumber === 'number' && Number.isInteger(latest.nextNoteNumber) && latest.nextNoteNumber >= 1) {
+        nextNote = latest.nextNoteNumber;
+      } else if (typeof raw.nextNoteNumber === 'number' && Number.isInteger(raw.nextNoteNumber) && raw.nextNoteNumber >= 1) {
+        nextNote = raw.nextNoteNumber;
+      }
       const next: CountersRecord = {
         nextGoalNumber: nextGoal,
         nextTaskNumber: nextTask,
         nextEvidenceNumber: nextEvidence,
         nextEventNumber: Math.max(n + 1, nextEvent),
+        ...(nextNote !== undefined ? { nextNoteNumber: nextNote } : {}),
       };
       writeJsonAtomic(countersPath(dataRoot, project), next);
       return id;
