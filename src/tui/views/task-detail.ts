@@ -142,7 +142,7 @@ export function renderTaskDetail(
   }
 
   lines.push('├' + '─'.repeat(inner) + '┤');
-  lines.push('│' + pad(' Esc:back  q:quit  M:Memos', inner) + '│');
+  lines.push('│' + pad(' Esc:back  q:quit  M:Memos  e:Edit', inner) + '│');
   lines.push('└' + '─'.repeat(inner) + '┘');
 
   if (lines.length > rows) {

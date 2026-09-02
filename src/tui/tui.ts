@@ -15,11 +15,18 @@ import { resolveCurrentAttemptRunId } from '../backend/goal-task-runtime.js';
 import {
   deriveAvailableActions,
   executeOwnerAction,
+  executeTaskEdit,
   reduceReasonInput,
+  reduceBoundedTextInput,
+  boundsForEditField,
+  TASK_EDIT_FIELDS,
   type OwnerActionContext,
   type OwnerActionResult,
   type OwnerActionCode,
   type ReasonInputState,
+  type TaskEditContext,
+  type EditFieldKey,
+  type BoundedTextState,
 } from './actions.js';
 import type { TaskRecord } from '../shared/types.js';
 
@@ -28,7 +35,9 @@ export interface TuiOptions {
   refreshMs?: number;
 }
 
-type ViewState = 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS' | 'CHANGES_INPUT';
+type ViewState =
+  | 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS' | 'CHANGES_INPUT'
+  | 'TASK_EDIT_MENU' | 'TASK_EDIT_FIELD';
 
 function isTTY(): boolean {
   return !!process.stdout.isTTY && !!process.stdin.isTTY;
@@ -78,6 +87,12 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
   let changesReasonState: ReasonInputState = { draft: '', error: undefined };
   let pendingChangesCtx: OwnerActionContext | null = null;
   let actionBusy = false;
+  // Phase I3F-4: Task Edit state. editTaskCtx is the CAS context (expectedUpdatedAt)
+  // captured when [e] Edit was pressed (menu open) — never re-read at submit.
+  // editFieldKey/editFieldState are the currently-open bounded field input.
+  let editTaskCtx: TaskEditContext | null = null;
+  let editFieldKey: EditFieldKey | null = null;
+  let editFieldState: BoundedTextState = { draft: '', error: undefined };
 
   function enterAlt(): void {
     try {
@@ -334,6 +349,129 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
     renderToScreen();
   }
 
+  // ── Phase I3F-4: Task Edit ([e] from Task Detail only — spec #1, no global shortcut) ──
+
+  function fieldDraftFromTask(task: TaskRecord, field: EditFieldKey): string {
+    switch (field) {
+      case 'title': return task.title;
+      case 'goal': return task.goal;
+      case 'reason': return task.reason;
+      case 'scope': return task.scope;
+      case 'completionCriteria': return task.completionCriteria.join(', ');
+      case 'dependencies': return task.dependencies.join(', ');
+    }
+  }
+
+  /** [e] on TASK_DETAIL: capture CAS context (expectedUpdatedAt) now, open the field menu. */
+  function handleEditKeyOpen(): void {
+    if (actionBusy) return;
+    const { dataRoot, project, task } = resolveActionTask();
+    if (!dataRoot || !project || !task) {
+      showBanner('No active Task.', 2500);
+      renderToScreen();
+      return;
+    }
+    const availability = deriveAvailableActions({
+      executionState: task.executionState,
+      pmState: task.pmState,
+      acceptedRunId: task.acceptedRunId,
+      currentRunId: resolveCurrentAttemptRunId(task),
+      linkedRunsCount: task.linkedRuns.length,
+    });
+    if (availability.TASK_EDIT.state !== 'ENABLED') {
+      showBanner(
+        availability.TASK_EDIT.state === 'DISABLED' ? availability.TASK_EDIT.reason : 'Task Edit unavailable.',
+        2500,
+      );
+      renderToScreen();
+      return;
+    }
+    editTaskCtx = { dataRoot, project, taskId: task.taskId, expectedUpdatedAt: task.updatedAt };
+    view = 'TASK_EDIT_MENU';
+    renderToScreen();
+  }
+
+  /** TASK_EDIT_MENU: [1]-[6] select a field, Esc back to Task Detail. No free text here — q stays global quit. */
+  function handleTaskEditMenuKey(s: string): void {
+    if (s === '\x1b') {
+      view = 'TASK_DETAIL';
+      editTaskCtx = null;
+      renderToScreen();
+      return;
+    }
+    const entry = TASK_EDIT_FIELDS.find((f) => f.menuKey === s);
+    if (!entry || !editTaskCtx) return;
+    const { dataRoot, project, task } = resolveActionTask();
+    if (!dataRoot || !project || !task || task.taskId !== editTaskCtx.taskId) {
+      showBanner('Task changed. Review current state and try again.', 3000);
+      view = 'TASK_DETAIL';
+      editTaskCtx = null;
+      doSnapshotRefresh();
+      return;
+    }
+    editFieldKey = entry.key;
+    editFieldState = { draft: fieldDraftFromTask(task, entry.key), error: undefined };
+    view = 'TASK_EDIT_FIELD';
+    renderToScreen();
+  }
+
+  async function submitTaskEditField(field: EditFieldKey, value: string): Promise<void> {
+    if (!editTaskCtx || actionBusy) return;
+    const ctx = editTaskCtx;
+    actionBusy = true;
+    view = 'TASK_DETAIL';
+    editTaskCtx = null;
+    editFieldKey = null;
+    editFieldState = { draft: '', error: undefined };
+    renderToScreen();
+    try {
+      const result = await executeTaskEdit(ctx, field, value);
+      handleActionResult(result, `Task updated · ${ctx.taskId}`);
+    } finally {
+      actionBusy = false;
+    }
+  }
+
+  /** TASK_EDIT_FIELD keys — intercepted before the global q-quit so typed text stays literal. */
+  function handleTaskEditFieldKey(s: string): void {
+    if (!editFieldKey) { view = 'TASK_EDIT_MENU'; renderToScreen(); return; }
+    const bounds = boundsForEditField(editFieldKey);
+    const withLabel = { ...bounds, label: TASK_EDIT_FIELDS.find((f) => f.key === editFieldKey)?.label ?? 'Field' };
+    if (s === '\x1b') { // Esc cancel — back to the field menu, no mutation call.
+      view = 'TASK_EDIT_MENU';
+      editFieldKey = null;
+      editFieldState = { draft: '', error: undefined };
+      renderToScreen();
+      return;
+    }
+    if (s === '\r' || s === '\n') { // Enter submit
+      const effect = reduceBoundedTextInput(editFieldState, { type: 'submit' }, withLabel);
+      if (effect.action === 'update') {
+        editFieldState = effect.state;
+        renderToScreen();
+        return;
+      }
+      if (effect.action === 'submit') {
+        void submitTaskEditField(editFieldKey, effect.value);
+      }
+      return;
+    }
+    if (s === '\x7f' || s === '\x08') { // Backspace
+      const effect = reduceBoundedTextInput(editFieldState, { type: 'backspace' }, withLabel);
+      if (effect.action === 'update') editFieldState = effect.state;
+      renderToScreen();
+      return;
+    }
+    if (s.startsWith('\x1b[')) return; // arrow keys ignored
+    for (const ch of s) {
+      const code = ch.charCodeAt(0);
+      if (code < 32 || code === 127) continue; // control chars ignored (q included — literal text here)
+      const effect = reduceBoundedTextInput(editFieldState, { type: 'char', value: ch }, withLabel);
+      if (effect.action === 'update') editFieldState = effect.state;
+    }
+    renderToScreen();
+  }
+
   const onData = (buf: Buffer) => {
     const s = buf.toString('utf8');
 
@@ -343,10 +481,16 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
       process.exit(0);
     }
 
-    // CHANGES_INPUT: intercepted before the global q-quit below -- typed q is
-    // literal Reason text here, not a shortcut (spec I3F-3 #20).
+    // CHANGES_INPUT / TASK_EDIT_FIELD: intercepted before the global q-quit
+    // below -- typed q is literal text here, not a shortcut (spec I3F-3 #20 /
+    // I3F-4 field input). TASK_EDIT_MENU is number-key selection only (no
+    // free text), so it does NOT need this early interception.
     if (view === 'CHANGES_INPUT') {
       handleChangesInputKey(s);
+      return;
+    }
+    if (view === 'TASK_EDIT_FIELD') {
+      handleTaskEditFieldKey(s);
       return;
     }
 
@@ -506,6 +650,11 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
         renderToScreen();
         return;
       }
+      // I3F-4: [e] Edit — only reachable from Task Detail (spec #1, no global shortcut).
+      if (s === 'e' || s === 'E') {
+        handleEditKeyOpen();
+        return;
+      }
       if (s === 'r' || s === 'R') {
         doSnapshotRefresh();
         return;
@@ -520,6 +669,9 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
         doSnapshotRefresh();
         return;
       }
+    } else if (view === 'TASK_EDIT_MENU') {
+      handleTaskEditMenuKey(s);
+      return;
     }
   };
 
@@ -612,6 +764,41 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
           inputLines.push('│' + padRight(truncate('! ' + changesReasonState.error, inner), inner) + '│');
         } else {
           inputLines.push('│' + padRight(`${draft.length}/2000 chars (min 10) · Enter:submit  Esc:cancel  Backspace:edit`, inner) + '│');
+        }
+        inputLines.push('└' + '─'.repeat(inner) + '┘');
+        out = inputLines.join('\n');
+      } else if (view === 'TASK_EDIT_MENU') {
+        // Field-selection menu only — spec #8: no full-screen editor, just [1]-[6] + Esc.
+        const inner = size.cols - 2;
+        const menuLines: string[] = [];
+        menuLines.push('┌' + '─'.repeat(inner) + '┐');
+        menuLines.push('│' + padCenter('Edit Task', inner) + '│');
+        menuLines.push('│' + ' '.repeat(inner) + '│');
+        for (const f of TASK_EDIT_FIELDS) {
+          menuLines.push('│' + padRight(` [${f.menuKey}] ${f.label}`, inner) + '│');
+        }
+        menuLines.push('│' + ' '.repeat(inner) + '│');
+        menuLines.push('│' + padRight(' [Esc] Back', inner) + '│');
+        menuLines.push('└' + '─'.repeat(inner) + '┘');
+        out = menuLines.join('\n');
+      } else if (view === 'TASK_EDIT_FIELD') {
+        // Bounded field input, prefilled with the current value (spec #8/#9).
+        const inner = size.cols - 2;
+        const fieldLabel = TASK_EDIT_FIELDS.find((f) => f.key === editFieldKey)?.label ?? 'Field';
+        const bounds = editFieldKey ? boundsForEditField(editFieldKey) : { min: 1, max: 5000 };
+        const draft = editFieldState.draft;
+        const preview = draft.length > inner - 14 ? draft.slice(-(inner - 14)) : draft;
+        const cursor = '█';
+        const inputLines: string[] = [];
+        inputLines.push('┌' + '─'.repeat(inner) + '┐');
+        inputLines.push('│' + padCenter(`Edit ${fieldLabel}`, inner) + '│');
+        inputLines.push('│' + ' '.repeat(inner) + '│');
+        const prompt = `${fieldLabel} > ${preview}${cursor}`;
+        inputLines.push('│' + padRight(truncate(prompt, inner), inner) + '│');
+        if (editFieldState.error) {
+          inputLines.push('│' + padRight(truncate('! ' + editFieldState.error, inner), inner) + '│');
+        } else {
+          inputLines.push('│' + padRight(`${draft.length}/${bounds.max} chars (min ${bounds.min}) · Enter:submit  Esc:cancel  Backspace:edit`, inner) + '│');
         }
         inputLines.push('└' + '─'.repeat(inner) + '┘');
         out = inputLines.join('\n');

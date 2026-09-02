@@ -28,6 +28,7 @@ const check = (cond, m) => { if (cond) PASS(m); else FAIL(m); };
 const tuiSrc = fs.readFileSync('src/tui/tui.ts', 'utf8');
 const actionsSrc = fs.readFileSync('src/tui/actions.ts', 'utf8');
 const renderSrc = fs.readFileSync('src/tui/render.ts', 'utf8');
+const taskDetailSrc = fs.readFileSync('src/tui/views/task-detail.ts', 'utf8');
 
 const relay = await import('../dist/server/backend/fs.js');
 const gt = await import('../dist/server/backend/goal-task.js');
@@ -344,7 +345,13 @@ console.log('\n── Regression: Relay motion / Memo / Events / structural ─�
   check(renderSrc.includes('renderRelayFrame'), 'render.ts still exports renderRelayFrame');
   check(tuiSrc.includes('createMemo') && tuiSrc.includes('memoDraft'), 'Memo flow (I3F-1) source untouched in shape');
   check(tuiSrc.includes("view = 'EVENTS'"), 'Events view navigation intact');
-  check(tuiSrc.includes("view = 'TASK_DETAIL'") && !tuiSrc.includes('[e] Edit') && !tuiSrc.includes('Edit Task'), 'Task Detail stays read-only, no Edit added');
+  check(tuiSrc.includes("view = 'TASK_DETAIL'"), 'Task Detail navigation intact');
+  // Durable invariant (I3F-4 adds Task Edit through the canonical bridge, not inline
+  // mutation): the Task Detail VIEW/render module itself still never mutates directly.
+  check(
+    !taskDetailSrc.includes('createMemo') && !taskDetailSrc.includes('updateTask') && !taskDetailSrc.includes('editTaskNarrative') && !taskDetailSrc.includes('transitionTask'),
+    'Task Detail render module stays mutation-free (Edit, when present, routes through tui.ts + actions.ts, not here)',
+  );
   check(tuiSrc.includes('?1049h') && tuiSrc.includes('?1049l'), 'alt screen enter/leave preserved');
   check(tuiSrc.includes('setRawMode(false)'), 'raw mode cleanup preserved');
   check(tuiSrc.includes("s === 'q' || s === 'Q'") && tuiSrc.includes('process.exit'), 'global q quit preserved (outside CHANGES_INPUT)');
