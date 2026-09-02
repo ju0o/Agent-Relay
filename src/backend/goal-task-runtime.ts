@@ -20,11 +20,14 @@
  *   RESULT_RECEIVED + CHANGES_REQUESTED → requestRetry → READY + PENDING
  *   Does NOT delete prior linkedRuns; next attempt needs a NEW linked Run.
  *
- * PM:
+ * PM (generic transitionTaskPm — lifecycle only):
  *   PENDING → VERIFYING
- *   VERIFYING → ACCEPTED | CHANGES_REQUESTED
+ *   VERIFYING → PENDING is illegal (only ACCEPTED → PENDING reopen).
  *   CHANGES_REQUESTED → VERIFYING | PENDING
  *   ACCEPTED → PENDING (explicit reopen; clears acceptedRunId)
+ *   ACCEPTED and CHANGES_REQUESTED are NOT reachable via generic
+ *   transitionTaskPm — they are canonical-only judgment mutations
+ *   (task:acceptResult / task:requestChanges, Phase I3F-2/I3F-2H).
  *
  * Dependencies (DERIVED only):
  *   Satisfied iff dependency.pmState === ACCEPTED.
@@ -395,35 +398,30 @@ export function transitionTaskPm(
       assertExpectedExecution(task.executionState, input.expectedExecutionState);
     }
 
+    // Phase I3F-2H hardening: canonical judgment states are NOT reachable via
+    // the generic PM transition surface. Accept must go through acceptResult
+    // (run binding + dual CAS + ACCEPT_RESULT permission + TASK_RESULT_ACCEPTED
+    // Event + canonical acceptedRunId); Changes must go through requestChanges
+    // (run binding + reason validation + TASK_CHANGES_REQUESTED Event).
+    // No mutation occurs on rejection.
+    if (input.to === 'ACCEPTED') {
+      throw new Error(
+        'INVALID_STATE: ACCEPTED must use canonical acceptResult action (task:acceptResult).',
+      );
+    }
+    if (input.to === 'CHANGES_REQUESTED') {
+      throw new Error(
+        'INVALID_STATE: CHANGES_REQUESTED must use canonical requestChanges action (task:requestChanges).',
+      );
+    }
+
     if (task.pmState === input.to) {
-      if (
-        input.to === 'ACCEPTED'
-        && input.acceptedRunId
-        && input.acceptedRunId === task.acceptedRunId
-      ) {
-        return task;
-      }
       return task; // idempotent
     }
 
     assertLegalPmTransition(task.pmState, input.to);
 
-    if (input.to === 'ACCEPTED') {
-      if (task.executionState !== 'RESULT_RECEIVED') {
-        throw new Error('ACCEPTED는 executionState=RESULT_RECEIVED일 때만 설정할 수 있습니다.');
-      }
-      const runId = input.acceptedRunId ?? task.acceptedRunId;
-      if (!runId) throw new Error('ACCEPTED에는 acceptedRunId가 필요합니다.');
-      if (!task.linkedRuns.some((r) => r.runId === runId)) {
-        throw new Error('acceptedRunId는 linkedRuns에 포함된 runId여야 합니다.');
-      }
-      task.acceptedRunId = runId;
-    }
-
     if (task.pmState === 'ACCEPTED' && input.to === 'PENDING') {
-      delete task.acceptedRunId;
-    }
-    if (input.to === 'CHANGES_REQUESTED') {
       delete task.acceptedRunId;
     }
 
