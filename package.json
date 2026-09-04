@@ -54,6 +54,7 @@
     "test:phase-i3f3-tui-mutation-bridge": "node test/phase-i3f3-tui-mutation-bridge.test.mjs",
     "test:phase-i3f4-safe-task-edit": "node test/phase-i3f4-safe-task-edit.test.mjs",
     "test:v1-g1-pm-intake": "node test/v1-g1-pm-intake.test.mjs",
+    "test:v1-g2-owner-dispatch": "node test/v1-g2-owner-dispatch.test.mjs",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
     "cli": "node dist/server/cli/index.js",
     "cli:help": "node dist/server/cli/index.js --help",

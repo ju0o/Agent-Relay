@@ -20,6 +20,7 @@ import * as pmGateway from '../backend/pm-gateway.js';
 import * as dispatcher from '../backend/dispatcher.js';
 import * as pmWork from '../backend/pm-work.js';
 import * as v1Intake from '../backend/v1-intake.js';
+import * as v1Dispatch from '../backend/v1-dispatch.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
@@ -515,6 +516,45 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
             taskId,
             workerId: requireString(args, 'workerId'),
             workspaceRoot: requireString(args, 'workspaceRoot'),
+            expectedExecutionState,
+          });
+        } catch (err) {
+          mapPermissionError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_dispatch_owner_approved',
+      description:
+        'V1-G2 owner-approved single dispatch: dispatch ONE READY Task to ONE trusted workerId ' +
+        'with workspaceRoot. Represents the owner\'s explicit one-time "GO" for THIS Task dispatch only. ' +
+        'The owning Goal permissionPolicy is NOT mutated and remains PLAN; authorization is enforced ' +
+        'through the central permission gate with OWNER_IPC-equivalent semantics for this one DISPATCH ' +
+        'effect only (no token, no persisted elevation, no other effect). ' +
+        'Delegates to the canonical dispatcher.dispatchTask (Run materialization, READY→DISPATCHED→RUNNING, ' +
+        'Capture arm, Worker spawn, observation binding). ' +
+        'expectedExecutionState must be READY. No goalId/permission/runId/launch/CLI/env/shell inputs. ' +
+        'Response is logical IDs only (no folder/path/launchCommand).',
+      inputSchema: objectSchema(
+        {
+          taskId: { type: 'string' },
+          workerId: { type: 'string' },
+          workspaceRoot: { type: 'string' },
+          expectedExecutionState: { type: 'string', enum: ['READY'] },
+        },
+        ['taskId', 'workerId', 'workspaceRoot', 'expectedExecutionState'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['taskId', 'workerId', 'workspaceRoot', 'expectedExecutionState']);
+        const expectedExecutionState = requireEnum(args, 'expectedExecutionState', ['READY'] as const);
+        const taskId = requireString(args, 'taskId');
+        const workerId = requireString(args, 'workerId');
+        const workspaceRoot = requireString(args, 'workspaceRoot');
+        try {
+          return await v1Dispatch.dispatchV1OwnerApproved(dataRoot, project, {
+            taskId,
+            workerId,
+            workspaceRoot,
             expectedExecutionState,
           });
         } catch (err) {
