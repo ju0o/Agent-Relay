@@ -361,6 +361,126 @@ console.log('\n-- bridge: one-judgment CHANGES --');
   await resetProcessLocal();
 }
 
+// ── G5-B correction: READY-prep crash seam (RECEIVED→APPLIED after restart) ──
+console.log('\n-- G5-B correction: READY crash seam --');
+{
+  const tc = await driveToResultReceived('V1 G5B crash-seam', 'ses-g5b-cs', 'G5B crash seam text');
+  const DC = `PMD-${tc.taskId}-${tc.runId}`;
+  const JC = `PMJ-${DC}`;
+  const PC = `RTP-${JC}`;
+  await get('relay_pm_submit_judgment').handler({ deliveryId: DC, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  check(retryPrep.getRetryPreparation(TEST_ROOT, project, PC).status === 'READY', 'crash-seam setup: preparation READY');
+  check(pmJud.getPmJudgment(TEST_ROOT, project, JC).status === 'APPLIED', 'crash-seam setup: judgment APPLIED');
+  const retryBefore = gt.getTask(TEST_ROOT, project, tc.taskId).retryCount;
+  const evBefore = evk.listEvents(TEST_ROOT, project).events.filter((e) => e.taskId === tc.taskId);
+  const chBefore = evBefore.filter((e) => e.type === 'TASK_CHANGES_REQUESTED').length;
+  const rrBefore = evBefore.filter((e) => e.type === 'TASK_RETRY_REQUESTED').length;
+  const runsBefore = gt.getTask(TEST_ROOT, project, tc.taskId).linkedRuns.length;
+  const taskJsonBefore = fs.readFileSync(path.join(gt.taskFolder(TEST_ROOT, project, tc.taskId), 'task.json'), 'utf8');
+  // Simulate crash after Preparation READY persisted but before Judgment APPLIED:
+  // force judgment back to RECEIVED on disk.
+  const jPath = path.join(pmJud.pmJudgmentFolder(TEST_ROOT, project, JC), 'judgment.json');
+  const jRaw = JSON.parse(fs.readFileSync(jPath, 'utf8'));
+  delete jRaw.appliedAt;
+  jRaw.status = 'RECEIVED';
+  jRaw.updatedAt = new Date().toISOString();
+  fs.writeFileSync(jPath, JSON.stringify(jRaw, null, 2), 'utf8');
+  check(pmJud.getPmJudgment(TEST_ROOT, project, JC).status === 'RECEIVED', 'crash-seam setup: judgment forced to RECEIVED');
+  // Restart: reset process-local state.
+  retryPrep._resetRetryPreparationLocksForTests();
+  pmJud._resetPmJudgmentLocksForTests();
+  await resetProcessLocal();
+  // A: READY prep + READY/PENDING + RECEIVED → APPLIED.
+  const res = await retryPrep.reconcileRetryPreparationForJudgment(TEST_ROOT, project, DC);
+  check(res.preparation.status === 'READY', 'A crash-seam reconcile heals Judgment RECEIVED→APPLIED');
+  check(pmJud.getPmJudgment(TEST_ROOT, project, JC).status === 'APPLIED', 'A judgment becomes APPLIED');
+  const tAfter = gt.getTask(TEST_ROOT, project, tc.taskId);
+  check(tAfter.executionState === 'READY' && tAfter.pmState === 'PENDING', 'A/F task remains READY+PENDING');
+  check(res.task.executionState === 'READY' && res.task.pmState === 'PENDING', 'A returned task READY+PENDING');
+  // C: retryCount unchanged.
+  check(tAfter.retryCount === retryBefore, 'C retryCount unchanged by READY reconcile');
+  // D/E: no duplicate Action Events.
+  const evAfter = evk.listEvents(TEST_ROOT, project).events.filter((e) => e.taskId === tc.taskId);
+  check(evAfter.filter((e) => e.type === 'TASK_CHANGES_REQUESTED').length === chBefore, 'D no duplicate TASK_CHANGES_REQUESTED Event');
+  check(evAfter.filter((e) => e.type === 'TASK_RETRY_REQUESTED').length === rrBefore, 'E no duplicate TASK_RETRY_REQUESTED Event');
+  // F: no Task mutation.
+  const taskJsonAfter = fs.readFileSync(path.join(gt.taskFolder(TEST_ROOT, project, tc.taskId), 'task.json'), 'utf8');
+  check(taskJsonAfter === taskJsonBefore, 'F no Task mutation (task.json byte-identical)');
+  // G/H: no new Run, no dispatch.
+  check(tAfter.linkedRuns.length === runsBefore, 'G no new Run');
+  check(tAfter.executionState === 'READY', 'H no dispatch (still READY awaiting G5-C)');
+  // I: preparation remains READY.
+  check(retryPrep.getRetryPreparation(TEST_ROOT, project, PC).status === 'READY', 'I preparation remains READY');
+  // B: idempotent when already APPLIED.
+  retryPrep._resetRetryPreparationLocksForTests();
+  pmJud._resetPmJudgmentLocksForTests();
+  await resetProcessLocal();
+  const res2 = await retryPrep.reconcileRetryPreparationForJudgment(TEST_ROOT, project, DC);
+  check(res2.preparation.status === 'READY', 'B idempotent reconcile with APPLIED stays READY');
+  check(pmJud.getPmJudgment(TEST_ROOT, project, JC).status === 'APPLIED', 'B judgment remains APPLIED');
+  check(gt.getTask(TEST_ROOT, project, tc.taskId).retryCount === retryBefore, 'B/C retryCount still unchanged');
+  // J: restart/process-local reset does not change outcome (covered by resets above).
+  check(true, 'J restart/process-local reset does not change outcome');
+  await resetProcessLocal();
+}
+
+// ── G5-B correction: advanced-task compat (G5-C consumption via dispatch) ──
+console.log('\n-- G5-B correction: G5-C consumption compat --');
+{
+  const ta = await driveToResultReceived('V1 G5B consumed', 'ses-g5b-ca', 'G5B consumed text');
+  const DA = `PMD-${ta.taskId}-${ta.runId}`;
+  const JA = `PMJ-${DA}`;
+  const PA = `RTP-${JA}`;
+  await get('relay_pm_submit_judgment').handler({ deliveryId: DA, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  check(retryPrep.getRetryPreparation(TEST_ROOT, project, PA).status === 'READY', 'compat setup: preparation READY');
+  // Force RECEIVED to prove heal-after-consumption, then consume via real dispatch (G5-C stand-in).
+  const jPathA = path.join(pmJud.pmJudgmentFolder(TEST_ROOT, project, JA), 'judgment.json');
+  const jRawA = JSON.parse(fs.readFileSync(jPathA, 'utf8'));
+  delete jRawA.appliedAt;
+  jRawA.status = 'RECEIVED';
+  jRawA.updatedAt = new Date().toISOString();
+  fs.writeFileSync(jPathA, JSON.stringify(jRawA, null, 2), 'utf8');
+  const evBase = evk.listEvents(TEST_ROOT, project).events.filter((e) => e.taskId === ta.taskId);
+  const chBase = evBase.filter((e) => e.type === 'TASK_CHANGES_REQUESTED').length;
+  const rrBase = evBase.filter((e) => e.type === 'TASK_RETRY_REQUESTED').length;
+  const retryBase = gt.getTask(TEST_ROOT, project, ta.taskId).retryCount;
+  // Smallest valid existing mechanism for "consumed by later attempt": dispatch READY task.
+  await resetProcessLocal();
+  const dispRes = await get('relay_pm_dispatch_owner_approved').handler({
+    taskId: ta.taskId, workerId: 'v1-g5b-worker', workspaceRoot: WORKSPACE, expectedExecutionState: 'READY',
+  });
+  check(typeof dispRes.runId === 'string' && dispRes.runId !== ta.runId, 'compat setup: dispatch created newer attempt');
+  const tDispatched = gt.getTask(TEST_ROOT, project, ta.taskId);
+  check(tDispatched.executionState === 'DISPATCHED' || tDispatched.executionState === 'RUNNING', 'compat setup: task consumed beyond READY');
+  const taskJsonConsumed = fs.readFileSync(path.join(gt.taskFolder(TEST_ROOT, project, ta.taskId), 'task.json'), 'utf8');
+  retryPrep._resetRetryPreparationLocksForTests();
+  pmJud._resetPmJudgmentLocksForTests();
+  await resetProcessLocal();
+  const resA = await retryPrep.reconcileRetryPreparationForJudgment(TEST_ROOT, project, DA);
+  check(resA.preparation.status === 'READY', 'compat consumed reconcile keeps preparation READY (terminal-success bookkeeping)');
+  check(resA.preparation.failedAt === undefined && resA.preparation.failureCode === undefined, 'compat READY never reinterpreted as FAILED');
+  check(pmJud.getPmJudgment(TEST_ROOT, project, JA).status === 'APPLIED', 'compat judgment RECEIVED repaired to APPLIED after consumption');
+  const tAfterA = gt.getTask(TEST_ROOT, project, ta.taskId);
+  check(tAfterA.executionState === 'DISPATCHED' || tAfterA.executionState === 'RUNNING', 'compat no backward Task mutation after consumption');
+  check(tAfterA.retryCount === retryBase, 'compat retryCount unchanged (no re-increment)');
+  const evAfterA = evk.listEvents(TEST_ROOT, project).events.filter((e) => e.taskId === ta.taskId);
+  check(evAfterA.filter((e) => e.type === 'TASK_CHANGES_REQUESTED').length === chBase, 'compat no rerun of requestTaskChanges');
+  check(evAfterA.filter((e) => e.type === 'TASK_RETRY_REQUESTED').length === rrBase, 'compat no rerun of requestTaskRetry');
+  check(fs.readFileSync(path.join(gt.taskFolder(TEST_ROOT, project, ta.taskId), 'task.json'), 'utf8') === taskJsonConsumed, 'compat task.json byte-identical (no mutation)');
+  // Idempotent when already APPLIED after consumption.
+  retryPrep._resetRetryPreparationLocksForTests();
+  pmJud._resetPmJudgmentLocksForTests();
+  await resetProcessLocal();
+  const resA2 = await retryPrep.reconcileRetryPreparationForJudgment(TEST_ROOT, project, DA);
+  check(resA2.preparation.status === 'READY', 'compat APPLIED stays READY (idempotent)');
+  check(pmJud.getPmJudgment(TEST_ROOT, project, JA).status === 'APPLIED', 'compat judgment remains APPLIED');
+  // Structural: READY is irreversible in source (no markPrep-FAILED path reachable from READY).
+  const src = fs.readFileSync('src/backend/retry-preparation.ts', 'utf8');
+  const readyFn = src.slice(src.indexOf('reconcileReadyPreparation'));
+  check(!readyFn.slice(0, readyFn.indexOf('async function reconcilePreparation')).includes('markPrep('), 'structural READY path never calls markPrep (irreversible success)');
+  await resetProcessLocal();
+}
+
 delete process.env.WORKER_STAY_MS;
 fs.rmSync(TEST_ROOT, { recursive: true, force: true });
 

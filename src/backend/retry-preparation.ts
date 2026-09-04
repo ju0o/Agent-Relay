@@ -15,7 +15,14 @@
  *   prep RECEIVED + task VERIFYING          → requestTaskChanges
  *   prep ≤CHANGES_APPLIED + task CHANGES_REQUESTED → requestTaskRetry (once)
  *   prep <READY + task READY+PENDING        → mark READY, no re-increment
+ *   prep READY + task READY+PENDING         → heal Judgment RECEIVED→APPLIED only
+ *   prep READY + task consumed by later attempt (G5-C) → heal Judgment only,
+ *     preparation stays READY (terminal-success bookkeeping)
  *   task terminal/displaced                  → FAILED, no mutation
+ *
+ * READY is terminal-success bookkeeping: once READY, never rerun Task
+ * mutations, never mark FAILED due to G5-C advancement, only reconcile the
+ * Judgment lifecycle to APPLIED.
  */
 
 import * as fs from 'node:fs';
@@ -369,6 +376,61 @@ function markPrep(
   return next;
 }
 
+/**
+ * READY-preparation recovery (V1-G5-B correction).
+ *
+ * READY Retry Preparation is terminal-success bookkeeping. Once READY it
+ * never reruns Task mutations (no requestTaskChanges, no requestTaskRetry),
+ * never creates a Run, never dispatches, and is never reinterpreted as
+ * FAILED merely because G5-C later advanced the Task. It only reconciles
+ * the corresponding CHANGES judgment lifecycle RECEIVED→APPLIED (idempotent
+ * when already APPLIED).
+ *
+ * Legitimate states that still represent this completed preparation:
+ *   - Task READY+PENDING (normal post-preparation state, incl. crash seam
+ *     where Judgment is still RECEIVED), or
+ *   - Task consumed by a later retry attempt (G5-C): current attempt runId
+ *     differs from prep.sourceRunId (e.g. DISPATCHED/RUNNING/RESULT_RECEIVED
+ *     with a newer linked Run). The preparation stays historically READY.
+ *
+ * Any other Task state (terminal ACCEPTED/CANCELLED/BLOCKED/FAILED, source
+ * Run unlinked, or incompatible regression with no newer attempt) fails
+ * safely: throw without mutating Task, preparation, Judgment, Events, or Runs.
+ */
+async function reconcileReadyPreparation(
+  dataRoot: string,
+  project: string,
+  prep: RetryPreparationRecord,
+): Promise<RetryPreparationResult> {
+  const task = getTask(dataRoot, project, prep.taskId);
+  // Terminal states disprove this preparation — fail safely, no blind APPLIED.
+  if (
+    task.pmState === 'ACCEPTED'
+    || task.executionState === 'CANCELLED'
+    || task.executionState === 'BLOCKED'
+    || task.executionState === 'FAILED'
+  ) {
+    throw new RetryPreparationError('CONFLICT', `Preparation ${prep.preparationId} is READY but Task ${task.taskId} is terminal (${task.executionState}+${task.pmState}); refusing judgment repair.`);
+  }
+  // Source attempt must still be evidence-linked; otherwise disproved.
+  if (!task.linkedRuns.some((r) => r.runId === prep.sourceRunId)) {
+    throw new RetryPreparationError('CONFLICT', `Preparation ${prep.preparationId} is READY but source attempt ${prep.sourceRunId} is no longer linked.`);
+  }
+  const isReadyPending = task.executionState === 'READY' && task.pmState === 'PENDING';
+  if (!isReadyPending) {
+    // Only a newer attempt (G5-C consumption) excuses leaving READY+PENDING.
+    // Otherwise the Task regressed or moved incompatibly — fail safely.
+    const current = resolveCurrentAttemptRunId(task);
+    if (current === prep.sourceRunId) {
+      throw new RetryPreparationError('CONFLICT', `Preparation ${prep.preparationId} is READY but Task ${task.taskId} is ${task.executionState}+${task.pmState}; refusing judgment repair.`);
+    }
+  }
+  // Stable READY result: heal Judgment only (idempotent), no Task mutation,
+  // no retryCount change, no Events, no Run, no dispatch.
+  await advanceJudgment(dataRoot, project, prep);
+  return { preparation: prep, task: getTask(dataRoot, project, prep.taskId) };
+}
+
 async function reconcilePreparation(
   dataRoot: string,
   project: string,
@@ -376,7 +438,7 @@ async function reconcilePreparation(
   prep: RetryPreparationRecord,
 ): Promise<RetryPreparationResult> {
   if (prep.status === 'READY') {
-    return { preparation: prep, task: getTask(dataRoot, project, prep.taskId) };
+    return reconcileReadyPreparation(dataRoot, project, prep);
   }
   if (prep.status === 'FAILED') {
     throw new RetryPreparationError('CONFLICT', `Preparation ${prep.preparationId} already FAILED.`);
