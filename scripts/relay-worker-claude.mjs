@@ -31,6 +31,12 @@ const DIST_BACKEND = path.join(__dirname, '..', 'dist', 'server', 'backend');
 /** Maximum total prompt size (bytes, UTF-8). V1 = 16 KiB is sufficient. */
 const PROMPT_SIZE_LIMIT_BYTES = 16 * 1024;
 
+/**
+ * Bound for captured worker stdout/stderr diagnostic excerpts. Never logs a
+ * full transcript, chain-of-thought, or unbounded session output.
+ */
+const MAX_WORKER_DIAG_CHARS = 16 * 1024;
+
 /** Relay wrapper protocol arg keys (consumed here, never forwarded). */
 const RELAY_ARGS = new Set([
   '--dataRoot',
@@ -455,6 +461,43 @@ function writeLaunchLog(runFolder, entry) {
   }
 }
 
+/**
+ * Collect a child stream into a bounded UTF-8 excerpt (capped at
+ * MAX_WORKER_DIAG_CHARS). Never unbounded; never a full transcript.
+ *
+ * @param {import('node:stream').Readable | null} stream
+ * @returns {Promise<string>} bounded excerpt ('' when stream is null)
+ */
+function collectBoundedStream(stream) {
+  if (!stream) return Promise.resolve('');
+  return new Promise((resolve) => {
+    let text = '';
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk) => {
+      if (text.length < MAX_WORKER_DIAG_CHARS) {
+        text += String(chunk).slice(0, MAX_WORKER_DIAG_CHARS - text.length);
+      }
+    });
+    stream.on('end', () => resolve(text));
+    stream.on('error', () => resolve(text));
+  });
+}
+
+/**
+ * Safe redacted summary of the Claude argv (non-secret shape only). The full
+ * prompt is intentionally NOT logged.
+ *
+ * @param {string} exe
+ * @param {string[]} args
+ * @returns {string[]}
+ */
+function redactedArgvShape(exe, args) {
+  return [exe, ...args.map((a) => {
+    if (/^-/.test(a)) return a;                 // flags are non-secret shape
+    return a.length <= 80 ? a : a.slice(0, 40) + '…(truncated)';
+  })];
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -577,16 +620,22 @@ async function main() {
     claudeArgs.push(prompt);
 
     let exitCode = 1;
+    let exitSignal = null;
+    let stderrExcerpt = '';
+    let stdoutExcerpt = '';
     try {
       exitCode = await new Promise((resolve) => {
         const child = spawn(claudeExe, claudeArgs, {
           cwd: workspaceRoot,    // workspaceRoot = coding workspace cwd only
           shell: false,          // MANDATORY: no shell
-          stdio: 'inherit',      // Inherit for operator visibility during dogfood
+          stdio: ['ignore', 'pipe', 'pipe'], // capture bounded CLI stdout/stderr for diagnostics
           windowsHide: true,
           // env: intentionally NOT passed — no arbitrary env injection from Task content
           // Claude inherits process.env (which is the trusted operator env)
         });
+
+        const stderrP = collectBoundedStream(child.stderr);
+        const stdoutP = collectBoundedStream(child.stdout);
 
         child.on('error', (err) => {
           process.stderr.write(
@@ -595,8 +644,13 @@ async function main() {
           resolve(1);
         });
 
-        child.on('exit', (code, signal) => {
-          resolve(code ?? (signal ? 1 : 0));
+        child.on('exit', (code, sig) => {
+          exitSignal = sig;
+          Promise.all([stderrP, stdoutP]).then(([se, so]) => {
+            stderrExcerpt = se;
+            stdoutExcerpt = so;
+            resolve(code ?? (sig ? 1 : 0));
+          });
         });
       });
     } catch (err) {
@@ -608,6 +662,7 @@ async function main() {
         taskId,
         runId,
         claudeExecutableResolved: claudeExe,
+        argvShape: redactedArgvShape(claudeExe, claudeArgs),
         phase: 'spawn-threw',
         error: msg,
         exitCode: 1,
@@ -616,7 +671,7 @@ async function main() {
     }
 
     // ── 10. Write final log entry ──────────────────────────────────────────────
-    writeLaunchLog(runFolder, {
+    const finalEntry = {
       startedAt,
       finishedAt: new Date().toISOString(),
       taskId,
@@ -624,11 +679,20 @@ async function main() {
       claudeExecutableResolved: claudeExe,
       // Safe normalized field — records what was used, not a raw arg
       permissionMode: permissionMode ?? 'default',
+      argvShape: redactedArgvShape(claudeExe, claudeArgs),
       phase: 'completed',
       // exitCode=0 does NOT mean RESULT_RECEIVED.
       // The claude-code adapter observes RESPONSE_COMPLETE independently.
       exitCode,
-    });
+    };
+    // Non-zero exits carry bounded CLI launch diagnostics only — no transcript,
+    // no chain-of-thought, no secrets/env.
+    if (exitCode !== 0 || exitSignal !== null) {
+      if (exitSignal !== null) finalEntry.signal = exitSignal;
+      if (stderrExcerpt.trim()) finalEntry.stderrExcerpt = stderrExcerpt.trim().slice(0, MAX_WORKER_DIAG_CHARS);
+      if (stdoutExcerpt.trim()) finalEntry.stdoutExcerpt = stdoutExcerpt.trim().slice(0, MAX_WORKER_DIAG_CHARS);
+    }
+    writeLaunchLog(runFolder, finalEntry);
 
     // ── 11. Propagate Claude exit code ────────────────────────────────────────
     //
