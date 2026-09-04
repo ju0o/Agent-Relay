@@ -22,6 +22,7 @@ import * as pmWork from '../backend/pm-work.js';
 import * as v1Intake from '../backend/v1-intake.js';
 import * as v1Dispatch from '../backend/v1-dispatch.js';
 import * as pmDelivery from '../backend/pm-delivery.js';
+import * as pmVerificationContext from '../backend/pm-verification-context.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
@@ -208,6 +209,26 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
         rejectUnknownFields(args, ['deliveryId']);
         try {
           return pmDelivery.getPmDelivery(dataRoot, project, requireString(args, 'deliveryId'));
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_get_verification_context',
+      description:
+        'V1-G4-B: compose ONE bounded verification packet for a pending TASK_VERIFY PM Delivery. ' +
+        'Input is deliveryId only — the Delivery owns Task/run identity; no taskId/runId/path injection. ' +
+        'Includes bounded result text (result.md, agent-result.md fallback), Task context, exact-run ' +
+        'Evidence, current-attempt safety, advisory CAS and review actions. ' +
+        'PURE READ — never marks DELIVERED/ACKs, never judges, never dispatches.',
+      inputSchema: objectSchema({ deliveryId: { type: 'string' } }, ['deliveryId']),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['deliveryId']);
+        try {
+          return pmVerificationContext.getVerificationContextForDelivery(
+            dataRoot, project, requireString(args, 'deliveryId'),
+          );
         } catch (err) {
           throw mapCoreError(err);
         }

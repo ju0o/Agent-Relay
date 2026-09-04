@@ -396,7 +396,12 @@ function deriveAllowedActions(
 
 // ── String / path helpers ────────────────────────────────────────────────────
 
-function boundString(value: string): string {
+/**
+ * Bound a display string to MAX_BOUNDED_STRING (512 chars).
+ * Exported for reuse by the V1-G4-B verification composer (same packet
+ * bounding contract; no gateway behavior change).
+ */
+export function boundString(value: string): string {
   return value.length > MAX_BOUNDED_STRING
     ? value.slice(0, MAX_BOUNDED_STRING) + '…'
     : value;
