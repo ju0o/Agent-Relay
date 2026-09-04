@@ -22,6 +22,7 @@ Commands:
   doctor              Run infrastructure health checks
   init                Initialize project (interactive or --yes)
   connect <client>    Configure PM MCP (claude-code)
+  host watch          Watch pending PM Deliveries and hand them to the PM Host
 
 Options:
   --help, -h          Show this help
@@ -30,6 +31,9 @@ Options:
   --no-tui            Headless status entry (no TUI)
   --yes               Non-interactive defaults (for init)
   --force             Overwrite existing config/worker
+  --once              Single pass and exit (for host watch)
+  --poll-ms <ms>      Host watch cadence (for host watch, default 1000)
+  --host-config <dir> Directory containing host.json (default <cwd>/.agent-relay)
 
 Examples:
   agent-relay status
@@ -40,11 +44,12 @@ Examples:
   agent-relay init --yes
   agent-relay init --yes --json
   agent-relay connect claude-code
+  agent-relay host watch --once
   agent-relay --no-tui
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -54,21 +59,37 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let version = false;
   let yes = false;
   let force = false;
+  let once = false;
+  let pollMs: number | null = null;
+  let hostConfig: string | null = null;
   let unknown: string | null = null;
 
-  for (const a of args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
     if (a === '--help' || a === '-h') help = true;
     else if (a === '--version' || a === '-v') version = true;
     else if (a === '--json') json = true;
     else if (a === '--no-tui') noTui = true;
     else if (a === '--yes') yes = true;
     else if (a === '--force') force = true;
-    else if (a.startsWith('--')) {
+    else if (a === '--once') once = true;
+    else if (a === '--poll-ms' || a === '--host-config') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) { unknown = a; break; }
+      if (a === '--poll-ms') {
+        const n = Number(next);
+        if (!Number.isFinite(n)) { unknown = `${a} ${next}`; break; }
+        pollMs = n;
+      } else {
+        hostConfig = next;
+      }
+      i++;
+    } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'init' || a === 'connect')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'init' || a === 'connect' || a === 'host')) {
       command = a;
-    } else if (command === 'connect' && !sub) {
+    } else if ((command === 'connect' || command === 'host') && !sub) {
       sub = a;
     } else {
       unknown = a;
@@ -76,11 +97,11 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, json, noTui, help, version, yes, force, unknown };
+  return { command, sub, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function main(): Promise<void> {
-  const { command, sub, json, noTui, help, version, yes, force, unknown } = parseArgs(process.argv);
+  const { command, sub, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -205,6 +226,23 @@ async function main(): Promise<void> {
       if (res.diagnostic) console.log(`\nDiagnostic: ${res.diagnostic.slice(0, 400)}`);
     }
     process.exit(res.ok ? 0 : 1);
+  }
+
+  if (command === 'host') {
+    if (sub !== 'watch') {
+      const msg = 'Usage: agent-relay host watch [--once] [--poll-ms <ms>] [--host-config <dir>]';
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.host.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const { runHostWatch } = await import('./host.js');
+    const code = await runHostWatch({
+      cwd,
+      once,
+      ...(pollMs !== null ? { pollMs } : {}),
+      ...(hostConfig !== null ? { hostConfigDir: hostConfig } : {}),
+    });
+    process.exit(code);
   }
 
   // Bare agent-relay (no command)
