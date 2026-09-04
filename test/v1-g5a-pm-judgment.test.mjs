@@ -209,7 +209,10 @@ const DC = `PMD-${tc.taskId}-${tc.runId}`;
   check(res.judgment.status === 'RECEIVED' && res.applied === false, 'B CHANGES intent recorded, not applied');
   check(res.judgment.retryInstructionPresent === true, 'Q retry instruction flagged');
   const folder = pmJud.pmJudgmentFolder(TEST_ROOT, project, `PMJ-${DC}`);
-  check(fs.readFileSync(path.join(folder, 'retry-instruction.md'), 'utf8') === 'fix the nits and re-verify typecheck', 'Q retry instruction bytes durable');
+  const intent = JSON.parse(fs.readFileSync(path.join(folder, 'intent.json'), 'utf8'));
+  check(intent.decision === 'CHANGES' && intent.deliveryId === DC, 'Q atomic intent payload identity');
+  check(intent.retryInstruction === 'fix the nits and re-verify typecheck', 'Q intent retry instruction bytes durable');
+  check(pmJud.getRetryInstructionForDelivery(TEST_ROOT, project, DC) === 'fix the nits and re-verify typecheck', 'Q accessor returns exact bytes');
   const t = gt.getTask(TEST_ROOT, project, tc.taskId);
   check(t.executionState === 'RESULT_RECEIVED' && t.pmState === 'VERIFYING', 'R Task untouched by CHANGES');
   check(t.acceptedRunId === undefined, 'R no acceptance side effect');
@@ -422,7 +425,7 @@ console.log('\n-- Z: durability --');
   const folder = pmJud.pmJudgmentFolder(TEST_ROOT, project, `PMJ-${DC}`);
   const diskRecord = JSON.parse(fs.readFileSync(path.join(folder, 'judgment.json'), 'utf8'));
   check(diskRecord.status === 'RECEIVED' && diskRecord.decision === 'CHANGES', 'Z judgment re-read from disk');
-  check(fs.readFileSync(path.join(folder, 'retry-instruction.md'), 'utf8') === 'fix the nits and re-verify typecheck', 'Z retry instruction re-read from disk');
+  check(pmJud.getRetryInstructionForDelivery(TEST_ROOT, project, DC) === 'fix the nits and re-verify typecheck', 'Z retry instruction re-read from disk');
   const res = await submit({
     deliveryId: DC, decision: 'CHANGES',
     reason: 'please address the review nits above',

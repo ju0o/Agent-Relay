@@ -14,7 +14,7 @@
  *
  * Durability: one judgment intent per deliveryId
  *   {dataRoot}/{project}/_relay/pm-judgments/{judgmentId}/judgment.json
- * plus immutable retry-instruction.md for CHANGES (consumed by G5-B).
+ * plus immutable intent.json for CHANGES (consumed by G5-B).
  */
 
 import * as fs from 'node:fs';
@@ -70,7 +70,7 @@ export interface PmJudgmentRecord {
   decision: PmJudgmentDecision;
   status: PmJudgmentStatus;
   reason?: string;
-  /** True when a retry-instruction.md companion was persisted (CHANGES). */
+  /** True when the immutable CHANGES intent payload was committed. */
   retryInstructionPresent: boolean;
   createdAt: string;
   updatedAt: string;
@@ -114,8 +114,83 @@ function judgmentMdPath(folder: string): string {
   return path.join(folder, 'judgment.md');
 }
 
-export function retryInstructionPath(folder: string): string {
-  return path.join(folder, 'retry-instruction.md');
+/**
+ * Immutable intent payload path (CHANGES only).
+ *
+ * intent.json is the ONE immutable PM intent payload per deliveryId. It is
+ * written atomically BEFORE judgment.json, so judgment.json acts as the
+ * commit marker: an orphan intent.json without judgment.json is recoverable
+ * (identical resubmit verifies bytes and completes the commit), and a
+ * present judgment.json always implies its intent is durable.
+ */
+function judgmentIntentPath(folder: string): string {
+  return path.join(folder, 'intent.json');
+}
+
+/** Immutable CHANGES intent payload (atomic unit; compared on resubmit). */
+export interface PmJudgmentIntent {
+  schemaVersion: number;
+  judgmentId: string;
+  deliveryId: string;
+  decision: 'CHANGES';
+  reason: string;
+  retryInstruction: string;
+}
+
+/** PM intent payload schema version. */
+export const PM_JUDGMENT_INTENT_SCHEMA_VERSION = 1;
+
+function validateJudgmentIntent(raw: unknown): PmJudgmentIntent {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new PmJudgmentError('INVALID_STATE', '잘못된 judgment intent 형식입니다.');
+  }
+  const o = raw as Record<string, unknown>;
+  if (o.schemaVersion !== PM_JUDGMENT_INTENT_SCHEMA_VERSION) {
+    throw new PmJudgmentError('INVALID_STATE', `지원하지 않는 intent schemaVersion: ${String(o.schemaVersion)}`);
+  }
+  if (typeof o.judgmentId !== 'string' || typeof o.deliveryId !== 'string') {
+    throw new PmJudgmentError('INVALID_STATE', '잘못된 judgment intent identity.');
+  }
+  if (o.decision !== 'CHANGES') {
+    throw new PmJudgmentError('INVALID_STATE', 'judgment intent decision은 CHANGES여야 합니다.');
+  }
+  if (typeof o.reason !== 'string' || typeof o.retryInstruction !== 'string') {
+    throw new PmJudgmentError('INVALID_STATE', '잘못된 judgment intent payload.');
+  }
+  return o as unknown as PmJudgmentIntent;
+}
+
+/** Read the immutable intent payload, or null when absent/unreadable. */
+function readJudgmentIntent(dataRoot: string, project: string, judgmentId: string): PmJudgmentIntent | null {
+  if (!JUDGMENT_ID_RE.test(judgmentId)) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(judgmentIntentPath(pmJudgmentFolder(dataRoot, project, judgmentId)), 'utf8'));
+  } catch {
+    return null;
+  }
+  try {
+    return validateJudgmentIntent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * G5-B accessor: exact durable retry instruction bytes for a delivery.
+ * Throws NOT_FOUND when no CHANGES intent was committed.
+ */
+export function getRetryInstructionForDelivery(
+  dataRoot: string,
+  project: string,
+  deliveryId: string,
+): string {
+  const judgmentId = pmJudgmentIdFor(deliveryId);
+  const intent = readJudgmentIntent(dataRoot, project, judgmentId);
+  if (!intent || intent.deliveryId !== deliveryId) {
+    throw new PmJudgmentError('NOT_FOUND', `Retry instruction을 찾을 수 없습니다: ${deliveryId}`);
+  }
+  return intent.retryInstruction;
 }
 
 // ── locks ────────────────────────────────────────────────────────────────────
@@ -372,22 +447,85 @@ function resolveJudicable(
   return { task, runId: delivery.runId };
 }
 
-function readRetryInstruction(folder: string): string | null {
+// ── intake ───────────────────────────────────────────────────────────────────
+
+/**
+ * Compare an incoming CHANGES payload against the immutable committed intent.
+ * Legacy pre-correction retry-instruction.md companions (no intent.json) are
+ * honored read-only for byte equality so old dev/test data never poisons a
+ * resubmit; new code never writes the legacy file.
+ */
+function changesPayloadMatches(
+  dataRoot: string,
+  project: string,
+  judgmentId: string,
+  reason: string | undefined,
+  retryInstruction: string | undefined,
+  storedReason: string | undefined,
+): boolean {
+  if (storedReason !== reason) return false;
+  const intent = readJudgmentIntent(dataRoot, project, judgmentId);
+  if (intent) return intent.retryInstruction === retryInstruction;
+  if (retryInstruction === undefined) return true;
   try {
-    return fs.readFileSync(retryInstructionPath(folder), 'utf8');
+    const legacy = fs.readFileSync(
+      path.join(pmJudgmentFolder(dataRoot, project, judgmentId), 'retry-instruction.md'),
+      'utf8',
+    );
+    return legacy === retryInstruction;
   } catch {
-    return null;
+    return false;
   }
 }
 
-// ── intake ───────────────────────────────────────────────────────────────────
+/**
+ * Commit (or verify-then-commit) the immutable CHANGES intent payload.
+ *
+ * Crash-safe order: intent.json is written atomically FIRST; judgment.json
+ * is the commit marker written only after intent durability succeeds.
+ *   - no intent.json → write it (atomic), then commit judgment.json
+ *   - intent.json present + byte-identical payload → commit judgment.json
+ *   - intent.json present + different payload → CONFLICT (never overwrite)
+ */
+function commitChangesIntent(
+  dataRoot: string,
+  project: string,
+  folder: string,
+  judgmentId: string,
+  deliveryId: string,
+  reason: string,
+  retryInstruction: string,
+): void {
+  fs.mkdirSync(folder, { recursive: true });
+  const present = readJudgmentIntent(dataRoot, project, judgmentId);
+  if (present) {
+    if (
+      present.deliveryId !== deliveryId
+      || present.decision !== 'CHANGES'
+      || present.reason !== reason
+      || present.retryInstruction !== retryInstruction
+    ) {
+      throw new PmJudgmentError('CONFLICT', `Delivery ${deliveryId} already has a different retry instruction.`);
+    }
+    return;
+  }
+  writeJsonAtomic(path.join(folder, 'intent.json'), {
+    schemaVersion: PM_JUDGMENT_INTENT_SCHEMA_VERSION,
+    judgmentId,
+    deliveryId,
+    decision: 'CHANGES',
+    reason,
+    retryInstruction,
+  } satisfies PmJudgmentIntent);
+}
 
 /**
  * Submit a structured PM judgment for one TASK_VERIFY delivery.
  *
  * ACCEPT  → persists intent, applies canonical acceptTaskResult, APPLIED.
- * CHANGES → validates + persists intent + immutable retry-instruction.md,
- *           leaves the Task untouched (G5-B prepares retry). Returns RECORDED.
+ * CHANGES → validates + commits immutable intent (intent.json FIRST, then
+ *           judgment.json as the marker), leaves the Task untouched (G5-B
+ *           prepares retry). Returns RECORDED.
  *
  * Same delivery + same decision + same payload → existing record (idempotent;
  * APPLIED replays as applied). Same delivery + different decision/payload →
@@ -405,10 +543,10 @@ export function submitPmJudgment(
     const folder = pmJudgmentFolder(dataRoot, project, judgmentId);
     const existing = readJudgmentRecord(dataRoot, project, judgmentId);
     if (existing) {
-      const storedInstruction = existing.decision === 'CHANGES' ? readRetryInstruction(folder) : undefined;
       const payloadSame = existing.decision === decision
-        && (existing.reason ?? undefined) === reason
-        && (decision === 'ACCEPT' || storedInstruction === retryInstruction);
+        && (decision === 'ACCEPT'
+          ? (existing.reason ?? undefined) === reason
+          : changesPayloadMatches(dataRoot, project, judgmentId, reason, retryInstruction, existing.reason ?? undefined));
       if (!payloadSame) {
         throw new PmJudgmentError('CONFLICT', `Delivery ${deliveryId} already has a different PM judgment intent.`);
       }
@@ -443,7 +581,11 @@ export function submitPmJudgment(
 
     const ts = nowIso();
     if (decision === 'CHANGES') {
-      fs.mkdirSync(folder, { recursive: true });
+      // Crash-safe commit order: immutable intent FIRST (atomic), then
+      // judgment.json as the commit marker. An orphan intent.json without
+      // judgment.json (crash between the two writes) is verified byte-equal
+      // here and the commit completes; differing payload → CONFLICT.
+      commitChangesIntent(dataRoot, project, folder, judgmentId, deliveryId, reason!, retryInstruction!);
       const record: PmJudgmentRecord = {
         schemaVersion: PM_JUDGMENT_SCHEMA_VERSION,
         judgmentId,
@@ -459,17 +601,6 @@ export function submitPmJudgment(
         updatedAt: ts,
       };
       persistJudgmentRecord(folder, record);
-      // Immutable intent payload: write once; conflicting content can never
-      // appear here (same-payload resubmits return above; different → CONFLICT).
-      const target = retryInstructionPath(folder);
-      if (fs.existsSync(target)) {
-        const prev = fs.readFileSync(target, 'utf8');
-        if (prev !== retryInstruction) {
-          throw new PmJudgmentError('CONFLICT', `Delivery ${deliveryId} already has a different retry instruction.`);
-        }
-      } else {
-        fs.writeFileSync(target, retryInstruction!, 'utf8');
-      }
       return { judgment: record, applied: false, task: resolved.task };
     }
 
