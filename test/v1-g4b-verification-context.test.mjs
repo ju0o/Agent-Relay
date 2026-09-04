@@ -333,7 +333,13 @@ console.log('\n-- S: scope --');
     check(!src.includes(needle), `S composer never calls ${needle}`);
   }
   const names = tools.map((t) => t.name);
-  check(!names.some((n) => n.includes('wake') || n.includes('deliver_result')), 'S no wake/delivery-push tool');
+  // G6-MCP adds BOUNDED wake tools (claim-once-per-delivery, identity-only
+  // instruction, no result payload). Assert no unbounded deliver_result-style
+  // push exists and the only wake surface is the bounded claim/fail pair.
+  const wakeTools = names.filter((n) => n.includes('wake'));
+  check(wakeTools.length <= 3, 'S only the bounded wake tool set exists');
+  check(!names.includes('relay_pm_deliver_result'), 'S no arbitrary result-delivery push tool');
+  check(!names.some((n) => n.includes('push_result') || n.includes('deliver_result')), 'S no unbounded result-push tool');
 }
 
 // ── T: Phase F gateway unchanged ──

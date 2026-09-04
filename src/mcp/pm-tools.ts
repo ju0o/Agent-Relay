@@ -39,6 +39,7 @@ import {
 } from './schemas.js';
 import { McpError, mapCoreError } from './errors.js';
 import type { McpTool, PmServerContext } from './server.js';
+import { buildPmWakeTools } from './app/pm-wake-tools.js';
 
 // Phase I3F-2: accept/changes/retry CAS values are frozen single-value enums
 // (no permissive multi-state compatibility) — see ACCEPT_EXEC_ONLY etc. below.
@@ -849,7 +850,7 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
   ];
 }
 
-/** All PM tools (read + write). No Worker tools included. */
+/** All PM tools (read + write + wake). No Worker tools included. */
 export function buildAllPmTools(ctx: PmServerContext): McpTool[] {
-  return [...buildPmReadTools(ctx), ...buildPmWriteTools(ctx)];
+  return [...buildPmReadTools(ctx), ...buildPmWriteTools(ctx), ...buildPmWakeTools(ctx)];
 }

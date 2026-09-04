@@ -258,11 +258,14 @@ await resetProcessLocal();
 console.log('\n-- structural --');
 {
   const names = tools.map((t) => t.name);
-  check(!names.some((n) => n.includes('wake') || n.includes('deliver_result')), 'S no PM Wake / result-delivery tool added');
+  // G6-MCP adds BOUNDED wake tools (claim-once-per-delivery, identity-only,
+  // no result payload). Assert no unbounded deliver_result-style push exists.
+  check(!names.includes('relay_pm_deliver_result'), 'S no arbitrary result-delivery push tool');
+  check(!names.some((n) => n.includes('push_result') || n.includes('deliver_result')), 'S no unbounded result-push tool');
   const g3Src = fs.readFileSync('test/v1-g3-result-return.test.mjs', 'utf8');
   check(!/\bawait markResultReceived\(/.test(g3Src), 'S test never calls markResultReceived directly');
   const pmSrc = fs.readFileSync('src/mcp/pm-tools.ts', 'utf8');
-  check(!pmSrc.includes('relay_pm_wake') && !pmSrc.includes('relay_pm_deliver'), 'S production MCP unchanged (no wake/delivery)');
+  check(!pmSrc.includes('relay_pm_deliver') && !pmSrc.includes('relay_pm_push'), 'S production MCP has no unbounded deliver/push');
 }
 
 // ── R: adapter honors CLAUDE_CONFIG_DIR (V1-G3 real-run correction) ──
