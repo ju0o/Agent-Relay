@@ -19,6 +19,7 @@ import * as eventKernel from '../backend/event.js';
 import * as pmGateway from '../backend/pm-gateway.js';
 import * as dispatcher from '../backend/dispatcher.js';
 import * as pmWork from '../backend/pm-work.js';
+import * as v1Intake from '../backend/v1-intake.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
@@ -239,6 +240,55 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
 export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
   const { dataRoot, project } = ctx;
   return [
+    {
+      name: 'relay_pm_create_task',
+      description:
+        'V1-G1 PM Task intake: create ONE canonical V1 Task from a finalized Task Contract. ' +
+        'The mandatory goalId is handled internally via a deterministic V1 technical container Goal ' +
+        '(create/reuse, no manual Goal management). ' +
+        'Task is prepared to READY+PENDING via the frozen PLANNED→READY transition for the next dispatch stage. ' +
+        'Does NOT dispatch, accept, complete any Goal, or orchestrate. ' +
+        'Runtime fields (goalId/executionState/pmState/runId/paths) are not accepted.',
+      inputSchema: objectSchema(
+        {
+          title: { type: 'string' },
+          goal: { type: 'string' },
+          reason: { type: 'string' },
+          scope: { type: 'string' },
+          completionCriteria: { type: 'array', items: { type: 'string' } },
+        },
+        ['title', 'goal', 'reason', 'scope'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['title', 'goal', 'reason', 'scope', 'completionCriteria']);
+        const title = requireString(args, 'title');
+        const goalText = requireString(args, 'goal');
+        if (typeof args.reason !== 'string') {
+          throw new McpError('INVALID_ARGUMENT', '필수 인자 누락 또는 형식 오류: reason');
+        }
+        if (typeof args.scope !== 'string') {
+          throw new McpError('INVALID_ARGUMENT', '필수 인자 누락 또는 형식 오류: scope');
+        }
+        let completionCriteria: string[] | undefined;
+        if (args.completionCriteria !== undefined) {
+          if (!Array.isArray(args.completionCriteria) || !args.completionCriteria.every((x) => typeof x === 'string')) {
+            throw new McpError('INVALID_ARGUMENT', '잘못된 인자 형식: completionCriteria');
+          }
+          completionCriteria = [...(args.completionCriteria as string[])];
+        }
+        try {
+          return await v1Intake.createV1TaskFromContract(dataRoot, project, {
+            title,
+            goal: goalText,
+            reason: args.reason as string,
+            scope: args.scope as string,
+            ...(completionCriteria !== undefined ? { completionCriteria } : {}),
+          });
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    },
     {
       name: 'relay_pm_activate_goal',
       description:
