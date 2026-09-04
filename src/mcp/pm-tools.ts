@@ -25,6 +25,7 @@ import * as pmDelivery from '../backend/pm-delivery.js';
 import * as pmVerificationContext from '../backend/pm-verification-context.js';
 import * as pmJudgment from '../backend/pm-judgment.js';
 import * as retryPreparation from '../backend/retry-preparation.js';
+import * as retryDispatch from '../backend/retry-dispatch.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
@@ -728,7 +729,38 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
               dataRoot, project, submitted.judgment.deliveryId,
             );
             const judgment = pmJudgment.getPmJudgment(dataRoot, project, submitted.judgment.judgmentId);
-            return { judgment, preparation: prepared.preparation, task: prepared.task, prepared: true };
+            // V1-G5-C: READY preparation automatically continues to same-Task
+            // redispatch (no second owner GO). A redispatch failure returns a
+            // bounded operational failure; the durable preparation stays
+            // recoverable via retry-dispatch reconciliation.
+            try {
+              const redispatched = await retryDispatch.dispatchV1Retry(
+                dataRoot, project, { deliveryId: submitted.judgment.deliveryId },
+              );
+              return {
+                judgment,
+                preparation: redispatched.preparation,
+                task: redispatched.task,
+                prepared: true,
+                redispatch: {
+                  ok: true,
+                  retryRunId: redispatched.runId,
+                  workerId: redispatched.workerId,
+                  executionState: redispatched.executionState,
+                  alreadyDispatched: redispatched.alreadyDispatched,
+                },
+              };
+            } catch (err) {
+              const code = (err as { code?: string } | null)?.code ?? 'REDISPATCH_FAILED';
+              const message = err instanceof Error ? err.message : String(err);
+              return {
+                judgment,
+                preparation: prepared.preparation,
+                task: prepared.task,
+                prepared: true,
+                redispatch: { ok: false, code: String(code), message: message.slice(0, 500) },
+              };
+            }
           }
           return submitted;
         } catch (err) {

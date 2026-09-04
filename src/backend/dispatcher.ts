@@ -62,6 +62,21 @@ export interface DispatchRequest {
   expectedExecutionState: 'READY';
   /** Coding repository / Adapter observation scope — NOT Relay Run folder. */
   workspaceRoot: string;
+  /**
+   * V1-G5-C trusted internal retry correlation. ONLY the retry-dispatch
+   * backend may set this; it is never accepted from MCP/host/owner surfaces.
+   * When present the Dispatcher persists the correlation on the new Run meta
+   * and pre-writes the backend-composed retry prompt (the Claude wrapper
+   * recomputes the identical prompt via retry-prompt.js for its idempotent
+   * prompt.md write). Ordinary initial dispatch omits this entirely.
+   */
+  retryContext?: {
+    preparationId: string;
+    sourceRunId: string;
+    judgmentId: string;
+    deliveryId: string;
+    prompt: string;
+  };
 }
 
 export interface DispatchResult {
@@ -538,6 +553,19 @@ async function handleChildExit(
 
 // ── Rollback ─────────────────────────────────────────────────────────────────
 
+/** Atomic small-file write (tmp + rename) inside a Run folder. */
+function writeFileAtomicText(folder: string, name: string, content: string): void {
+  const filePath = path.join(folder, name);
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, content, 'utf8');
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore cleanup */ }
+    throw err;
+  }
+}
+
 async function rollbackPreCommitRun(
   dataRoot: string,
   project: string,
@@ -574,6 +602,32 @@ export async function dispatchTask(
 
   // Phase H: workspaceRoot required + validated
   const workspaceRoot = validateWorkspaceRoot(request?.workspaceRoot);
+
+  // V1-G5-C: trusted internal retry correlation (never from external callers).
+  const retryContext = request?.retryContext;
+  if (retryContext !== undefined) {
+    if (!retryContext || typeof retryContext !== 'object') {
+      throw new DispatcherError('INVALID_ARGUMENT', 'retryContext must be an object.');
+    }
+    if (typeof retryContext.preparationId !== 'string' || !/^RTP-PMJ-PMD-TASK-\d+-[A-Za-z0-9._-]+$/.test(retryContext.preparationId)) {
+      throw new DispatcherError('INVALID_ARGUMENT', `잘못된 retry preparationId: ${String(retryContext.preparationId)}`);
+    }
+    if (typeof retryContext.sourceRunId !== 'string' || !retryContext.sourceRunId) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'retryContext.sourceRunId가 필요합니다.');
+    }
+    if (typeof retryContext.judgmentId !== 'string' || !retryContext.judgmentId) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'retryContext.judgmentId가 필요합니다.');
+    }
+    if (typeof retryContext.deliveryId !== 'string' || !retryContext.deliveryId) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'retryContext.deliveryId가 필요합니다.');
+    }
+    if (typeof retryContext.prompt !== 'string' || !retryContext.prompt) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'retryContext.prompt가 필요합니다.');
+    }
+    if (Buffer.byteLength(retryContext.prompt, 'utf8') > 16 * 1024) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'retryContext.prompt exceeds the 16 KiB Worker prompt cap.');
+    }
+  }
 
   const key = dispatchKey(root, proj, taskId);
 
@@ -681,10 +735,19 @@ export async function dispatchTask(
     live.runId = createdRunId;
     live.captureFolder = createdFolder;
 
-    // Audit-only: persist workspaceRoot on Run meta (not authority for future dispatch).
+    // Audit + G5-C binding: persist workspaceRoot on Run meta, plus the
+    // authoritative workerId for this attempt and (retry only) the
+    // preparation correlation BEFORE link so linkRunToTask preserves it.
     try {
       const meta = readRunMeta(createdFolder);
-      writeRunMeta(createdFolder, { ...meta, workspaceRoot });
+      writeRunMeta(createdFolder, {
+        ...meta,
+        workspaceRoot,
+        workerId,
+        ...(retryContext
+          ? { retryPreparationId: retryContext.preparationId, sourceRunId: retryContext.sourceRunId }
+          : {}),
+      });
     } catch { /* audit best-effort */ }
 
     // 7. Link Run to Task
@@ -692,6 +755,46 @@ export async function dispatchTask(
 
     if (afterLinkHook) {
       await afterLinkHook();
+    }
+
+    // 7b. Retry only: persist retry-context.json + backend-composed prompt.md
+    // into the NEW Run folder (prior Runs untouched). Written pre-commit so a
+    // CAS failure rolls the files back with the Run; post-commit failures
+    // preserve them with the Run. The Claude wrapper recomputes the identical
+    // prompt from retry-context.json (see retry-prompt.js).
+    if (retryContext) {
+      try {
+        writeFileAtomicText(
+          createdFolder,
+          'retry-context.json',
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              preparationId: retryContext.preparationId,
+              sourceRunId: retryContext.sourceRunId,
+              taskId,
+              judgmentId: retryContext.judgmentId,
+              deliveryId: retryContext.deliveryId,
+            },
+            null,
+            2,
+          ) + '\n',
+        );
+        writeFileAtomicText(createdFolder, 'prompt.md', retryContext.prompt);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
+        createdFolder = undefined;
+        createdRunId = undefined;
+        live.captureFolder = undefined;
+        live.runId = undefined;
+        if (observationLock) {
+          releaseObservationLock(observationLock);
+          observationLock = undefined;
+          live.observationLock = undefined;
+        }
+        throw new DispatcherError('INTERNAL_ERROR', `Retry context persist failed: ${msg}`);
+      }
     }
 
     // 8. CAS READY → DISPATCHED  ← commitment

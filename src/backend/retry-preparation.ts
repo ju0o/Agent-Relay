@@ -74,6 +74,15 @@ export interface RetryPreparationRecord {
   readyAt?: string;
   failedAt?: string;
   failureCode?: string;
+  /**
+   * V1-G5-C additive consumption bookkeeping. status stays READY forever
+   * (terminal-success bookkeeping); these fields distinguish "READY but not
+   * dispatched" from "READY already dispatched". One preparation binds at
+   * most one retry Run.
+   */
+  dispatchedRunId?: string;
+  dispatchedAt?: string;
+  consumedAt?: string;
 }
 
 export interface RetryPreparationResult {
@@ -127,6 +136,19 @@ function withPrepLock<T>(dataRoot: string, project: string, preparationId: strin
 /** Test-only reset for the process-local preparation chains. */
 export function _resetRetryPreparationLocksForTests(): void {
   _prepLocks.clear();
+}
+
+/**
+ * V1-G5-C: shared per-preparation serializer so retry dispatch and retry
+ * preparation mutate the same preparation record under one chain.
+ */
+export function withRetryPreparationLock<T>(
+  dataRoot: string,
+  project: string,
+  preparationId: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  return withPrepLock(dataRoot, project, preparationId, fn);
 }
 
 // ── identity / validation ────────────────────────────────────────────────────
@@ -228,6 +250,42 @@ export function getRetryPreparation(dataRoot: string, project: string, preparati
     throw new RetryPreparationError('NOT_FOUND', `Retry Preparation을 찾을 수 없습니다: ${preparationId}`);
   }
   return record;
+}
+
+/**
+ * V1-G5-C: record that a preparation produced its one retry Run. Status
+ * stays READY (never rewritten); only additive consumption fields are set.
+ * Caller must hold withRetryPreparationLock. Idempotent for the same runId;
+ * refuses to rebind to a different runId.
+ */
+export function markRetryPreparationConsumed(
+  dataRoot: string,
+  project: string,
+  preparationId: string,
+  runId: string,
+): RetryPreparationRecord {
+  const folder = retryPreparationFolder(dataRoot, project, preparationId);
+  const prep = readPreparationRecord(dataRoot, project, preparationId);
+  if (!prep) {
+    throw new RetryPreparationError('NOT_FOUND', `Retry Preparation을 찾을 수 없습니다: ${preparationId}`);
+  }
+  if (prep.status !== 'READY') {
+    throw new RetryPreparationError('CONFLICT', `Preparation ${preparationId} is ${prep.status}, not READY; cannot mark consumed.`);
+  }
+  if (prep.dispatchedRunId && prep.dispatchedRunId !== runId) {
+    throw new RetryPreparationError('CONFLICT', `Preparation ${preparationId} already bound to ${prep.dispatchedRunId}; refusing rebind to ${runId}.`);
+  }
+  if (prep.dispatchedRunId === runId) return prep;
+  const ts = nowIso();
+  const next: RetryPreparationRecord = {
+    ...prep,
+    dispatchedRunId: runId,
+    dispatchedAt: prep.dispatchedAt ?? ts,
+    consumedAt: ts,
+    updatedAt: ts,
+  };
+  persistPreparationRecord(folder, next);
+  return next;
 }
 
 /** List all preparation records (malformed siblings skipped deterministically). */

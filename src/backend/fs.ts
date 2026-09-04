@@ -256,6 +256,19 @@ export interface RunMeta {
    * NOT authority for future dispatch; do not expose via PM Context Packet.
    */
   workspaceRoot?: string;
+  /**
+   * V1-G5-C additive: authoritative workerId bound at dispatch time.
+   * Old records without it remain valid (undefined = unknown).
+   */
+  workerId?: string;
+  /**
+   * V1-G5-C additive: retry preparation that produced this Run (set only on
+   * automatic retry dispatches). Enables crash-safe adoption: a preparation
+   * with a correlated Run never dispatches twice.
+   */
+  retryPreparationId?: string;
+  /** V1-G5-C additive: PM-judged source attempt for a retry Run. */
+  sourceRunId?: string;
 }
 
 /** Allocate a new collision-resistant runId (UUID). */
@@ -277,6 +290,15 @@ export function readRunMeta(folder: string): RunMeta {
     }
     if (typeof raw.workspaceRoot === 'string' && raw.workspaceRoot) {
       meta.workspaceRoot = raw.workspaceRoot;
+    }
+    if (typeof raw.workerId === 'string' && raw.workerId) {
+      meta.workerId = raw.workerId;
+    }
+    if (typeof raw.retryPreparationId === 'string' && raw.retryPreparationId) {
+      meta.retryPreparationId = raw.retryPreparationId;
+    }
+    if (typeof raw.sourceRunId === 'string' && raw.sourceRunId) {
+      meta.sourceRunId = raw.sourceRunId;
     }
     return meta;
   } catch {
@@ -307,6 +329,15 @@ export function writeRunMeta(folder: string, meta: RunMeta): void {
   }
   if (typeof meta.workspaceRoot === 'string' && meta.workspaceRoot) {
     out.workspaceRoot = meta.workspaceRoot;
+  }
+  if (typeof meta.workerId === 'string' && meta.workerId) {
+    out.workerId = meta.workerId;
+  }
+  if (typeof meta.retryPreparationId === 'string' && meta.retryPreparationId) {
+    out.retryPreparationId = meta.retryPreparationId;
+  }
+  if (typeof meta.sourceRunId === 'string' && meta.sourceRunId) {
+    out.sourceRunId = meta.sourceRunId;
   }
   const filePath = path.join(folder, 'meta.json');
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;

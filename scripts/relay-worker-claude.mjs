@@ -283,6 +283,75 @@ function buildWorkerPrompt(task, runId) {
 // ── prompt.md write ───────────────────────────────────────────────────────────
 
 /**
+ * V1-G5-C: read and minimally validate retry-context.json from a Run folder.
+ * Returns null for initial Runs (file absent). Malformed context fails safe
+ * (throw) rather than silently falling back to the initial prompt.
+ *
+ * @param {string} runFolder
+ * @returns {{ preparationId: string; sourceRunId: string; taskId: string; judgmentId: string; deliveryId: string } | null}
+ */
+function readRetryContext(runFolder) {
+  const ctxPath = path.join(runFolder, 'retry-context.json');
+  if (!fs.existsSync(ctxPath)) return null;
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(ctxPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`retry-context.json unreadable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  for (const f of ['preparationId', 'sourceRunId', 'taskId', 'judgmentId', 'deliveryId']) {
+    if (!raw || typeof raw[f] !== 'string' || !raw[f]) {
+      throw new Error(`retry-context.json missing field: ${f}`);
+    }
+  }
+  return {
+    preparationId: raw.preparationId,
+    sourceRunId: raw.sourceRunId,
+    taskId: raw.taskId,
+    judgmentId: raw.judgmentId,
+    deliveryId: raw.deliveryId,
+  };
+}
+
+/**
+ * V1-G5-C: recompute the retry prompt with the shared dist composer
+ * (identical bytes to the backend pre-write). Reads the durable
+ * instruction + reason from the G5-A judgment/intent and the bounded prior
+ * excerpt from the source Run — same inputs as retry-dispatch.ts.
+ */
+async function buildRetryPrompt(dataRoot, project, task, retryCtx) {
+  if (retryCtx.taskId !== task.taskId) {
+    throw new Error(`retry-context taskId mismatch: ${retryCtx.taskId} ≠ ${task.taskId}`);
+  }
+  const retryPromptPath = path.join(DIST_BACKEND, 'retry-prompt.js');
+  const pmJudgmentPath = path.join(DIST_BACKEND, 'pm-judgment.js');
+  if (!fs.existsSync(retryPromptPath) || !fs.existsSync(pmJudgmentPath)) {
+    throw new Error(
+      'Relay backend dist not found for retry prompt composition.\n' +
+      'Run "npm run build" before using the relay worker.',
+    );
+  }
+  const rp = await import(pathToFileURL(retryPromptPath).href);
+  const pmJud = await import(pathToFileURL(pmJudgmentPath).href);
+  const judgment = pmJud.getPmJudgment(dataRoot, project, retryCtx.judgmentId);
+  const instruction = pmJud.getRetryInstructionForDelivery(dataRoot, project, retryCtx.deliveryId);
+  const sourceLink = task.linkedRuns.find((r) => r.runId === retryCtx.sourceRunId);
+  if (!sourceLink) {
+    throw new Error(`Source Run ${retryCtx.sourceRunId} is no longer linked.`);
+  }
+  const prior = rp.readPriorResultExcerpt(sourceLink.folder);
+  return rp.composeRetryPrompt({
+    task,
+    preparationId: retryCtx.preparationId,
+    sourceRunId: retryCtx.sourceRunId,
+    reason: judgment.reason || '',
+    retryInstruction: instruction,
+    priorExcerpt: prior.excerpt,
+    priorAvailable: prior.available,
+  });
+}
+
+/**
  * Write the bounded Worker prompt to prompt.md inside the existing Run folder.
  *
  * Idempotency rules:
@@ -426,9 +495,19 @@ async function main() {
     runFolder = runFolder_;
 
     // ── 5. Build bounded Worker prompt ────────────────────────────────────────
+    // V1-G5-C: retry Runs carry retry-context.json (written pre-commit by the
+    // canonical Dispatcher from backend-composed data). Recompute the
+    // identical retry prompt via the shared dist composer so the idempotent
+    // prompt.md write below agrees byte-for-byte; initial Runs use the
+    // canonical Task prompt as before.
     let prompt;
     try {
-      prompt = buildWorkerPrompt(task, args.runId);
+      const retryCtx = readRetryContext(runFolder);
+      if (retryCtx) {
+        prompt = await buildRetryPrompt(args.dataRoot, args.project, task, retryCtx);
+      } else {
+        prompt = buildWorkerPrompt(task, args.runId);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[relay-worker-claude] Prompt construction failed: ${msg}\n`);

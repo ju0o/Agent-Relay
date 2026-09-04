@@ -65,6 +65,11 @@ const get = (name) => tools.find((t) => t.name === name);
 
 const WORKSPACE = path.join(TEST_ROOT, '_workspace');
 fs.mkdirSync(WORKSPACE, { recursive: true });
+// Isolated workspace for the bridge block: bridge.start() reconciliation may
+// redispatch leftover READY preparations into WORKSPACE (holding its
+// observation slot); the bridge task must never contend with them.
+const WORKSPACE_B = path.join(TEST_ROOT, '_workspace_b');
+fs.mkdirSync(WORKSPACE_B, { recursive: true });
 
 process.env.WORKER_STAY_MS = '30000';
 disp._resetDispatcherStateForTests();
@@ -109,10 +114,10 @@ function responseComplete(sessionId, text) {
   };
 }
 
-async function driveToResultReceived(title, sessionId, text) {
+async function driveToResultReceived(title, sessionId, text, workspace = WORKSPACE) {
   const inc = await get('relay_pm_create_task').handler({ ...CONTRACT, title });
   const res = await get('relay_pm_dispatch_owner_approved').handler({
-    taskId: inc.task.taskId, workerId: 'v1-g5b-worker', workspaceRoot: WORKSPACE, expectedExecutionState: 'READY',
+    taskId: inc.task.taskId, workerId: 'v1-g5b-worker', workspaceRoot: workspace, expectedExecutionState: 'READY',
   });
   const t0 = gt.getTask(TEST_ROOT, project, inc.task.taskId);
   const folder = t0.linkedRuns.find((r) => r.runId === res.runId).folder;
@@ -122,6 +127,9 @@ async function driveToResultReceived(title, sessionId, text) {
   await sleep(150);
   const t = gt.getTask(TEST_ROOT, project, inc.task.taskId);
   if (t.executionState !== 'RESULT_RECEIVED') throw new Error(`setup failed: ${t.executionState}`);
+  // Simulate worker exit (fixture workers linger): clear the per-task live
+  // dispatch entry + observation slot, as a real exited worker would.
+  await resetProcessLocal();
   return { goalId: inc.goal.goalId, taskId: inc.task.taskId, runId: res.runId, folder };
 }
 
@@ -140,7 +148,7 @@ function readRecords(file) {
   return fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
 }
 
-// ── main flow: ONE MCP judgment → READY+PENDING ──
+// ── main flow: ONE MCP judgment → READY+PENDING → automatic G5-C redispatch ──
 console.log('\n-- one-judgment product flow --');
 const t1 = await driveToResultReceived('V1 G5B main', 'ses-g5b-1', 'G5B main result text');
 const D1 = `PMD-${t1.taskId}-${t1.runId}`;
@@ -153,8 +161,13 @@ let mcpRes;
   });
   check(mcpRes.prepared === true, 'ONE judgment drives intake + preparation, no second command');
   check(mcpRes.judgment.status === 'APPLIED', 'CHANGES judgment APPLIED after READY');
-  check(mcpRes.task.executionState === 'READY' && mcpRes.task.pmState === 'PENDING', 'Task READY+PENDING');
   check(mcpRes.preparation.status === 'READY', 'preparation READY');
+  // V1-G5-C: the same judgment automatically continues to same-Task
+  // redispatch (no second owner GO). Task no longer rests at READY.
+  check(mcpRes.redispatch?.ok === true, 'G5-C automatic redispatch follows READY');
+  check(typeof mcpRes.redispatch?.retryRunId === 'string' && mcpRes.redispatch.retryRunId !== t1.runId, 'G5-C new retry Run created');
+  check(['DISPATCHED', 'RUNNING'].includes(mcpRes.task.executionState) && mcpRes.task.pmState === 'PENDING', 'G5-C Task DISPATCHED/RUNNING+PENDING');
+  await resetProcessLocal();
 }
 
 // ── A/B/C/D ──
@@ -178,7 +191,9 @@ console.log('\n-- E-K: canonical sequence --');
   const ch = events.filter((e) => e.type === 'TASK_CHANGES_REQUESTED' && e.taskId === t1.taskId);
   check(ch.length === 1 && ch[0].runId === t1.runId, 'E/G canonical requestTaskChanges + Event');
   const t = gt.getTask(TEST_ROOT, project, t1.taskId);
-  check(t.executionState === 'READY' && t.pmState === 'PENDING', 'F/I Task ends READY+PENDING');
+  // V1-G5-C: after the automatic retry dispatch the Task has moved beyond
+  // READY (preparation history stays READY; see G5-C suite for the binding).
+  check(['DISPATCHED', 'RUNNING'].includes(t.executionState) && t.pmState === 'PENDING', 'F/I Task moved to DISPATCHED/RUNNING+PENDING via automatic retry');
   check(t.retryCount === 1, 'J retryCount incremented exactly once');
   const rr = events.filter((e) => e.type === 'TASK_RETRY_REQUESTED' && e.taskId === t1.taskId);
   check(rr.length === 1, 'H/K canonical requestTaskRetry + Event');
@@ -195,6 +210,10 @@ console.log('\n-- L/M: replay --');
   check(res.preparation.status === 'READY', 'L same judgment replay returns READY preparation');
   check(gt.getTask(TEST_ROOT, project, t1.taskId).retryCount === before, 'L retryCount untouched by replay');
   check(retryPrep.listRetryPreparations(TEST_ROOT, project).filter((p) => p.deliveryId === D1).length === 1, 'M one preparation only');
+  // V1-G5-C: replay adopts the already-produced retry Run (no duplicate).
+  check(res.redispatch?.ok === true && res.redispatch?.retryRunId === mcpRes.redispatch?.retryRunId, 'L/M replay adopts same retry Run, no duplicate');
+  check(res.redispatch?.alreadyDispatched === true, 'L/M replay reports alreadyDispatched');
+  await resetProcessLocal();
 }
 
 // ── N/O/P/Q: restart matrix ──
@@ -313,17 +332,20 @@ console.log('\n-- V: accept intact --');
   await resetProcessLocal();
 }
 
-// ── W/X/Y/Z: scope ──
+// ── W/X/Y/Z: scope (preparation kernel creates nothing; G5-C owns dispatch) ──
 console.log('\n-- W-Z: scope --');
 {
   const before = gt.listTasks(TEST_ROOT, project).reduce((n, t) => n + t.linkedRuns.length, 0);
   const tw = await driveToResultReceived('V1 G5B scope', 'ses-g5b-w', 'G5B scope text');
   const DW = `PMD-${tw.taskId}-${tw.runId}`;
-  await get('relay_pm_submit_judgment').handler({ deliveryId: DW, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  // Direct kernel path (no MCP/bridge auto-redispatch): preparation alone
+  // must create no Run and dispatch nothing.
+  await pmJud.submitPmJudgment(TEST_ROOT, project, { deliveryId: DW, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  await retryPrep.prepareRetryForJudgment(TEST_ROOT, project, DW);
   const after = gt.listTasks(TEST_ROOT, project).reduce((n, t) => n + t.linkedRuns.length, 0);
-  check(after === before + 1, 'W no Run created (only the setup dispatch run)');
+  check(after === before + 1, 'W no Run created by preparation (only the setup dispatch run)');
   const t = gt.getTask(TEST_ROOT, project, tw.taskId);
-  check(t.executionState === 'READY', 'X no dispatch invoked (READY awaiting G5-C)');
+  check(t.executionState === 'READY', 'X no dispatch invoked by preparation (READY awaiting G5-C)');
   const newFolders = t.linkedRuns.filter((r) => r.runId !== tw.runId);
   check(newFolders.length === 0, 'Y no second run materialized (no Worker prompt possible)');
   const src = fs.readFileSync('src/backend/retry-preparation.ts', 'utf8');
@@ -333,10 +355,10 @@ console.log('\n-- W-Z: scope --');
   await resetProcessLocal();
 }
 
-// ── bridge one-judgment CHANGES ──
+// ── bridge one-judgment CHANGES (now drives G5-C automatic redispatch) ──
 console.log('\n-- bridge: one-judgment CHANGES --');
 {
-  const tb = await driveToResultReceived('V1 G5B bridge', 'ses-g5b-b', 'G5B bridge text');
+  const tb = await driveToResultReceived('V1 G5B bridge', 'ses-g5b-b', 'G5B bridge text', WORKSPACE_B);
   const DB = `PMD-${tb.taskId}-${tb.runId}`;
   const rec = path.join(TEST_ROOT, 'rec-g5b.ndjson');
   process.env.FAKE_HOST_RECORD_FILE = rec;
@@ -347,15 +369,15 @@ console.log('\n-- bridge: one-judgment CHANGES --');
     pollMs: 30, receiptTimeoutMs: 4000, maxBackoffMs: 400, logger: (l) => logs.push(l),
   });
   await b.start();
-  await waitFor('bridge ready', () => {
+  await waitFor('bridge redispatched', () => {
     const t = gt.getTask(TEST_ROOT, project, tb.taskId);
-    return t.executionState === 'READY' && t.pmState === 'PENDING' ? true : false;
+    return (t.executionState === 'DISPATCHED' || t.executionState === 'RUNNING') && t.pmState === 'PENDING' ? true : false;
   });
   await b.stop();
   delete process.env.FAKE_HOST_RECORD_FILE;
   delete process.env.FAKE_HOST_MODE;
   const rows = readRecords(rec).filter((r) => r.event === 'judgment-response');
-  check(rows.some((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'APPLIED' && r.message?.deliveryId === DB), 'bridge CHANGES → APPLIED with READY taskState');
+  check(rows.some((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'REDISPATCHED' && r.message?.deliveryId === DB && typeof r.message?.retryRunId === 'string'), 'bridge CHANGES → REDISPATCHED with retryRunId');
   const j = pmJud.getPmJudgment(TEST_ROOT, project, `PMJ-${DB}`);
   check(j.status === 'APPLIED', 'bridge advanced judgment to APPLIED');
   await resetProcessLocal();
@@ -368,7 +390,10 @@ console.log('\n-- G5-B correction: READY crash seam --');
   const DC = `PMD-${tc.taskId}-${tc.runId}`;
   const JC = `PMJ-${DC}`;
   const PC = `RTP-${JC}`;
-  await get('relay_pm_submit_judgment').handler({ deliveryId: DC, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  // Direct kernel path (no MCP auto-redispatch): preparation alone must rest
+  // at READY+PENDING so the crash seam is observable.
+  await pmJud.submitPmJudgment(TEST_ROOT, project, { deliveryId: DC, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  await retryPrep.prepareRetryForJudgment(TEST_ROOT, project, DC);
   check(retryPrep.getRetryPreparation(TEST_ROOT, project, PC).status === 'READY', 'crash-seam setup: preparation READY');
   check(pmJud.getPmJudgment(TEST_ROOT, project, JC).status === 'APPLIED', 'crash-seam setup: judgment APPLIED');
   const retryBefore = gt.getTask(TEST_ROOT, project, tc.taskId).retryCount;
@@ -431,7 +456,10 @@ console.log('\n-- G5-B correction: G5-C consumption compat --');
   const DA = `PMD-${ta.taskId}-${ta.runId}`;
   const JA = `PMJ-${DA}`;
   const PA = `RTP-${JA}`;
-  await get('relay_pm_submit_judgment').handler({ deliveryId: DA, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  // Direct kernel path (no MCP auto-redispatch): preparation rests at
+  // READY+PENDING; a later manual dispatch stands in for G5-C consumption.
+  await pmJud.submitPmJudgment(TEST_ROOT, project, { deliveryId: DA, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  await retryPrep.prepareRetryForJudgment(TEST_ROOT, project, DA);
   check(retryPrep.getRetryPreparation(TEST_ROOT, project, PA).status === 'READY', 'compat setup: preparation READY');
   // Force RECEIVED to prove heal-after-consumption, then consume via real dispatch (G5-C stand-in).
   const jPathA = path.join(pmJud.pmJudgmentFolder(TEST_ROOT, project, JA), 'judgment.json');

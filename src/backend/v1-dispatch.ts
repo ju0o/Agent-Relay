@@ -26,6 +26,8 @@
 import { getGoal, getTask } from './goal-task.js';
 import { authorizeEffect } from './permission-gate.js';
 import { DispatcherError, dispatchTask, type DispatchResult } from './dispatcher.js';
+import { computeTaskScopeFingerprint, mintRetryAuthorization } from './retry-authorization.js';
+import { recordRuntimeWarning } from './event.js';
 
 export interface V1OwnerApprovedDispatchInput {
   taskId: string;
@@ -102,10 +104,40 @@ export async function dispatchV1OwnerApproved(
   });
 
   // Canonical dispatch — Dispatcher owns Run, CAS, Capture, spawn, binding.
-  return dispatchTask(dataRoot, project, {
+  const result = await dispatchTask(dataRoot, project, {
     taskId,
     workerId,
     workspaceRoot,
     expectedExecutionState: 'READY',
   });
+
+  // V1-G5-C: mint the narrow retry authorization ONLY after the canonical
+  // initial dispatch has succeeded (the Task/Run binding is real). A mint
+  // failure never rolls back the real dispatch — it records a bounded
+  // warning; the binding can be repaired later from the trusted first-run
+  // binding (see retry-dispatch.ts ensureAuthorizationFromFirstRunBinding).
+  try {
+    const dispatched = getTask(dataRoot, project, taskId);
+    mintRetryAuthorization(dataRoot, project, {
+      taskId,
+      goalId,
+      workerId,
+      workspaceRoot,
+      scopeFingerprint: computeTaskScopeFingerprint(dispatched),
+      source: 'OWNER_APPROVED_INITIAL_DISPATCH',
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    try {
+      await recordRuntimeWarning(dataRoot, project, {
+        summary: `RETRY_AUTH_MINT_FAILED: initial dispatch of Task ${taskId} succeeded but retry authorization could not be persisted; repair from first-run binding may be required.`,
+        taskId,
+        runId: result.runId,
+        goalId,
+        source: { kind: 'v1-dispatch', subsystem: 'retry-authorization' },
+        details: { workerId, error: msg },
+      });
+    } catch { /* warning best-effort; dispatch result stands */ }
+  }
+  return result;
 }

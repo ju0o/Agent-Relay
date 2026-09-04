@@ -31,6 +31,8 @@ import {
 import { getVerificationContextForDelivery } from './pm-verification-context.js';
 import { submitPmJudgment } from './pm-judgment.js';
 import { prepareRetryForJudgment } from './retry-preparation.js';
+import { dispatchV1Retry } from './retry-dispatch.js';
+import { reconcileReadyRetryDispatches } from './retry-dispatch.js';
 
 /** Host protocol version (bridge ↔ PM Host child). */
 export const PM_HOST_PROTOCOL_VERSION = 1;
@@ -253,6 +255,18 @@ export class PmHostBridge {
     this.stopping = false;
     const rec = await reconcilePmDeliveries(this.dataRoot, this.project);
     this.log(`Bridge started (reconciled ${rec.ensured.length} delivery(s))`);
+    // V1-G5-C restart reconciliation: adopt already-correlated retry Runs,
+    // dispatch READY unconsumed preparations once, skip anything else.
+    // Best-effort only — never breaks bridge startup.
+    try {
+      const retried = await reconcileReadyRetryDispatches(this.dataRoot, this.project);
+      const acted = retried.filter((r) => r.outcome !== 'skipped');
+      if (acted.length) {
+        this.log(`Retry reconcile: ${acted.map((r) => `${r.preparationId}=${r.outcome}${r.runId ? `:${r.runId}` : ''}`).join(', ')}`);
+      }
+    } catch (err) {
+      this.log(`Retry reconcile failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     await this.tick();
     this.timer = setInterval(() => {
       void this.tick().catch((err) => {
@@ -630,6 +644,39 @@ export class PmHostBridge {
           reason: reason.slice(0, 500),
         });
         this.log(`Retry preparation failed for ${deliveryId.slice(0, 64)}`);
+        return;
+      }
+      // V1-G5-C: READY preparation automatically continues to same-Task
+      // redispatch (no second owner GO). A redispatch failure keeps the
+      // truthful APPLIED/READY state with a bounded retryError; the durable
+      // preparation stays recoverable via retry-dispatch reconciliation.
+      try {
+        const redispatched = await dispatchV1Retry(this.dataRoot, this.project, { deliveryId });
+        taskState = { executionState: redispatched.task.executionState, pmState: redispatched.task.pmState };
+        status = 'REDISPATCHED';
+        await reply({
+          type: 'PM_JUDGMENT_APPLIED',
+          protocolVersion: PM_HOST_PROTOCOL_VERSION,
+          deliveryId,
+          decision: result.judgment.decision,
+          status,
+          taskState,
+          retryRunId: redispatched.runId,
+        });
+        this.log(`Judgment ${status} for ${deliveryId.slice(0, 64)} (${result.judgment.decision} → ${redispatched.runId})`);
+        return;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await reply({
+          type: 'PM_JUDGMENT_APPLIED',
+          protocolVersion: PM_HOST_PROTOCOL_VERSION,
+          deliveryId,
+          decision: result.judgment.decision,
+          status,
+          taskState,
+          retryError: reason.slice(0, 500),
+        });
+        this.log(`Redispatch failed for ${deliveryId.slice(0, 64)} (preparation recoverable)`);
         return;
       }
     }
