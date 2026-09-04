@@ -45,7 +45,7 @@ export function mapCoreError(err: unknown): McpError {
   if (name === 'PermissionDeniedError') {
     return new McpError('FORBIDDEN', msg);
   }
-  if (name === 'OrphanResolutionError' || name === 'ObservationLockError' || name === 'ResultBridgeError' || name === 'PmDeliveryError' || name === 'VerificationContextError') {
+  if (name === 'OrphanResolutionError' || name === 'ObservationLockError' || name === 'ResultBridgeError' || name === 'PmDeliveryError' || name === 'VerificationContextError' || name === 'PmJudgmentError') {
     const hCode = (err as { code?: string } | null)?.code;
     switch (hCode) {
       case 'FORBIDDEN':

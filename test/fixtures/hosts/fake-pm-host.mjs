@@ -8,7 +8,14 @@
  * Configuration via environment (inherited from the bridge spawn):
  *   FAKE_HOST_RECORD_FILE  append-only NDJSON record of received packets (required)
  *   FAKE_HOST_MODE         ack | no-ack | crash-immediate | crash-after-receive
- *                          | wrong-id | malformed   (default: ack)
+ *                          | wrong-id | malformed | judge-accept | judge-changes
+ *                          (default: ack)
+ *
+ * judge-accept / judge-changes: ack the delivery, then send one
+ * PM_TASK_JUDGMENT for it (ACCEPT with reason / CHANGES with reason +
+ * retryInstruction). Bridge replies (PM_JUDGMENT_APPLIED / REJECTED) are
+ * recorded as judgment-response rows. Receipt is transport receipt only —
+ * never PM judgment. Diagnostics go to stderr; protocol on stdout.
  *
  * The fixture dedupes deliveryIds per process lifetime and records repeats
  * with duplicate:true (at-least-once evidence). Receipt is transport receipt
@@ -65,6 +72,11 @@ process.stdin.on('data', (chunk) => {
       continue; // malformed inbound ignored
     }
     if (!msg || msg.type !== 'PM_VERIFICATION_DELIVERY' || msg.protocolVersion !== 1 || typeof msg.deliveryId !== 'string') {
+      // Bridge operational replies to our own judgments arrive on the same
+      // channel; record them as test evidence.
+      if (msg && (msg.type === 'PM_JUDGMENT_APPLIED' || msg.type === 'PM_JUDGMENT_REJECTED')) {
+        record({ event: 'judgment-response', deliveryId: msg.deliveryId ?? 'unknown', message: msg, at: new Date().toISOString() });
+      }
       continue;
     }
     received += 1;
@@ -84,6 +96,17 @@ process.stdin.on('data', (chunk) => {
     }
     if (mode === 'malformed') {
       process.stdout.write('NOT-JSON{{{garbage\n');
+      continue;
+    }
+    if (mode === 'judge-accept' || mode === 'judge-changes') {
+      reply({ type: 'PM_DELIVERY_RECEIVED', protocolVersion: 1, deliveryId: msg.deliveryId });
+      // Judge once per delivery (first receipt; repeats are transport noise).
+      if (!duplicate) {
+        const judgment = mode === 'judge-accept'
+          ? { type: 'PM_TASK_JUDGMENT', protocolVersion: 1, deliveryId: msg.deliveryId, decision: 'ACCEPT', reason: 'fixture accept: result looks good' }
+          : { type: 'PM_TASK_JUDGMENT', protocolVersion: 1, deliveryId: msg.deliveryId, decision: 'CHANGES', reason: 'fixture changes: please address the nits above', retryInstruction: 'fixture retry instruction: fix the nits and re-verify' };
+        reply(judgment);
+      }
       continue;
     }
     // ack (default): acknowledge every receipt, including duplicates.

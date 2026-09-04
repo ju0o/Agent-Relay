@@ -23,6 +23,7 @@ import * as v1Intake from '../backend/v1-intake.js';
 import * as v1Dispatch from '../backend/v1-dispatch.js';
 import * as pmDelivery from '../backend/pm-delivery.js';
 import * as pmVerificationContext from '../backend/pm-verification-context.js';
+import * as pmJudgment from '../backend/pm-judgment.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
@@ -685,6 +686,38 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
             requireString(args, 'deliveryId'),
             requireEnum(args, 'expectedStatus', pmDelivery.PM_DELIVERY_STATUSES),
           );
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_submit_judgment',
+      description:
+        'V1-G5-A: submit a structured PM judgment for a TASK_VERIFY PM Delivery. ' +
+        'ACCEPT applies the canonical acceptTaskResult; CHANGES validates and durably records intent only ' +
+        '(retry preparation belongs to G5-B). Input is deliveryId + decision + bounded reason/retryInstruction; ' +
+        'no taskId/runId/path injection. Same backend as the stdio host bridge.',
+      inputSchema: objectSchema(
+        {
+          deliveryId: { type: 'string' },
+          decision: { type: 'string', enum: ['ACCEPT', 'CHANGES'] },
+          reason: { type: 'string' },
+          retryInstruction: { type: 'string' },
+        },
+        ['deliveryId', 'decision'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['deliveryId', 'decision', 'reason', 'retryInstruction']);
+        const reason = optionalString(args, 'reason');
+        const retryInstruction = optionalString(args, 'retryInstruction');
+        try {
+          return await pmJudgment.submitPmJudgment(dataRoot, project, {
+            deliveryId: requireString(args, 'deliveryId'),
+            decision: requireEnum(args, 'decision', pmJudgment.PM_JUDGMENT_DECISIONS),
+            ...(reason !== undefined ? { reason } : {}),
+            ...(retryInstruction !== undefined ? { retryInstruction } : {}),
+          });
         } catch (err) {
           throw mapCoreError(err);
         }

@@ -29,6 +29,7 @@ import {
   type PmDeliveryRecord,
 } from './pm-delivery.js';
 import { getVerificationContextForDelivery } from './pm-verification-context.js';
+import { submitPmJudgment } from './pm-judgment.js';
 
 /** Host protocol version (bridge ↔ PM Host child). */
 export const PM_HOST_PROTOCOL_VERSION = 1;
@@ -534,6 +535,10 @@ export class PmHostBridge {
       return;
     }
     const m = msg as Record<string, unknown>;
+    if (m.type === 'PM_TASK_JUDGMENT') {
+      void this.handleJudgment(m);
+      return;
+    }
     if (m.type !== 'PM_DELIVERY_RECEIVED' || m.protocolVersion !== PM_HOST_PROTOCOL_VERSION || typeof m.deliveryId !== 'string') {
       this.log('Ignoring non-receipt host message');
       return;
@@ -562,6 +567,64 @@ export class PmHostBridge {
     this.backoffFailures = 0;
     this.nextSpawnAtMs = 0;
     this.log(`Receipt confirmed for ${deliveryId}`);
+  }
+
+  /**
+   * V1-G5-A: route a structured PM judgment from the host through the same
+   * backend intake as the MCP surface, then report the operational outcome
+   * back over stdio. Transport receipt (PM_DELIVERY_RECEIVED) stays separate.
+   */
+  private async handleJudgment(m: Record<string, unknown>): Promise<void> {
+    const child = this.child;
+    const reply = async (obj: Record<string, unknown>): Promise<void> => {
+      if (!child || !this.isHostAlive()) return;
+      try {
+        await this.writeLine(child, JSON.stringify(obj));
+      } catch {
+        // Reply best-effort; judgment durability does not depend on it.
+      }
+    };
+    const deliveryRaw = m.deliveryId;
+    const deliveryId = typeof deliveryRaw === 'string' ? deliveryRaw : 'unknown';
+    let result: { judgment: { judgmentId: string; decision: string; status: string }; applied: boolean; task: { executionState: string; pmState: string } };
+    try {
+      result = await submitPmJudgment(this.dataRoot, this.project, {
+        deliveryId: typeof m.deliveryId === 'string' ? m.deliveryId : '',
+        decision: m.decision as 'ACCEPT' | 'CHANGES',
+        ...(typeof m.reason === 'string' ? { reason: m.reason } : {}),
+        ...(typeof m.retryInstruction === 'string' ? { retryInstruction: m.retryInstruction } : {}),
+        ...(m.protocolVersion !== undefined ? { protocolVersion: m.protocolVersion } : {}),
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await reply({
+        type: 'PM_JUDGMENT_REJECTED',
+        protocolVersion: PM_HOST_PROTOCOL_VERSION,
+        deliveryId,
+        reason: reason.slice(0, 500),
+      });
+      this.log(`Judgment rejected for ${deliveryId.slice(0, 64)}`);
+      return;
+    }
+    // CHANGES records intent only in G5-A: report RECORDED truthfully
+    // (never APPLIED when no Task action ran).
+    const status = result.judgment.status === 'APPLIED'
+      ? 'APPLIED'
+      : result.judgment.status === 'RECEIVED' && result.judgment.decision === 'CHANGES'
+        ? 'RECORDED'
+        : result.judgment.status;
+    await reply({
+      type: 'PM_JUDGMENT_APPLIED',
+      protocolVersion: PM_HOST_PROTOCOL_VERSION,
+      deliveryId,
+      decision: result.judgment.decision,
+      status,
+      taskState: {
+        executionState: result.task.executionState,
+        pmState: result.task.pmState,
+      },
+    });
+    this.log(`Judgment ${status} for ${deliveryId.slice(0, 64)} (${result.judgment.decision})`);
   }
 
   private log(line: string): void {

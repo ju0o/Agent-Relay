@@ -59,6 +59,7 @@
     "test:v1-g4a-pm-delivery": "node test/v1-g4a-pm-delivery.test.mjs",
     "test:v1-g4b-verification-context": "node test/v1-g4b-verification-context.test.mjs",
     "test:v1-g4c-pm-host-wake": "node test/v1-g4c-pm-host-wake.test.mjs",
+    "test:v1-g5a-pm-judgment": "node test/v1-g5a-pm-judgment.test.mjs",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
     "cli": "node dist/server/cli/index.js",
     "cli:help": "node dist/server/cli/index.js --help",
