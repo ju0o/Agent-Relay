@@ -5,6 +5,7 @@ import * as path from 'path';
 /**
  * Read-only access to Claude Code's on-disk session transcripts:
  *   ~/.claude/projects/<encoded-workspace>/<sessionId>.jsonl
+ *   (or $CLAUDE_CONFIG_DIR/projects/... when the CLI config dir is relocated)
  *
  * We never write here. Directory-name encoding differs between Claude Code
  * versions, so instead of re-encoding workspace paths we scan all project
@@ -21,8 +22,21 @@ export interface TranscriptFile {
   mtimeMs: number;
 }
 
+/**
+ * Resolve the transcript root the CLI itself persists to.
+ *
+ * V1-G3 correction: honor the CLI's documented CLAUDE_CONFIG_DIR relocation.
+ * When set, the CLI stores session transcripts under
+ * $CLAUDE_CONFIG_DIR/projects instead of ~/.claude/projects. Relay's worker
+ * inherits the same process env, so the adapter must read from the same root
+ * the worker's Claude wrote to — otherwise real runs are never observed.
+ * Falls back to ~/.claude/projects when unset.
+ */
 export function claudeProjectsRoot(): string | null {
-  const root = path.join(os.homedir(), '.claude', 'projects');
+  const override = process.env['CLAUDE_CONFIG_DIR'];
+  const root = override && override.trim()
+    ? path.join(override.trim(), 'projects')
+    : path.join(os.homedir(), '.claude', 'projects');
   try {
     return fs.statSync(root).isDirectory() ? root : null;
   } catch {

@@ -265,6 +265,31 @@ console.log('\n-- structural --');
   check(!pmSrc.includes('relay_pm_wake') && !pmSrc.includes('relay_pm_deliver'), 'S production MCP unchanged (no wake/delivery)');
 }
 
+// ── R: adapter honors CLAUDE_CONFIG_DIR (V1-G3 real-run correction) ──
+console.log('\n-- R: transcript root resolution --');
+{
+  const storage = await import('../dist/server/integrations/claude/storage.js');
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const altRoot = path.join(TEST_ROOT, 'alt-claude-home');
+    fs.mkdirSync(path.join(altRoot, 'projects'), { recursive: true });
+    process.env.CLAUDE_CONFIG_DIR = altRoot;
+    check(
+      storage.claudeProjectsRoot() === path.join(altRoot, 'projects'),
+      'R CLAUDE_CONFIG_DIR relocation honored',
+    );
+    delete process.env.CLAUDE_CONFIG_DIR;
+    const fallback = storage.claudeProjectsRoot();
+    check(
+      fallback === null || fallback.endsWith(path.join('.claude', 'projects')),
+      'R fallback is ~/.claude/projects (or null when absent)',
+    );
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = saved;
+  }
+}
+
 await resetProcessLocal();
 delete process.env.WORKER_STAY_MS;
 fs.rmSync(TEST_ROOT, { recursive: true, force: true });
