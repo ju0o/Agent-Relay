@@ -15,7 +15,7 @@
  * The HTML is embedded so the compiled dist needs no asset-copy step.
  */
 
-export const PM_WIDGET_RESOURCE_URI = 'ui://agent-relay/pm-widget';
+export const PM_WIDGET_RESOURCE_URI = 'ui://agent-relay/pm-widget-v2';
 export const PM_WIDGET_RESOURCE_NAME = 'Agent Relay PM';
 export const PM_WIDGET_MIME_TYPE = 'text/html;profile=mcp-app';
 export const PM_WIDGET_RESOURCE_VERSION = '2026-01-26';
@@ -97,10 +97,12 @@ const WIDGET_HTML = `<!DOCTYPE html>
       }
 
       // ---- minimal JSON-RPC over postMessage (MCP Apps bridge) ----
+      // Proven spike bridge (behavioral authority): register the response
+      // listener synchronously, then postMessage, then return the promise.
       var nextId = 1;
       function sendRequest(method, params, timeoutMs) {
         var id = nextId++;
-        return new Promise(function (resolve, reject) {
+        var p = new Promise(function (resolve, reject) {
           var done = false;
           var to = setTimeout(function () {
             if (!done) { done = true; cleanup(); reject(new Error('timeout waiting for ' + method)); }
@@ -109,12 +111,16 @@ const WIDGET_HTML = `<!DOCTYPE html>
             var d = ev.data;
             if (!d || d.id !== id) return;
             cleanup();
-            if (d.result) resolve(d.result);
-            else reject(new Error((d.error && d.error.message) || ('error ' + method)));
+            // Presence check, not truthiness: an empty-object result is valid.
+            if (Object.prototype.hasOwnProperty.call(d, 'result')) resolve(d.result);
+            else if (d.error) reject(new Error((d.error.message) || ('error ' + method)));
+            else reject(new Error('invalid response for ' + method));
           }
           function cleanup() { clearTimeout(to); window.removeEventListener('message', listener); }
           window.addEventListener('message', listener);
         });
+        window.parent.postMessage({ jsonrpc: '2.0', id: id, method: method, params: params }, '*');
+        return p;
       }
       function sendNotification(method, params) {
         window.parent.postMessage({ jsonrpc: '2.0', method: method, params: params }, '*');
