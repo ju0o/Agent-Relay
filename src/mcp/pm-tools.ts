@@ -21,6 +21,7 @@ import * as dispatcher from '../backend/dispatcher.js';
 import * as pmWork from '../backend/pm-work.js';
 import * as v1Intake from '../backend/v1-intake.js';
 import * as v1Dispatch from '../backend/v1-dispatch.js';
+import * as pmDelivery from '../backend/pm-delivery.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
@@ -179,6 +180,37 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
       handler: async (args) => {
         rejectUnknownFields(args, ['eventId']);
         return pmGateway.getContextForEvent(dataRoot, project, requireString(args, 'eventId'));
+      },
+    },
+    {
+      name: 'relay_pm_list_pending_deliveries',
+      description:
+        'V1-G4-A: list durable PM Delivery records awaiting host consumption ' +
+        '(status PENDING or DELIVERED-awaiting-ACK). Terminal ACKNOWLEDGED/IGNORED never resurface. ' +
+        'Identity/state only — no result text. Pure read.',
+      inputSchema: objectSchema({}),
+      handler: async (args) => {
+        rejectUnknownFields(args, []);
+        try {
+          return { project, deliveries: pmDelivery.listPendingPmDeliveries(dataRoot, project) };
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_get_delivery',
+      description:
+        'V1-G4-A: read one durable PM Delivery record by deliveryId. ' +
+        'Identity/state only — no result text. Pure read.',
+      inputSchema: objectSchema({ deliveryId: { type: 'string' } }, ['deliveryId']),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['deliveryId']);
+        try {
+          return pmDelivery.getPmDelivery(dataRoot, project, requireString(args, 'deliveryId'));
+        } catch (err) {
+          throw mapCoreError(err);
+        }
       },
     },
     {
@@ -559,6 +591,81 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
           });
         } catch (err) {
           mapPermissionError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_mark_delivery_delivered',
+      description:
+        'V1-G4-A: mark a PENDING PM Delivery as DELIVERED (host has been given the delivery). ' +
+        'Requires expectedStatus CAS guard. Identity/state only — no judgment, no context payload.',
+      inputSchema: objectSchema(
+        {
+          deliveryId: { type: 'string' },
+          expectedStatus: { type: 'string', enum: ['PENDING', 'DELIVERED', 'ACKNOWLEDGED', 'IGNORED'] },
+        },
+        ['deliveryId', 'expectedStatus'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['deliveryId', 'expectedStatus']);
+        try {
+          return await pmDelivery.markPmDeliveryDelivered(
+            dataRoot, project,
+            requireString(args, 'deliveryId'),
+            requireEnum(args, 'expectedStatus', pmDelivery.PM_DELIVERY_STATUSES),
+          );
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_ack_delivery',
+      description:
+        'V1-G4-A: acknowledge a DELIVERED PM Delivery (host consumed it). Terminal state. ' +
+        'Requires expectedStatus CAS guard. ACK means consumed, never judged.',
+      inputSchema: objectSchema(
+        {
+          deliveryId: { type: 'string' },
+          expectedStatus: { type: 'string', enum: ['PENDING', 'DELIVERED', 'ACKNOWLEDGED', 'IGNORED'] },
+        },
+        ['deliveryId', 'expectedStatus'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['deliveryId', 'expectedStatus']);
+        try {
+          return await pmDelivery.acknowledgePmDelivery(
+            dataRoot, project,
+            requireString(args, 'deliveryId'),
+            requireEnum(args, 'expectedStatus', pmDelivery.PM_DELIVERY_STATUSES),
+          );
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_ignore_delivery',
+      description:
+        'V1-G4-A: ignore a PM Delivery (host dismisses without consuming). Terminal state. ' +
+        'Legal from PENDING or DELIVERED. Requires expectedStatus CAS guard.',
+      inputSchema: objectSchema(
+        {
+          deliveryId: { type: 'string' },
+          expectedStatus: { type: 'string', enum: ['PENDING', 'DELIVERED', 'ACKNOWLEDGED', 'IGNORED'] },
+        },
+        ['deliveryId', 'expectedStatus'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['deliveryId', 'expectedStatus']);
+        try {
+          return await pmDelivery.ignorePmDelivery(
+            dataRoot, project,
+            requireString(args, 'deliveryId'),
+            requireEnum(args, 'expectedStatus', pmDelivery.PM_DELIVERY_STATUSES),
+          );
+        } catch (err) {
+          throw mapCoreError(err);
         }
       },
     },

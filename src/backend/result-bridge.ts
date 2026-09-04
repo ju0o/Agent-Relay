@@ -17,6 +17,7 @@ import {
 } from './goal-task-runtime.js';
 import { recordAdapterObservation } from './evidence.js';
 import { recordRunResultReceived } from './event.js';
+import { ensurePmDeliveryForTaskVerify } from './pm-delivery.js';
 import { releaseObservationLockByBinding } from './observation-lock.js';
 import type { TaskRecord } from '../shared/types.js';
 
@@ -192,6 +193,14 @@ export async function promoteObservedResult(
     });
   } catch {
     // Fact Event failure must not roll back RESULT_RECEIVED (B2 state already committed).
+  }
+
+  // 6. V1-G4-A: mint the durable PM Delivery for this attempt (best-effort,
+  // post-commit — must never fail or roll back the promotion above).
+  try {
+    await ensurePmDeliveryForTaskVerify(dataRoot, project, taskId);
+  } catch {
+    // Delivery mint failure is non-fatal here; reconcilePmDeliveries recovers.
   }
 
   // Release observation lock after successful terminal promotion.

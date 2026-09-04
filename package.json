@@ -56,6 +56,7 @@
     "test:v1-g1-pm-intake": "node test/v1-g1-pm-intake.test.mjs",
     "test:v1-g2-owner-dispatch": "node test/v1-g2-owner-dispatch.test.mjs",
     "test:v1-g3-result-return": "node test/v1-g3-result-return.test.mjs",
+    "test:v1-g4a-pm-delivery": "node test/v1-g4a-pm-delivery.test.mjs",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
     "cli": "node dist/server/cli/index.js",
     "cli:help": "node dist/server/cli/index.js --help",
