@@ -24,6 +24,7 @@ import * as v1Dispatch from '../backend/v1-dispatch.js';
 import * as pmDelivery from '../backend/pm-delivery.js';
 import * as pmVerificationContext from '../backend/pm-verification-context.js';
 import * as pmJudgment from '../backend/pm-judgment.js';
+import * as retryPreparation from '../backend/retry-preparation.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
@@ -712,12 +713,24 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
         const reason = optionalString(args, 'reason');
         const retryInstruction = optionalString(args, 'retryInstruction');
         try {
-          return await pmJudgment.submitPmJudgment(dataRoot, project, {
+          const submitted = await pmJudgment.submitPmJudgment(dataRoot, project, {
             deliveryId: requireString(args, 'deliveryId'),
             decision: requireEnum(args, 'decision', pmJudgment.PM_JUDGMENT_DECISIONS),
             ...(reason !== undefined ? { reason } : {}),
             ...(retryInstruction !== undefined ? { retryInstruction } : {}),
           });
+          // V1-G5-B: one PM judgment drives intake + retry preparation.
+          // CHANGES with a durable RECEIVED intent automatically continues to
+          // READY+PENDING preparation here (no second manual PM command).
+          // ACCEPT is already fully applied by the intake itself.
+          if (submitted.judgment.decision === 'CHANGES') {
+            const prepared = await retryPreparation.prepareRetryForJudgment(
+              dataRoot, project, submitted.judgment.deliveryId,
+            );
+            const judgment = pmJudgment.getPmJudgment(dataRoot, project, submitted.judgment.judgmentId);
+            return { judgment, preparation: prepared.preparation, task: prepared.task, prepared: true };
+          }
+          return submitted;
         } catch (err) {
           throw mapCoreError(err);
         }

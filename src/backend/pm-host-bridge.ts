@@ -30,6 +30,7 @@ import {
 } from './pm-delivery.js';
 import { getVerificationContextForDelivery } from './pm-verification-context.js';
 import { submitPmJudgment } from './pm-judgment.js';
+import { prepareRetryForJudgment } from './retry-preparation.js';
 
 /** Host protocol version (bridge ↔ PM Host child). */
 export const PM_HOST_PROTOCOL_VERSION = 1;
@@ -606,23 +607,39 @@ export class PmHostBridge {
       this.log(`Judgment rejected for ${deliveryId.slice(0, 64)}`);
       return;
     }
-    // CHANGES records intent only in G5-A: report RECORDED truthfully
-    // (never APPLIED when no Task action ran).
-    const status = result.judgment.status === 'APPLIED'
+    // V1-G5-B: one CHANGES judgment drives intake + retry preparation.
+    // ACCEPT is fully applied by the intake itself. A preparation failure
+    // reports REJECTED (bounded); durable intent/preparation survive anyway.
+    let taskState = { executionState: result.task.executionState, pmState: result.task.pmState };
+    let status = result.judgment.status === 'APPLIED'
       ? 'APPLIED'
       : result.judgment.status === 'RECEIVED' && result.judgment.decision === 'CHANGES'
         ? 'RECORDED'
         : result.judgment.status;
+    if (result.judgment.decision === 'CHANGES') {
+      try {
+        const prepared = await prepareRetryForJudgment(this.dataRoot, this.project, deliveryId);
+        taskState = { executionState: prepared.task.executionState, pmState: prepared.task.pmState };
+        status = 'APPLIED';
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await reply({
+          type: 'PM_JUDGMENT_REJECTED',
+          protocolVersion: PM_HOST_PROTOCOL_VERSION,
+          deliveryId,
+          reason: reason.slice(0, 500),
+        });
+        this.log(`Retry preparation failed for ${deliveryId.slice(0, 64)}`);
+        return;
+      }
+    }
     await reply({
       type: 'PM_JUDGMENT_APPLIED',
       protocolVersion: PM_HOST_PROTOCOL_VERSION,
       deliveryId,
       decision: result.judgment.decision,
       status,
-      taskState: {
-        executionState: result.task.executionState,
-        pmState: result.task.pmState,
-      },
+      taskState,
     });
     this.log(`Judgment ${status} for ${deliveryId.slice(0, 64)} (${result.judgment.decision})`);
   }

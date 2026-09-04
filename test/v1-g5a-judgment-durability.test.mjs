@@ -127,6 +127,9 @@ async function driveToResultReceived(title, sessionId, text) {
 }
 
 const submit = (args) => get('relay_pm_submit_judgment').handler(args);
+// Crash-seam tests target the G5-A intake boundary directly: the MCP surface
+// now chains G5-B preparation, which would move the Task past VERIFYING.
+const submitBackend = (args) => pmJud.submitPmJudgment(TEST_ROOT, project, args);
 const jid = (deliveryId) => `PMJ-${deliveryId}`;
 const jfolder = (deliveryId) => pmJud.pmJudgmentFolder(TEST_ROOT, project, jid(deliveryId));
 
@@ -169,7 +172,7 @@ console.log('\n-- C/D: orphan conflicts --');
 // ── B: identical resubmit completes the commit ──
 console.log('\n-- B: orphan recovery --');
 {
-  const res = await submit({ deliveryId: DP, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  const res = await submitBackend({ deliveryId: DP, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
   check(res.judgment.status === 'RECEIVED', 'B identical resubmit completes judgment commit');
   check(fs.existsSync(path.join(jfolder(DP), 'judgment.json')), 'B judgment.json now durable');
   const t = gt.getTask(TEST_ROOT, project, tp.taskId);
@@ -179,7 +182,7 @@ console.log('\n-- B: orphan recovery --');
 // ── E/F/I: completed-state behavior ──
 console.log('\n-- E/F/I: completed --');
 {
-  const res = await submit({ deliveryId: DP, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  const res = await submitBackend({ deliveryId: DP, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
   check(res.judgment.status === 'RECEIVED', 'E completed + identical resubmit idempotent');
   await shouldThrow(
     () => submit({ deliveryId: DP, decision: 'CHANGES', reason: REASON, retryInstruction: 'other bytes' }),
@@ -204,7 +207,7 @@ console.log('\n-- A: fresh --');
   const t = await driveToResultReceived('V1 G5AC fresh', 'ses-g5ac-f', 'G5AC fresh text');
   const D = `PMD-${t.taskId}-${t.runId}`;
   check(!fs.existsSync(jfolder(D)), 'A no partial state exists');
-  const res = await submit({ deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  const res = await submitBackend({ deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
   check(res.judgment.status === 'RECEIVED', 'A fresh identical submit commits');
   check(fs.existsSync(path.join(jfolder(D), 'intent.json')), 'A intent durable');
   await resetProcessLocal();

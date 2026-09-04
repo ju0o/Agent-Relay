@@ -712,8 +712,41 @@ async function applyAccept(
   return { judgment: done, applied: true, task: after };
 }
 
-async function resumeAcceptApply(
+/**
+ * Canonical CHANGES lifecycle advance (V1-G5-B only).
+ *
+ * Moves a RECEIVED CHANGES judgment to APPLIED once retry preparation
+ * reached READY. Idempotent when already APPLIED. Rejects ACCEPT judgments
+ * (their APPLIED transition belongs to the apply flow) and any other state.
+ * This is the ONLY sanctioned writer of judgment lifecycle outside intake.
+ */
+export function markJudgmentApplied(
   dataRoot: string,
+  project: string,
+  judgmentId: string,
+): Promise<PmJudgmentRecord> {
+  if (!JUDGMENT_ID_RE.test(judgmentId)) {
+    throw new PmJudgmentError('INVALID_ARGUMENT', `잘못된 judgmentId: ${judgmentId}`);
+  }
+  return withJudgmentLock(dataRoot, project, judgmentId, (): PmJudgmentRecord => {
+    const current = readJudgmentRecord(dataRoot, project, judgmentId);
+    if (!current) {
+      throw new PmJudgmentError('NOT_FOUND', `PM Judgment를 찾을 수 없습니다: ${judgmentId}`);
+    }
+    if (current.decision !== 'CHANGES') {
+      throw new PmJudgmentError('INVALID_STATE', 'markJudgmentApplied applies to CHANGES judgments only.');
+    }
+    if (current.status === 'APPLIED') return current;
+    if (current.status !== 'RECEIVED') {
+      throw new PmJudgmentError('CONFLICT', `Judgment ${judgmentId} is ${current.status}, not RECEIVED.`);
+    }
+    const done: PmJudgmentRecord = { ...current, status: 'APPLIED', updatedAt: nowIso(), appliedAt: nowIso() };
+    persistJudgmentRecord(pmJudgmentFolder(dataRoot, project, judgmentId), done);
+    return done;
+  });
+}
+
+async function resumeAcceptApply(  dataRoot: string,
   project: string,
   folder: string,
   record: PmJudgmentRecord,

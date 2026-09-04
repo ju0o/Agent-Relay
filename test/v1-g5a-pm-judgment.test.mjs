@@ -69,8 +69,7 @@ const disp = await import('../dist/server/backend/dispatcher.js');
 const wr = await import('../dist/server/backend/worker-registry.js');
 const pmDel = await import('../dist/server/backend/pm-delivery.js');
 const pmJud = await import('../dist/server/backend/pm-judgment.js');
-const evk = await import('../dist/server/backend/event.js');
-const captureSvc = await import('../dist/server/backend/capture-service.js');
+const evk = await import('../dist/server/backend/event.js');const captureSvc = await import('../dist/server/backend/capture-service.js');
 const bridgeMod = await import('../dist/server/backend/pm-host-bridge.js');
 const pmTools = await import('../dist/server/mcp/pm-tools.js');
 const testFix = await import('../dist/server/integrations/test-fixture/watch.js');
@@ -160,6 +159,9 @@ function readRecords(file) {
 }
 
 const submit = (args) => get('relay_pm_submit_judgment').handler(args);
+// Backend intake directly: proves the G5-A boundary (durable intent, no Task
+// mutation). The MCP/bridge surfaces now chain G5-B preparation on top.
+const submitBackend = (args) => pmJud.submitPmJudgment(TEST_ROOT, project, args);
 
 // ── A/K/L/M: ACCEPT path ──
 console.log('\n-- A/K/L/M: ACCEPT --');
@@ -201,7 +203,9 @@ console.log('\n-- B/Q/R: CHANGES --');
 const tc = await driveToResultReceived('V1 G5A changes', 'ses-g5a-c', 'G5A changes result text');
 const DC = `PMD-${tc.taskId}-${tc.runId}`;
 {
-  const res = await submit({
+  // Backend intake boundary: durable intent, Task untouched. (MCP/bridge now
+  // chain G5-B preparation on top — covered by the G5-B suite.)
+  const res = await submitBackend({
     deliveryId: DC, decision: 'CHANGES',
     reason: 'please address the review nits above',
     retryInstruction: 'fix the nits and re-verify typecheck',
@@ -222,17 +226,17 @@ const DC = `PMD-${tc.taskId}-${tc.runId}`;
 console.log('\n-- P: payload conflict --');
 {
   await shouldThrow(
-    () => submit({ deliveryId: DC, decision: 'CHANGES', reason: 'a different reason entirely here', retryInstruction: 'fix the nits and re-verify typecheck' }),
+    () => submitBackend({ deliveryId: DC, decision: 'CHANGES', reason: 'a different reason entirely here', retryInstruction: 'fix the nits and re-verify typecheck' }),
     'P different reason rejected',
     'CONFLICT',
   );
   await shouldThrow(
-    () => submit({ deliveryId: DC, decision: 'CHANGES', reason: 'please address the review nits above', retryInstruction: 'different instruction' }),
+    () => submitBackend({ deliveryId: DC, decision: 'CHANGES', reason: 'please address the review nits above', retryInstruction: 'different instruction' }),
     'P different retryInstruction rejected',
     'CONFLICT',
   );
   // Identical resubmit replays.
-  const res = await submit({
+  const res = await submitBackend({
     deliveryId: DC, decision: 'CHANGES',
     reason: 'please address the review nits above',
     retryInstruction: 'fix the nits and re-verify typecheck',
@@ -382,15 +386,15 @@ console.log('\n-- T: bridge judgment --');
   });
   await bc.start();
   await waitFor('t changes', () => {
-    try { return pmJud.getPmJudgment(TEST_ROOT, project, `PMJ-${DC2}`).status === 'RECEIVED'; } catch { return false; }
+    try { return pmJud.getPmJudgment(TEST_ROOT, project, `PMJ-${DC2}`).status === 'APPLIED'; } catch { return false; }
   });
   await bc.stop();
   delete process.env.FAKE_HOST_RECORD_FILE;
   delete process.env.FAKE_HOST_MODE;
   const rowsC = readRecords(recC).filter((r) => r.event === 'judgment-response');
-  check(rowsC.some((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'RECORDED' && r.message?.deliveryId === DC2), 'T CHANGES round-trip RECORDED over stdio (Task untouched)');
+  check(rowsC.some((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'APPLIED' && r.message?.deliveryId === DC2), 'T CHANGES round-trip APPLIED over stdio (G5-B auto-prepare)');
   const tc2after = gt.getTask(TEST_ROOT, project, tc2.taskId);
-  check(tc2after.executionState === 'RESULT_RECEIVED' && tc2after.pmState === 'VERIFYING', 'T CHANGES via bridge leaves Task state');
+  check(tc2after.executionState === 'READY' && tc2after.pmState === 'PENDING', 'T CHANGES via bridge reaches READY+PENDING');
   await resetProcessLocal();
 }
 
@@ -426,7 +430,7 @@ console.log('\n-- Z: durability --');
   const diskRecord = JSON.parse(fs.readFileSync(path.join(folder, 'judgment.json'), 'utf8'));
   check(diskRecord.status === 'RECEIVED' && diskRecord.decision === 'CHANGES', 'Z judgment re-read from disk');
   check(pmJud.getRetryInstructionForDelivery(TEST_ROOT, project, DC) === 'fix the nits and re-verify typecheck', 'Z retry instruction re-read from disk');
-  const res = await submit({
+  const res = await submitBackend({
     deliveryId: DC, decision: 'CHANGES',
     reason: 'please address the review nits above',
     retryInstruction: 'fix the nits and re-verify typecheck',
