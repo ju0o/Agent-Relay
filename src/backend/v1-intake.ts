@@ -8,9 +8,14 @@
  *   - The Task kernel requires goalId, so V1 keeps a single deterministic
  *     internal technical container Goal per scoped project.
  *   - Identified by the frozen `V1_CONTAINER_TAG` ('v1-internal') plus the
- *     frozen container title. create/reuse is deterministic: the lowest
- *     sorted matching goalId is reused; a new container is created only when
- *     none exists. Repeated intake calls therefore never multiply containers.
+ *     frozen container title. Ensure/reuse is serialized per scoped project
+ *     through a process-local per-project Promise chain (see
+ *     `withV1ContainerLock`): inside the lock the code lists matching
+ *     containers, reuses the lowest sorted matching goalId when present, and
+ *     creates exactly one container only when none exists. Concurrent first
+ *     intakes in the same Relay process therefore cannot multiply containers.
+ *     Unrelated projects/dataRoots use distinct lock keys and never block
+ *     each other. Cross-process races are out of scope for V1-G1.
  *   - The container is ordinary Goal-kernel data (status PLANNING, mode PLAN,
  *     least privilege). No new public Goal UX, no auto-activate, no auto
  *     complete, no permission escalation. PM MCP DISPATCH under PLAN remains
@@ -24,6 +29,7 @@
  *     linkage, no judgment mutation.
  */
 
+import * as path from 'node:path';
 import {
   createGoal,
   createTask,
@@ -78,28 +84,70 @@ function isV1Container(g: GoalRecord): boolean {
 }
 
 /**
- * Deterministic create/reuse of the internal V1 container Goal.
- * Reuse rule: lowest sorted matching goalId wins. No duplicates on repeats.
+ * Process-local per-project serialization for V1 container ensure/create.
+ *
+ * Key = resolved dataRoot + project, so unrelated projects/dataRoots never
+ * block each other. Each key owns an independent Promise chain; every
+ * ensure/create runs strictly after the previous one for the same scope.
+ * The chain tail never rejects (errors are propagated to the caller but
+ * swallowed in the stored tail) so one failure cannot wedge later intakes.
+ */
+const _v1ContainerChains = new Map<string, Promise<void>>();
+
+function v1ScopeKey(dataRoot: string, project: string): string {
+  return `${path.resolve(dataRoot)}@@${project}`;
+}
+
+function withV1ContainerLock<T>(
+  dataRoot: string,
+  project: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = v1ScopeKey(dataRoot, project);
+  const prev = _v1ContainerChains.get(key) ?? Promise.resolve();
+  const work = prev.then(fn);
+  const tail = work.then(
+    () => undefined,
+    () => undefined,
+  );
+  _v1ContainerChains.set(key, tail);
+  tail.then(() => {
+    if (_v1ContainerChains.get(key) === tail) _v1ContainerChains.delete(key);
+  });
+  return work;
+}
+
+/** Test-only reset for the process-local V1 container chains. */
+export function _resetV1ContainerLocksForTests(): void {
+  _v1ContainerChains.clear();
+}
+
+/**
+ * Deterministic serialized create/reuse of the internal V1 container Goal.
+ * Reuse rule: lowest sorted matching goalId wins. No duplicates on repeats,
+ * including concurrent first intakes within this process (serialized above).
  */
 export async function ensureV1ContainerGoal(
   dataRoot: string,
   project: string,
 ): Promise<{ goal: GoalRecord; reused: boolean }> {
-  const existing = listGoals(dataRoot, project)
-    .filter(isV1Container)
-    .sort((a, b) => a.goalId.localeCompare(b.goalId));
-  if (existing.length > 0) {
-    return { goal: existing[0]!, reused: true };
-  }
-  const goal = await createGoal(dataRoot, project, {
-    title: V1_CONTAINER_TITLE,
-    goalStatement: V1_CONTAINER_GOAL_STATEMENT,
-    description: 'V1-G1 internal compatibility container. Do not use as product Goal UX.',
-    tags: [V1_CONTAINER_TAG, 'technical-container'],
-    completionCriteria: [],
-    // Default permissionPolicy (PLAN, least privilege). No escalation in G1.
+  return withV1ContainerLock(dataRoot, project, async () => {
+    const existing = listGoals(dataRoot, project)
+      .filter(isV1Container)
+      .sort((a, b) => a.goalId.localeCompare(b.goalId));
+    if (existing.length > 0) {
+      return { goal: existing[0]!, reused: true };
+    }
+    const goal = await createGoal(dataRoot, project, {
+      title: V1_CONTAINER_TITLE,
+      goalStatement: V1_CONTAINER_GOAL_STATEMENT,
+      description: 'V1-G1 internal compatibility container. Do not use as product Goal UX.',
+      tags: [V1_CONTAINER_TAG, 'technical-container'],
+      completionCriteria: [],
+      // Default permissionPolicy (PLAN, least privilege). No escalation in G1.
+    });
+    return { goal, reused: false };
   });
-  return { goal, reused: false };
 }
 
 /**

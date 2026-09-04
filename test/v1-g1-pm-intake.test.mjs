@@ -10,6 +10,7 @@
  *   G1-06  forbidden runtime fields cannot be injected (unknown-field rejection)
  *   G1-07  repeated creation does not corrupt counters/container state
  *   G1-08  structural safety: no raw updateTask/updateGoal, no auto-dispatch/accept/complete
+ *   G1-09  concurrent first intake: Promise.all from fresh project yields one container
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -164,6 +165,49 @@ console.log('\n-- G1-08: structural safety --');
   check(pmSrc.includes('relay_pm_create_task'), 'G1-08 intake tool registered');
   check(!intakeSrc.includes('dispatchTask'), 'G1-08 intake never calls dispatchTask');
   check(!intakeSrc.includes('acceptResult') && !intakeSrc.includes('completeGoal'), 'G1-08 intake never accepts/completes');
+}
+
+// G1-09: concurrent first intake — check-then-create race regression
+console.log('\n-- G1-09: concurrent first intake --');
+{
+  const concProject = 'V1G1ConcProj';
+  const concTools = pmTools.buildAllPmTools({ dataRoot: TEST_ROOT, project: concProject });
+  const concGet = (name) => concTools.find((t) => t.name === name);
+  check(
+    gt.listGoals(TEST_ROOT, concProject).length === 0,
+    'G1-09 fresh project starts with no goals',
+  );
+  const [r1, r2] = await Promise.all([
+    concGet('relay_pm_create_task').handler({ ...CONTRACT, title: 'Conc task A' }),
+    concGet('relay_pm_create_task').handler({ ...CONTRACT, title: 'Conc task B' }),
+  ]);
+  check(r1.goal.goalId === r2.goal.goalId, 'G1-09 concurrent intakes share the same container goalId');
+  check(r1.task.taskId !== r2.task.taskId, 'G1-09 concurrent intakes yield two distinct taskIds');
+  const concGoals = gt.listGoals(TEST_ROOT, concProject).filter((g) =>
+    (g.tags ?? []).includes('v1-internal'),
+  );
+  check(concGoals.length === 1, `G1-09 exactly one internal container after concurrent intake (got ${concGoals.length})`);
+  const concTasks = gt.listTasks(TEST_ROOT, concProject);
+  check(concTasks.length === 2, `G1-09 exactly two tasks after concurrent intake (got ${concTasks.length})`);
+  const concIds = concTasks.map((t) => t.taskId).sort();
+  check(new Set(concIds).size === concIds.length, 'G1-09 taskIds unique, counters valid');
+  check(
+    concTasks.every((t) => t.goalId === concGoals[0].goalId),
+    'G1-09 both tasks point at the single container',
+  );
+  for (const t of concTasks) {
+    const reread = gt.getTask(TEST_ROOT, concProject, t.taskId);
+    check(reread.executionState === 'READY', `G1-09 task ${t.taskId} is READY (got ${reread.executionState})`);
+    check(reread.pmState === 'PENDING', `G1-09 task ${t.taskId} is PENDING (got ${reread.pmState})`);
+    check(reread.linkedRuns.length === 0, `G1-09 task ${t.taskId} has no auto-dispatch (no linked runs)`);
+  }
+  // Sequential reuse still holds after the concurrent first intake.
+  const third = await concGet('relay_pm_create_task').handler({ ...CONTRACT, title: 'Conc task C' });
+  check(third.goal.goalId === concGoals[0].goalId, 'G1-09 post-race sequential intake reuses container');
+  check(
+    gt.listGoals(TEST_ROOT, concProject).filter((g) => (g.tags ?? []).includes('v1-internal')).length === 1,
+    'G1-09 container count stays at one after sequential reuse',
+  );
 }
 
 fs.rmSync(TEST_ROOT, { recursive: true, force: true });
