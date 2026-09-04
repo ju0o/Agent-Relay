@@ -77,6 +77,19 @@ export interface DispatchRequest {
     deliveryId: string;
     prompt: string;
   };
+  /**
+   * V1-G5-C correction trusted internal owner-approval context. ONLY
+   * dispatchV1OwnerApproved sets this, using a fingerprint computed
+   * server-side from the canonical Task BEFORE the initial dispatch. The
+   * Dispatcher persists it on the initial RunMeta so a missing retry
+   * authorization can be reconstructed without re-fingerprinting mutable
+   * current Task state. Never accepted from PM/MCP/Worker/Adapter/retry
+   * surfaces. Mutually exclusive with retryContext (a dispatch is either the
+   * initial owner dispatch or an automatic retry).
+   */
+  ownerApprovalContext?: {
+    scopeFingerprint: string;
+  };
 }
 
 export interface DispatchResult {
@@ -605,6 +618,10 @@ export async function dispatchTask(
 
   // V1-G5-C: trusted internal retry correlation (never from external callers).
   const retryContext = request?.retryContext;
+  const ownerApprovalContext = request?.ownerApprovalContext;
+  if (retryContext !== undefined && ownerApprovalContext !== undefined) {
+    throw new DispatcherError('INVALID_ARGUMENT', 'retryContext and ownerApprovalContext are mutually exclusive.');
+  }
   if (retryContext !== undefined) {
     if (!retryContext || typeof retryContext !== 'object') {
       throw new DispatcherError('INVALID_ARGUMENT', 'retryContext must be an object.');
@@ -626,6 +643,15 @@ export async function dispatchTask(
     }
     if (Buffer.byteLength(retryContext.prompt, 'utf8') > 16 * 1024) {
       throw new DispatcherError('INVALID_ARGUMENT', 'retryContext.prompt exceeds the 16 KiB Worker prompt cap.');
+    }
+  }
+  if (ownerApprovalContext !== undefined) {
+    if (!ownerApprovalContext || typeof ownerApprovalContext !== 'object') {
+      throw new DispatcherError('INVALID_ARGUMENT', 'ownerApprovalContext must be an object.');
+    }
+    const fp = ownerApprovalContext.scopeFingerprint;
+    if (typeof fp !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(fp)) {
+      throw new DispatcherError('INVALID_ARGUMENT', `잘못된 ownerApprovedScopeFingerprint: ${String(fp)}`);
     }
   }
 
@@ -738,6 +764,9 @@ export async function dispatchTask(
     // Audit + G5-C binding: persist workspaceRoot on Run meta, plus the
     // authoritative workerId for this attempt and (retry only) the
     // preparation correlation BEFORE link so linkRunToTask preserves it.
+    // The ORIGINAL owner-approved scope fingerprint is persisted only on the
+    // initial owner dispatch (ownerApprovalContext); retry Runs never write
+    // it, so they cannot redefine the original approval.
     try {
       const meta = readRunMeta(createdFolder);
       writeRunMeta(createdFolder, {
@@ -746,6 +775,9 @@ export async function dispatchTask(
         workerId,
         ...(retryContext
           ? { retryPreparationId: retryContext.preparationId, sourceRunId: retryContext.sourceRunId }
+          : {}),
+        ...(ownerApprovalContext
+          ? { ownerApprovedScopeFingerprint: ownerApprovalContext.scopeFingerprint }
           : {}),
       });
     } catch { /* audit best-effort */ }

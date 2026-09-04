@@ -538,6 +538,172 @@ console.log('\n-- FULL G5 LOOP (bridge host + fixture worker) --');
   await resetProcessLocal();
 }
 
+// ── G5-C correction: original owner-approved scope preserved for auth repair ──
+console.log('\n-- correction: owner-approved fingerprint on first-run binding --');
+{
+  // A: initial owner dispatch RunMeta stores ownerApprovedScopeFingerprint.
+  const t = await driveToResultReceived('V1 G5C corr-auth', 'ses-g5c-cor-a', 'G5C corr text');
+  const task0 = gt.getTask(TEST_ROOT, project, t.taskId);
+  const initialLink = task0.linkedRuns.find((r) => r.runId === t.runId);
+  const meta = fsKernel.readRunMeta(initialLink.folder);
+  check(typeof meta.ownerApprovedScopeFingerprint === 'string' && /^sha256:[0-9a-f]{64}$/.test(meta.ownerApprovedScopeFingerprint), 'A initial RunMeta stores ownerApprovedScopeFingerprint');
+  // B: stored value equals fingerprint of Task contract at owner approval.
+  const contractAtApproval = retryAuth.computeTaskScopeFingerprint({ ...CONTRACT, taskId: t.taskId });
+  check(meta.ownerApprovedScopeFingerprint === contractAtApproval, 'B RunMeta fingerprint equals Task contract at owner approval');
+  // C: normal authorization uses the exact same fingerprint.
+  const auth = retryAuth.getRetryAuthorization(TEST_ROOT, project, t.taskId);
+  check(auth.scopeFingerprint === meta.ownerApprovedScopeFingerprint, 'C authorization fingerprint == RunMeta original fingerprint');
+  check(auth.scopeFingerprint === contractAtApproval, 'C authorization fingerprint == contract-at-approval fingerprint');
+  await resetProcessLocal();
+}
+
+console.log('\n-- correction: repair without current-task blessing --');
+{
+  // D/E/F: simulate missing authorization.json after initial dispatch; Task
+  // contract UNCHANGED → repair from RunMeta succeeds with the ORIGINAL
+  // fingerprint.
+  const t = await driveToResultReceived('V1 G5C corr-repair', 'ses-g5c-cor-d', 'G5C corr repair text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  const task0 = gt.getTask(TEST_ROOT, project, t.taskId);
+  const initialLink = task0.linkedRuns.find((r) => r.runId === t.runId);
+  const meta = fsKernel.readRunMeta(initialLink.folder);
+  const originalFp = meta.ownerApprovedScopeFingerprint;
+  const authPath = retryAuth.retryAuthorizationFile(TEST_ROOT, project, t.taskId);
+  fs.rmSync(path.dirname(authPath), { recursive: true, force: true });
+  check(!fs.existsSync(authPath), 'D authorization.json removed (mint-failure simulation)');
+  // Task contract unchanged → direct retry dispatch auto-repairs from RunMeta.
+  await pmJud.submitPmJudgment(TEST_ROOT, project, { deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  await retryPrep.prepareRetryForJudgment(TEST_ROOT, project, D);
+  const res = await retryDispatch.dispatchV1Retry(TEST_ROOT, project, { deliveryId: D });
+  check(res.alreadyDispatched === false && !!res.runId, 'E unchanged Task → repair + retry dispatch succeeds');
+  const repaired = retryAuth.getRetryAuthorization(TEST_ROOT, project, t.taskId);
+  check(repaired.source === 'REPAIRED_FROM_FIRST_RUN_BINDING', 'E authorization auto-repaired');
+  check(repaired.scopeFingerprint === originalFp, 'F repaired authorization fingerprint == RunMeta original fingerprint');
+  check(repaired.scopeFingerprint === contractFp(t.taskId), 'F repaired authorization == contract-at-approval fingerprint');
+  await resetProcessLocal();
+}
+function contractFp(taskId) {
+  return retryAuth.computeTaskScopeFingerprint({ ...CONTRACT, taskId });
+}
+
+console.log('\n-- correction: changed-scope DENIED after repair (critical) --');
+{
+  // G: Task contract changed AFTER initial owner dispatch → missing auth →
+  // repair reconstructs ORIGINAL auth → retry MUST DENY (current fp mismatch).
+  const t = await driveToResultReceived('V1 G5C corr-changed', 'ses-g5c-cor-g', 'G5C corr changed text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  const task0 = gt.getTask(TEST_ROOT, project, t.taskId);
+  const initialLink = task0.linkedRuns.find((r) => r.runId === t.runId);
+  const meta = fsKernel.readRunMeta(initialLink.folder);
+  const originalFp = meta.ownerApprovedScopeFingerprint;
+  // Mutate the Task contract AFTER owner approval (smallest legal mechanism).
+  const taskPath = path.join(gt.taskFolder(TEST_ROOT, project, t.taskId), 'task.json');
+  const taskRaw = JSON.parse(fs.readFileSync(taskPath, 'utf8'));
+  taskRaw.completionCriteria = ['done when worker result received AND extra scope added later'];
+  fs.writeFileSync(taskPath, JSON.stringify(taskRaw, null, 2), 'utf8');
+  const currentFp = retryAuth.computeTaskScopeFingerprint(gt.getTask(TEST_ROOT, project, t.taskId));
+  check(originalFp !== currentFp, 'G original fingerprint A != current fingerprint B (contract mutated)');
+  // Remove authorization → repair MUST use A, never B.
+  const authPath = retryAuth.retryAuthorizationFile(TEST_ROOT, project, t.taskId);
+  fs.rmSync(path.dirname(authPath), { recursive: true, force: true });
+  await pmJud.submitPmJudgment(TEST_ROOT, project, { deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  await retryPrep.prepareRetryForJudgment(TEST_ROOT, project, D);
+  const runsBefore = gt.getTask(TEST_ROOT, project, t.taskId).linkedRuns.length;
+  await shouldThrow(
+    () => retryDispatch.dispatchV1Retry(TEST_ROOT, project, { deliveryId: D }),
+    'G changed scope after owner approval → retry DENIED (repair uses original A)',
+    'scope',
+  );
+  const after = gt.getTask(TEST_ROOT, project, t.taskId);
+  check(after.linkedRuns.length === runsBefore, 'G no new Run created');
+  const repaired = retryAuth.getRetryAuthorization(TEST_ROOT, project, t.taskId);
+  check(repaired.scopeFingerprint === originalFp, 'G repair fingerprint == original A (not current B)');
+  await resetProcessLocal();
+}
+
+console.log('\n-- correction: repair never fingerprints current Task --');
+{
+  // H: structural — repair path source contains no computeTaskScopeFingerprint.
+  const src = fs.readFileSync('src/backend/retry-dispatch.ts', 'utf8');
+  const repairSlice = src.slice(src.indexOf('ensureAuthorizationFromFirstRunBinding'), src.indexOf('loadAuthorizationOrRepair'));
+  check(!repairSlice.includes('computeTaskScopeFingerprint'), 'H repair path never fingerprints current Task');
+  check(repairSlice.includes('meta.ownerApprovedScopeFingerprint'), 'H repair uses stored original fingerprint');
+}
+
+console.log('\n-- correction: legacy/no-fingerprint safe denial --');
+{
+  // I: pre-G5-C / legacy first RunMeta (no original fingerprint) → no auto-repair.
+  const t = await driveToResultReceived('V1 G5C corr-legacy', 'ses-g5c-cor-i', 'G5C corr legacy text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  const task0 = gt.getTask(TEST_ROOT, project, t.taskId);
+  const initialLink = task0.linkedRuns.find((r) => r.runId === t.runId);
+  const metaPath = path.join(initialLink.folder, 'meta.json');
+  const metaRaw = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  delete metaRaw.ownerApprovedScopeFingerprint;
+  fs.writeFileSync(metaPath, JSON.stringify(metaRaw, null, 2), 'utf8');
+  const authPath = retryAuth.retryAuthorizationFile(TEST_ROOT, project, t.taskId);
+  fs.rmSync(path.dirname(authPath), { recursive: true, force: true });
+  await pmJud.submitPmJudgment(TEST_ROOT, project, { deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  await retryPrep.prepareRetryForJudgment(TEST_ROOT, project, D);
+  await shouldThrow(
+    () => retryDispatch.dispatchV1Retry(TEST_ROOT, project, { deliveryId: D }),
+    'I legacy first RunMeta without fingerprint → auto-repair denied safely',
+    'cannot be reconstructed safely',
+  );
+  check(!fs.existsSync(authPath), 'I no authorization minted from legacy binding');
+  await resetProcessLocal();
+}
+
+console.log('\n-- correction: PM cannot inject ownerApprovedScopeFingerprint --');
+{
+  // J: PM judgment schema + retry dispatch input have no such field.
+  const srcJ = fs.readFileSync('src/backend/retry-dispatch.ts', 'utf8')
+    + '\n' + fs.readFileSync('src/backend/pm-judgment.ts', 'utf8');
+  check(!srcJ.includes('ownerApprovedScopeFingerprint: input'), 'J retry dispatch accepts no ownerApprovedScopeFingerprint input');
+  // Dispatcher rejects a caller-supplied ownerApprovalContext with bad fingerprint.
+  const t = await driveToResultReceived('V1 G5C corr-j', 'ses-g5c-cor-j', 'G5C corr j text');
+  await shouldThrow(
+    () => get('relay_pm_dispatch_owner_approved').handler({
+      taskId: t.taskId, workerId: 'v1-g5c-worker', workspaceRoot: WORKSPACE, expectedExecutionState: 'READY',
+      ownerApprovalContext: { scopeFingerprint: 'sha256:' + '0'.repeat(64) },
+    }),
+    'J ownerApprovalContext not accepted from MCP surface',
+    'INVALID',
+  );
+  await resetProcessLocal();
+}
+
+console.log('\n-- correction: retry Run does not redefine original approval --');
+{
+  // K: after a retry dispatch, the retry Run meta has NO fresh
+  // ownerApprovedScopeFingerprint; the initial Run keeps the original.
+  const t = await driveToResultReceived('V1 G5C corr-k', 'ses-g5c-cor-k', 'G5C corr k text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  const task0 = gt.getTask(TEST_ROOT, project, t.taskId);
+  const initialLink = task0.linkedRuns.find((r) => r.runId === t.runId);
+  const originalFp = fsKernel.readRunMeta(initialLink.folder).ownerApprovedScopeFingerprint;
+  const res = await get('relay_pm_submit_judgment').handler({ deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  const retryLink = gt.getTask(TEST_ROOT, project, t.taskId).linkedRuns.find((r) => r.runId === res.redispatch.retryRunId);
+  const retryMeta = fsKernel.readRunMeta(retryLink.folder);
+  check(retryMeta.ownerApprovedScopeFingerprint === undefined, 'K retry Run does not store ownerApprovedScopeFingerprint');
+  check(fsKernel.readRunMeta(initialLink.folder).ownerApprovedScopeFingerprint === originalFp, 'K initial Run original fingerprint unchanged');
+  check(retryAuth.getRetryAuthorization(TEST_ROOT, project, t.taskId).scopeFingerprint === originalFp, 'K authorization still binds original fingerprint');
+  await resetProcessLocal();
+}
+
+console.log('\n-- correction: normal path unchanged-scope retry still works --');
+{
+  // L regression: normal mint + unchanged scope → automatic retry works.
+  const t = await driveToResultReceived('V1 G5C corr-l', 'ses-g5c-cor-l', 'G5C corr l text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  const auth = retryAuth.getRetryAuthorization(TEST_ROOT, project, t.taskId);
+  const initialMeta = fsKernel.readRunMeta(gt.getTask(TEST_ROOT, project, t.taskId).linkedRuns.find((r) => r.runId === t.runId).folder);
+  check(auth.scopeFingerprint === initialMeta.ownerApprovedScopeFingerprint, 'L normal auth fingerprint == initial RunMeta fingerprint');
+  const res = await get('relay_pm_submit_judgment').handler({ deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  check(res.redispatch?.ok === true, 'L unchanged-scope CHANGES retry still dispatches');
+  await resetProcessLocal();
+}
+
 delete process.env.WORKER_STAY_MS;
 fs.rmSync(TEST_ROOT, { recursive: true, force: true });
 

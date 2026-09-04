@@ -87,6 +87,13 @@ export async function dispatchV1OwnerApproved(
     );
   }
 
+  // V1-G5-C correction: compute the ORIGINAL owner-approved scope fingerprint
+  // from the canonical Task BEFORE dispatch, and carry it as trusted internal
+  // owner-approval context into the Dispatcher so it is persisted on the
+  // initial RunMeta. The SAME precomputed value is used for the authorization
+  // mint below — never recomputed from post-dispatch/current Task state.
+  const ownerApprovedScopeFingerprint = computeTaskScopeFingerprint(current);
+
   // ONE-TIME owner authorization for THIS dispatch effect only.
   // Uses the existing central gate with OWNER_IPC-equivalent semantics.
   // Does NOT mutate Goal permissionPolicy; does NOT grant owner semantics
@@ -104,26 +111,30 @@ export async function dispatchV1OwnerApproved(
   });
 
   // Canonical dispatch — Dispatcher owns Run, CAS, Capture, spawn, binding.
+  // ownerApprovalContext carries the precomputed original owner-approved
+  // fingerprint for persistence on the initial RunMeta (repair truth).
   const result = await dispatchTask(dataRoot, project, {
     taskId,
     workerId,
     workspaceRoot,
     expectedExecutionState: 'READY',
+    ownerApprovalContext: { scopeFingerprint: ownerApprovedScopeFingerprint },
   });
 
   // V1-G5-C: mint the narrow retry authorization ONLY after the canonical
-  // initial dispatch has succeeded (the Task/Run binding is real). A mint
-  // failure never rolls back the real dispatch — it records a bounded
-  // warning; the binding can be repaired later from the trusted first-run
-  // binding (see retry-dispatch.ts ensureAuthorizationFromFirstRunBinding).
+  // initial dispatch has succeeded (the Task/Run binding is real). The mint
+  // uses the SAME precomputed owner-approved fingerprint — NOT a fingerprint
+  // recomputed from the current Task — so normal mint and crash repair share
+  // identical approval truth. A mint failure never rolls back the real
+  // dispatch; it records a bounded warning and the binding can be repaired
+  // later from the trusted first-run binding.
   try {
-    const dispatched = getTask(dataRoot, project, taskId);
     mintRetryAuthorization(dataRoot, project, {
       taskId,
       goalId,
       workerId,
       workspaceRoot,
-      scopeFingerprint: computeTaskScopeFingerprint(dispatched),
+      scopeFingerprint: ownerApprovedScopeFingerprint,
       source: 'OWNER_APPROVED_INITIAL_DISPATCH',
     });
   } catch (err) {

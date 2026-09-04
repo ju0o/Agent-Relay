@@ -262,6 +262,17 @@ export interface RunMeta {
    */
   workerId?: string;
   /**
+   * V1-G5-C correction additive: the ORIGINAL owner-approved Task contract
+   * fingerprint, computed server-side BEFORE the initial owner dispatch and
+   * persisted with the first-run binding. ONLY dispatchV1OwnerApproved
+   * populates it via trusted internal ownerApprovalContext — never from PM,
+   * Worker, Adapter, retry instruction, or generic dispatch. Retry Runs do
+   * NOT write this (they must never redefine the original approval).
+   * Authorization repair requires it: a missing value means the original
+   * owner-approved scope cannot be reconstructed safely.
+   */
+  ownerApprovedScopeFingerprint?: string;
+  /**
    * V1-G5-C additive: retry preparation that produced this Run (set only on
    * automatic retry dispatches). Enables crash-safe adoption: a preparation
    * with a correlated Run never dispatches twice.
@@ -293,6 +304,9 @@ export function readRunMeta(folder: string): RunMeta {
     }
     if (typeof raw.workerId === 'string' && raw.workerId) {
       meta.workerId = raw.workerId;
+    }
+    if (typeof raw.ownerApprovedScopeFingerprint === 'string' && raw.ownerApprovedScopeFingerprint) {
+      meta.ownerApprovedScopeFingerprint = raw.ownerApprovedScopeFingerprint;
     }
     if (typeof raw.retryPreparationId === 'string' && raw.retryPreparationId) {
       meta.retryPreparationId = raw.retryPreparationId;
@@ -332,6 +346,9 @@ export function writeRunMeta(folder: string, meta: RunMeta): void {
   }
   if (typeof meta.workerId === 'string' && meta.workerId) {
     out.workerId = meta.workerId;
+  }
+  if (typeof meta.ownerApprovedScopeFingerprint === 'string' && meta.ownerApprovedScopeFingerprint) {
+    out.ownerApprovedScopeFingerprint = meta.ownerApprovedScopeFingerprint;
   }
   if (typeof meta.retryPreparationId === 'string' && meta.retryPreparationId) {
     out.retryPreparationId = meta.retryPreparationId;

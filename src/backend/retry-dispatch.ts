@@ -136,9 +136,13 @@ export function findRetryRunForPreparation(
 /**
  * Repair a missing authorization from the trusted first-run binding: the
  * earliest linked Run WITHOUT retryPreparationId is, by construction, an
- * initial owner-approved dispatch product carrying authoritative workerId
- * and workspaceRoot in its meta. Old records without workerId cannot be
- * repaired safely → NOT_FOUND.
+ * initial owner-approved dispatch product. Repair is ONLY safe when the
+ * first-run RunMeta carries the ORIGINAL owner-approved scope fingerprint
+ * (persisted pre-auth by dispatchV1OwnerApproved) alongside workerId and
+ * workspaceRoot. The repaired authorization mint uses that stored original
+ * fingerprint — the mutable current Task is NEVER fingerprinted as
+ * owner-approved scope. Any missing component (including pre-G5-C / legacy
+ * runs without the fingerprint) → safe denial, no guess.
  */
 function ensureAuthorizationFromFirstRunBinding(
   dataRoot: string,
@@ -154,13 +158,18 @@ function ensureAuthorizationFromFirstRunBinding(
       continue;
     }
     if (meta.retryPreparationId) continue; // retry product, not an owner binding
-    if (!meta.workerId || !meta.workspaceRoot) continue; // pre-G5-C record: cannot repair safely
+    if (!meta.workerId || !meta.workspaceRoot || !meta.ownerApprovedScopeFingerprint) {
+      throw new RetryDispatchError(
+        'CONFLICT',
+        `Retry authorization missing for Task ${task.taskId} and original owner-approved scope cannot be reconstructed safely (first-run binding lacks the original fingerprint).`,
+      );
+    }
     return mintRetryAuthorization(dataRoot, project, {
       taskId: task.taskId,
       goalId: task.goalId,
       workerId: meta.workerId,
       workspaceRoot: meta.workspaceRoot,
-      scopeFingerprint: computeTaskScopeFingerprint(task),
+      scopeFingerprint: meta.ownerApprovedScopeFingerprint,
       source: 'REPAIRED_FROM_FIRST_RUN_BINDING',
     });
   }
