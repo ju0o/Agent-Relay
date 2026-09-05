@@ -83,6 +83,12 @@ export interface ResumeBlockedExecutionPlanInput {
   ownerRecoveryId: string;
 }
 
+export interface AdvanceExecutionPlanActiveTaskInput {
+  expectedState: 'RUNNING';
+  expectedActiveTaskId: string;
+  nextActiveTaskId: string;
+}
+
 const _planLocks = new Map<string, Promise<void>>();
 const _planCreateLocks = new Map<string, Promise<void>>();
 
@@ -490,6 +496,43 @@ export async function startExecutionPlan(
       state: 'RUNNING',
       activeTaskId,
       ownerAuthorization: immutableAuthorization(input.ownerAuthorization),
+      updatedAt: nextTimestamp(current.updatedAt),
+    };
+    return persistExecutionPlan(dataRoot, project, next);
+  });
+}
+
+/**
+ * Slice 3 cursor primitive. It deliberately permits only the immediate next
+ * frozen Task; Task acceptance and successor dispatch remain outside the Plan
+ * kernel and retain their respective authorities.
+ */
+export async function advanceExecutionPlanActiveTask(
+  dataRoot: string,
+  project: string,
+  planId: string,
+  input: AdvanceExecutionPlanActiveTaskInput,
+): Promise<ExecutionPlanRecord> {
+  return withExecutionPlanLock(dataRoot, project, planId, () => {
+    const current = getExecutionPlan(dataRoot, project, planId);
+    if (current.state !== input.expectedState) {
+      throw new ExecutionPlanError('CONFLICT', `Expected Plan state ${input.expectedState}, found ${current.state}.`);
+    }
+    if (current.state !== 'RUNNING') {
+      throw new ExecutionPlanError('INVALID_STATE', 'Only RUNNING Plan may advance its active Task cursor.');
+    }
+    const expectedActiveTaskId = requireNonEmpty(input.expectedActiveTaskId, 'expectedActiveTaskId', 128);
+    const nextActiveTaskId = requireNonEmpty(input.nextActiveTaskId, 'nextActiveTaskId', 128);
+    if (current.activeTaskId !== expectedActiveTaskId) {
+      throw new ExecutionPlanError('CONFLICT', `Expected active Task ${expectedActiveTaskId}, found ${String(current.activeTaskId)}.`);
+    }
+    const currentIndex = current.orderedTaskIds.indexOf(expectedActiveTaskId);
+    if (currentIndex < 0 || current.orderedTaskIds[currentIndex + 1] !== nextActiveTaskId) {
+      throw new ExecutionPlanError('INVALID_ARGUMENT', 'nextActiveTaskId must be the immediate frozen successor.');
+    }
+    const next: ExecutionPlanRecord = {
+      ...current,
+      activeTaskId: nextActiveTaskId,
       updatedAt: nextTimestamp(current.updatedAt),
     };
     return persistExecutionPlan(dataRoot, project, next);

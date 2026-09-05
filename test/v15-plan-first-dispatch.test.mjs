@@ -33,7 +33,6 @@ const v1Dispatch = await import('../dist/server/backend/v1-dispatch.js');
 const retryAuth = await import('../dist/server/backend/retry-authorization.js');
 const gt = await import('../dist/server/backend/goal-task.js');
 const rt = await import('../dist/server/backend/goal-task-runtime.js');
-const actions = await import('../dist/server/backend/task-actions.js');
 const dispatcher = await import('../dist/server/backend/dispatcher.js');
 const workers = await import('../dist/server/backend/worker-registry.js');
 const fixtures = await import('../dist/server/integrations/test-fixture/watch.js');
@@ -243,15 +242,8 @@ const interruptedReplay = await planDispatch.dispatchExecutionPlanOwnerApproved(
 check(interruptedReplay.outcome === 'ALREADY_STARTED' && interruptedReplay.existingRunId === interruptedRun.runId, '14 post-materialization replay recognizes existing Run');
 check(gt.getTask(TEST_ROOT, project, interrupted.plan.orderedTaskIds[0]).linkedRuns.length === 1, '14 post-materialization replay never double-dispatches');
 
-console.log('\n-- no successor advancement and V1 regression boundary --');
-await rt.markResultReceived(TEST_ROOT, project, valid.plan.orderedTaskIds[0], validGo.dispatch.runId, { expectedExecutionState: 'RUNNING' });
-const firstForAccept = gt.getTask(TEST_ROOT, project, valid.plan.orderedTaskIds[0]);
-await actions.acceptTaskResult({
-  dataRoot: TEST_ROOT, project, goalId: firstForAccept.goalId, taskId: firstForAccept.taskId, runId: validGo.dispatch.runId,
-  expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', callerSurface: 'OWNER_IPC', reason: 'Slice 2 no-successor fixture',
-});
-check(gt.getTask(TEST_ROOT, project, valid.plan.orderedTaskIds[0]).pmState === 'ACCEPTED', '15 first Task ACCEPTED in canonical V1 runtime');
-check(gt.getTask(TEST_ROOT, project, valid.plan.orderedTaskIds[1]).linkedRuns.length === 0, '15 ACCEPT does not dispatch Task 2');
+console.log('\n-- V1 regression boundary --');
+check(gt.getTask(TEST_ROOT, project, valid.plan.orderedTaskIds[1]).linkedRuns.length === 0, '15 Slice 2 first-dispatch path never starts Task 2');
 const standalone = (await intake.createV1TaskFromContract(TEST_ROOT, project, contract('standalone-v1'))).task;
 const standaloneDispatch = await v1Dispatch.dispatchV1OwnerApproved(TEST_ROOT, project, {
   taskId: standalone.taskId, workerId: 'v15-s2-worker', workspaceRoot: workspace, expectedExecutionState: 'READY',

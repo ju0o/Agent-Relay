@@ -62,14 +62,16 @@ function requireExactInputShape(input: DispatchExecutionPlanOwnerApprovedInput):
   }
 }
 
-function firstBinding(plan: ExecutionPlanRecord): ExecutionPlanTaskBinding {
-  const taskId = plan.orderedTaskIds[0];
-  if (!taskId) {
-    throw new ExecutionPlanError('INVALID_STATE', 'ExecutionPlan has no first Task.');
+export function getFrozenPlanTaskBinding(
+  plan: ExecutionPlanRecord,
+  taskId: string,
+): ExecutionPlanTaskBinding {
+  if (!plan.orderedTaskIds.includes(taskId)) {
+    throw new ExecutionPlanError('INVALID_ARGUMENT', `Task is not declared by ExecutionPlan: ${taskId}`);
   }
   const binding = plan.taskBindings.find((candidate) => candidate.taskId === taskId);
   if (!binding) {
-    throw new ExecutionPlanError('INVALID_STATE', `ExecutionPlan first Task binding is missing: ${taskId}`);
+    throw new ExecutionPlanError('INVALID_STATE', `ExecutionPlan Task binding is missing: ${taskId}`);
   }
   return binding;
 }
@@ -78,24 +80,25 @@ function firstBinding(plan: ExecutionPlanRecord): ExecutionPlanTaskBinding {
  * Validate the immutable Plan binding against current V1 authority before the
  * Plan leaves PLANNED. No caller-supplied Task/Worker/workspace value exists.
  */
-function validateFirstTaskDispatchability(
+export function validateFrozenPlanTaskDispatchability(
   dataRoot: string,
   project: string,
   plan: ExecutionPlanRecord,
+  taskId: string,
 ): ExecutionPlanTaskBinding {
-  const binding = firstBinding(plan);
+  const binding = getFrozenPlanTaskBinding(plan, taskId);
   const task = getTask(dataRoot, project, binding.taskId);
   if (task.executionState !== 'READY' || task.pmState !== 'PENDING') {
     throw new ExecutionPlanError(
       'INVALID_STATE',
-      `First Plan Task must be READY/PENDING (found ${task.executionState}/${task.pmState}).`,
+      `Plan Task must be READY/PENDING (found ${task.executionState}/${task.pmState}).`,
     );
   }
   if (task.linkedRuns.length !== 0) {
-    throw new ExecutionPlanError('CONFLICT', 'First Plan Task already has a Run; Plan GO is unsafe.');
+    throw new ExecutionPlanError('CONFLICT', 'Plan Task already has a Run; dispatch is unsafe.');
   }
   if (computeTaskScopeFingerprint(task) !== binding.scopeFingerprint) {
-    throw new ExecutionPlanError('INVALID_STATE', 'First Plan Task scope fingerprint does not match its frozen binding.');
+    throw new ExecutionPlanError('INVALID_STATE', 'Plan Task scope fingerprint does not match its frozen binding.');
   }
   // These are the same frozen values later supplied to V1. Their validation is
   // deliberately performed before durable Plan start, so obvious mismatch does
@@ -103,6 +106,31 @@ function validateFirstTaskDispatchability(
   loadWorkerRegistryRecord(dataRoot, binding.workerId);
   validateWorkspaceRoot(binding.workspaceRoot);
   return binding;
+}
+
+/**
+ * Internal Plan dispatch adapter. It accepts no Worker/workspace/scope input:
+ * all execution binding comes from the frozen Plan and V1 remains the actual
+ * Task/Run dispatcher.
+ */
+export async function dispatchFrozenPlanTask(
+  dataRoot: string,
+  project: string,
+  plan: ExecutionPlanRecord,
+  taskId: string,
+): Promise<DispatchResult> {
+  const binding = validateFrozenPlanTaskDispatchability(dataRoot, project, plan, taskId);
+  const dispatch = await ownerDispatch(dataRoot, project, {
+    taskId: binding.taskId,
+    workerId: binding.workerId,
+    workspaceRoot: binding.workspaceRoot,
+    expectedExecutionState: 'READY',
+  });
+  const after = getTask(dataRoot, project, binding.taskId);
+  if (after.linkedRuns.length !== 1 || after.linkedRuns[0]?.runId !== dispatch.runId) {
+    throw new ExecutionPlanError('CONFLICT', 'Canonical dispatch did not leave exactly one linked Plan Task Run.');
+  }
+  return dispatch;
 }
 
 function resolveAlreadyStarted(
@@ -177,7 +205,9 @@ export async function dispatchExecutionPlanOwnerApproved(
     return resolveAlreadyStarted(dataRoot, project, plan);
   }
 
-  const binding = validateFirstTaskDispatchability(dataRoot, project, plan);
+  const firstTaskId = plan.orderedTaskIds[0];
+  if (!firstTaskId) throw new ExecutionPlanError('INVALID_STATE', 'ExecutionPlan has no first Task.');
+  const binding = validateFrozenPlanTaskDispatchability(dataRoot, project, plan, firstTaskId);
   try {
     plan = await startExecutionPlan(dataRoot, project, plan.planId, {
       expectedState: input.expectedPlanState,
@@ -190,16 +220,7 @@ export async function dispatchExecutionPlanOwnerApproved(
   }
 
   try {
-    const dispatch = await ownerDispatch(dataRoot, project, {
-      taskId: binding.taskId,
-      workerId: binding.workerId,
-      workspaceRoot: binding.workspaceRoot,
-      expectedExecutionState: 'READY',
-    });
-    const after = getTask(dataRoot, project, binding.taskId);
-    if (after.linkedRuns.length !== 1 || after.linkedRuns[0]?.runId !== dispatch.runId) {
-      throw new ExecutionPlanError('CONFLICT', 'Canonical dispatch did not leave exactly one linked first-Task Run.');
-    }
+    const dispatch = await dispatchFrozenPlanTask(dataRoot, project, plan, binding.taskId);
     return { outcome: 'DISPATCHED', plan: getExecutionPlan(dataRoot, project, plan.planId), dispatch };
   } catch (error) {
     // No rollback and no redispatch: Task/Run remains authoritative. Convert

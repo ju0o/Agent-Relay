@@ -29,6 +29,7 @@ import {
   recordTaskResultAccepted,
   recordTaskRetryRequested,
 } from './event.js';
+import { continueExecutionPlanAfterTaskAccepted } from './execution-plan-continuation.js';
 import type {
   PermissionPolicy,
   TaskExecutionState,
@@ -118,6 +119,11 @@ export async function acceptTaskResult(input: AcceptTaskResultInput): Promise<Ta
     // Best-effort: the Task mutation already succeeded and is durable.
     // See file header — Event persistence failure never rolls back state.
   }
+
+  // Slice 3: only after canonical ACCEPT is durable may a matching Plan move.
+  // A Plan failure never rolls back the accepted Task or turns V1 acceptance
+  // into a second judgment path; the continuation itself fails closed.
+  await continueExecutionPlanAfterTaskAccepted(dataRoot, project, after);
 
   return after;
 }
