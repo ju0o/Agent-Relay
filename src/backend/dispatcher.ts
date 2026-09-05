@@ -41,6 +41,7 @@ import {
   WorkerRegistryError,
 } from './worker-registry.js';
 import { getAdapter } from '../integrations/core/registry.js';
+import { resolveClaudeConfigContext } from '../integrations/claude/profile.js';
 import { ensureDispatchCaptureManager } from './capture-service.js';
 import {
   tryAcquireObservationLock,
@@ -315,6 +316,8 @@ export function buildDispatchArgv(
     taskId: string;
     runId: string;
     workspaceRoot?: string;
+    /** Run-bound Claude config directory, derived only by Dispatcher. */
+    claudeConfigDir?: string;
     /** Trusted worker registry permission mode — never from Task/Goal/PM narrative. */
     permissionMode?: ClaudePermissionMode;
   },
@@ -328,6 +331,9 @@ export function buildDispatchArgv(
   ];
   if (binding.workspaceRoot) {
     argv.push('--workspaceRoot', binding.workspaceRoot);
+  }
+  if (binding.claudeConfigDir) {
+    argv.push('--claudeConfigDir', binding.claudeConfigDir);
   }
   // Only inject --permissionMode when explicitly set to 'acceptEdits'.
   // 'default' and absent are equivalent (no flag); omitting preserves least privilege.
@@ -689,6 +695,7 @@ export async function dispatchTask(
   let observationLock: ObservationLockHandle | undefined;
   let captureArmed = false;
   let observationAdapterId: string | undefined;
+  let claudeConfigDir: string | undefined;
 
   try {
     // 2. Validate Task + READY
@@ -730,6 +737,12 @@ export async function dispatchTask(
       );
     }
 
+    // Resolve once, before Run persistence and capture arm. This is the
+    // Worker launch context that must be shared with Claude observation.
+    if (observationAdapterId === 'claude-code') {
+      claudeConfigDir = resolveClaudeConfigContext(workspaceRoot).configDir;
+    }
+
     // 4. workspaceRoot already validated above
     // 5. Acquire/reserve observation lock BEFORE any Run / DISPATCHED commitment.
     //    Contention → CONFLICT; Task remains READY; no Run; no spawn.
@@ -767,20 +780,21 @@ export async function dispatchTask(
     // The ORIGINAL owner-approved scope fingerprint is persisted only on the
     // initial owner dispatch (ownerApprovalContext); retry Runs never write
     // it, so they cannot redefine the original approval.
-    try {
-      const meta = readRunMeta(createdFolder);
-      writeRunMeta(createdFolder, {
-        ...meta,
-        workspaceRoot,
-        workerId,
-        ...(retryContext
-          ? { retryPreparationId: retryContext.preparationId, sourceRunId: retryContext.sourceRunId }
-          : {}),
-        ...(ownerApprovalContext
-          ? { ownerApprovedScopeFingerprint: ownerApprovalContext.scopeFingerprint }
-          : {}),
-      });
-    } catch { /* audit best-effort */ }
+    // For Claude, claudeConfigDir is also the observer's authority boundary:
+    // do not arm or spawn if the Run cannot durably retain that context.
+    const meta = readRunMeta(createdFolder);
+    writeRunMeta(createdFolder, {
+      ...meta,
+      workspaceRoot,
+      workerId,
+      ...(claudeConfigDir ? { claudeConfigDir } : {}),
+      ...(retryContext
+        ? { retryPreparationId: retryContext.preparationId, sourceRunId: retryContext.sourceRunId }
+        : {}),
+      ...(ownerApprovalContext
+        ? { ownerApprovedScopeFingerprint: ownerApprovalContext.scopeFingerprint }
+        : {}),
+    });
 
     // 7. Link Run to Task
     await linkRunToTask(root, proj, taskId, materialized.folder);
@@ -876,6 +890,7 @@ export async function dispatchTask(
         folder: createdFolder,
         isDraft: false,
         workspaceRoot,
+        ...(claudeConfigDir ? { claudeConfigDir } : {}),
         executionBinding,
       });
       captureArmed = true;
@@ -917,6 +932,7 @@ export async function dispatchTask(
       taskId,
       runId: createdRunId,
       workspaceRoot,
+      ...(claudeConfigDir ? { claudeConfigDir } : {}),
       ...(permissionMode ? { permissionMode } : {}),
     });
 

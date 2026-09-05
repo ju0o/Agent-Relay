@@ -262,6 +262,12 @@ export interface RunMeta {
    */
   workerId?: string;
   /**
+   * G6 additive: effective Claude configuration directory selected for this
+   * Run before observation was armed. Directory path only; never tokens or
+   * environment contents. Existing Runs may omit it and use legacy fallback.
+   */
+  claudeConfigDir?: string;
+  /**
    * V1-G5-C correction additive: the ORIGINAL owner-approved Task contract
    * fingerprint, computed server-side BEFORE the initial owner dispatch and
    * persisted with the first-run binding. ONLY dispatchV1OwnerApproved
@@ -305,6 +311,9 @@ export function readRunMeta(folder: string): RunMeta {
     if (typeof raw.workerId === 'string' && raw.workerId) {
       meta.workerId = raw.workerId;
     }
+    if (typeof raw.claudeConfigDir === 'string' && raw.claudeConfigDir && path.isAbsolute(raw.claudeConfigDir)) {
+      meta.claudeConfigDir = path.resolve(raw.claudeConfigDir);
+    }
     if (typeof raw.ownerApprovedScopeFingerprint === 'string' && raw.ownerApprovedScopeFingerprint) {
       meta.ownerApprovedScopeFingerprint = raw.ownerApprovedScopeFingerprint;
     }
@@ -346,6 +355,9 @@ export function writeRunMeta(folder: string, meta: RunMeta): void {
   }
   if (typeof meta.workerId === 'string' && meta.workerId) {
     out.workerId = meta.workerId;
+  }
+  if (typeof meta.claudeConfigDir === 'string' && meta.claudeConfigDir && path.isAbsolute(meta.claudeConfigDir)) {
+    out.claudeConfigDir = path.resolve(meta.claudeConfigDir);
   }
   if (typeof meta.ownerApprovedScopeFingerprint === 'string' && meta.ownerApprovedScopeFingerprint) {
     out.ownerApprovedScopeFingerprint = meta.ownerApprovedScopeFingerprint;

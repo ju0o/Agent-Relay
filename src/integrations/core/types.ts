@@ -70,6 +70,11 @@ export type AdapterEvent =
 export interface WatchTarget {
   /** Optional workspace directory hint for scoping observation. */
   workspaceRoot?: string;
+  /**
+   * Optional Run-bound Claude config directory. Set by Dispatcher from the
+   * Worker launch context; adapters must prefer it over ambient process env.
+   */
+  claudeConfigDir?: string;
 }
 
 export interface WatchHandle {

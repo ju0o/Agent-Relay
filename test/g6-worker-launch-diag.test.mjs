@@ -64,15 +64,27 @@ fs.writeFileSync(path.join(RUN, 'meta.json'), JSON.stringify({ tags: [], runId: 
 const WRAPPER = path.resolve(__dirname, '../scripts/relay-worker-claude.mjs');
 const args = [WRAPPER, '--dataRoot', SMOKE, '--project', PROJECT, '--taskId', 'TASK-0001', '--runId', '11111111-1111-1111-1111-111111111111', '--workspaceRoot', WORK];
 
-async function runWrapper(env) {
+async function runWrapper(env, extraArgs = []) {
   return await new Promise((resolve) => {
-    const child = spawn(process.execPath, args, { env: { ...process.env, ...env }, cwd: path.resolve(__dirname, '..') });
+    const child = spawn(process.execPath, [...args, ...extraArgs], { env: { ...process.env, ...env }, cwd: path.resolve(__dirname, '..') });
     let out = '', err = '';
     child.stdout.on('data', (c) => (out += c));
     child.stderr.on('data', (c) => (err += c));
     child.on('close', (code) => resolve({ code, out, err }));
   });
 }
+
+// A Run-bound profile must become the child environment, not merely a log field.
+const PROFILE_DIR = path.join(TEST_ROOT, 'run-bound-profile');
+const PROFILE_SEEN = path.join(TEST_ROOT, 'run-bound-profile-seen.txt');
+fs.mkdirSync(PROFILE_DIR, { recursive: true });
+const PROFILE_WORKER = path.join(TEST_ROOT, 'profile-worker.mjs');
+fs.writeFileSync(
+  PROFILE_WORKER,
+  `#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(PROFILE_SEEN)}, process.env.CLAUDE_CONFIG_DIR || '');\nprocess.exit(0);\n`,
+  'utf8',
+);
+fs.chmodSync(PROFILE_WORKER, 0o755);
 
 function readLaunchLog() {
   return JSON.parse(fs.readFileSync(path.join(RUN, 'worker-launch.log'), 'utf8').split('\n---\n').pop());
@@ -104,6 +116,18 @@ console.log('\n-- success path --');
   const log = readLaunchLog();
   check(log.phase === 'completed' && log.exitCode === 0, '4 success recorded');
   check(log.stderrExcerpt === undefined && log.stdoutExcerpt === undefined, '4 no diagnostic excerpts on success');
+}
+
+console.log('\n-- run-bound profile propagation --');
+{
+  const run = await runWrapper(
+    { CLAUDE_EXE: PROFILE_WORKER, CLAUDE_CONFIG_DIR: path.join(TEST_ROOT, 'wrong-ambient-profile') },
+    ['--claudeConfigDir', PROFILE_DIR],
+  );
+  const log = readLaunchLog();
+  check(run.code === 0, '6 run-bound profile worker exits 0');
+  check(log.claudeConfigProfile === 'run-bound', '6 wrapper selects Run-bound profile over ambient env');
+  check(fs.existsSync(PROFILE_SEEN) && fs.readFileSync(PROFILE_SEEN, 'utf8') === PROFILE_DIR, '6 child receives exact Run-bound CLAUDE_CONFIG_DIR');
 }
 
 console.log(`\nG6 Worker Launch Diagnostics Tests complete. Passed: ${passed}, Failed: ${failed}`);

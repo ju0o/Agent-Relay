@@ -32,10 +32,10 @@ export interface TranscriptFile {
  * the worker's Claude wrote to — otherwise real runs are never observed.
  * Falls back to ~/.claude/projects when unset.
  */
-export function claudeProjectsRoot(): string | null {
-  const override = process.env['CLAUDE_CONFIG_DIR'];
-  const root = override && override.trim()
-    ? path.join(override.trim(), 'projects')
+export function claudeProjectsRoot(runConfigDir?: string): string | null {
+  const override = runConfigDir?.trim() || process.env['CLAUDE_CONFIG_DIR']?.trim();
+  const root = override
+    ? path.join(override, 'projects')
     : path.join(os.homedir(), '.claude', 'projects');
   try {
     return fs.statSync(root).isDirectory() ? root : null;

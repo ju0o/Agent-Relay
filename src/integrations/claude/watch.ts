@@ -61,9 +61,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const debug = process.env['AGENT_RELAY_CAPTURE_DEBUG'] === '1';
     const workspaceFilter = target.workspaceRoot ? normalizePath(target.workspaceRoot) : null;
 
-    const root = claudeProjectsRoot();
+    // A Dispatcher-bound Run carries the effective Worker config directory.
+    // Never let this observer's ambient process profile override that Run.
+    const root = claudeProjectsRoot(target.claudeConfigDir);
     if (!root) {
-      const message = 'Claude Code 세션 저장소(~/.claude/projects)를 찾을 수 없습니다.';
+      const message = 'Claude Code 세션 저장소를 찾을 수 없습니다.';
       sink({ type: 'status', phase: 'error', detail: message });
       throw new Error(message);
     }

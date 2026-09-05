@@ -187,6 +187,8 @@ export class CaptureManager {
       isDraft?: boolean;
       materializeParams?: MaterializeParams;
       workspaceRoot?: string;
+      /** Run-bound Claude profile context from the authoritative Worker launch. */
+      claudeConfigDir?: string;
       executionBinding?: ExecutionBinding;
     },
   ): Promise<void> {
@@ -264,7 +266,10 @@ export class CaptureManager {
 
     // Build the WatchTarget. workspaceRoot is the CODING workspace — if not provided,
     // pass an empty target (the adapter will observe all accessible sessions).
-    const target = opts?.workspaceRoot ? { workspaceRoot: opts.workspaceRoot } : {};
+    const target = {
+      ...(opts?.workspaceRoot ? { workspaceRoot: opts.workspaceRoot } : {}),
+      ...(opts?.claudeConfigDir ? { claudeConfigDir: opts.claudeConfigDir } : {}),
+    };
 
     try {
       ctx.handle = await adapter.startWatch(target, (e) => this.onEvent(ctx, e));

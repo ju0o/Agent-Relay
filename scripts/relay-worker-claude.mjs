@@ -44,6 +44,7 @@ const RELAY_ARGS = new Set([
   '--taskId',
   '--runId',
   '--workspaceRoot',
+  '--claudeConfigDir',
   '--permissionMode',
 ]);
 
@@ -67,7 +68,7 @@ const VALID_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
  *     'dangerously-skip-permissions' is explicitly rejected.
  *
  * @param {string[]} argv  Slice of process.argv (caller provides slice(2)).
- * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; permissionMode?: string }}
+ * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string }}
  */
 function parseRelayArgs(argv) {
   const result = {};
@@ -120,7 +121,7 @@ function parseRelayArgs(argv) {
     }
   }
 
-  return /** @type {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; permissionMode?: string }} */ (result);
+  return /** @type {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string }} */ (result);
 }
 
 class ArgError extends Error {
@@ -448,9 +449,15 @@ function resolveClaudeExecutable() {
  * credentials remain in Claude's own permission-restricted storage.
  *
  * @param {string} workspaceRoot
- * @returns {{ configDir?: string; profile: 'inherited' | 'team' | 'pro' | 'default' }}
+ * @returns {{ configDir?: string; profile: 'run-bound' | 'inherited' | 'team' | 'pro' | 'default' }}
  */
-function resolveClaudeConfigDir(workspaceRoot) {
+function resolveClaudeConfigDir(workspaceRoot, runConfigDir) {
+  if (runConfigDir) {
+    if (!path.isAbsolute(runConfigDir) || !fs.existsSync(runConfigDir) || !fs.statSync(runConfigDir).isDirectory()) {
+      throw new Error('Run-bound claudeConfigDir must be an existing absolute directory.');
+    }
+    return { configDir: path.resolve(runConfigDir), profile: 'run-bound' };
+  }
   const inherited = process.env['CLAUDE_CONFIG_DIR'];
   if (inherited && inherited.trim()) {
     return { configDir: inherited.trim(), profile: 'inherited' };
@@ -620,7 +627,7 @@ async function main() {
 
     // ── 7. Resolve Claude executable ──────────────────────────────────────────
     const claudeExe = resolveClaudeExecutable();
-    const claudeConfig = resolveClaudeConfigDir(workspaceRoot);
+    const claudeConfig = resolveClaudeConfigDir(workspaceRoot, args.claudeConfigDir);
 
     // ── 8. Write launch log (pre-spawn diagnostics) ───────────────────────────
     writeLaunchLog(runFolder, {
