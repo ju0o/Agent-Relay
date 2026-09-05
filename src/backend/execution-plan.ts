@@ -91,6 +91,8 @@ export interface AdvanceExecutionPlanActiveTaskInput {
 
 const _planLocks = new Map<string, Promise<void>>();
 const _planCreateLocks = new Map<string, Promise<void>>();
+const _planRecoveryLocks = new Map<string, Promise<void>>();
+export const EXECUTION_PLAN_STALE_LOCK_MIN_AGE_MS = 5 * 60 * 1000;
 
 function lock<T>(locks: Map<string, Promise<void>>, key: string, fn: () => T | Promise<T>): Promise<T> {
   const previous = locks.get(key) ?? Promise.resolve();
@@ -101,6 +103,29 @@ function lock<T>(locks: Map<string, Promise<void>>, key: string, fn: () => T | P
 
 function rootProjectKey(dataRoot: string, project: string): string {
   return `${path.resolve(dataRoot)}@@${project}`;
+}
+
+function processStartTicks(pid: number): string | undefined {
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const closing = raw.lastIndexOf(')');
+    const fields = raw.slice(closing + 2).trim().split(/\s+/);
+    // /proc/<pid>/stat field 22 = index 19 after the state field.
+    return fields[19] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLiveProcess(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the PID exists but is not signalable: never reclaim it.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
 }
 
 export function withExecutionPlanLock<T>(
@@ -116,7 +141,7 @@ export function withExecutionPlanLock<T>(
     let handle: number;
     try {
       handle = fs.openSync(lockFile, 'wx');
-      fs.writeFileSync(handle, `${JSON.stringify({ planId: normalizedPlanId, pid: process.pid, acquiredAt: new Date().toISOString() })}\n`, 'utf8');
+      fs.writeFileSync(handle, `${JSON.stringify({ planId: normalizedPlanId, pid: process.pid, processStartTicks: processStartTicks(process.pid), acquiredAt: new Date().toISOString() })}\n`, 'utf8');
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'EEXIST') {
@@ -141,6 +166,7 @@ export function withExecutionPlanLock<T>(
 export function _resetExecutionPlanLocksForTests(): void {
   _planLocks.clear();
   _planCreateLocks.clear();
+  _planRecoveryLocks.clear();
 }
 
 export function executionPlansDir(dataRoot: string, project: string): string {
@@ -158,6 +184,73 @@ export function executionPlanPath(dataRoot: string, project: string, planId: str
 /** Local exclusive mutation lock. A leftover lock is intentionally fail-closed. */
 export function executionPlanLockPath(dataRoot: string, project: string, planId: string): string {
   return path.join(executionPlanFolder(dataRoot, project, planId), '.plan-mutation.lock');
+}
+
+/**
+ * True when the lock metadata still names a live owner.
+ * A live PID with matching processStartTicks is authoritative ownership.
+ * A live PID without comparable start ticks fails closed (may be reused).
+ * A live PID with mismatched start ticks is treated as abandoned (PID reuse).
+ */
+function lockOwnerIsLive(metadata: { pid: number; processStartTicks?: unknown }): boolean {
+  if (!isLiveProcess(metadata.pid)) return false;
+  if (typeof metadata.processStartTicks !== 'string' || !metadata.processStartTicks) {
+    // Old/partial lock records cannot disambiguate PID reuse → fail closed.
+    return true;
+  }
+  const liveTicks = processStartTicks(metadata.pid);
+  if (!liveTicks) {
+    // PID appeared live, but /proc start ticks are unreadable → fail closed.
+    return true;
+  }
+  return liveTicks === metadata.processStartTicks;
+}
+
+/**
+ * Reclaims only an aged local lock whose recorded owner is provably absent
+ * (dead PID, or live PID whose start ticks prove reuse). Invalid/live/young
+ * locks remain fail-closed. The atomic rename claims the stale file before
+ * deletion, preventing two recoverers from both reclaiming.
+ */
+export async function recoverStaleExecutionPlanLock(
+  dataRoot: string,
+  project: string,
+  planId: string,
+  opts?: { minAgeMs?: number },
+): Promise<boolean> {
+  const normalizedProject = requireNonEmpty(project, 'project', 256);
+  const normalizedPlanId = requirePlanId(planId);
+  const minAgeMs = opts?.minAgeMs ?? EXECUTION_PLAN_STALE_LOCK_MIN_AGE_MS;
+  if (!Number.isFinite(minAgeMs) || minAgeMs < 0) {
+    throw new ExecutionPlanError('INVALID_ARGUMENT', 'minAgeMs must be a non-negative finite number.');
+  }
+  return lock(_planRecoveryLocks, `${rootProjectKey(dataRoot, normalizedProject)}::${normalizedPlanId}`, () => {
+    const lockFile = executionPlanLockPath(dataRoot, normalizedProject, normalizedPlanId);
+    let metadata: { planId?: unknown; pid?: unknown; acquiredAt?: unknown; processStartTicks?: unknown };
+    try {
+      metadata = JSON.parse(fs.readFileSync(lockFile, 'utf8')) as typeof metadata;
+    } catch {
+      return false;
+    }
+    if (metadata.planId !== normalizedPlanId || typeof metadata.pid !== 'number' || typeof metadata.acquiredAt !== 'string') {
+      return false;
+    }
+    const acquiredAt = Date.parse(metadata.acquiredAt);
+    if (Number.isNaN(acquiredAt) || Date.now() - acquiredAt < minAgeMs) {
+      return false;
+    }
+    if (lockOwnerIsLive({ pid: metadata.pid, processStartTicks: metadata.processStartTicks })) {
+      return false;
+    }
+    const claimed = `${lockFile}.stale-${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+    try {
+      fs.renameSync(lockFile, claimed);
+    } catch {
+      return false;
+    }
+    try { fs.unlinkSync(claimed); } catch { /* cleared canonical lock path is sufficient */ }
+    return true;
+  });
 }
 
 function requireNonEmpty(value: unknown, field: string, max = 500): string {
@@ -507,46 +600,62 @@ export async function startExecutionPlan(
  * frozen Task; Task acceptance and successor dispatch remain outside the Plan
  * kernel and retain their respective authorities.
  */
+function advanceExecutionPlanActiveTaskCurrent(
+  dataRoot: string,
+  project: string,
+  planId: string,
+  input: AdvanceExecutionPlanActiveTaskInput,
+): ExecutionPlanRecord {
+  const current = getExecutionPlan(dataRoot, project, planId);
+  if (current.state !== input.expectedState) {
+    throw new ExecutionPlanError('CONFLICT', `Expected Plan state ${input.expectedState}, found ${current.state}.`);
+  }
+  if (current.state !== 'RUNNING') {
+    throw new ExecutionPlanError('INVALID_STATE', 'Only RUNNING Plan may advance its active Task cursor.');
+  }
+  const expectedActiveTaskId = requireNonEmpty(input.expectedActiveTaskId, 'expectedActiveTaskId', 128);
+  const nextActiveTaskId = requireNonEmpty(input.nextActiveTaskId, 'nextActiveTaskId', 128);
+  if (current.activeTaskId !== expectedActiveTaskId) {
+    throw new ExecutionPlanError('CONFLICT', `Expected active Task ${expectedActiveTaskId}, found ${String(current.activeTaskId)}.`);
+  }
+  const currentIndex = current.orderedTaskIds.indexOf(expectedActiveTaskId);
+  if (currentIndex < 0 || current.orderedTaskIds[currentIndex + 1] !== nextActiveTaskId) {
+    throw new ExecutionPlanError('INVALID_ARGUMENT', 'nextActiveTaskId must be the immediate frozen successor.');
+  }
+  const next: ExecutionPlanRecord = {
+    ...current,
+    activeTaskId: nextActiveTaskId,
+    updatedAt: nextTimestamp(current.updatedAt),
+  };
+  return persistExecutionPlan(dataRoot, project, next);
+}
+
 export async function advanceExecutionPlanActiveTask(
   dataRoot: string,
   project: string,
   planId: string,
   input: AdvanceExecutionPlanActiveTaskInput,
 ): Promise<ExecutionPlanRecord> {
-  return withExecutionPlanLock(dataRoot, project, planId, () => {
-    const current = getExecutionPlan(dataRoot, project, planId);
-    if (current.state !== input.expectedState) {
-      throw new ExecutionPlanError('CONFLICT', `Expected Plan state ${input.expectedState}, found ${current.state}.`);
-    }
-    if (current.state !== 'RUNNING') {
-      throw new ExecutionPlanError('INVALID_STATE', 'Only RUNNING Plan may advance its active Task cursor.');
-    }
-    const expectedActiveTaskId = requireNonEmpty(input.expectedActiveTaskId, 'expectedActiveTaskId', 128);
-    const nextActiveTaskId = requireNonEmpty(input.nextActiveTaskId, 'nextActiveTaskId', 128);
-    if (current.activeTaskId !== expectedActiveTaskId) {
-      throw new ExecutionPlanError('CONFLICT', `Expected active Task ${expectedActiveTaskId}, found ${String(current.activeTaskId)}.`);
-    }
-    const currentIndex = current.orderedTaskIds.indexOf(expectedActiveTaskId);
-    if (currentIndex < 0 || current.orderedTaskIds[currentIndex + 1] !== nextActiveTaskId) {
-      throw new ExecutionPlanError('INVALID_ARGUMENT', 'nextActiveTaskId must be the immediate frozen successor.');
-    }
-    const next: ExecutionPlanRecord = {
-      ...current,
-      activeTaskId: nextActiveTaskId,
-      updatedAt: nextTimestamp(current.updatedAt),
-    };
-    return persistExecutionPlan(dataRoot, project, next);
-  });
+  return withExecutionPlanLock(dataRoot, project, planId, () => advanceExecutionPlanActiveTaskCurrent(dataRoot, project, planId, input));
+}
+
+/** Internal orchestration primitive; caller must currently own Plan lock. */
+export function advanceExecutionPlanActiveTaskWhileLocked(
+  dataRoot: string,
+  project: string,
+  planId: string,
+  input: AdvanceExecutionPlanActiveTaskInput,
+): ExecutionPlanRecord {
+  return advanceExecutionPlanActiveTaskCurrent(dataRoot, project, planId, input);
 }
 
 /** Controlled terminal/block transition only; no arbitrary Plan patch surface. */
-export async function transitionExecutionPlan(
+function transitionExecutionPlanCurrent(
   dataRoot: string,
   project: string,
   planId: string,
   input: TransitionExecutionPlanInput,
-): Promise<ExecutionPlanRecord> {
-  return withExecutionPlanLock(dataRoot, project, planId, () => {
+): ExecutionPlanRecord {
     const current = getExecutionPlan(dataRoot, project, planId);
     if (current.state !== input.expectedState) {
       throw new ExecutionPlanError('CONFLICT', `Expected Plan state ${input.expectedState}, found ${current.state}.`);
@@ -578,7 +687,25 @@ export async function transitionExecutionPlan(
     const terminalReason = reason ?? `${input.to} recorded by controlled Plan transition.`;
     const next: ExecutionPlanRecord = { ...current, state: input.to, terminalAt: timestamp, terminalReason, updatedAt: timestamp };
     return persistExecutionPlan(dataRoot, project, next);
-  });
+}
+
+export async function transitionExecutionPlan(
+  dataRoot: string,
+  project: string,
+  planId: string,
+  input: TransitionExecutionPlanInput,
+): Promise<ExecutionPlanRecord> {
+  return withExecutionPlanLock(dataRoot, project, planId, () => transitionExecutionPlanCurrent(dataRoot, project, planId, input));
+}
+
+/** Internal orchestration primitive; caller must currently own Plan lock. */
+export function transitionExecutionPlanWhileLocked(
+  dataRoot: string,
+  project: string,
+  planId: string,
+  input: TransitionExecutionPlanInput,
+): ExecutionPlanRecord {
+  return transitionExecutionPlanCurrent(dataRoot, project, planId, input);
 }
 
 /** Guarded kernel primitive; no Owner/MCP surface is exposed in Slice 1. */
