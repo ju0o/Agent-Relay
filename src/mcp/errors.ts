@@ -45,7 +45,7 @@ export function mapCoreError(err: unknown): McpError {
   if (name === 'PermissionDeniedError') {
     return new McpError('FORBIDDEN', msg);
   }
-  if (name === 'OrphanResolutionError' || name === 'ObservationLockError' || name === 'ResultBridgeError' || name === 'PmDeliveryError' || name === 'VerificationContextError' || name === 'PmJudgmentError' || name === 'RetryPreparationError') {
+  if (name === 'OrphanResolutionError' || name === 'ObservationLockError' || name === 'ResultBridgeError' || name === 'PmDeliveryError' || name === 'VerificationContextError' || name === 'PmJudgmentError' || name === 'RetryPreparationError' || name === 'ExecutionPlanError') {
     const hCode = (err as { code?: string } | null)?.code;
     switch (hCode) {
       case 'FORBIDDEN':
@@ -58,6 +58,8 @@ export function mapCoreError(err: unknown): McpError {
         return new McpError('INVALID_STATE', msg);
       case 'INVALID_ARGUMENT':
         return new McpError('INVALID_ARGUMENT', msg);
+      case 'IO_FAILURE':
+        return new McpError('INTERNAL_ERROR', msg);
       default:
         return new McpError('INTERNAL_ERROR', msg);
     }

@@ -40,6 +40,7 @@ import {
 import { McpError, mapCoreError } from './errors.js';
 import type { McpTool, PmServerContext } from './server.js';
 import { buildPmWakeTools } from './app/pm-wake-tools.js';
+import { buildExecutionPlanReadTools, buildExecutionPlanWriteTools } from './execution-plan-tools.js';
 
 // Phase I3F-2: accept/changes/retry CAS values are frozen single-value enums
 // (no permissive multi-state compatibility) — see ACCEPT_EXEC_ONLY etc. below.
@@ -73,6 +74,7 @@ function mapPermissionError(err: unknown): never {
 export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
   const { dataRoot, project } = ctx;
   return [
+    ...buildExecutionPlanReadTools(ctx),
     {
       name: 'relay_pm_get_goal',
       description: 'Read a Goal record by goalId.',
@@ -298,6 +300,7 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
 export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
   const { dataRoot, project } = ctx;
   return [
+    ...buildExecutionPlanWriteTools(ctx),
     {
       name: 'relay_pm_create_task',
       description:
