@@ -437,6 +437,42 @@ function resolveClaudeExecutable() {
   return 'claude';
 }
 
+/**
+ * Resolve the Claude Code config directory without copying credentials.
+ *
+ * Interactive Owner shells on this host select the Team profile for work under
+ * ~/Desktop/Projects/Team and the Pro profile everywhere else. Relay is
+ * launched without that shell function, so preserve an explicit inherited
+ * CLAUDE_CONFIG_DIR when present and otherwise apply the same directory-only
+ * routing. The selected directory is passed to Claude as environment metadata;
+ * credentials remain in Claude's own permission-restricted storage.
+ *
+ * @param {string} workspaceRoot
+ * @returns {{ configDir?: string; profile: 'inherited' | 'team' | 'pro' | 'default' }}
+ */
+function resolveClaudeConfigDir(workspaceRoot) {
+  const inherited = process.env['CLAUDE_CONFIG_DIR'];
+  if (inherited && inherited.trim()) {
+    return { configDir: inherited.trim(), profile: 'inherited' };
+  }
+
+  const home = process.env['HOME'];
+  if (!home || !home.trim()) return { profile: 'default' };
+
+  const teamRoot = path.resolve(home, 'Desktop', 'Projects', 'Team');
+  const workspace = path.resolve(workspaceRoot);
+  const isTeamWorkspace = workspace === teamRoot || workspace.startsWith(teamRoot + path.sep);
+  const profile = isTeamWorkspace ? 'team' : 'pro';
+  const configDir = path.join(home, isTeamWorkspace ? '.claude-team' : '.claude-pro');
+
+  try {
+    if (fs.statSync(configDir).isDirectory()) return { configDir, profile };
+  } catch {
+    // The host does not have the routed profile; retain Claude's normal default.
+  }
+  return { profile: 'default' };
+}
+
 // ── diagnostic log ────────────────────────────────────────────────────────────
 
 /**
@@ -584,6 +620,7 @@ async function main() {
 
     // ── 7. Resolve Claude executable ──────────────────────────────────────────
     const claudeExe = resolveClaudeExecutable();
+    const claudeConfig = resolveClaudeConfigDir(workspaceRoot);
 
     // ── 8. Write launch log (pre-spawn diagnostics) ───────────────────────────
     writeLaunchLog(runFolder, {
@@ -594,6 +631,7 @@ async function main() {
       workspaceRoot,
       // Safe normalized field — not an env dump or raw token
       permissionMode: permissionMode ?? 'default',
+      claudeConfigProfile: claudeConfig.profile,
       phase: 'spawning',
     });
 
@@ -630,8 +668,13 @@ async function main() {
           shell: false,          // MANDATORY: no shell
           stdio: ['ignore', 'pipe', 'pipe'], // capture bounded CLI stdout/stderr for diagnostics
           windowsHide: true,
-          // env: intentionally NOT passed — no arbitrary env injection from Task content
-          // Claude inherits process.env (which is the trusted operator env)
+          // Preserve the trusted parent environment. When no explicit config
+          // directory was inherited, route only to the Owner's normal Claude
+          // profile; no Task-derived environment values or secrets are added.
+          env: {
+            ...process.env,
+            ...(claudeConfig.configDir ? { CLAUDE_CONFIG_DIR: claudeConfig.configDir } : {}),
+          },
         });
 
         const stderrP = collectBoundedStream(child.stderr);
@@ -679,6 +722,7 @@ async function main() {
       claudeExecutableResolved: claudeExe,
       // Safe normalized field — records what was used, not a raw arg
       permissionMode: permissionMode ?? 'default',
+      claudeConfigProfile: claudeConfig.profile,
       argvShape: redactedArgvShape(claudeExe, claudeArgs),
       phase: 'completed',
       // exitCode=0 does NOT mean RESULT_RECEIVED.
