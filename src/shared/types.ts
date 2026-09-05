@@ -482,6 +482,71 @@ export interface TaskRecord {
   retryCount?: number;
 }
 
+// ── V1.5 Execution Plan kernel ─────────────────────────────────────────────
+//
+// An ExecutionPlan is deliberately smaller than a workflow engine. It owns
+// only frozen ordering/authorization and one active-task cursor; Task, Run,
+// Delivery, Judgment, Evidence, and Wake records remain their own SSOTs.
+
+export const EXECUTION_PLAN_SCHEMA_VERSION = 1;
+
+export const EXECUTION_PLAN_STATES = [
+  'PLANNED',
+  'RUNNING',
+  'COMPLETED',
+  'FAILED',
+  'BLOCKED',
+  'CANCELLED',
+] as const;
+export type ExecutionPlanState = (typeof EXECUTION_PLAN_STATES)[number];
+
+export interface ExecutionPlanTaskBinding {
+  taskId: string;
+  workerId: string;
+  /** Pre-approved absolute workspace identity; never a credential or prompt. */
+  workspaceRoot: string;
+  /** Frozen per-Task authorization/scope fingerprint. */
+  scopeFingerprint: string;
+}
+
+export interface ExecutionPlanAuthorization {
+  authorizationId: string;
+  approvedAt: string;
+  approvedBy: 'OWNER';
+  /** Canonical hash of the frozen title/order/bindings scope. */
+  planScopeFingerprint: string;
+  /** Must exactly match each binding's frozen scopeFingerprint. */
+  taskScopeFingerprints: Record<string, string>;
+}
+
+export interface ExecutionPlanBlock {
+  code: string;
+  reason: string;
+  at: string;
+  taskId?: string;
+}
+
+/** Persistent V1.5 Plan record. No Task or Run state is duplicated here. */
+export interface ExecutionPlanRecord {
+  schemaVersion: number;
+  planId: string;
+  project: string;
+  title: string;
+  orderedTaskIds: string[];
+  taskBindings: ExecutionPlanTaskBinding[];
+  state: ExecutionPlanState;
+  /** Null before start; once RUNNING it names exactly one declared Task. */
+  activeTaskId: string | null;
+  /** Absent until the future Owner-GO transition freezes authorization. */
+  ownerAuthorization?: ExecutionPlanAuthorization;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  terminalAt?: string;
+  terminalReason?: string;
+  block?: ExecutionPlanBlock;
+}
+
 /**
  * Map legacy v1 TaskStatus → split axes.
  * DONE/ACCEPTED → pmState ACCEPTED; WORKING → RUNNING; ABANDONED → CANCELLED.

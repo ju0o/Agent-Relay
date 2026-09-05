@@ -368,6 +368,15 @@ console.log('\n-- T: bridge judgment --');
   });
   await ba.start();
   await waitFor('t accept', () => gt.getTask(TEST_ROOT, project, ta2.taskId).pmState === 'ACCEPTED');
+  // PM state becomes durable before the asynchronous stdio acknowledgement is
+  // necessarily flushed. Wait for the response contract we assert below before
+  // stopping the fixture, rather than racing bridge shutdown against writeLine.
+  await waitFor('t accept response', () => readRecords(recA).some((r) =>
+    r.event === 'judgment-response'
+      && r.message?.type === 'PM_JUDGMENT_APPLIED'
+      && r.message?.status === 'APPLIED'
+      && r.message?.deliveryId === DA2,
+  ));
   await ba.stop();
   delete process.env.FAKE_HOST_RECORD_FILE;
   delete process.env.FAKE_HOST_MODE;
@@ -388,6 +397,12 @@ console.log('\n-- T: bridge judgment --');
   await waitFor('t changes', () => {
     try { return pmJud.getPmJudgment(TEST_ROOT, project, `PMJ-${DC2}`).status === 'APPLIED'; } catch { return false; }
   });
+  await waitFor('t changes response', () => readRecords(recC).some((r) =>
+    r.event === 'judgment-response'
+      && r.message?.type === 'PM_JUDGMENT_APPLIED'
+      && r.message?.status === 'APPLIED'
+      && r.message?.deliveryId === DC2,
+  ));
   await bc.stop();
   delete process.env.FAKE_HOST_RECORD_FILE;
   delete process.env.FAKE_HOST_MODE;
