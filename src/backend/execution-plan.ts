@@ -32,6 +32,7 @@ export {
 
 const PLAN_ID_RE = /^PLAN-(\d+)$/;
 const FINGERPRINT_RE = /^[a-f0-9]{64}$/;
+const TASK_SCOPE_FINGERPRINT_RE = /^(?:sha256:)?[a-f0-9]{64}$/;
 const TERMINAL_STATES = new Set<ExecutionPlanState>(['COMPLETED', 'FAILED', 'CANCELLED']);
 const TRANSITIONS: Readonly<Record<ExecutionPlanState, readonly ExecutionPlanState[]>> = {
   PLANNED: ['RUNNING'],
@@ -184,6 +185,19 @@ function requireFingerprint(value: unknown, field: string): string {
   return fingerprint;
 }
 
+/**
+ * V1 Task scope fingerprints are canonical `sha256:<hex>` values. Slice 1
+ * accepted bare hashes for generic Plan fixtures; retain that compatibility,
+ * but never force a second fingerprint representation for V1 dispatch.
+ */
+function requireTaskScopeFingerprint(value: unknown, field: string): string {
+  const fingerprint = requireNonEmpty(value, field, 128);
+  if (!TASK_SCOPE_FINGERPRINT_RE.test(fingerprint)) {
+    throw new ExecutionPlanError('INVALID_ARGUMENT', `${field} must be a canonical Task scope fingerprint.`);
+  }
+  return fingerprint;
+}
+
 function normalizeBinding(value: ExecutionPlanTaskBinding): ExecutionPlanTaskBinding {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ExecutionPlanError('INVALID_ARGUMENT', 'taskBinding must be an object.');
@@ -194,7 +208,7 @@ function normalizeBinding(value: ExecutionPlanTaskBinding): ExecutionPlanTaskBin
   if (workspaceRoot.includes('\0') || !path.isAbsolute(workspaceRoot)) {
     throw new ExecutionPlanError('INVALID_ARGUMENT', 'taskBinding.workspaceRoot must be an absolute NUL-free path.');
   }
-  return { taskId, workerId, workspaceRoot, scopeFingerprint: requireFingerprint(value.scopeFingerprint, 'taskBinding.scopeFingerprint') };
+  return { taskId, workerId, workspaceRoot, scopeFingerprint: requireTaskScopeFingerprint(value.scopeFingerprint, 'taskBinding.scopeFingerprint') };
 }
 
 /** Deterministic frozen definition hash. Do not include lifecycle fields. */
@@ -240,7 +254,7 @@ function validateAuthorization(record: ExecutionPlanRecord, authorization: Execu
   }
   const bindings = new Map(record.taskBindings.map((binding) => [binding.taskId, binding]));
   for (const taskId of record.orderedTaskIds) {
-    if (requireFingerprint(authorization.taskScopeFingerprints[taskId], `ownerAuthorization.taskScopeFingerprints.${taskId}`) !== bindings.get(taskId)?.scopeFingerprint) {
+    if (requireTaskScopeFingerprint(authorization.taskScopeFingerprints[taskId], `ownerAuthorization.taskScopeFingerprints.${taskId}`) !== bindings.get(taskId)?.scopeFingerprint) {
       throw new ExecutionPlanError('INVALID_STATE', `ownerAuthorization fingerprint does not match binding for ${taskId}.`);
     }
   }
@@ -448,7 +462,7 @@ function immutableAuthorization(input: ExecutionPlanAuthorization): ExecutionPla
     approvedAt: requireIso(input.approvedAt, 'ownerAuthorization.approvedAt'),
     approvedBy: 'OWNER',
     planScopeFingerprint: requireFingerprint(input.planScopeFingerprint, 'ownerAuthorization.planScopeFingerprint'),
-    taskScopeFingerprints: Object.fromEntries(Object.entries(input.taskScopeFingerprints ?? {}).map(([taskId, fingerprint]) => [taskId, requireFingerprint(fingerprint, `ownerAuthorization.taskScopeFingerprints.${taskId}`)])),
+    taskScopeFingerprints: Object.fromEntries(Object.entries(input.taskScopeFingerprints ?? {}).map(([taskId, fingerprint]) => [taskId, requireTaskScopeFingerprint(fingerprint, `ownerAuthorization.taskScopeFingerprints.${taskId}`)])),
   };
 }
 
