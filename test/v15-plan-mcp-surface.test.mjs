@@ -92,7 +92,6 @@ function bindingsFor(tasks, workspace) {
     taskId: task.taskId,
     workerId: 'v15-s5-worker',
     workspaceRoot: workspace,
-    scopeFingerprint: retryAuth.computeTaskScopeFingerprint(task),
   }));
 }
 
@@ -144,6 +143,15 @@ console.log('\n-- create plan validation --');
   const ok = await createPlanViaMcp('valid-create');
   check(ok.created.planId && ok.created.state === 'PLANNED' && ok.created.activeTaskId === null, '1 create valid 3-Task Plan through MCP');
   const tasks = ok.tasks;
+  const persisted = plans.getExecutionPlan(ROOT, project, ok.created.planId);
+  check(
+    persisted.taskBindings.every((binding) => binding.scopeFingerprint === retryAuth.computeTaskScopeFingerprint(tasks.find((task) => task.taskId === binding.taskId))),
+    '1 authoritative Task fingerprints are server-derived and frozen into the persisted Plan',
+  );
+  check(
+    plans.computeExecutionPlanScopeFingerprint(persisted) === plans.computeExecutionPlanScopeFingerprint(plans.getExecutionPlan(ROOT, project, ok.created.planId)),
+    '1 frozen Plan authorization fingerprint is stable after creation',
+  );
   await shouldThrow(
     () => get('relay_pm_create_execution_plan').handler({
       title: 'dup',
@@ -164,13 +172,12 @@ console.log('\n-- create plan validation --');
   );
   await shouldThrow(
     () => get('relay_pm_create_execution_plan').handler({
-      title: 'inject-fingerprint',
+      title: 'inject-task-fingerprint',
       orderedTaskIds: tasks.map((task) => task.taskId),
-      taskBindings: bindingsFor(tasks, ok.workspace),
-      planScopeFingerprint: '0'.repeat(64),
+      taskBindings: bindingsFor(tasks, ok.workspace).map((binding) => ({ ...binding, scopeFingerprint: `sha256:${'0'.repeat(64)}` })),
     }),
-    '4 caller cannot inject Plan fingerprint',
-    '허용되지 않은 인자',
+    '4 caller-supplied Task fingerprint is rejected as an unexpected property',
+    'taskBindings[].scopeFingerprint',
   );
   await shouldThrow(
     () => get('relay_pm_create_execution_plan').handler({
@@ -183,6 +190,17 @@ console.log('\n-- create plan validation --');
     '5 caller cannot set activeTaskId/state',
     '허용되지 않은 인자',
   );
+
+  gt.updateTask(ROOT, project, tasks[0].taskId, { scope: 'mutated after Plan freeze' });
+  await shouldThrow(
+    () => get('relay_pm_dispatch_execution_plan_owner_approved').handler({
+      planId: ok.created.planId,
+      expectedPlanState: 'PLANNED',
+    }),
+    '5b Task scope mutation after Plan creation fails Owner GO closed',
+    'scope fingerprint',
+  );
+  check(plans.getExecutionPlan(ROOT, project, ok.created.planId).state === 'PLANNED', '5b failed GO does not regenerate the frozen Plan authorization');
 }
 
 console.log('\n-- Plan GO + get + reconcile bounds --');
@@ -345,6 +363,14 @@ console.log('\n-- V1 single-Task MCP path + fail-closed bounds --');
       `19 ${name} has strict bounded schema`,
     );
   }
+  const createSchema = get('relay_pm_create_execution_plan').inputSchema;
+  const bindingSchema = createSchema.properties.taskBindings.items;
+  check(
+    bindingSchema.additionalProperties === false
+      && !Object.hasOwn(bindingSchema.properties, 'scopeFingerprint')
+      && bindingSchema.required.join(',') === 'taskId,workerId,workspaceRoot',
+    '19 Plan-create binding schema excludes caller scopeFingerprint and remains strict',
+  );
   check(!tools.some((tool) => /relay_plan_accept|relay_plan_changes|relay_plan_review/.test(tool.name)), '19 no Plan-specific judgment path added');
   check(baselineNames.includes('relay_pm_create_task') && baselineNames.includes('relay_pm_submit_judgment'), '19 existing V1 tools retained');
 }

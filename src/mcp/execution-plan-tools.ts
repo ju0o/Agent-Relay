@@ -53,23 +53,26 @@ function requireStringArray(args: Record<string, unknown>, name: string): string
   return value.map((item) => (item as string).trim());
 }
 
-function requireTaskBindings(args: Record<string, unknown>): ExecutionPlanTaskBinding[] {
+/** Public MCP input deliberately excludes the internal frozen fingerprint. */
+type CreatePlanTaskBindingInput = Omit<ExecutionPlanTaskBinding, 'scopeFingerprint'>;
+
+function requireTaskBindings(args: Record<string, unknown>): CreatePlanTaskBindingInput[] {
   const value = args.taskBindings;
   if (!Array.isArray(value) || value.length === 0) {
     throw new McpError('INVALID_ARGUMENT', '필수 인자 누락 또는 형식 오류: taskBindings');
   }
-  const bindings: ExecutionPlanTaskBinding[] = [];
+  const bindings: CreatePlanTaskBindingInput[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       throw new McpError('INVALID_ARGUMENT', 'taskBindings[] must be objects.');
     }
     const entry = raw as Record<string, unknown>;
     for (const key of Object.keys(entry)) {
-      if (!['taskId', 'workerId', 'workspaceRoot', 'scopeFingerprint'].includes(key)) {
+      if (!['taskId', 'workerId', 'workspaceRoot'].includes(key)) {
         throw new McpError('INVALID_ARGUMENT', `허용되지 않은 인자: taskBindings[].${key}`);
       }
     }
-    for (const required of ['taskId', 'workerId', 'workspaceRoot', 'scopeFingerprint'] as const) {
+    for (const required of ['taskId', 'workerId', 'workspaceRoot'] as const) {
       if (typeof entry[required] !== 'string' || !(entry[required] as string).trim()) {
         throw new McpError('INVALID_ARGUMENT', `필수 인자 누락 또는 형식 오류: taskBindings[].${required}`);
       }
@@ -78,7 +81,6 @@ function requireTaskBindings(args: Record<string, unknown>): ExecutionPlanTaskBi
       taskId: (entry.taskId as string).trim(),
       workerId: (entry.workerId as string).trim(),
       workspaceRoot: (entry.workspaceRoot as string).trim(),
-      scopeFingerprint: (entry.scopeFingerprint as string).trim(),
     });
   }
   return bindings;
@@ -88,7 +90,7 @@ function assertTaskAvailableForPlan(
   dataRoot: string,
   project: string,
   taskId: string,
-  binding: ExecutionPlanTaskBinding,
+  binding: CreatePlanTaskBindingInput,
 ): TaskRecord {
   let task: TaskRecord;
   try {
@@ -104,10 +106,6 @@ function assertTaskAvailableForPlan(
   }
   if (task.linkedRuns.length !== 0) {
     throw new McpError('CONFLICT', `Plan Task already has a Run and cannot be frozen: ${taskId}`);
-  }
-  const liveFingerprint = computeTaskScopeFingerprint(task);
-  if (binding.scopeFingerprint !== liveFingerprint) {
-    throw new McpError('INVALID_STATE', `Task scope fingerprint does not match authoritative Task content: ${taskId}`);
   }
   try {
     loadWorkerRegistryRecord(dataRoot, binding.workerId);
@@ -225,8 +223,8 @@ export function buildExecutionPlanWriteTools(ctx: PmServerContext): McpTool[] {
       name: 'relay_pm_create_execution_plan',
       description:
         'V1.5: create ONE frozen sequential ExecutionPlan from ALREADY EXISTING Tasks. ' +
-        'Caller supplies title, orderedTaskIds, and taskBindings (taskId/workerId/workspaceRoot/scopeFingerprint). ' +
-        'Server validates authoritative Task state/content, Worker registry, and workspace. ' +
+        'Caller supplies title, orderedTaskIds, and taskBindings (taskId/workerId/workspaceRoot). ' +
+        'Server validates authoritative Task state/content, Worker registry, and workspace, then derives and freezes each internal Task scope fingerprint. ' +
         'Does NOT accept Plan state, activeTaskId, authorization fingerprints, timestamps, or out-of-plan bindings. ' +
         'Does NOT dispatch. Owner GO is a separate tool.',
       inputSchema: objectSchema(
@@ -241,9 +239,8 @@ export function buildExecutionPlanWriteTools(ctx: PmServerContext): McpTool[] {
                 taskId: { type: 'string' },
                 workerId: { type: 'string' },
                 workspaceRoot: { type: 'string' },
-                scopeFingerprint: { type: 'string' },
               },
-              ['taskId', 'workerId', 'workspaceRoot', 'scopeFingerprint'],
+              ['taskId', 'workerId', 'workspaceRoot'],
             ),
           },
         },
@@ -253,33 +250,37 @@ export function buildExecutionPlanWriteTools(ctx: PmServerContext): McpTool[] {
         rejectUnknownFields(args, ['title', 'orderedTaskIds', 'taskBindings']);
         const title = requireString(args, 'title');
         const orderedTaskIds = requireStringArray(args, 'orderedTaskIds');
-        const taskBindings = requireTaskBindings(args);
+        const requestedBindings = requireTaskBindings(args);
         if (new Set(orderedTaskIds).size !== orderedTaskIds.length) {
           throw new McpError('INVALID_ARGUMENT', 'orderedTaskIds must not contain duplicates.');
         }
-        if (taskBindings.length !== orderedTaskIds.length) {
+        if (requestedBindings.length !== orderedTaskIds.length) {
           throw new McpError('INVALID_ARGUMENT', 'Each ordered Task must have exactly one binding.');
         }
-        const bindingIds = taskBindings.map((binding) => binding.taskId);
+        const bindingIds = requestedBindings.map((binding) => binding.taskId);
         if (new Set(bindingIds).size !== bindingIds.length) {
           throw new McpError('INVALID_ARGUMENT', 'taskBindings must not contain duplicate taskId values.');
         }
         for (const taskId of orderedTaskIds) {
-          const binding = taskBindings.find((candidate) => candidate.taskId === taskId);
+          const binding = requestedBindings.find((candidate) => candidate.taskId === taskId);
           if (!binding) {
             throw new McpError('INVALID_ARGUMENT', `Missing binding for ordered Task: ${taskId}`);
           }
         }
-        for (const binding of taskBindings) {
+        for (const binding of requestedBindings) {
           if (!orderedTaskIds.includes(binding.taskId)) {
             throw new McpError('INVALID_ARGUMENT', `Out-of-plan binding rejected: ${binding.taskId}`);
           }
         }
         assertTasksNotInActivePlan(dataRoot, project, orderedTaskIds);
-        for (const taskId of orderedTaskIds) {
-          const binding = taskBindings.find((candidate) => candidate.taskId === taskId)!;
-          assertTaskAvailableForPlan(dataRoot, project, taskId, binding);
-        }
+        const taskBindings: ExecutionPlanTaskBinding[] = orderedTaskIds.map((taskId) => {
+          const binding = requestedBindings.find((candidate) => candidate.taskId === taskId)!;
+          const task = assertTaskAvailableForPlan(dataRoot, project, taskId, binding);
+          // This is the sole public-to-kernel bridge for scope integrity. The
+          // caller never supplies this value, so only authoritative Task data
+          // can be frozen into the immutable ExecutionPlan binding.
+          return { ...binding, scopeFingerprint: computeTaskScopeFingerprint(task) };
+        });
         try {
           const plan = await createExecutionPlan(dataRoot, project, {
             title,
