@@ -17,6 +17,7 @@ export type PermissionEffect =
   | 'ORPHAN_KEEP_WAITING'
   | 'ORPHAN_CONFIRM_FAILED'
   | 'ORPHAN_CONFIRM_CANCELLED'
+  | 'RECOVER_COMPLETED_RUN'
   | 'ACCEPT_RESULT'
   | 'REQUEST_CHANGES'
   | 'REQUEST_RETRY'
@@ -113,6 +114,12 @@ export function evaluateEffect(input: AuthorizeEffectInput): AuthorizeEffectResu
 
   if (effect === 'ORPHAN_KEEP_WAITING') {
     // PM allowed all modes; Owner allowed all modes.
+    return { allowed: true, effect, callerSurface, mode };
+  }
+
+  if (effect === 'RECOVER_COMPLETED_RUN') {
+    // Fact-reconciliation of an already-completed Worker Run, not a new
+    // judgment or dispatch decision — PM allowed all modes; Owner allowed all modes.
     return { allowed: true, effect, callerSurface, mode };
   }
 

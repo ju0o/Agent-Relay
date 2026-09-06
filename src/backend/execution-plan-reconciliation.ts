@@ -119,7 +119,9 @@ function hasAmbiguousUnlinkedRunCandidate(
  * Revalidate frozen Owner authorization before any cursor repair or dispatch.
  * Authorization mismatch is never silently repaired.
  */
-function revalidatePlanAuthorization(plan: ExecutionPlanRecord): { ok: true } | { ok: false; reason: string } {
+/** Exported for reuse by completed-run recovery, which must revalidate Plan
+ *  authorization for any Plan-owned Task before promoting a forensic capture. */
+export function revalidatePlanAuthorization(plan: ExecutionPlanRecord): { ok: true } | { ok: false; reason: string } {
   if (!plan.ownerAuthorization) {
     return { ok: false, reason: 'RUNNING Plan is missing ownerAuthorization evidence.' };
   }

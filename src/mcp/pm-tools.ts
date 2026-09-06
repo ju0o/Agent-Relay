@@ -27,6 +27,7 @@ import * as pmJudgment from '../backend/pm-judgment.js';
 import * as retryPreparation from '../backend/retry-preparation.js';
 import * as retryDispatch from '../backend/retry-dispatch.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
+import * as completedRunRecovery from '../backend/completed-run-recovery.js';
 import * as taskActions from '../backend/task-actions.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
 import type { GoalStatus, EventDeliveryStatus } from '../shared/types.js';
@@ -844,6 +845,36 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
               ? requireEnum(args, 'expectedExecutionState', ['DISPATCHED', 'RUNNING'] as const)
               : undefined,
             reason: optionalString(args, 'reason'),
+          });
+        } catch (err) {
+          mapPermissionError(err);
+        }
+      },
+    },
+    {
+      name: 'relay_pm_recover_completed_run',
+      description:
+        'V1.5 Blocker Hotfix 02: recover a Run that completed successfully (Worker exit 0, ' +
+        'durable terminal transcript boundary) while no live capture watch observed it, and ' +
+        'promote it through the SAME canonical Result Bridge path a live observation would ' +
+        'have used. Input is taskId + runId only — every other fact (transcript identity, ' +
+        'workspace, exit status, Plan authorization) is derived canonically; the caller cannot ' +
+        'supply transcript paths, result text, a delivery ID, or a desired Task state. ' +
+        'Never replays the Worker. Idempotent: a second call on an already-recovered Run is a ' +
+        'bounded no-op. Fails closed (BLOCKED/REJECTED) on any ambiguity.',
+      inputSchema: objectSchema(
+        { taskId: { type: 'string' }, runId: { type: 'string' } },
+        ['taskId', 'runId'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['taskId', 'runId']);
+        try {
+          return await completedRunRecovery.recoverCompletedRunCapture({
+            dataRoot,
+            project,
+            taskId: requireString(args, 'taskId'),
+            runId: requireString(args, 'runId'),
+            callerSurface: 'PM_MCP',
           });
         } catch (err) {
           mapPermissionError(err);

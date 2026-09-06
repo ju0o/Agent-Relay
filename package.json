@@ -72,6 +72,7 @@
     "test:v15-plan-reconciliation": "node test/v15-plan-reconciliation.test.mjs",
     "test:v15-plan-mcp-surface": "node test/v15-plan-mcp-surface.test.mjs",
     "test:v15-slice6-dogfood-ready": "node test/v15-slice6-dogfood-ready.test.mjs",
+    "test:completed-run-recovery": "node test/completed-run-recovery.test.mjs",
     "mcp:app": "node dist/server/mcp/app-server-main.js",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
     "cli": "node dist/server/cli/index.js",
