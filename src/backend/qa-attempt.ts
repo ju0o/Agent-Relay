@@ -101,6 +101,15 @@ export interface QaDeterministicCheckResult {
   /** Attributes this check to one AC id for failedCriteria/BOTH-coverage
    * reporting; absent for a bare infrastructure/scope guard (§6). */
   criterionId?: string;
+  /** Slice 2 additive: wall-clock duration of this check, when meaningful
+   * (e.g. `command`). Never validated/required — old checks without it
+   * remain valid. */
+  durationMs?: number;
+  /** Slice 2 additive: bounded, non-secret supporting evidence (hashes,
+   * exit codes, truncated/bounded output, byte lengths) — never full file
+   * contents, unbounded process output, or environment dumps. See
+   * qa-deterministic-evaluator.ts for the per-kind bounding rules. */
+  evidence?: Record<string, unknown>;
 }
 
 export interface QaDeterministicEvidence {
