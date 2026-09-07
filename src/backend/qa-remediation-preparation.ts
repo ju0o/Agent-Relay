@@ -70,7 +70,15 @@ export interface QaRemediationPreparationRecord {
 }
 
 export class QaRemediationPreparationError extends Error {
-  readonly code: 'NOT_FOUND' | 'CONFLICT' | 'INVALID_STATE' | 'INVALID_ARGUMENT';
+  /**
+   * NOT_FOUND: the preparation folder genuinely does not exist. CORRUPT_RECORD:
+   * preparation.json exists but its persisted state is not a valid
+   * QaRemediationPreparationRecord (malformed JSON, schema-invalid,
+   * identity-mismatched) — never collapsed into NOT_FOUND, never silently
+   * repaired/deleted/recreated (correction 01; mirrors qa-attempt.ts's
+   * QaAttemptError CORRUPT_RECORD exactly).
+   */
+  readonly code: 'NOT_FOUND' | 'CONFLICT' | 'INVALID_STATE' | 'INVALID_ARGUMENT' | 'CORRUPT_RECORD';
   constructor(code: QaRemediationPreparationError['code'], message: string) {
     super(message);
     this.name = 'QaRemediationPreparationError';
@@ -238,27 +246,55 @@ function persistQaRemediationPreparationRecord(folder: string, record: QaRemedia
   }
 }
 
-function readQaRemediationPreparationRecord(
+/**
+ * Correction 01: raw tri-state read, mirroring qa-attempt.ts's
+ * readQaAttemptRecordRaw exactly — 'absent' (never created) vs. 'corrupt'
+ * (persisted state exists but is invalid/impossible) are never conflated.
+ */
+type QaRemediationPreparationRawRead =
+  | { kind: 'absent' }
+  | { kind: 'corrupt'; reason: string }
+  | { kind: 'ok'; record: QaRemediationPreparationRecord };
+
+function readQaRemediationPreparationRecordRaw(
   dataRoot: string,
   project: string,
   preparationId: string,
-): QaRemediationPreparationRecord | null {
-  if (!QA_REMEDIATION_PREPARATION_ID_RE.test(preparationId)) return null;
+): QaRemediationPreparationRawRead {
+  if (!QA_REMEDIATION_PREPARATION_ID_RE.test(preparationId)) return { kind: 'absent' };
+  const jsonPath = preparationJsonPath(qaRemediationPreparationFolder(dataRoot, project, preparationId));
+  let text: string;
+  try {
+    text = fs.readFileSync(jsonPath, 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
+    return { kind: 'corrupt', reason: `preparation.json을 읽을 수 없습니다: ${err instanceof Error ? err.message : String(err)}` };
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(
-      fs.readFileSync(preparationJsonPath(qaRemediationPreparationFolder(dataRoot, project, preparationId)), 'utf8'),
-    );
-  } catch {
-    return null;
+    raw = JSON.parse(text);
+  } catch (err) {
+    return { kind: 'corrupt', reason: `preparation.json이 유효한 JSON이 아닙니다: ${err instanceof Error ? err.message : String(err)}` };
   }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { kind: 'corrupt', reason: 'preparation.json 최상위 값이 JSON 객체가 아닙니다.' };
+  }
   try {
     const record = raw as QaRemediationPreparationRecord;
     validateQaRemediationPreparationRecord(record);
-    return record;
-  } catch {
-    return null;
+    return { kind: 'ok', record };
+  } catch (err) {
+    return { kind: 'corrupt', reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function throwIfCorrupt(result: QaRemediationPreparationRawRead, preparationId: string): void {
+  if (result.kind === 'corrupt') {
+    throw new QaRemediationPreparationError(
+      'CORRUPT_RECORD',
+      `QA Remediation Preparation ${preparationId}의 영구 저장 상태가 손상되었습니다 (자동 복구/삭제/재생성 금지): ${result.reason}`,
+    );
   }
 }
 
@@ -269,22 +305,25 @@ export function getQaRemediationPreparation(
   project: string,
   preparationId: string,
 ): QaRemediationPreparationRecord {
-  const record = readQaRemediationPreparationRecord(dataRoot, project, preparationId);
-  if (!record) {
+  const result = readQaRemediationPreparationRecordRaw(dataRoot, project, preparationId);
+  if (result.kind === 'absent') {
     throw new QaRemediationPreparationError('NOT_FOUND', `QA Remediation Preparation을 찾을 수 없습니다: ${preparationId}`);
   }
-  return record;
+  throwIfCorrupt(result, preparationId);
+  return (result as { kind: 'ok'; record: QaRemediationPreparationRecord }).record;
 }
 
-/** List all preparation records (malformed siblings skipped deterministically). */
+/** List all preparation records (corrupt siblings skipped deterministically —
+ * a directory scan must not fail wholesale over one bad sibling; this never
+ * mints or repairs anything, it only omits the corrupt entry). */
 export function listQaRemediationPreparations(dataRoot: string, project: string): QaRemediationPreparationRecord[] {
   const dir = qaRemediationPreparationsDir(dataRoot, project);
   if (!fs.existsSync(dir)) return [];
   const out: QaRemediationPreparationRecord[] = [];
   for (const name of fs.readdirSync(dir)) {
     if (!QA_REMEDIATION_PREPARATION_ID_RE.test(name)) continue;
-    const record = readQaRemediationPreparationRecord(dataRoot, project, name);
-    if (record) out.push(record);
+    const result = readQaRemediationPreparationRecordRaw(dataRoot, project, name);
+    if (result.kind === 'ok') out.push(result.record);
   }
   out.sort((a, b) => a.preparationId.localeCompare(b.preparationId));
   return out;
@@ -333,8 +372,12 @@ export function createQaRemediationPreparation(
 
   return withQaRemediationPrepLock(dataRoot, project, preparationId, (): QaRemediationPreparationRecord => {
     const folder = qaRemediationPreparationFolder(dataRoot, project, preparationId);
-    const existing = readQaRemediationPreparationRecord(dataRoot, project, preparationId);
-    if (existing) {
+    const existingResult = readQaRemediationPreparationRecordRaw(dataRoot, project, preparationId);
+    // Correction 01: never recreate over a corrupt existing record — that
+    // would be exactly the silent repair this correction forbids.
+    throwIfCorrupt(existingResult, preparationId);
+    if (existingResult.kind === 'ok') {
+      const existing = existingResult.record;
       const sameIdentity =
         existing.taskId === taskId
         && existing.sourceRunId === sourceRunId

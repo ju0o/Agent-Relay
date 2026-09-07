@@ -230,17 +230,68 @@ console.log('-- 12) completed record resurrection rejected --');
   );
 }
 
-console.log('-- 13) malformed persisted QA record rejected --');
+console.log('-- 13) malformed persisted QA record rejected (correction 01: NOT_FOUND vs CORRUPT_RECORD) --');
 {
-  const taskId = nextTaskId();
-  const rec = await qa.createQaAttempt(ROOT, project, { taskId, runId: 'run-1', qaAttemptNumber: 1 });
-  const folder = qa.qaAttemptFolder(ROOT, project, rec.qaAttemptId);
-  fs.writeFileSync(path.join(folder, 'qa.json'), '{ not valid json', 'utf8');
+  // 13a: genuinely absent → NOT_FOUND.
+  const absentId = qa.qaAttemptIdFor(nextTaskId(), 'run-1');
   await throwsWithCode(
-    () => Promise.resolve(qa.getQaAttempt(ROOT, project, rec.qaAttemptId)),
+    () => Promise.resolve(qa.getQaAttempt(ROOT, project, absentId)),
     'NOT_FOUND',
-    '13a malformed JSON fails closed as NOT_FOUND, never partially trusted',
+    '13a absent qa.json → NOT_FOUND',
   );
+
+  // 13b: malformed JSON → explicit corruption failure, never NOT_FOUND.
+  {
+    const taskId = nextTaskId();
+    const rec = await qa.createQaAttempt(ROOT, project, { taskId, runId: 'run-1', qaAttemptNumber: 1 });
+    const folder = qa.qaAttemptFolder(ROOT, project, rec.qaAttemptId);
+    fs.writeFileSync(path.join(folder, 'qa.json'), '{ not valid json', 'utf8');
+    await throwsWithCode(
+      () => Promise.resolve(qa.getQaAttempt(ROOT, project, rec.qaAttemptId)),
+      'CORRUPT_RECORD',
+      '13b malformed JSON is a distinct corruption failure, never collapsed into NOT_FOUND',
+    );
+    // 13b-ii: idempotent create must never recreate/repair over the corruption.
+    await throwsWithCode(
+      () => qa.createQaAttempt(ROOT, project, { taskId, runId: 'run-1', qaAttemptNumber: 1 }),
+      'CORRUPT_RECORD',
+      '13b-ii createQaAttempt refuses to recreate over a corrupt record',
+    );
+    const stillCorrupt = fs.readFileSync(path.join(folder, 'qa.json'), 'utf8');
+    check(stillCorrupt === '{ not valid json', '13b-iii corrupt qa.json left byte-for-byte untouched (no silent repair)');
+  }
+
+  // 13c: schema-invalid JSON (valid JSON, invalid QaAttemptRecord shape) → corruption.
+  {
+    const taskId = nextTaskId();
+    const rec = await qa.createQaAttempt(ROOT, project, { taskId, runId: 'run-1', qaAttemptNumber: 1 });
+    const folder = qa.qaAttemptFolder(ROOT, project, rec.qaAttemptId);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(folder, 'qa.json'), 'utf8'));
+    onDisk.finalQaStatus = 'NOT_A_REAL_STATUS';
+    fs.writeFileSync(path.join(folder, 'qa.json'), JSON.stringify(onDisk), 'utf8');
+    await throwsWithCode(
+      () => Promise.resolve(qa.getQaAttempt(ROOT, project, rec.qaAttemptId)),
+      'CORRUPT_RECORD',
+      '13c schema-invalid finalQaStatus → CORRUPT_RECORD',
+    );
+  }
+
+  // 13d: identity-mismatched JSON (taskId inside the record doesn't match
+  // the qaAttemptId it's stored under) → corruption.
+  {
+    const taskId = nextTaskId();
+    const otherTaskId = nextTaskId();
+    const rec = await qa.createQaAttempt(ROOT, project, { taskId, runId: 'run-1', qaAttemptNumber: 1 });
+    const folder = qa.qaAttemptFolder(ROOT, project, rec.qaAttemptId);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(folder, 'qa.json'), 'utf8'));
+    onDisk.taskId = otherTaskId; // qaAttemptId string itself left unchanged
+    fs.writeFileSync(path.join(folder, 'qa.json'), JSON.stringify(onDisk), 'utf8');
+    await throwsWithCode(
+      () => Promise.resolve(qa.getQaAttempt(ROOT, project, rec.qaAttemptId)),
+      'CORRUPT_RECORD',
+      '13d identity-mismatched taskId/qaAttemptId → CORRUPT_RECORD',
+    );
+  }
 }
 
 console.log('-- 14) duplicate identical create idempotent --');
@@ -403,6 +454,96 @@ console.log('-- 25) GPT G5 retry prep remains structurally distinct --');
   check(prep.preparationId.startsWith('QRP-QA-'), '25a QA remediation preparation id namespace (QRP-QA-…) never collides with G5 (RTP-PMJ-…)');
   check(!fs.existsSync(retryPrep.retryPreparationsDir(ROOT, project)) || fs.readdirSync(retryPrep.retryPreparationsDir(ROOT, project)).length === 0, '25b creating a QA remediation preparation never touches the G5 retry-preparations directory');
   check(retryPrep.retryPreparationIdFor, '25c G5 retry-preparation module remains independently importable/untouched');
+}
+
+console.log('-- 27) malformed persisted QA remediation preparation rejected (correction 01) --');
+{
+  // 27a: genuinely absent → NOT_FOUND.
+  const taskId0 = nextTaskId();
+  const attempt0 = await failingAttemptFixture(taskId0);
+  const absentPrepId = qrp.qaRemediationPreparationIdFor(attempt0.qaAttemptId);
+  await throwsWithCode(
+    () => Promise.resolve(qrp.getQaRemediationPreparation(ROOT, project, absentPrepId)),
+    'NOT_FOUND',
+    '27a absent preparation.json → NOT_FOUND',
+  );
+
+  // 27b: malformed JSON → explicit corruption failure, never NOT_FOUND, and
+  // never silently recreated through idempotent create.
+  {
+    const taskId = nextTaskId();
+    const attempt = await failingAttemptFixture(taskId);
+    const prep = await qrp.createQaRemediationPreparation(ROOT, project, {
+      sourceQaAttemptId: attempt.qaAttemptId, taskId, sourceRunId: attempt.runId,
+      qaRemediationNumber: 1, failedCriteria: attempt.failedCriteria,
+      remediationInstructionRef: attempt.qaAttemptId, workerId: 'claude-code',
+      workspaceRoot: path.join(ROOT, 'workspace'),
+    });
+    const folder = qrp.qaRemediationPreparationFolder(ROOT, project, prep.preparationId);
+    fs.writeFileSync(path.join(folder, 'preparation.json'), '{ not valid json', 'utf8');
+    await throwsWithCode(
+      () => Promise.resolve(qrp.getQaRemediationPreparation(ROOT, project, prep.preparationId)),
+      'CORRUPT_RECORD',
+      '27b malformed JSON is a distinct corruption failure, never collapsed into NOT_FOUND',
+    );
+    await throwsWithCode(
+      () => qrp.createQaRemediationPreparation(ROOT, project, {
+        sourceQaAttemptId: attempt.qaAttemptId, taskId, sourceRunId: attempt.runId,
+        qaRemediationNumber: 1, failedCriteria: attempt.failedCriteria,
+        remediationInstructionRef: attempt.qaAttemptId, workerId: 'claude-code',
+        workspaceRoot: path.join(ROOT, 'workspace'),
+      }),
+      'CORRUPT_RECORD',
+      '27b-ii createQaRemediationPreparation refuses to recreate over a corrupt record',
+    );
+    const stillCorrupt = fs.readFileSync(path.join(folder, 'preparation.json'), 'utf8');
+    check(stillCorrupt === '{ not valid json', '27b-iii corrupt preparation.json left byte-for-byte untouched (no silent repair)');
+  }
+
+  // 27c: schema-invalid JSON (valid JSON, invalid record shape) → corruption.
+  {
+    const taskId = nextTaskId();
+    const attempt = await failingAttemptFixture(taskId);
+    const prep = await qrp.createQaRemediationPreparation(ROOT, project, {
+      sourceQaAttemptId: attempt.qaAttemptId, taskId, sourceRunId: attempt.runId,
+      qaRemediationNumber: 1, failedCriteria: attempt.failedCriteria,
+      remediationInstructionRef: attempt.qaAttemptId, workerId: 'claude-code',
+      workspaceRoot: path.join(ROOT, 'workspace'),
+    });
+    const folder = qrp.qaRemediationPreparationFolder(ROOT, project, prep.preparationId);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(folder, 'preparation.json'), 'utf8'));
+    onDisk.status = 'NOT_A_REAL_STATUS';
+    fs.writeFileSync(path.join(folder, 'preparation.json'), JSON.stringify(onDisk), 'utf8');
+    await throwsWithCode(
+      () => Promise.resolve(qrp.getQaRemediationPreparation(ROOT, project, prep.preparationId)),
+      'CORRUPT_RECORD',
+      '27c schema-invalid status → CORRUPT_RECORD',
+    );
+  }
+
+  // 27d: identity-mismatched JSON (sourceQaAttemptId inside the record
+  // doesn't match the preparationId it's stored under) → corruption.
+  {
+    const taskId = nextTaskId();
+    const otherTaskId = nextTaskId();
+    const attempt = await failingAttemptFixture(taskId);
+    const otherAttempt = await failingAttemptFixture(otherTaskId);
+    const prep = await qrp.createQaRemediationPreparation(ROOT, project, {
+      sourceQaAttemptId: attempt.qaAttemptId, taskId, sourceRunId: attempt.runId,
+      qaRemediationNumber: 1, failedCriteria: attempt.failedCriteria,
+      remediationInstructionRef: attempt.qaAttemptId, workerId: 'claude-code',
+      workspaceRoot: path.join(ROOT, 'workspace'),
+    });
+    const folder = qrp.qaRemediationPreparationFolder(ROOT, project, prep.preparationId);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(folder, 'preparation.json'), 'utf8'));
+    onDisk.sourceQaAttemptId = otherAttempt.qaAttemptId; // preparationId string itself left unchanged
+    fs.writeFileSync(path.join(folder, 'preparation.json'), JSON.stringify(onDisk), 'utf8');
+    await throwsWithCode(
+      () => Promise.resolve(qrp.getQaRemediationPreparation(ROOT, project, prep.preparationId)),
+      'CORRUPT_RECORD',
+      '27d identity-mismatched sourceQaAttemptId/preparationId → CORRUPT_RECORD',
+    );
+  }
 }
 
 console.log('\n== BACKWARD COMPATIBILITY ==');

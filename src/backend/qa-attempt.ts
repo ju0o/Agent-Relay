@@ -31,6 +31,25 @@
  *   qa.json (SSOT) + qa.md (human mirror). Atomic JSON writes; per-attempt
  * process-local serialization for mutations — same conventions as
  * pm-delivery.ts and retry-preparation.ts.
+ *
+ * Absent vs. corrupt (correction 01): a qaAttemptId whose qa.json genuinely
+ * does not exist is NOT_FOUND. A qa.json that exists but fails to parse, is
+ * schema-invalid, or has a taskId/runId identity mismatch is a distinct
+ * CORRUPT_RECORD outcome (readQaAttemptRecordRaw below) — never collapsed
+ * into NOT_FOUND, and never silently repaired, deleted, or recreated
+ * (createQaAttempt's idempotent-replay path refuses to create over a
+ * corrupt existing record for the same reason).
+ *
+ * criteriaValidationModes (§7): the value passed into CreateQaAttemptInput
+ * is an INTERNAL materialized snapshot only, stored as-is with no
+ * derivation or verification against Task storage (this kernel never reads
+ * Task/Run records — see above). When a future slice wires QA to real Tasks
+ * (V16-QA-GATE-PLAN-01.md §22, Slice 4), that snapshot MUST be derived
+ * server-side from the authoritative frozen Task Acceptance Criteria at the
+ * moment the attempt is created — no MCP tool, Worker, or QA Agent caller
+ * may supply or override it. Slice 1 accepts it as a plain caller-supplied
+ * value ONLY because no such caller exists yet; this is not a precedent for
+ * a future trust boundary.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -136,7 +155,20 @@ export interface QaAttemptRecord {
 }
 
 export class QaAttemptError extends Error {
-  readonly code: 'NOT_FOUND' | 'CONFLICT' | 'INVALID_STATE' | 'INVALID_ARGUMENT';
+  /**
+   * NOT_FOUND: the path/folder genuinely does not exist — no such attempt
+   * was ever created (correction 01, see readQaAttemptRecordRaw below).
+   * CORRUPT_RECORD: the file exists but its persisted state is not a valid
+   * QaAttemptRecord (malformed JSON, schema-invalid, identity-mismatched,
+   * or otherwise an impossible persisted state). This is NEVER collapsed
+   * into NOT_FOUND — the two are semantically distinct outcomes that a
+   * caller (future QA/reconciliation code) must never confuse, because
+   * treating "corrupt" as "never created" could permit duplicate QA
+   * attempts or remediation preparations against a Run that already has
+   * one. A CORRUPT_RECORD is never silently repaired, deleted, or
+   * recreated by this module.
+   */
+  readonly code: 'NOT_FOUND' | 'CONFLICT' | 'INVALID_STATE' | 'INVALID_ARGUMENT' | 'CORRUPT_RECORD';
   constructor(code: QaAttemptError['code'], message: string) {
     super(message);
     this.name = 'QaAttemptError';
@@ -395,37 +427,83 @@ function persistQaAttemptRecord(folder: string, record: QaAttemptRecord): void {
   }
 }
 
-function readQaAttemptRecord(dataRoot: string, project: string, qaAttemptId: string): QaAttemptRecord | null {
-  if (!QA_ATTEMPT_ID_RE.test(qaAttemptId)) return null;
+/**
+ * Correction 01 (V1.6 Slice 1): raw tri-state read of the persisted qa.json.
+ * This is the ONLY place that touches the filesystem for a read, so every
+ * caller below (getQaAttempt, listQaAttemptsForTask, createQaAttempt's
+ * existing-record check) sees the same absent/corrupt/ok distinction and
+ * cannot accidentally collapse "corrupt" into "absent":
+ *
+ *   - 'absent': the qaAttemptId is not even shaped like one, or qa.json does
+ *     not exist (ENOENT/ENOTDIR) — genuinely never created.
+ *   - 'corrupt': qa.json exists but fails to parse as JSON, is not a JSON
+ *     object, fails validateQaAttemptRecord's schema checks, or has an
+ *     identity mismatch (qaAttemptId ≠ qaAttemptIdFor(taskId, runId)) — an
+ *     impossible/invalid persisted state. `reason` carries the underlying
+ *     validation message for diagnostics.
+ *   - 'ok': a fully valid record.
+ */
+type QaAttemptRawRead =
+  | { kind: 'absent' }
+  | { kind: 'corrupt'; reason: string }
+  | { kind: 'ok'; record: QaAttemptRecord };
+
+function readQaAttemptRecordRaw(dataRoot: string, project: string, qaAttemptId: string): QaAttemptRawRead {
+  if (!QA_ATTEMPT_ID_RE.test(qaAttemptId)) return { kind: 'absent' };
+  const jsonPath = qaAttemptJsonPath(qaAttemptFolder(dataRoot, project, qaAttemptId));
+  let text: string;
+  try {
+    text = fs.readFileSync(jsonPath, 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
+    // Exists but unreadable for some other reason (permissions, I/O) —
+    // never silently treated as "never created".
+    return { kind: 'corrupt', reason: `qa.json을 읽을 수 없습니다: ${err instanceof Error ? err.message : String(err)}` };
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(qaAttemptJsonPath(qaAttemptFolder(dataRoot, project, qaAttemptId)), 'utf8'));
-  } catch {
-    return null;
+    raw = JSON.parse(text);
+  } catch (err) {
+    return { kind: 'corrupt', reason: `qa.json이 유효한 JSON이 아닙니다: ${err instanceof Error ? err.message : String(err)}` };
   }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { kind: 'corrupt', reason: 'qa.json 최상위 값이 JSON 객체가 아닙니다.' };
+  }
   try {
     const record = raw as QaAttemptRecord;
     validateQaAttemptRecord(record);
-    return record;
-  } catch {
-    // Malformed persisted JSON fails closed — never partially trusted.
-    return null;
+    return { kind: 'ok', record };
+  } catch (err) {
+    // Schema-invalid or identity-mismatched — an impossible persisted state.
+    return { kind: 'corrupt', reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function throwIfCorrupt(result: QaAttemptRawRead, qaAttemptId: string): void {
+  if (result.kind === 'corrupt') {
+    throw new QaAttemptError(
+      'CORRUPT_RECORD',
+      `QA Attempt ${qaAttemptId}의 영구 저장 상태가 손상되었습니다 (자동 복구/삭제/재생성 금지): ${result.reason}`,
+    );
   }
 }
 
 // ── reads ────────────────────────────────────────────────────────────────────
 
 export function getQaAttempt(dataRoot: string, project: string, qaAttemptId: string): QaAttemptRecord {
-  const record = readQaAttemptRecord(dataRoot, project, qaAttemptId);
-  if (!record) {
+  const result = readQaAttemptRecordRaw(dataRoot, project, qaAttemptId);
+  if (result.kind === 'absent') {
     throw new QaAttemptError('NOT_FOUND', `QA Attempt를 찾을 수 없습니다: ${qaAttemptId}`);
   }
-  return record;
+  throwIfCorrupt(result, qaAttemptId);
+  return (result as { kind: 'ok'; record: QaAttemptRecord }).record;
 }
 
-/** List all QA attempts for one Task, ordered by qaAttemptNumber. Malformed
- * siblings are skipped deterministically, never fail the whole list. */
+/** List all QA attempts for one Task, ordered by qaAttemptNumber. Corrupt
+ * siblings are skipped deterministically (a directory scan must not fail
+ * wholesale over one bad sibling) — this never mints or repairs anything,
+ * it only omits the corrupt entry from the returned list. */
 export function listQaAttemptsForTask(dataRoot: string, project: string, taskId: string): QaAttemptRecord[] {
   const tid = requireNonEmptyString(taskId, 'taskId');
   const dir = qaAttemptsDir(dataRoot, project);
@@ -433,8 +511,8 @@ export function listQaAttemptsForTask(dataRoot: string, project: string, taskId:
   const out: QaAttemptRecord[] = [];
   for (const name of fs.readdirSync(dir)) {
     if (!QA_ATTEMPT_ID_RE.test(name)) continue;
-    const record = readQaAttemptRecord(dataRoot, project, name);
-    if (record && record.taskId === tid) out.push(record);
+    const result = readQaAttemptRecordRaw(dataRoot, project, name);
+    if (result.kind === 'ok' && result.record.taskId === tid) out.push(result.record);
   }
   out.sort((a, b) => a.qaAttemptNumber - b.qaAttemptNumber);
   return out;
@@ -471,8 +549,14 @@ export function createQaAttempt(
 
   return withQaAttemptLock(dataRoot, project, qaAttemptId, (): QaAttemptRecord => {
     const folder = qaAttemptFolder(dataRoot, project, qaAttemptId);
-    const existing = readQaAttemptRecord(dataRoot, project, qaAttemptId);
-    if (existing) {
+    const existingResult = readQaAttemptRecordRaw(dataRoot, project, qaAttemptId);
+    // Correction 01: a corrupt persisted record is never treated as absent.
+    // Recreating over it would be exactly the silent repair this correction
+    // forbids, and could let a second QA attempt be minted for a Run that
+    // already has one.
+    throwIfCorrupt(existingResult, qaAttemptId);
+    if (existingResult.kind === 'ok') {
+      const existing = existingResult.record;
       const sameIdentity =
         existing.qaAttemptNumber === input.qaAttemptNumber
         && existing.qaWorkerId === input.qaWorkerId
