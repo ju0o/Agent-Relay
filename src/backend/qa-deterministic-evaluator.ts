@@ -332,9 +332,11 @@ async function runFileExactContentCheck(
   });
 }
 
-// ── process execution (shared by `command` and `diffScope`'s git status) ──────
+// ── process execution (shared by `command`/`diffScope`'s git status, and
+// reused as-is by qa-semantic-evaluator.ts for the QA Agent's own dispatch —
+// same shell:false/timeout/bounded-capture discipline, one implementation) ──
 
-interface ProcessOutcome {
+export interface ProcessOutcome {
   exitCode: number | null;
   timedOut: boolean;
   stdout: string;
@@ -349,7 +351,7 @@ interface ProcessOutcome {
  * bounded/truncated stdout+stderr capture. Never a shell string — argv
  * elements (including shell metacharacters) are passed through literally
  * and never interpreted, globbed, piped, or redirected by a shell. */
-function runProcess(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<ProcessOutcome> {
+export function runProcess(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<ProcessOutcome> {
   return new Promise((resolve) => {
     const start = Date.now();
     let child;
@@ -644,15 +646,24 @@ function deriveFailedCriteria(checks: QaDeterministicCheckResult[]): string[] {
 
 // ── RUN / TASK VALIDATION ────────────────────────────────────────────────────
 
+export interface QaRunBinding {
+  workspaceRoot: string;
+  /** Absolute path to the implementation Run's folder — e.g. to read its
+   * result.md/agent-result.md (used by qa-semantic-evaluator.ts). */
+  runFolder: string;
+}
+
 /**
- * Resolves the authoritative workspaceRoot for this attempt's Run, failing
- * closed (never persisting anything) if the canonical binding is broken:
- * Task missing, Run not linked to that Task, no workspaceRoot bound on the
- * Run, or the Run's Result was never canonically captured (mirrors
- * completed-run-recovery.ts's own `evidence/adapter.json` existence check —
- * the same marker used there to decide a Result is durably captured).
+ * Resolves the authoritative workspaceRoot + Run folder for this attempt's
+ * Run, failing closed (never persisting anything) if the canonical binding
+ * is broken: Task missing, Run not linked to that Task, no workspaceRoot
+ * bound on the Run, or the Run's Result was never canonically captured
+ * (mirrors completed-run-recovery.ts's own `evidence/adapter.json`
+ * existence check — the same marker used there to decide a Result is
+ * durably captured). Shared by both the deterministic and semantic
+ * evaluators — the canonical-binding rule must never drift between them.
  */
-function resolveAuthoritativeWorkspaceRoot(dataRoot: string, project: string, attempt: QaAttemptRecord): string {
+export function resolveAuthoritativeRunBinding(dataRoot: string, project: string, attempt: QaAttemptRecord): QaRunBinding {
   let task;
   try {
     task = getTask(dataRoot, project, attempt.taskId);
@@ -672,10 +683,16 @@ function resolveAuthoritativeWorkspaceRoot(dataRoot: string, project: string, at
   if (!fs.existsSync(evidencePath)) {
     throw new QaDeterministicEvaluatorError('BLOCKED', `Run의 Result가 아직 canonical하게 capture되지 않았습니다: ${attempt.runId}`);
   }
-  return meta.workspaceRoot;
+  return { workspaceRoot: meta.workspaceRoot, runFolder: link.folder };
 }
 
 // ── locking (mirrors qa-attempt.ts's per-attempt lock convention) ──────────
+//
+// Exported and reused by qa-semantic-evaluator.ts under the SAME key space —
+// deterministic and semantic evaluation for one qaAttemptId must never run
+// concurrently with each other either (semantic requires deterministic
+// already PASS, so they're sequential by construction, but a shared lock
+// closes any scheduling race between the two evaluators, not just within one).
 
 const _evaluatorLocks = new Map<string, Promise<void>>();
 
@@ -683,7 +700,7 @@ function evaluatorLockKey(dataRoot: string, project: string, qaAttemptId: string
   return `${path.resolve(dataRoot)}@@${project}::${qaAttemptId}`;
 }
 
-function withEvaluatorLock<T>(dataRoot: string, project: string, qaAttemptId: string, fn: () => Promise<T>): Promise<T> {
+export function withQaEvaluatorLock<T>(dataRoot: string, project: string, qaAttemptId: string, fn: () => Promise<T>): Promise<T> {
   const key = evaluatorLockKey(dataRoot, project, qaAttemptId);
   const prev = _evaluatorLocks.get(key) ?? Promise.resolve();
   const work = prev.then(() => fn());
@@ -739,7 +756,7 @@ export function evaluateDeterministicQa(
   project: string,
   input: EvaluateDeterministicQaInput,
 ): Promise<QaDeterministicEvaluationOutcome> {
-  return withEvaluatorLock(dataRoot, project, input.qaAttemptId, async (): Promise<QaDeterministicEvaluationOutcome> => {
+  return withQaEvaluatorLock(dataRoot, project, input.qaAttemptId, async (): Promise<QaDeterministicEvaluationOutcome> => {
     // getQaAttempt propagates NOT_FOUND / CORRUPT_RECORD (correction 01)
     // untouched — this evaluator never treats a corrupt attempt as absent
     // or attempts to repair/recreate it.
@@ -749,7 +766,7 @@ export function evaluateDeterministicQa(
     }
 
     validateCheckKindsOrThrow(input.checks);
-    const workspaceRoot = resolveAuthoritativeWorkspaceRoot(dataRoot, project, attempt);
+    const { workspaceRoot } = resolveAuthoritativeRunBinding(dataRoot, project, attempt);
 
     const results: QaDeterministicCheckResult[] = [];
     for (let i = 0; i < input.checks.length; i += 1) {

@@ -74,6 +74,16 @@ export interface WorkerRegistryRecord {
    * Contains only narrowly typed configuration; never arbitrary CLI flags.
    */
   driverOptions?: WorkerDriverOptions;
+  /**
+   * V1.6 Slice 3 additive — tags this registry entry's role (§10 Q14/Q15).
+   * Absent ≡ 'implementation' (today's only meaning; every existing untagged
+   * row remains valid). A worker tagged 'qa' is eligible to be resolved as a
+   * Semantic QA Agent (qa-semantic-evaluator.ts); it is NOT thereby excluded
+   * from also being used for implementation dispatch — this is a capability
+   * tag, not a partition. A local-model or cheap-cloud QA worker later is a
+   * new registry row with role:'qa', never a code change.
+   */
+  role?: 'implementation' | 'qa';
 }
 
 /** Safe public view — never includes launchCommand / cwd / env / absolute paths. */
@@ -294,6 +304,15 @@ export function validateWorkerRegistryRecord(
     }
   }
 
+  // V1.6 Slice 3 additive: role tag (§10 Q14/Q15). Absent ≡ 'implementation'.
+  let role: 'implementation' | 'qa' | undefined;
+  if (obj.role !== undefined && obj.role !== null) {
+    if (obj.role !== 'implementation' && obj.role !== 'qa') {
+      throw new WorkerRegistryError('INVALID_ARGUMENT', `Invalid role: '${String(obj.role)}'. Allowed values: 'implementation', 'qa'.`);
+    }
+    role = obj.role;
+  }
+
   // Reject unknown fields that look like executable overrides from untrusted authors.
   const allowed = new Set([
     'schemaVersion',
@@ -305,6 +324,7 @@ export function validateWorkerRegistryRecord(
     'capabilities',
     'observationAdapterId',
     'driverOptions',
+    'role',
   ]);
   for (const key of Object.keys(obj)) {
     if (!allowed.has(key)) {
@@ -322,6 +342,7 @@ export function validateWorkerRegistryRecord(
     ...(capabilities ? { capabilities } : {}),
     ...(observationAdapterId ? { observationAdapterId } : {}),
     ...(driverOptions !== undefined ? { driverOptions } : {}),
+    ...(role !== undefined ? { role } : {}),
   };
 }
 
