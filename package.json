@@ -76,6 +76,7 @@
     "test:v16-slice1-qa-kernel": "node test/v16-slice1-qa-kernel.test.mjs",
     "test:v16-slice2-deterministic-qa": "node test/v16-slice2-deterministic-qa.test.mjs",
     "test:v16-slice3-semantic-qa": "node test/v16-slice3-semantic-qa.test.mjs",
+    "test:v16-slice4-qa-remediation": "node test/v16-slice4-qa-remediation.test.mjs",
     "mcp:app": "node dist/server/mcp/app-server-main.js",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
     "cli": "node dist/server/cli/index.js",

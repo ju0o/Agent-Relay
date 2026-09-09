@@ -286,6 +286,15 @@ export interface RunMeta {
   retryPreparationId?: string;
   /** V1-G5-C additive: PM-judged source attempt for a retry Run. */
   sourceRunId?: string;
+  /**
+   * V1.6 Slice 4 additive: QA remediation preparation that produced this
+   * Run (set only on automatic QA-remediation dispatches). Namespace-
+   * separated sibling of retryPreparationId — a Run carries exactly one of
+   * the two, never both, so QA-remediation lineage and GPT PM CHANGES-retry
+   * lineage stay durably distinguishable on disk and in meta.json (plan
+   * §11 Q5/Q7). Enables the same crash-safe adoption as G5-C.
+   */
+  qaRemediationPreparationId?: string;
 }
 
 /** Allocate a new collision-resistant runId (UUID). */
@@ -322,6 +331,9 @@ export function readRunMeta(folder: string): RunMeta {
     }
     if (typeof raw.sourceRunId === 'string' && raw.sourceRunId) {
       meta.sourceRunId = raw.sourceRunId;
+    }
+    if (typeof raw.qaRemediationPreparationId === 'string' && raw.qaRemediationPreparationId) {
+      meta.qaRemediationPreparationId = raw.qaRemediationPreparationId;
     }
     return meta;
   } catch {
@@ -367,6 +379,9 @@ export function writeRunMeta(folder: string, meta: RunMeta): void {
   }
   if (typeof meta.sourceRunId === 'string' && meta.sourceRunId) {
     out.sourceRunId = meta.sourceRunId;
+  }
+  if (typeof meta.qaRemediationPreparationId === 'string' && meta.qaRemediationPreparationId) {
+    out.qaRemediationPreparationId = meta.qaRemediationPreparationId;
   }
   const filePath = path.join(folder, 'meta.json');
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;

@@ -91,6 +91,22 @@ export interface DispatchRequest {
   ownerApprovalContext?: {
     scopeFingerprint: string;
   };
+  /**
+   * V1.6 Slice 4 trusted internal QA-remediation correlation. ONLY the QA
+   * gate backend (qa-gate.ts) may set this; it is never accepted from
+   * MCP/host/owner/PM/Worker/Adapter surfaces. When present the Dispatcher
+   * persists the correlation on the new Run meta
+   * (`qaRemediationPreparationId`, never `retryPreparationId`) and
+   * pre-writes the backend-composed remediation prompt. Mutually exclusive
+   * with retryContext/ownerApprovalContext: a dispatch is the initial owner
+   * dispatch, a G5 CHANGES retry, or a QA remediation — never two at once,
+   * so the two retry lineages stay durably distinct.
+   */
+  qaRemediationContext?: {
+    preparationId: string;
+    sourceRunId: string;
+    prompt: string;
+  };
 }
 
 export interface DispatchResult {
@@ -623,10 +639,16 @@ export async function dispatchTask(
   const workspaceRoot = validateWorkspaceRoot(request?.workspaceRoot);
 
   // V1-G5-C: trusted internal retry correlation (never from external callers).
+  // V1.6 Slice 4: trusted internal QA-remediation correlation (same posture).
   const retryContext = request?.retryContext;
   const ownerApprovalContext = request?.ownerApprovalContext;
-  if (retryContext !== undefined && ownerApprovalContext !== undefined) {
-    throw new DispatcherError('INVALID_ARGUMENT', 'retryContext and ownerApprovalContext are mutually exclusive.');
+  const qaRemediationContext = request?.qaRemediationContext;
+  const correlationCount = [retryContext, ownerApprovalContext, qaRemediationContext].filter((c) => c !== undefined).length;
+  if (correlationCount > 1) {
+    throw new DispatcherError(
+      'INVALID_ARGUMENT',
+      'retryContext, ownerApprovalContext, and qaRemediationContext are mutually exclusive.',
+    );
   }
   if (retryContext !== undefined) {
     if (!retryContext || typeof retryContext !== 'object') {
@@ -658,6 +680,29 @@ export async function dispatchTask(
     const fp = ownerApprovalContext.scopeFingerprint;
     if (typeof fp !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(fp)) {
       throw new DispatcherError('INVALID_ARGUMENT', `잘못된 ownerApprovedScopeFingerprint: ${String(fp)}`);
+    }
+  }
+  if (qaRemediationContext !== undefined) {
+    if (!qaRemediationContext || typeof qaRemediationContext !== 'object') {
+      throw new DispatcherError('INVALID_ARGUMENT', 'qaRemediationContext must be an object.');
+    }
+    if (
+      typeof qaRemediationContext.preparationId !== 'string'
+      || !/^QRP-QA-TASK-\d+-[A-Za-z0-9._-]+$/.test(qaRemediationContext.preparationId)
+    ) {
+      throw new DispatcherError(
+        'INVALID_ARGUMENT',
+        `잘못된 QA remediation preparationId: ${String(qaRemediationContext.preparationId)}`,
+      );
+    }
+    if (typeof qaRemediationContext.sourceRunId !== 'string' || !qaRemediationContext.sourceRunId) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'qaRemediationContext.sourceRunId가 필요합니다.');
+    }
+    if (typeof qaRemediationContext.prompt !== 'string' || !qaRemediationContext.prompt) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'qaRemediationContext.prompt가 필요합니다.');
+    }
+    if (Buffer.byteLength(qaRemediationContext.prompt, 'utf8') > 16 * 1024) {
+      throw new DispatcherError('INVALID_ARGUMENT', 'qaRemediationContext.prompt exceeds the 16 KiB Worker prompt cap.');
     }
   }
 
@@ -791,6 +836,9 @@ export async function dispatchTask(
       ...(retryContext
         ? { retryPreparationId: retryContext.preparationId, sourceRunId: retryContext.sourceRunId }
         : {}),
+      ...(qaRemediationContext
+        ? { qaRemediationPreparationId: qaRemediationContext.preparationId, sourceRunId: qaRemediationContext.sourceRunId }
+        : {}),
       ...(ownerApprovalContext
         ? { ownerApprovedScopeFingerprint: ownerApprovalContext.scopeFingerprint }
         : {}),
@@ -840,6 +888,46 @@ export async function dispatchTask(
           live.observationLock = undefined;
         }
         throw new DispatcherError('INTERNAL_ERROR', `Retry context persist failed: ${msg}`);
+      }
+    }
+
+    // 7c. QA remediation only: persist qa-remediation-context.json +
+    // backend-composed prompt.md into the NEW Run folder. A SEPARATE file
+    // from retry-context.json (never both — the correlations are mutually
+    // exclusive above) so the two lineages stay distinguishable on disk:
+    // retry-context.json always means GPT PM CHANGES lineage,
+    // qa-remediation-context.json always means QA FAIL lineage.
+    if (qaRemediationContext) {
+      try {
+        writeFileAtomicText(
+          createdFolder,
+          'qa-remediation-context.json',
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              preparationId: qaRemediationContext.preparationId,
+              qaRemediationPreparationId: qaRemediationContext.preparationId,
+              sourceRunId: qaRemediationContext.sourceRunId,
+              taskId,
+            },
+            null,
+            2,
+          ) + '\n',
+        );
+        writeFileAtomicText(createdFolder, 'prompt.md', qaRemediationContext.prompt);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
+        createdFolder = undefined;
+        createdRunId = undefined;
+        live.captureFolder = undefined;
+        live.runId = undefined;
+        if (observationLock) {
+          releaseObservationLock(observationLock);
+          observationLock = undefined;
+          live.observationLock = undefined;
+        }
+        throw new DispatcherError('INTERNAL_ERROR', `QA remediation context persist failed: ${msg}`);
       }
     }
 

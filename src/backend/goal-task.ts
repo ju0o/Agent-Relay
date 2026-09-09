@@ -37,6 +37,7 @@ import {
   mapLegacyTaskStatus,
 } from '../shared/types.js';
 import { ensureRunId, projectDir, readRunMeta, writeRunMeta } from './fs.js';
+import { validateTaskQaContractFields } from './qa-contract.js';
 
 const GOAL_ID_RE = /^GOAL-(\d+)$/;
 const TASK_ID_RE = /^TASK-(\d+)$/;
@@ -607,6 +608,14 @@ export function validateTaskRecord(t: TaskRecord): void {
       throw new Error('acceptedRunId는 linkedRuns에 포함된 runId여야 합니다.');
     }
   }
+  // V1.6 QA Gate (§7): both-or-neither + full contract validation, enforced
+  // on every persist/read (fail closed — a malformed persisted contract can
+  // never load as a valid Task).
+  validateTaskQaContractFields({
+    scope: t.scope,
+    acceptanceCriteria: t.acceptanceCriteria,
+    qaContract: t.qaContract,
+  });
 }
 
 // ── v1 → v2 Task migration ──────────────────────────────────────────────────
@@ -738,6 +747,21 @@ export function normalizeTaskRecord(raw: Record<string, unknown>): TaskRecord {
   }
   if (typeof raw.retryCount === 'number' && Number.isInteger(raw.retryCount) && raw.retryCount >= 0) {
     record.retryCount = raw.retryCount;
+  }
+  // V1.6 QA Gate (§7): carry the frozen contract through normalization in
+  // validated-normalized form (fail closed on a hand-corrupted task.json —
+  // validateTaskRecord below re-checks, so a malformed contract can never
+  // load as valid).
+  if (raw.acceptanceCriteria !== undefined || raw.qaContract !== undefined) {
+    const validated = validateTaskQaContractFields({
+      scope: record.scope,
+      acceptanceCriteria: raw.acceptanceCriteria,
+      qaContract: raw.qaContract,
+    });
+    if (validated) {
+      record.acceptanceCriteria = validated.acceptanceCriteria;
+      record.qaContract = validated.qaContract;
+    }
   }
   validateTaskRecord(record);
   return record;
@@ -1012,6 +1036,12 @@ export interface TaskCreateInput {
   dependencies?: string[];
   executionState?: unknown;
   pmState?: unknown;
+  /**
+   * V1.6 QA Gate contract (§7) — both-or-neither, frozen at creation.
+   * Validated fail-closed here; absent = no QA Gate for this Task.
+   */
+  acceptanceCriteria?: unknown;
+  qaContract?: unknown;
 }
 
 function listTaskIds(dataRoot: string, project: string): Set<string> {
@@ -1049,6 +1079,12 @@ export function createTask(
       : (() => { throw new Error(`알 수 없는 Task pmState: ${String(input.pmState)}`); })());
 
   const completionCriteria = normalizeCriteria(input.completionCriteria);
+  // V1.6 QA Gate (§7): validate the frozen contract at creation, fail closed.
+  const validatedQa = validateTaskQaContractFields({
+    scope: input.scope,
+    acceptanceCriteria: input.acceptanceCriteria,
+    qaContract: input.qaContract,
+  });
   const graph = buildTaskGraphMeta(dataRoot, project);
   const dependencies = normalizeDependencies(input.dependencies, null, graph.ids, {
     goalId,
@@ -1082,6 +1118,8 @@ export function createTask(
       nextTaskRunSequence: 1,
       createdAt: ts,
       updatedAt: ts,
+      // V1.6 QA Gate (§7): frozen at creation, stored in validated form.
+      ...(validatedQa ? { acceptanceCriteria: validatedQa.acceptanceCriteria, qaContract: validatedQa.qaContract } : {}),
     };
     validateTaskRecord(record);
     persistTaskFiles(taskFolder(dataRoot, project, taskId), record);
@@ -1149,6 +1187,15 @@ export function updateTask(
   }
   if (patch.acceptedRunId !== undefined || patch.clearAcceptedRunId) {
     throw new Error('acceptedRunId는 task:acceptResult / transitionPm(재개방)을 통해 변경해야 합니다.');
+  }
+  // V1.6 QA Gate (§7): the QA contract is frozen at Task creation — never
+  // mutable via task:update (the typed TaskUpdatePatch already excludes
+  // these keys; this rejects untyped/JS callers too, fail closed).
+  if (
+    (patch as Record<string, unknown>).acceptanceCriteria !== undefined
+    || (patch as Record<string, unknown>).qaContract !== undefined
+  ) {
+    throw new Error('acceptanceCriteria/qaContract는 Task 생성 시 고정되며 task:update로 변경할 수 없습니다.');
   }
 
   const existing = getTask(dataRoot, project, taskId);

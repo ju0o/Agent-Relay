@@ -712,6 +712,140 @@ export function requestRetry(
   });
 }
 
+/**
+ * V1.6 Slice 4 — QA-gated Result receipt.
+ *
+ * Same promotion as markResultReceived (DISPATCHED/RUNNING → RESULT_RECEIVED,
+ * idempotent replay) EXCEPT pmState is deliberately left at PENDING instead
+ * of being flipped to VERIFYING. The QA gate (qa-gate.ts) owns the
+ * PENDING → VERIFYING transition itself: only on QA PASS, remediation-budget
+ * exhaustion, or QA BLOCKED — never before the verdict is decided (plan §8).
+ *
+ * Strict CAS: the execution axis must be pre-gate (DISPATCHED/RUNNING, or an
+ * idempotent RESULT_RECEIVED replay) AND pmState must be PENDING. A Task
+ * that already left PENDING (VERIFYING/CHANGES_REQUESTED/ACCEPTED) is
+ * refused — the gate never pulls a Task back into QA.
+ */
+export function markQaResultReceived(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  runId: string,
+  opts?: { expectedExecutionState?: TaskExecutionState },
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
+
+    if (!task.linkedRuns.some((r) => r.runId === rid)) {
+      throw new Error('runId는 이 Task에 연결된 Run이어야 합니다.');
+    }
+    if (task.pmState === 'ACCEPTED') {
+      throw new Error('이미 ACCEPTED된 Task에는 markQaResultReceived를 적용할 수 없습니다.');
+    }
+
+    // Idempotent replay: already RESULT_RECEIVED — return as-is regardless
+    // of pmState (an escalated VERIFYING Task replays through the gate's
+    // delivery-ensure path, never back into QA evaluation).
+    if (task.executionState === 'RESULT_RECEIVED') {
+      if (opts?.expectedExecutionState && opts.expectedExecutionState !== 'RESULT_RECEIVED') {
+        throw new RuntimeConflictError(
+          `CONFLICT: expectedExecutionState=${opts.expectedExecutionState} but found RESULT_RECEIVED`,
+        );
+      }
+      return task;
+    }
+
+    if (opts?.expectedExecutionState !== undefined) {
+      assertExpectedExecution(task.executionState, opts.expectedExecutionState);
+    }
+    if (task.pmState !== 'PENDING') {
+      throw new RuntimeConflictError(
+        `CONFLICT: markQaResultReceived requires pmState=PENDING but found ${task.pmState}`,
+      );
+    }
+
+    if (task.executionState === 'DISPATCHED') {
+      assertLegalExecutionTransition('DISPATCHED', 'RUNNING');
+      assertLegalExecutionTransition('RUNNING', 'RESULT_RECEIVED');
+    } else {
+      assertLegalExecutionTransition(task.executionState, 'RESULT_RECEIVED');
+    }
+
+    task.executionState = 'RESULT_RECEIVED';
+    // pmState deliberately untouched — stays PENDING until the QA gate
+    // decides PASS (→ VERIFYING + Delivery), FAIL-remediation (stays
+    // PENDING, execution → READY), or BLOCKED/exhausted (→ VERIFYING).
+    task.lastTransitionReason = `markQaResultReceived:${rid}`;
+    task.updatedAt = nowIso();
+    return persistTaskRecord(dataRoot, project, task);
+  });
+}
+
+/**
+ * V1.6 Slice 4 — QA-remediation retry.
+ *
+ * Canonical RESULT_RECEIVED + PENDING → READY + PENDING for a QA FAIL with
+ * remediation budget remaining (plan §11 step 3).
+ *
+ * Why not reuse requestRetry: that command hard-requires pmState
+ * CHANGES_REQUESTED, and QA must NEVER set CHANGES_REQUESTED (that state is
+ * exclusively GPT PM's own vocabulary — plan §8 Q5). A narrow additive
+ * variant with its own strict CAS is the minimal honest shape; the
+ * transition itself (READY + PENDING post-state, linkedRuns preserved, a NEW
+ * linked Run required next) is identical.
+ *
+ * Lineage distinction: `retryCount` (G5 explicit-request metadata) is
+ * deliberately NOT incremented — the authoritative QA-remediation budget
+ * counter is `qaRemediationNumber` on the QaRemediationPreparationRecord,
+ * and the new Run carries `qaRemediationPreparationId` (never
+ * `retryPreparationId`). This function creates no Run and dispatches
+ * nothing; the gate dispatches after this commits.
+ */
+export interface RequestQaRemediationRetryInput {
+  goalId: string;
+  reason?: string;
+}
+
+export function requestQaRemediationRetry(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  opts: RequestQaRemediationRetryInput,
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  if (!opts || typeof opts !== 'object') {
+    throw new Error('잘못된 입력: requestQaRemediationRetry에는 goalId가 필요합니다.');
+  }
+  const goalId = requireNonEmptyString(opts.goalId, 'goalId');
+  if (opts.reason !== undefined && opts.reason.length > 500) {
+    throw new Error('잘못된 reason: 500자 이하이어야 합니다.');
+  }
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
+
+    if (task.goalId !== goalId) {
+      throw new Error(`잘못된 goalId: Task ${id}의 goalId는 ${task.goalId}입니다.`);
+    }
+
+    // Dual CAS — strict, no idempotent replay path (no silent retry).
+    assertExpectedExecution(task.executionState, 'RESULT_RECEIVED');
+    assertExpectedPm(task.pmState, 'PENDING');
+
+    if (task.acceptedRunId) {
+      throw new Error('requestQaRemediationRetry는 acceptedRunId가 없을 때만 가능합니다.');
+    }
+
+    task.executionState = 'READY';
+    task.pmState = 'PENDING';
+    // retryCount intentionally untouched (see docstring — G5 lineage stays clean).
+    task.lastTransitionReason = opts.reason?.trim() || 'requestQaRemediationRetry';
+    task.updatedAt = nowIso();
+    return persistTaskRecord(dataRoot, project, task);
+  });
+}
+
 // ── Goal completion / transitions ───────────────────────────────────────────
 
 /** CANCELLED tasks are abandoned for completion purposes. */

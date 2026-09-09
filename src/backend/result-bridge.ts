@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import type { AgentCompletion } from '../integrations/core/types.js';
 import { getTask } from './goal-task.js';
 import {
+  markQaResultReceived,
   markResultReceived,
   resolveCurrentAttemptRunId,
   RuntimeConflictError,
@@ -18,6 +19,7 @@ import {
 import { recordAdapterObservation } from './evidence.js';
 import { recordRunResultReceived } from './event.js';
 import { ensurePmDeliveryForTaskVerify } from './pm-delivery.js';
+import { runOrResumeQaGate } from './qa-gate.js';
 import { releaseObservationLockByBinding } from './observation-lock.js';
 import type { TaskRecord } from '../shared/types.js';
 
@@ -161,12 +163,22 @@ export async function promoteObservedResult(
     return null;
   }
 
-  // 4. markResultReceived (B2 — idempotent)
+  // V1.6 Slice 4 — QA Gate insertion (plan §16): a Task carrying a frozen
+  // qaContract takes the QA-gated receipt path (pmState stays PENDING — the
+  // gate owns the PENDING → VERIFYING transition); every other Task takes
+  // the unchanged V1/V1.5 path byte-identical to before.
+  const qaGated = task.qaContract !== undefined && task.qaContract !== null;
+
+  // 4. markResultReceived (B2 — idempotent) / markQaResultReceived (V1.6)
   let updated: TaskRecord;
   try {
-    updated = await markResultReceived(dataRoot, project, taskId, runId, {
-      expectedExecutionState: task.executionState,
-    });
+    updated = qaGated
+      ? await markQaResultReceived(dataRoot, project, taskId, runId, {
+        expectedExecutionState: task.executionState,
+      })
+      : await markResultReceived(dataRoot, project, taskId, runId, {
+        expectedExecutionState: task.executionState,
+      });
   } catch (err) {
     if (err instanceof RuntimeConflictError) {
       throw new ResultBridgeError('CONFLICT', err.message);
@@ -197,6 +209,25 @@ export async function promoteObservedResult(
 
   // 6. V1-G4-A: mint the durable PM Delivery for this attempt (best-effort,
   // post-commit — must never fail or roll back the promotion above).
+  // V1.6 Slice 4: QA-gated Tasks run the gate here instead — the gate owns
+  // the PENDING → VERIFYING transition and mints the ordinary Delivery
+  // itself on PASS / budget-exhausted FAIL / BLOCKED (plan §8, §16).
+  // Best-effort like the Delivery mint: promotion above already committed,
+  // and reconcileQaGate recovers any gate work left incomplete.
+  if (qaGated) {
+    try {
+      await runOrResumeQaGate(dataRoot, project, taskId);
+    } catch {
+      // Gate failure is non-fatal here; reconcileQaGate recovers from
+      // durable state (the Task stays RESULT_RECEIVED+PENDING).
+    }
+    // The gate may have transitioned or dispatched — return fresh truth.
+    try {
+      return getTask(dataRoot, project, taskId);
+    } catch {
+      return updated;
+    }
+  }
   try {
     await ensurePmDeliveryForTaskVerify(dataRoot, project, taskId);
   } catch {

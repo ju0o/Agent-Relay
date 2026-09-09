@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { relayDir, writeJsonAtomic } from './goal-task.js';
+import { canonicalizeQaContractForFingerprint } from './qa-contract.js';
 import type { TaskRecord } from '../shared/types.js';
 
 /** Retry authorization record schema version. */
@@ -88,15 +89,29 @@ export function retryAuthorizationFile(dataRoot: string, project: string, taskId
  * completionCriteria. Mutable runtime state (executionState, pmState,
  * retryCount, linkedRuns, acceptedRunId, …) is deliberately EXCLUDED so a
  * legitimately advanced Task still matches its own authorization.
+ *
+ * V1.6 QA Gate (§7): the frozen QA contract (acceptanceCriteria +
+ * qaContract) is folded in as a deterministic appendix — but ONLY when a
+ * contract exists. Tasks without one hash byte-identically to before, so
+ * every stored V1/V1.5 authorization keeps matching. A post-approval edit
+ * to the QA contract (or any attempt to smuggle one in) changes the
+ * fingerprint and is caught by the same authorization-mismatch mechanism
+ * that already guards scope edits.
  */
-export function computeTaskScopeFingerprint(task: Pick<TaskRecord, 'taskId' | 'goal' | 'reason' | 'scope' | 'completionCriteria'>): string {
-  const canonical = JSON.stringify([
+export function computeTaskScopeFingerprint(
+  task: Pick<TaskRecord, 'taskId' | 'goal' | 'reason' | 'scope' | 'completionCriteria'> & Partial<Pick<TaskRecord, 'acceptanceCriteria' | 'qaContract'>>,
+): string {
+  const base = [
     task.taskId,
     task.goal ?? '',
     task.reason ?? '',
     task.scope ?? '',
     Array.isArray(task.completionCriteria) ? task.completionCriteria : [],
-  ]);
+  ];
+  // Appendix is appended ONLY when a QA contract exists — tasks without one
+  // hash byte-identically to the pre-V1.6 shape (backward compatible).
+  const qaAppendix = canonicalizeQaContractForFingerprint(task.acceptanceCriteria, task.qaContract);
+  const canonical = JSON.stringify(qaAppendix === null ? base : [...base, qaAppendix]);
   return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 

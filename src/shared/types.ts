@@ -447,6 +447,42 @@ export interface LinkedRunRef {
   date?: string;
 }
 
+/**
+ * V1.6 QA Gate — frozen Task-side contract extension
+ * (docs/V16-QA-GATE-PLAN-01.md §6, §7, accepted commit f1c8959).
+ *
+ * Additive and optional: a Task that omits both fields behaves exactly as
+ * before (no QA Gate; the result bridge mints the PM Delivery
+ * unconditionally). Both fields are frozen at Task creation — never
+ * PM/Worker-mutable after creation, and excluded from TaskUpdatePatch.
+ */
+export type AcceptanceCriterionValidationMode = 'DETERMINISTIC' | 'SEMANTIC' | 'BOTH';
+
+export interface AcceptanceCriterion {
+  /** Stable AC id ("AC-01"), referenced by QA output and remediation. */
+  id: string;
+  /** Frozen criterion text. */
+  description: string;
+  validationMode: AcceptanceCriterionValidationMode;
+}
+
+/** Frozen deterministic check vocabulary (§9). `content` (not
+ * `expectedContent`) is the Task-side field name; the Slice 4 gate maps it
+ * onto the Slice 2 evaluator's `expectedContent` server-side. */
+export type DeterministicQaCheck =
+  | { kind: 'fileExists'; path: string; criterionId?: string }
+  | { kind: 'fileExactContent'; path: string; content: string; criterionId?: string }
+  | { kind: 'diffScope'; allowedPaths: string[]; criterionId?: string }
+  | { kind: 'command'; command: string; args: string[]; cwd?: string; timeoutMs?: number; expectExitCode?: number; criterionId?: string };
+
+export interface QaContract {
+  deterministic: DeterministicQaCheck[];
+  /** Present iff at least one AC has validationMode SEMANTIC or BOTH. */
+  semantic?: { qaWorkerId: string };
+  /** Omitted = frozen default 2 (plan §12). */
+  maxQaRemediationAttempts?: number;
+}
+
 /** Persistent Task record (JSON SSOT companion to task.md). */
 export interface TaskRecord {
   schemaVersion: number;
@@ -480,6 +516,12 @@ export interface TaskRecord {
   lastTransitionReason?: string;
   /** Number of explicit requestRetry cycles completed (optional metadata). */
   retryCount?: number;
+  /**
+   * V1.6 QA Gate contract (both-or-neither with qaContract; absent = no QA
+   * Gate for this Task). Frozen at Task creation — never PM/Worker-mutable.
+   */
+  acceptanceCriteria?: AcceptanceCriterion[];
+  qaContract?: QaContract;
 }
 
 // ── V1.5 Execution Plan kernel ─────────────────────────────────────────────
