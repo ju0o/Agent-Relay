@@ -45,3 +45,24 @@ hardening assignment: `c375e57` — `result-bridge.ts` +14 lines, dedicated
 regression test +294 lines, no refactor, no V2 work. Verdict:
 STABLE_HARDENING_PASS (P0 0, P1 0, P2 0 remaining). Pushed to
 `origin/dev/adapter-foundation-01`.
+
+## Final Promotion — V1 USER-STABLE_CERTIFIED (Owner / GPT PM decision)
+
+Recorded: 2026-09-11 KST. Owner/GPT PM FINAL DECISION: V1 USER-STABLE
+promotion is APPROVED.
+
+Final state: V1 OWNER_CERTIFIED, USER-STABLE_CERTIFIED, READY FOR DAILY USE.
+
+Evidence accepted (independent final certification,
+`.user-stable-cert/FINAL_CERTIFICATION_REPORT.md`, candidate HEAD `5074f4e`,
+production code `c375e57`): Happy Path 20/20, CHANGES same-Task retry 10/10,
+Failure/Recovery PASS, Restart/Durability PASS (incl. real SIGKILL +
+fresh-process resume), Duplicate/Idempotency PASS, BUG-001 regression PASS,
+V1/V1.5/V1.6 regression PASS, typecheck PASS, build PASS, P0/P1/P2/P3 open
+0/0/0/0, unexpected manual intervention 0. Phase-I dogfood shows 3 failures
+proven pre-existing at baseline `56a26c5` (identical 118/3), zero regression
+delta from the candidate.
+
+Scope: documentation record only. No production behavior modified. No V2
+work begun. V2 remains a separate Development Track requiring a new PM
+scope/GO.
