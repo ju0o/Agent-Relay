@@ -34,3 +34,14 @@ open V2.
 Nothing further is queued for this project tonight. If/when V2 scope is
 defined and approved by the Owner, open a new pane in
 `~/Desktop/Projects/Core/Agent-Relay` and hand it that scope explicitly.
+
+## Addendum — Stable Hardening 01 (BUG-001)
+
+Independent release QA (post-acceptance) found BUG-001 (P2, pre-existing
+at baseline 56a26c5): QA-gated task completion skipped worker-lock
+release, unlike the non-QA path, occasionally blocking successor
+dispatch while the prior worker was still alive. Fixed under a bounded
+hardening assignment: `c375e57` — `result-bridge.ts` +14 lines, dedicated
+regression test +294 lines, no refactor, no V2 work. Verdict:
+STABLE_HARDENING_PASS (P0 0, P1 0, P2 0 remaining). Pushed to
+`origin/dev/adapter-foundation-01`.
