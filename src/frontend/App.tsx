@@ -8,6 +8,7 @@ import { must, hasBridge, dragLocalFile, onUpdateStatus, onCaptureStatus } from 
 import { agentNameToAdapterId } from '../shared/adapter-map.js';
 import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
+import { TaskHistoryPanel } from './taskhistory.js';
 import { QuickDogfood } from './quickdf.js';
 import { renderMd } from './md.js';
 import {
@@ -185,6 +186,8 @@ function AppInner(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [dfMode, setDfMode]             = useState(false);
   const [pdMode, setPdMode]             = useState(false);
+  // V2 R4 — Task History 읽기 전용 패널
+  const [thMode, setThMode]             = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
   const [showQuickDf, setShowQuickDf]   = useState(false);
@@ -908,6 +911,7 @@ function AppInner(): React.ReactElement {
       confirmBtn: '영구 삭제',
         onOk: async () => {
           setPdMode(false);
+          setThMode(false);
           await must({ op: 'project:delete', dataRoot, project: projectName });
         const deletingId = sessions.find(s => s.project === projectName)?.id;
         const remaining = sessions.filter(s => s.project !== projectName);
@@ -1153,7 +1157,7 @@ function AppInner(): React.ReactElement {
   // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
   function closeSession(id: string): void {
     const remaining = sessions.filter(s => s.id !== id);
-    if (!remaining.some(s => s.project === project)) setPdMode(false);
+    if (!remaining.some(s => s.project === project)) { setPdMode(false); setThMode(false); }
     if (remaining.length === 0) {
       const fresh = makeSession();
       setSessions([fresh]);
@@ -1326,14 +1330,20 @@ function AppInner(): React.ReactElement {
             <button
               className={`mini df-toggle${dfMode ? ' on' : ''}`}
               title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
-              onClick={() => { setDfMode(m => !m); setPdMode(false); }}
+              onClick={() => { setDfMode(m => !m); setPdMode(false); setThMode(false); }}
             >🐾 App Dogfooding</button>
             <button
               className={`mini df-toggle${pdMode ? ' on' : ''}`}
               disabled={!project}
               title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
-              onClick={() => { setPdMode(m => !m); setDfMode(false); }}
+              onClick={() => { setPdMode(m => !m); setDfMode(false); setThMode(false); }}
             >📋 Project Dogfooding</button>
+            <button
+              className={`mini df-toggle${thMode ? ' on' : ''}`}
+              disabled={!project}
+              title={project ? `"${projectLabel(project)}" Task 타임라인 조회 (읽기 전용)` : '프로젝트를 먼저 선택하세요'}
+              onClick={() => { setThMode(m => !m); setDfMode(false); setPdMode(false); }}
+            >📜 Task History</button>
             <button
               className="mini qdf-toggle"
               disabled={!project}
@@ -1375,6 +1385,15 @@ function AppInner(): React.ReactElement {
               notify={notify}
               refreshSignal={pdRefreshSignal}
               onClose={() => setPdMode(false)}
+            />
+          ) : thMode && project ? (
+            /* ── V2 R4 — Task History 읽기 전용 패널 (H1 모델) ── */
+            <TaskHistoryPanel
+              key={`th:${project}`}
+              dataRoot={dataRoot}
+              project={project}
+              notify={notify}
+              onClose={() => setThMode(false)}
             />
           ) : (
             <>
