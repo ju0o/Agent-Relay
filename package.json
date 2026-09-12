@@ -88,6 +88,7 @@
     "test:v16-slice8-wrapper-qa-remediation": "node test/v16-slice8-wrapper-qa-remediation.test.mjs",
     "test:v2-h1-history": "node test/v2-h1-history.test.mjs",
     "test:v2-r2-actions": "node test/v2-r2-actions.test.mjs",
+    "test:v2-r3-restart": "node test/v2-r3-restart.test.mjs",
     "test:v2-r1-resume-scan": "node test/v2-r1-resume-scan.test.mjs",
     "test:stable-hardening-01": "node test/stable-hardening-01-worker-release.test.mjs",
     "mcp:app": "node dist/server/mcp/app-server-main.js",
