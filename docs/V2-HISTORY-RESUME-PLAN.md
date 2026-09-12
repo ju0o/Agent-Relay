@@ -150,3 +150,16 @@ changes, any Sub-Agent/Parallel-Worker groundwork.
    subset (delivery/QA-gate reconcile re-runs)?
 4. `relay_pm_recover_completed_run` automation: promote to automatic scan
    action, or keep manual-trigger with scan only surfacing candidates?
+
+## 6. Locked decisions (dated log — §1–5 untouched)
+
+- 2026-09-12 (slice-1 GO): TUI first + CLI read surface; slice-1 = H1+H2
+  only; R2 = explicit Owner confirm on every guided action (no auto-apply,
+  not even idempotent subset); `recover_completed_run` stays manual-trigger.
+- 2026-09-12 (QRP scope decision): **Option B — QRP-RECEIVED stays
+  permanently report-only.** No kernel producer exists for that status
+  (sole writer persists READY; see `qa-remediation-preparation.ts`), so no
+  real stuck work lacks a path. The R1 finding + R2 refusal stand as the
+  tripwire: if a non-forged QRP-RECEIVED record ever appears, that is the
+  evidence a producer exists — revisit then with a real case. No new
+  transition is invented for it.
