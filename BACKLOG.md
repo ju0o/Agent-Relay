@@ -2,21 +2,18 @@
 
 우선순위 없는 단순 목록. 코드상 확인되는 사실만 기록한다.
 
-## 남은 개선 후보 (Owner 판단 필요 — flagged, 미착수/부분)
+## 남은 개선 후보
 
-- [ ] 앱 아이콘 미설정 — electron-builder 기본 Electron 아이콘 사용 중 (build/ 리소스 필요)
-      ※ 배선만 완료 (`resolveWindowIcon` — `public/icon.png` 있으면 자동 사용).
-      실제 아트워크(`build/icon.ico` + `win.icon` 설정) 확정 필요 → Owner 판단 요청.
-- [ ] Work Tab 순서 영구 저장 — v0.3은 session-only (App.tsx onWorkTabDrop 주석 참조)
-      ※ 탭 자체가 재실행 시 복원되지 않으므로 순서만 저장해도 효과 없음.
-      탭 내용 영속 여부와 함께 설계 결정 필요 → Owner 판단 요청.
-- [ ] Drag Reorder 터치 지원 — v0.3은 HTML5 mouse DnD만 (Windows Desktop 우선 원칙)
-      ※ Pointer Events 전면 개편이 필요해 V1 안정 UI 변경 리스크 있음.
-      Windows Desktop 우선 원칙상 deferred 권장 → Owner 판단 요청.
-- [ ] 편집 탭 미저장 초안의 재실행 후 복원 (crash-safe draft persistence)
-      ※ 종료 경고(`beforeunload`)는 완료. 디스크 영속은 저장 스키마 설계 문제 → Owner 판단 요청.
-- [ ] 마지막 작업 탭(active tab) 전체 복원 — lastProject/lastAgent만 복원됨
-      ※ 탭 내용 영속과 동일 설계 문제 → Owner 판단 요청.
+없음 — 2026-09-12 정리 라운드에서 13건 모두 처리됨 (아래 완료 섹션 참조).
+
+## 완료된 것 (v0.3.3 — BACKLOG 잔여 5건, 추천 방안)
+
+- [x] 앱 아이콘 — 릴레이 셰브론 아트워크 생성 (`build/icon.png`/`.ico`/`.icns`,
+      `public/icon.png`) + `win.icon` 패키징 배선 + 윈도우 아이콘 자동 사용
+- [x] Work Tab 순서 영구 저장 — 프로젝트별 작업탭 스냅샷(localStorage)으로 순서 영속 (worktabs.ts)
+- [x] 마지막 작업 탭(active tab) 복원 — 스냅샷 `activeIndex` 복원 (lastProject/lastAgent에 추가)
+- [x] 편집 탭 미저장 초안의 재실행 후 복원 — 상한 내 초안 캐시 + 디스크 재독 우선, 폴더 소실 시 강등
+- [x] Drag Reorder 터치 지원 — 드래그 없는 ‹ › 이동 버튼 (프로젝트 탭 + 작업 탭, 터치/키보드 공용)
 
 ## 완료된 것 (v0.3.2 — BACKLOG 정리)
 
