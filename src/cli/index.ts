@@ -21,6 +21,7 @@ Commands:
   status              Show project status snapshot
   doctor              Run infrastructure health checks
   history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
+  resume-scan         Scan stuck/interrupted work (V2 R1, read-only report)
   init                Initialize project (interactive or --yes)
   connect <client>    Configure PM MCP (claude-code)
   host watch          Watch pending PM Deliveries and hand them to the PM Host
@@ -43,6 +44,8 @@ Examples:
   agent-relay doctor --json
   agent-relay history TASK-0001
   agent-relay history TASK-0001 --json
+  agent-relay resume-scan
+  agent-relay resume-scan --json
   agent-relay init
   agent-relay init --yes
   agent-relay init --yes --json
@@ -91,7 +94,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'init' || a === 'connect' || a === 'host')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'init' || a === 'connect' || a === 'host')) {
       command = a;
     } else if ((command === 'connect' || command === 'host') && !sub) {
       sub = a;
@@ -194,6 +197,19 @@ async function main(): Promise<void> {
       console.log(notInitializedMessage());
     } else {
       console.log(renderHistoryHuman(res));
+    }
+    process.exit(res.ok ? 0 : 1);
+  }
+
+  if (command === 'resume-scan') {
+    const { runResumeScan, renderResumeScanHuman, RESUME_SCAN_SCHEMA_VERSION } = await import('./resume-scan.js');
+    const res = runResumeScan(cwd);
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!res.ok && res.error === 'not-initialized') {
+      console.log(notInitializedMessage());
+    } else {
+      console.log(renderResumeScanHuman(res));
     }
     process.exit(res.ok ? 0 : 1);
   }

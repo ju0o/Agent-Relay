@@ -8,9 +8,12 @@ import { renderRelayFrame, renderCompact } from './render.js';
 import { resolveDetailTask, renderTaskDetail } from './views/task-detail.js';
 import { renderMemoHistory } from './views/memo-history.js';
 import { renderEventsView } from './views/events.js';
+import { renderResumeScanView } from './views/resume-scan.js';
 import { discoverConfig } from '../cli/config.js';
 import * as taskMemo from '../backend/task-memo.js';
 import * as eventKernel from '../backend/event.js';
+import { scanStuckWork } from '../backend/resume-scan.js';
+import type { ResumeScanResult } from '../backend/resume-scan.js';
 import { resolveCurrentAttemptRunId } from '../backend/goal-task-runtime.js';
 import {
   deriveAvailableActions,
@@ -36,7 +39,7 @@ export interface TuiOptions {
 }
 
 type ViewState =
-  | 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS' | 'CHANGES_INPUT'
+  | 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS' | 'RESUME_SCAN' | 'CHANGES_INPUT'
   | 'TASK_EDIT_MENU' | 'TASK_EDIT_FIELD';
 
 function isTTY(): boolean {
@@ -93,6 +96,9 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
   let editTaskCtx: TaskEditContext | null = null;
   let editFieldKey: EditFieldKey | null = null;
   let editFieldState: BoundedTextState = { draft: '', error: undefined };
+  // V2 R1: cached read-only resume scan (refreshed on open / [r])
+  let resumeScanReport: ResumeScanResult | null = null;
+  let resumeScanError: string | undefined;
 
   function enterAlt(): void {
     try {
@@ -601,11 +607,35 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
         renderToScreen();
         return;
       }
+      if (view === 'RESUME_SCAN') {
+        view = 'MAIN';
+        renderToScreen();
+        return;
+      }
     }
 
     if (view === 'MAIN') {
       if (s === 't' || s === 'T') {
         view = 'TASK_DETAIL';
+        renderToScreen();
+        return;
+      }
+      if (s === 's' || s === 'S') {
+        // V2 R1 — read-only resume scan. Never executes blessed actions.
+        try {
+          const discovered = discoverConfig(cwd);
+          if (!discovered.initialized || !discovered.config) {
+            resumeScanReport = null;
+            resumeScanError = 'not-initialized';
+          } else {
+            resumeScanReport = scanStuckWork(discovered.config.dataRoot, discovered.config.project);
+            resumeScanError = undefined;
+          }
+        } catch (e) {
+          resumeScanReport = null;
+          resumeScanError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
+        }
+        view = 'RESUME_SCAN';
         renderToScreen();
         return;
       }
@@ -669,6 +699,24 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
         doSnapshotRefresh();
         return;
       }
+    } else if (view === 'RESUME_SCAN') {
+      if (s === 'r' || s === 'R') {
+        try {
+          const discovered = discoverConfig(cwd);
+          if (!discovered.initialized || !discovered.config) {
+            resumeScanReport = null;
+            resumeScanError = 'not-initialized';
+          } else {
+            resumeScanReport = scanStuckWork(discovered.config.dataRoot, discovered.config.project);
+            resumeScanError = undefined;
+          }
+        } catch (e) {
+          resumeScanReport = null;
+          resumeScanError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
+        }
+        renderToScreen();
+        return;
+      }
     } else if (view === 'TASK_EDIT_MENU') {
       handleTaskEditMenuKey(s);
       return;
@@ -728,6 +776,9 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
           lastError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
         }
         out = renderEventsView(events, size);
+        if (lastError) out += '\n! ' + lastError.slice(0, 80);
+      } else if (view === 'RESUME_SCAN') {
+        out = renderResumeScanView(resumeScanReport, size, resumeScanError);
         if (lastError) out += '\n! ' + lastError.slice(0, 80);
       } else if (view === 'MEMO_INPUT') {
         // Render memo input overlay on top of main frame? Show simple prompt
