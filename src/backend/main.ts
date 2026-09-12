@@ -760,10 +760,8 @@ export function shouldEnableDevToolsShortcut(isPackaged: boolean): boolean {
 let mainWindow: BrowserWindow | null = null;
 
 /**
- * 윈도우 아이콘 해석 — 아트워크가 있으면 사용, 없으면 undefined(기본값).
- * - `public/icon.png`를 두면 vite가 `dist/client/icon.png`로 복사해 패키징에 포함된다.
- * - 설치형 exe 아이콘(`build/icon.ico` + electron.builder.yml `win.icon`)과
- *   NSIS 아트워크는 별도 Owner 확정 필요 — BACKLOG 8번 플래그 참조.
+ * 윈도우 아이콘 해석 — `public/icon.png`가 vite를 통해 `dist/client/icon.png`로
+ * 패키징에 포함되므로 dev/packaged 모두에서 사용 가능하다.
  */
 function resolveWindowIcon(): string | undefined {
   const p = path.join(__dirname, '..', '..', 'client', 'icon.png');
