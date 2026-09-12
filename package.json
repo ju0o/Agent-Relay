@@ -86,6 +86,7 @@
     "test:v16-slice7-full-qa": "node test/v16-slice7-full-qa.test.mjs",
     "test:v16-slice8-wrapper-qa-mode": "node test/v16-slice8-wrapper-qa-mode.test.mjs",
     "test:v16-slice8-wrapper-qa-remediation": "node test/v16-slice8-wrapper-qa-remediation.test.mjs",
+    "test:v2-h1-history": "node test/v2-h1-history.test.mjs",
     "test:stable-hardening-01": "node test/stable-hardening-01-worker-release.test.mjs",
     "mcp:app": "node dist/server/mcp/app-server-main.js",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
