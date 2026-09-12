@@ -5,11 +5,15 @@
 import type { TuiSnapshot } from '../snapshot.js';
 import * as goalTask from '../../backend/goal-task.js';
 import { getTaskReadiness } from '../../backend/goal-task-runtime.js';
+import { getTaskHistory } from '../../backend/task-history.js';
+import type { TaskHistory } from '../../backend/task-history.js';
 import type { TaskRecord, TaskReadiness } from '../../shared/types.js';
 
 export interface TaskDetailModel {
   task: TaskRecord | null;
   readiness: TaskReadiness | null;
+  /** V2 H1 read-only timeline (null when unavailable — view still renders). */
+  history: TaskHistory | null;
   error?: string;
 }
 
@@ -39,7 +43,13 @@ export function resolveDetailTask(
   dataRoot: string | undefined,
   project: string | undefined,
 ): TaskDetailModel {
-  if (!dataRoot || !project) return { task: null, readiness: null };
+  if (!dataRoot || !project) return { task: null, readiness: null, history: null };
+  // V2 H1: read-only timeline — must never break the detail view.
+  function loadHistory(taskId: string): TaskHistory | null {
+    try {
+      return getTaskHistory(dataRoot as string, project as string, taskId);
+    } catch { return null; }
+  }
   try {
     // Prefer active task from snapshot
     const activeId = snapshot.status.activeTasks[0]?.taskId;
@@ -51,21 +61,21 @@ export function resolveDetailTask(
           const all = goalTask.listTasks(dataRoot, project, task.goalId);
           readiness = getTaskReadiness(task, all);
         } catch { /* ignore */ }
-        return { task, readiness };
+        return { task, readiness, history: loadHistory(task.taskId) };
       } catch { /* fallthrough */ }
     }
     // Fallback: first task sorted
     const allTasks = goalTask.listTasks(dataRoot, project);
-    if (allTasks.length === 0) return { task: null, readiness: null };
+    if (allTasks.length === 0) return { task: null, readiness: null, history: null };
     const task = allTasks[0]!;
     let readiness: TaskReadiness | null = null;
     try {
       readiness = getTaskReadiness(task, goalTask.listTasks(dataRoot, project, task.goalId));
     } catch { /* ignore */ }
-    return { task, readiness };
+    return { task, readiness, history: loadHistory(task.taskId) };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { task: null, readiness: null, error: msg };
+    return { task: null, readiness: null, history: null, error: msg };
   }
 }
 
@@ -139,6 +149,25 @@ export function renderTaskDetail(
   // goal/reason/scope truncated single line already; detail view keeps bounded
   if (t.goal && lines.length < rows - 3) {
     lines.push('│' + pad(truncate(` goal: ${t.goal}`, inner), inner) + '│');
+  }
+
+  // V2 H1 — Attempts timeline (read-only). Bounded: max 8 rows + summary.
+  const hist = model.history;
+  if (hist && lines.length < rows - 4) {
+    lines.push('│' + ' '.repeat(inner) + '│');
+    lines.push('│' + pad(` Attempts (${hist.attempts.length}):`, inner) + '│');
+    for (const a of hist.attempts.slice(0, 8)) {
+      const pr = `${a.hasPrompt ? 'P' : '-'}/${a.hasResult ? 'R' : '-'}`;
+      const d = a.delivery ? a.delivery.status : '—';
+      const j = a.judgment ? `${a.judgment.decision}:${a.judgment.status}` : '—';
+      const agent = (a.agent ?? '?').slice(0, 12);
+      const line = `  #${a.taskRunSequence} ${agent} ${pr} D:${d} J:${j}`;
+      lines.push('│' + pad(truncate(line, inner), inner) + '│');
+      if (lines.length >= rows - 3) break;
+    }
+    if ((hist.events.length > 0 || hist.evidence.length > 0) && lines.length < rows - 3) {
+      lines.push('│' + pad(`  events:${hist.events.length} evidence:${hist.evidence.length}`, inner) + '│');
+    }
   }
 
   lines.push('├' + '─'.repeat(inner) + '┤');
