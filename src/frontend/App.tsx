@@ -1540,9 +1540,25 @@ function AppInner(): React.ReactElement {
                           <button
                             className="mini drag-chip"
                             draggable={false}
-                            title="이 버튼을 누른 채 ChatGPT 입력창으로 끌어다 놓으세요 (result.md 첨부)"
+                            title="마우스로 끌어다 놓거나, 키보드 Enter로 드래그 시작 (result.md 첨부). 드래그가 안 되면 위치 열기/복사를 사용하세요."
                             onMouseDown={e => { e.preventDefault(); dragResultToGpt(activeTab); }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                dragResultToGpt(activeTab);
+                              }
+                            }}
                           >📤 GPT로 드래그</button>
+                        )}
+                        {activeTab.resultSaved && activeTab.folder && (
+                          <button
+                            className="mini"
+                            title="키보드 전용 대체 경로 — result.md 파일 경로를 클립보드에 복사"
+                            onClick={() => {
+                              copyText(mdFilePath(activeTab.folder, 'result.md'));
+                              notify('ok', 'result.md 경로가 복사되었습니다. ChatGPT 입력창에 붙여넣으세요.');
+                            }}
+                          >경로 복사</button>
                         )}
                         {activeTab.resultSaved && activeTab.folder && (
                           <button
