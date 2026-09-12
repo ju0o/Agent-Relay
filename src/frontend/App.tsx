@@ -1663,7 +1663,12 @@ function AppInner(): React.ReactElement {
           context={dfContext()}
           notify={notify}
           onClose={() => setShowQuickDf(false)}
-          onSaved={() => setPdRefreshSignal(n => n + 1)}
+          onSaved={() => {
+            setPdRefreshSignal(n => n + 1);
+            // Quick Capture 저장 직후 목록을 바로 보여준다 — 다시 열 필요가 없도록.
+            setPdMode(true);
+            setDfMode(false);
+          }}
         />
       )}
 
