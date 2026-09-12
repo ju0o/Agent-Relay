@@ -19,10 +19,16 @@ function center(s: string, n: number): string {
 
 const MAX_ITEMS = 8;
 
+export interface ResumeScanUi {
+  selected?: number;
+  confirmPrompt?: string;
+}
+
 export function renderResumeScanView(
   report: ResumeScanResult | null,
   size: { cols: number; rows: number },
   error?: string,
+  ui?: ResumeScanUi,
 ): string {
   const cols = Math.max(20, size.cols);
   const inner = cols - 2;
@@ -39,10 +45,14 @@ export function renderResumeScanView(
     lines.push('│' + center('No stuck patterns detected.', inner) + '│');
     lines.push('│' + pad(truncate(` tasks scanned: ${report.scannedTasks}`, inner), inner) + '│');
   } else {
+    const sel = ui?.selected ?? -1;
     lines.push('│' + pad(truncate(` findings:${report.findings.length}  tasks:${report.scannedTasks}`, inner), inner) + '│');
     lines.push('│' + ' '.repeat(inner) + '│');
-    for (const it of report.findings.slice(0, MAX_ITEMS)) {
-      lines.push('│' + pad(truncate(`[${it.pattern}] ${it.taskId}`, inner), inner) + '│');
+    const items = report.findings.slice(0, MAX_ITEMS);
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]!;
+      const marker = i === sel ? '>' : ' ';
+      lines.push('│' + pad(truncate(`${marker}${i + 1} [${it.pattern}] ${it.taskId}`, inner), inner) + '│');
       lines.push('│' + pad(truncate(`  ${it.detail}`, inner), inner) + '│');
       lines.push('│' + pad(truncate(`  → ${it.blessedAction}`, inner), inner) + '│');
       if (lines.length >= size.rows - 4) {
@@ -55,8 +65,12 @@ export function renderResumeScanView(
     }
   }
 
+  if (ui?.confirmPrompt && lines.length < size.rows - 3) {
+    lines.push('│' + pad(truncate(` ? ${ui.confirmPrompt}`, inner), inner) + '│');
+  }
+
   lines.push('├' + '─'.repeat(inner) + '┤');
-  lines.push('│' + pad(' Esc:back  q:quit  r:refresh  (no actions)', inner) + '│');
+  lines.push('│' + pad(' Esc:back  q:quit  r:refresh  1-8:select  x:act  k/f/c:orphan', inner) + '│');
   lines.push('└' + '─'.repeat(inner) + '┘');
   if (lines.length > size.rows) {
     lines.splice(size.rows - 1, lines.length - size.rows, pad('… truncated — resize', cols));
