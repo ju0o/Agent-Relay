@@ -475,7 +475,7 @@ function AppInner(): React.ReactElement {
 
   // ── 탭 추가 ─────────────────────────────────────────────────────────────────
   async function addTab(agentName?: string): Promise<void> {
-    const agent = agentName ?? (activeTab?.agent ?? DEFAULT_AGENTS[0]);
+    const agent = agentName ?? activeTab?.agent ?? settings?.lastAgent ?? DEFAULT_AGENTS[0];
     const tab = makeTab(agent);
     setSessions(prev => prev.map(s =>
       s.id === activeSessionId
@@ -566,6 +566,9 @@ function AppInner(): React.ReactElement {
   // ── 에이전트 변경 (탭 내) ─────────────────────────────────────────────────────
   async function changeTabAgent(tabId: string, agent: string): Promise<void> {
     updateTab(tabId, { agent, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false });
+    // 마지막 선택 Agent 기억 — 다음 실행 시 새 탭 기본값으로 복원용
+    try { await must({ op: 'settings:setLastAgent', agent }); } catch { /* 무시 */ }
+    setSettings(prev => prev ? { ...prev, lastAgent: agent } : prev);
     const n = await peekNextRun(project, agent, date);
     if (n !== null) updateTab(tabId, { run: n });
   }
@@ -988,6 +991,16 @@ function AppInner(): React.ReactElement {
         if (!hasBridge()) { setInitError('Electron IPC 브리지를 사용할 수 없습니다.\nexe 파일을 직접 실행하세요.'); setLoading(false); return; }
         const s = await must<SettingsView>({ op: 'settings:get' });
         await applySettings(s);
+        // 마지막 선택 Agent 복원 — 빈 초기 탭에만 적용 (저장된 내용은 건드리지 않음)
+        if (s.lastAgent) {
+          const lastAgent = s.lastAgent;
+          setSessions(prev => prev.map(sess => ({
+            ...sess,
+            tabs: sess.tabs.map(t =>
+              (!t.prompt && !t.result && !t.folder ? { ...t, agent: lastAgent } : t),
+            ),
+          })));
+        }
         if (s.dataRoot && s.dataRootExists) {
           const projects = await must<ProjectInfo[]>({ op: 'projects:list', dataRoot: s.dataRoot });
           setProjects(projects);

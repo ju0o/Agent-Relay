@@ -143,6 +143,13 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return s.agentOrder;
     }
 
+    case 'settings:setLastAgent': {
+      const s = currentSettings();
+      s.lastAgent = String(req.agent || '');
+      saveSettings(s);
+      return s.lastAgent;
+    }
+
     case 'settings:setDataRoot': {
       if (!req.path) throw new Error('DATA_ROOT 경로가 비어 있습니다.');
       const resolved = path.resolve(req.path);
