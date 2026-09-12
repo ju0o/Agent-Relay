@@ -759,7 +759,22 @@ export function shouldEnableDevToolsShortcut(isPackaged: boolean): boolean {
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * 윈도우 아이콘 해석 — 아트워크가 있으면 사용, 없으면 undefined(기본값).
+ * - `public/icon.png`를 두면 vite가 `dist/client/icon.png`로 복사해 패키징에 포함된다.
+ * - 설치형 exe 아이콘(`build/icon.ico` + electron.builder.yml `win.icon`)과
+ *   NSIS 아트워크는 별도 Owner 확정 필요 — BACKLOG 8번 플래그 참조.
+ */
+function resolveWindowIcon(): string | undefined {
+  const p = path.join(__dirname, '..', '..', 'client', 'icon.png');
+  try {
+    if (fs.existsSync(p)) return p;
+  } catch { /* ignore */ }
+  return undefined;
+}
+
 function createWindow(): void {
+  const windowIcon = resolveWindowIcon();
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -768,6 +783,7 @@ function createWindow(): void {
     title: 'Agent Relay Log',
     backgroundColor: '#17181c',
     autoHideMenuBar: true,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       // contextIsolation defaults to true in Electron 28 — keep default
