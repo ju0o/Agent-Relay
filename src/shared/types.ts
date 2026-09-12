@@ -116,8 +116,10 @@ export type RelayRequest =
  | { op: 'task:resolveOrphan'; dataRoot: string; project: string; taskId: string; action: 'KEEP_WAITING' | 'CONFIRM_FAILED' | 'CONFIRM_CANCELLED'; expectedExecutionState?: TaskExecutionState; reason?: string }
  | { op: 'pm:getNextWork'; dataRoot: string; project: string }
  | { op: 'workers:list'; dataRoot: string }
- | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
- | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
+  | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
+  | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
+  /** V2 R4 — read-only Task timeline (H1 model). No state change. */
+  | { op: 'history:get'; dataRoot: string; project: string; taskId: string }
  | { op: 'task:update'; dataRoot: string; project: string; taskId: string; patch: TaskUpdatePatch }
  | { op: 'task:linkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }
  | { op: 'task:unlinkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }

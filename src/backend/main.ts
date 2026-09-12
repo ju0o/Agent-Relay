@@ -18,6 +18,7 @@ import * as dispatcher from './dispatcher.js';
 import * as pmWork from './pm-work.js';
 import * as orphanResolution from './orphan-resolution.js';
 import * as taskActions from './task-actions.js';
+import { getTaskHistory } from './task-history.js';
 import { authorizeEffect } from './permission-gate.js';
 import { CaptureManager } from './capture-manager.js';
 import { setCaptureManager } from './capture-service.js';
@@ -504,6 +505,12 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
 
     case 'task:list':
       return goalTask.listTasks(req.dataRoot, req.project, req.goalId);
+
+    case 'history:get': {
+      // V2 R4 — read-only Task timeline (H1 model). No state change.
+      if (!req.taskId) throw new Error('taskId가 필요합니다.');
+      return getTaskHistory(req.dataRoot, req.project, req.taskId);
+    }
 
     case 'task:update':
       return goalTask.updateTask(req.dataRoot, req.project, req.taskId, req.patch ?? {});
