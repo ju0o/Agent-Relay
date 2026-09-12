@@ -20,6 +20,7 @@ Usage:
 Commands:
   status              Show project status snapshot
   doctor              Run infrastructure health checks
+  history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
   init                Initialize project (interactive or --yes)
   connect <client>    Configure PM MCP (claude-code)
   host watch          Watch pending PM Deliveries and hand them to the PM Host
@@ -40,6 +41,8 @@ Examples:
   agent-relay status --json
   agent-relay doctor
   agent-relay doctor --json
+  agent-relay history TASK-0001
+  agent-relay history TASK-0001 --json
   agent-relay init
   agent-relay init --yes
   agent-relay init --yes --json
@@ -49,10 +52,11 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
+  let taskId: string | null = null;
   let json = false;
   let noTui = false;
   let help = false;
@@ -87,21 +91,23 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'init' || a === 'connect' || a === 'host')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'init' || a === 'connect' || a === 'host')) {
       command = a;
     } else if ((command === 'connect' || command === 'host') && !sub) {
       sub = a;
+    } else if (command === 'history' && !taskId) {
+      taskId = a;
     } else {
       unknown = a;
       break;
     }
   }
 
-  return { command, sub, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function main(): Promise<void> {
-  const { command, sub, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -171,6 +177,25 @@ async function main(): Promise<void> {
       console.log(renderDoctorHuman(result));
     }
     process.exit(result.ok ? 0 : 1);
+  }
+
+  if (command === 'history') {
+    const { runHistory, renderHistoryHuman, HISTORY_SCHEMA_VERSION } = await import('./history.js');
+    if (!taskId) {
+      const msg = 'Usage: agent-relay history <taskId> [--json]';
+      if (json) console.log(JSON.stringify({ schemaVersion: HISTORY_SCHEMA_VERSION, ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const res = runHistory(cwd, taskId);
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!res.ok && res.error === 'not-initialized') {
+      console.log(notInitializedMessage());
+    } else {
+      console.log(renderHistoryHuman(res));
+    }
+    process.exit(res.ok ? 0 : 1);
   }
 
   if (command === 'init') {
