@@ -793,6 +793,14 @@ function createWindow(): void {
   });
 
   // ── Load UI ──
+  // 개발 중에는 ELECTRON_START_URL(vite dev server, HMR)을 우선한다.
+  // 설정되지 않았거나 packaged 실행이면 기존대로 빌드된 index.html을 읽는다.
+  const devUrl = process.env.ELECTRON_START_URL;
+  if (devUrl) {
+    void mainWindow.loadURL(devUrl);
+    return;
+  }
+
   if (!fs.existsSync(clientPath)) {
     dialog.showErrorBox(
       'Agent Relay Log — index.html 없음',
