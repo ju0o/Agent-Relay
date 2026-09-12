@@ -745,6 +745,11 @@ function dragIcon(): Electron.NativeImage {
   return _dragIcon;
 }
 
+/** DevTools 단축키는 개발 중에만 허용 — packaged production에서는 F12 노출 금지. */
+export function shouldEnableDevToolsShortcut(isPackaged: boolean): boolean {
+  return !isPackaged;
+}
+
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow(): void {
@@ -762,16 +767,18 @@ function createWindow(): void {
     },
   });
 
-  // ── F12 / Ctrl+Shift+I → DevTools (even in production builds) ──
-  mainWindow.webContents.on('before-input-event', (_e, input) => {
-    if (
-      input.type === 'keyDown' &&
-      ((input.key === 'F12') ||
-        (input.control && input.shift && input.key === 'I'))
-    ) {
-      mainWindow?.webContents.openDevTools();
-    }
-  });
+  // ── F12 / Ctrl+Shift+I → DevTools (개발 중에만; production 패키지에서는 비활성화) ──
+  if (shouldEnableDevToolsShortcut(app.isPackaged)) {
+    mainWindow.webContents.on('before-input-event', (_e, input) => {
+      if (
+        input.type === 'keyDown' &&
+        ((input.key === 'F12') ||
+          (input.control && input.shift && input.key === 'I'))
+      ) {
+        mainWindow?.webContents.openDevTools();
+      }
+    });
+  }
 
   // DevTools는 F12 또는 Ctrl+Shift+I로 열 수 있습니다 (위에 등록됨)
 
