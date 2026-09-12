@@ -450,17 +450,22 @@ export function deleteProject(dataRoot: string, project: string): void {
  * Returns the markdown string; does not write anything.
  */
 export function exportRunMarkdown(folder: string): string {
-  const parts = folder.replace(/\\/g, '/').split('/');
-  const runN = parts[parts.length - 1] ?? '';
-  const agentN = parts[parts.length - 2] ?? '';
-  const dateN = parts[parts.length - 3] ?? '';
-  const projN = parts[parts.length - 4] ?? '';
+  // 끝에서부터 run/agent/date 순으로 해석한다 — DATA_ROOT 깊이에 무관.
+  // root 프로젝트('.')는 DATA_ROOT/date/agent/run 3단이라 project 세그먼트가 없다.
+  const segs = folder.replace(/\\/g, '/').split('/').filter((s) => s.length > 0);
+  const runN = segs[segs.length - 1] ?? '';
+  const agentN = segs[segs.length - 2] ?? '';
+  const dateN = segs[segs.length - 3] ?? '';
+  // project 세그먼트는 있을 때만 사용 (root 모드·짧은 경로에서는 빈 문자열).
+  const projN = segs.length >= 4 ? (segs[segs.length - 4] ?? '') : '';
 
   const prompt = readMarkdown(folder, 'prompt.md');
   const result = readMarkdown(folder, 'result.md');
   const tags = readRunMeta(folder).tags;
 
-  const header = `# ${projN} · ${agentN} · ${dateN} · Run ${runN}`;
+  const header = projN
+    ? `# ${projN} · ${agentN} · ${dateN} · Run ${runN}`
+    : `# ${agentN} · ${dateN} · Run ${runN}`;
   const tagLine = tags.length ? `\n> 태그: ${tags.join(', ')}` : '';
   const sections: string[] = [header + tagLine];
   if (prompt) sections.push(`\n## Prompt\n\n${prompt}`);
@@ -521,7 +526,8 @@ export function resolveResultPath(folder: string): string {
 
 /**
  * Move a run folder to a new project/date/agent location.
- * Copies all files, deletes the source, returns the new folder path.
+ * Copies all files AND subdirectories recursively, deletes the source,
+ * returns the new folder path.
  */
 export function moveRun(
   fromFolder: string,
@@ -533,8 +539,12 @@ export function moveRun(
   const nextRun = nextRunNumber(dataRoot, project, toDate, toAgent);
   const destFolder = ensureRunFolder(dataRoot, project, toDate, toAgent, nextRun);
   for (const entry of fs.readdirSync(fromFolder, { withFileTypes: true })) {
+    const src = path.join(fromFolder, entry.name);
+    const dest = path.join(destFolder, entry.name);
     if (entry.isFile()) {
-      fs.copyFileSync(path.join(fromFolder, entry.name), path.join(destFolder, entry.name));
+      fs.copyFileSync(src, dest);
+    } else if (entry.isDirectory()) {
+      fs.cpSync(src, dest, { recursive: true });
     }
   }
   fs.rmSync(fromFolder, { recursive: true, force: true });
