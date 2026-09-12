@@ -165,26 +165,6 @@ function maxExistingId(dir: string, re: RegExp): number {
   return max;
 }
 
-function allocateExclusiveId(dir: string, prefix: 'GOAL' | 'TASK', re: RegExp): string {
-  fs.mkdirSync(dir, { recursive: true });
-  let n = maxExistingId(dir, re) + 1;
-  for (;;) {
-    const id = padId(prefix, n);
-    const idDir = path.join(dir, id);
-    try {
-      fs.mkdirSync(idDir);
-      return id;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        n += 1;
-        continue;
-      }
-      throw err;
-    }
-  }
-}
-
 // ── monotonic counters for GOAL/TASK IDs ───────────────────────────────────
 
 export function countersPath(dataRoot: string, project: string): string {
@@ -245,10 +225,6 @@ function loadCounters(dataRoot: string, project: string): CountersRecord {
   if (nextEvent !== undefined) out.nextEventNumber = nextEvent;
   if (nextNote !== undefined) out.nextNoteNumber = nextNote;
   return out;
-}
-
-function saveCounters(dataRoot: string, project: string, c: CountersRecord): void {
-  writeJsonAtomic(countersPath(dataRoot, project), c);
 }
 
 function allocateGoalIdWithCounter(dataRoot: string, project: string): string {

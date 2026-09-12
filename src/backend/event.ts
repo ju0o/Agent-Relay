@@ -265,7 +265,7 @@ export function defaultSeverityForType(type: EventType): EventSeverity {
  * They must not unnecessarily re-wake PM; PM already discovers the resulting
  * state (VERIFYING/CHANGES_REQUESTED/READY+PENDING) via get_next_work / reads.
  */
-export function derivePmAttention(type: EventType, severity: EventSeverity): PmAttention {
+export function derivePmAttention(type: EventType, _severity: EventSeverity): PmAttention {
   switch (type) {
     case 'OWNER_DECISION_REQUIRED':
       return { required: true, reason: 'Owner/PM decision required', priority: 'HIGH' };

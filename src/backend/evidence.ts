@@ -49,7 +49,6 @@ import {
   findTaskByRunId,
   getGoal,
   getTask,
-  listTasks,
   relayDir,
   writeJsonAtomic,
   CountersRecord,

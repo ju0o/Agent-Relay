@@ -757,8 +757,8 @@ async function resumeAcceptApply(  dataRoot: string,
 }
 
 async function failRecord(
-  dataRoot: string,
-  project: string,
+  _dataRoot: string,
+  _project: string,
   folder: string,
   record: PmJudgmentRecord,
   err: unknown,

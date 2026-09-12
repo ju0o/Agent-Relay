@@ -445,10 +445,6 @@ function nextTimestamp(previous: string): string {
   return new Date(candidate > prior ? candidate : prior + 1).toISOString();
 }
 
-function planJsonPath(folder: string): string {
-  return path.join(folder, 'plan.json');
-}
-
 function readExecutionPlan(dataRoot: string, project: string, planId: string): ExecutionPlanRecord {
   const file = executionPlanPath(dataRoot, project, planId);
   let raw: string;

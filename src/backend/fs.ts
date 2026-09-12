@@ -18,7 +18,6 @@ import {
   DfType,
   DEFAULT_AGENTS,
   HistoryItem,
-  PROJECT_DF_TYPE_LABELS,
   ProjectInfo,
   ROOT_PROJECT,
   dfTypeFromText,
