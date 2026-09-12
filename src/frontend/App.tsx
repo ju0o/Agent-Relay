@@ -10,6 +10,11 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { renderMd } from './md.js';
+import {
+  flushWorktabSnapshots,
+  MAX_RESTORE_TABS,
+  readWorktabSnapshots,
+} from './worktabs.js';
 import { SessionBindingStatus } from './SessionBindingStatus.js';
 import {
   DEFAULT_AGENTS,
@@ -317,8 +322,26 @@ function AppInner(): React.ReactElement {
     tabDragFrom.current = null;
     setTabDragOver(null);
     if (from === null || from === toIndex || from >= tabs.length) return;
-    // Work Tab 순서는 현재 세션 동안만 유지 (영구 저장은 BACKLOG)
+    // 순서는 작업탭 스냅샷(localStorage)으로 영속된다 — 재실행 시 복원됨.
     updateActiveSession({ tabs: reorderArray(tabs, from, toIndex) });
+  }
+
+  // ── 터치/키보드 대체 순서 이동 (BACKLOG 11번: HTML5 mouse DnD 대체 수단) ──
+  // 드래그 없이 활성 탭/세션을 한 칸씩 이동한다. 마우스 DnD와 동일한 함수를 쓰므로
+  // 영속 동작(persistProjectOrder/스냅샷)도 그대로 따라간다.
+  function moveActiveWorkTab(dir: -1 | 1): void {
+    const idx = tabs.findIndex(t => t.id === activeTabId);
+    const to = idx + dir;
+    if (idx < 0 || to < 0 || to >= tabs.length) return;
+    updateActiveSession({ tabs: reorderArray(tabs, idx, to) });
+  }
+  function moveActiveSession(dir: -1 | 1): void {
+    const idx = sessions.findIndex(s => s.id === activeSessionId);
+    const to = idx + dir;
+    if (idx < 0 || to < 0 || to >= sessions.length) return;
+    const next = reorderArray(sessions, idx, to);
+    setSessions(next);
+    persistProjectOrder(next);
   }
 
   function onAgentPillDrop(toIndex: number): void {
@@ -962,6 +985,55 @@ function AppInner(): React.ReactElement {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [sessions]);
 
+  // sessionsRef: pagehide 플러시가 최신 상태를 읽도록 매 렌더마다 갱신
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  // ── 작업탭 스냅샷 영속 (디바운스 저장 + 종료 플러시) ──
+  useEffect(() => {
+    const h = setTimeout(() => flushWorktabSnapshots(sessions), 500);
+    return () => clearTimeout(h);
+  }, [sessions]);
+  useEffect(() => {
+    function onFlush(): void { flushWorktabSnapshots(sessionsRef.current); }
+    window.addEventListener('pagehide', onFlush);
+    return () => window.removeEventListener('pagehide', onFlush);
+  }, []);
+
+  // ── 저장된 작업탭 복원 (폴더 → 디스크 재독, 초안 → 캐시 복원) ──
+  // 폴더가 사라졌으면 빈 탭(동일 Agent)으로 강등 — 절대 크래시하지 않는다.
+  async function restoreWorkTabs(sessId: string, projectName: string): Promise<void> {
+    const snap = readWorktabSnapshots()[projectName];
+    if (!snap || !snap.tabs.length) return;
+    const tabs: EditorTab[] = [];
+    for (const p of snap.tabs.slice(0, MAX_RESTORE_TABS)) {
+      const tab = makeTab(p.agent || DEFAULT_AGENTS[0]);
+      tab.folder = p.folder || '';
+      tab.run = p.run || '';
+      if (p.folder) {
+        try {
+          const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: p.folder });
+          tab.prompt = rec.prompt; tab.result = rec.result;
+          tab.tags = rec.tags ?? p.tags ?? [];
+          tab.promptSaved = true; tab.resultSaved = true;
+        } catch {
+          tab.folder = ''; tab.run = '';
+          if (p.draftPrompt) tab.prompt = p.draftPrompt;
+          if (p.draftResult) tab.result = p.draftResult;
+          if (p.tags) tab.tags = [...p.tags];
+        }
+      } else {
+        if (p.draftPrompt) tab.prompt = p.draftPrompt;
+        if (p.draftResult) tab.result = p.draftResult;
+        if (p.tags) tab.tags = [...p.tags];
+      }
+      tabs.push(tab);
+    }
+    if (!tabs.length) return;
+    const activeTab = tabs[Math.min(snap.activeIndex, tabs.length - 1)]!;
+    setSessions(prev => prev.map(s => s.id === sessId ? { ...s, tabs, activeTabId: activeTab.id } : s));
+  }
+
   // ── 키보드 단축키 ─────────────────────────────────────────────────────────────
   const actionsRef = useRef({ saveActiveBoth: () => {}, newRunInActive: () => {}, addNewTab: () => {} });
   actionsRef.current = {
@@ -1020,16 +1092,17 @@ function AppInner(): React.ReactElement {
 
   // ── 프로젝트 세션 열기 ────────────────────────────────────────────────────────
   // 이미 열려있는 세션 → 전환. 현재 세션이 비어있으면 → 재사용. 그 외 → 새 세션 생성.
-  async function openProjectSession(name: string, root?: string): Promise<void> {
-    if (!name) return;
+  // 새로 열린 세션에는 저장된 작업탭 스냅샷이 있으면 복원한다. 세션 ID를 반환한다.
+  async function openProjectSession(name: string, root?: string): Promise<string | null> {
+    if (!name) return null;
     const rootPath = root ?? dataRoot;
-    if (!rootPath) return;
+    if (!rootPath) return null;
 
     // 이미 같은 프로젝트가 열려있으면 해당 세션으로 전환
     const existing = sessions.find(s => s.project === name);
     if (existing) {
       setActiveSessionId(existing.id);
-      return;
+      return existing.id;
     }
 
     // 현재 세션에 프로젝트가 없으면 현재 세션을 이 프로젝트로 설정
@@ -1071,6 +1144,10 @@ function AppInner(): React.ReactElement {
           : s.tabs,
       };
     }));
+
+    // 저장된 작업탭(순서 + 활성 탭 + 미저장 초안) 복원
+    await restoreWorkTabs(newSessId, name);
+    return newSessId;
   }
 
   // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
@@ -1350,6 +1427,16 @@ function AppInner(): React.ReactElement {
               onClick={addSession}
               title="새 프로젝트 탭 추가"
             >+</button>
+            <button
+              className="proj-tab-add"
+              onClick={() => moveActiveSession(-1)}
+              title="활성 프로젝트 탭을 왼쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+            >‹</button>
+            <button
+              className="proj-tab-add"
+              onClick={() => moveActiveSession(1)}
+              title="활성 프로젝트 탭을 오른쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+            >›</button>
           </div>
 
           {/* 글로벌 필드 (날짜 + 저장위치) */}
@@ -1447,6 +1534,16 @@ function AppInner(): React.ReactElement {
                   onClick={() => void addTab()}
                   title="새 병렬 탭 추가 (Ctrl+T)"
                 >+ 새 탭</button>
+                <button
+                  className="tab-btn add"
+                  onClick={() => moveActiveWorkTab(-1)}
+                  title="활성 작업 탭을 왼쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+                >‹</button>
+                <button
+                  className="tab-btn add"
+                  onClick={() => moveActiveWorkTab(1)}
+                  title="활성 작업 탭을 오른쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+                >›</button>
               </div>
 
               {/* 탭 헤더: 에이전트 선택 + 태그 + 액션 */}
