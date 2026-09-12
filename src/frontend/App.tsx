@@ -513,7 +513,7 @@ function AppInner(): React.ReactElement {
         };
       }));
     };
-    if (tab.prompt || tab.result) {
+    if ((tab.prompt.trim() && !tab.promptSaved) || (tab.result.trim() && !tab.resultSaved)) {
       setConfirm({ text: `탭 "${tab.agent} #${tab.run || '?'}"을 닫을까요?\n저장되지 않은 내용은 사라집니다.`, confirmBtn: '닫기', onOk: doRemove });
     } else {
       doRemove();
@@ -929,12 +929,35 @@ function AppInner(): React.ReactElement {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const text = ev.target?.result as string;
-        updateTab(tabId, pane === 'prompt' ? { prompt: text } : { result: text });
+        updateTab(tabId, pane === 'prompt' ? { prompt: text, promptSaved: false } : { result: text, resultSaved: false });
         notify('info', `${file.name} 불러옴`);
       };
       reader.readAsText(file, 'utf-8');
     };
   }
+
+  // ── 미저장 판정: 내용물이 있는데 디스크에 저장되지 않은 탭 ──
+  // 저장 후 편집하면 onChange에서 saved 플래그를 false로 되돌리므로 재경고된다.
+  function isTabUnsaved(t: EditorTab): boolean {
+    return (
+      (!!t.prompt.trim() && !t.promptSaved) ||
+      (!!t.result.trim() && !t.resultSaved)
+    );
+  }
+
+  // ── 앱 종료(새로고침/닫기) 시 미저장 내용이 있으면 네이티브 경고 ──
+  // 세션 전환 자체는 tabs 상태를 보존하므로 파괴적이지 않다; 진짜 유실 지점은
+  // 앱 종료(메모리 상태 소멸)이며, 초안 영속 저장은 별도 설계가 필요해 플래그 대상이다.
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent): void {
+      const dirty = sessions.some(s => s.tabs.some(isTabUnsaved));
+      if (dirty) {
+        e.preventDefault();
+      }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [sessions]);
 
   // ── 키보드 단축키 ─────────────────────────────────────────────────────────────
   const actionsRef = useRef({ saveActiveBoth: () => {}, newRunInActive: () => {}, addNewTab: () => {} });
@@ -1398,7 +1421,7 @@ function AppInner(): React.ReactElement {
                       {tab.agent}
                       {tab.run && <span className="tab-runnum"> #{tab.run}</span>}
                     </span>
-                    {(tab.prompt || tab.result) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
+                    {isTabUnsaved(tab) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
                     <button
                       className="tab-close"
                       onClick={e => { e.stopPropagation(); removeTab(tab.id); }}
@@ -1519,7 +1542,7 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.prompt) }} />
                       : <textarea
                           value={activeTab.prompt}
-                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value })}
+                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value, promptSaved: false })}
                           placeholder={'# GPT에게 받은 다음 프롬프트를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
                           spellCheck={false}
                         />
@@ -1641,7 +1664,7 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.result) }} />
                       : <textarea
                           value={activeTab.result}
-                          onChange={e => updateTab(activeTab.id, { result: e.target.value })}
+                          onChange={e => updateTab(activeTab.id, { result: e.target.value, resultSaved: false })}
                           placeholder={'# 에이전트 실행 결과 보고서를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
                           spellCheck={false}
                         />
