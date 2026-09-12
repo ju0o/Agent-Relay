@@ -2,21 +2,34 @@
 
 우선순위 없는 단순 목록. 코드상 확인되는 사실만 기록한다.
 
-## 남은 개선 후보
+## 남은 개선 후보 (Owner 판단 필요 — flagged, 미착수/부분)
 
-- [ ] `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행 (package.json)
-- [ ] DevTools가 production에서도 F12로 열림 (src/backend/main.ts)
-- [ ] `moveRun`이 런 폴더의 **최상위 파일만** 복사함 — 하위 폴더는 이동하지 않음 (src/backend/fs.ts)
-- [ ] `exportRunMarkdown`이 폴더 경로 깊이(4세그먼트)를 가정해 헤더를 파싱함 (src/backend/fs.ts)
-- [ ] 편집 탭 미저장 내용이 프로젝트 세션 전환/앱 종료 시 유실됨 — 종료 경고 없음
-- [ ] Dogfooding 피드백 검색/Type 필터는 미지원 (Status 필터만 있음)
-- [ ] drag-out은 사용자 제스처(mousedown)가 필요 — 키보드만으로는 불가
 - [ ] 앱 아이콘 미설정 — electron-builder 기본 Electron 아이콘 사용 중 (build/ 리소스 필요)
+      ※ 배선만 완료 (`resolveWindowIcon` — `public/icon.png` 있으면 자동 사용).
+      실제 아트워크(`build/icon.ico` + `win.icon` 설정) 확정 필요 → Owner 판단 요청.
 - [ ] Work Tab 순서 영구 저장 — v0.3은 session-only (App.tsx onWorkTabDrop 주석 참조)
-- [ ] 마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원 — lastProject만 복원됨
+      ※ 탭 자체가 재실행 시 복원되지 않으므로 순서만 저장해도 효과 없음.
+      탭 내용 영속 여부와 함께 설계 결정 필요 → Owner 판단 요청.
 - [ ] Drag Reorder 터치 지원 — v0.3은 HTML5 mouse DnD만 (Windows Desktop 우선 원칙)
-- [ ] electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨
-- [ ] Quick Capture 저장 직후 pdMode가 닫혀있으면 알림만 표시 — 목록 확인은 다시 열어야 함
+      ※ Pointer Events 전면 개편이 필요해 V1 안정 UI 변경 리스크 있음.
+      Windows Desktop 우선 원칙상 deferred 권장 → Owner 판단 요청.
+- [ ] 편집 탭 미저장 초안의 재실행 후 복원 (crash-safe draft persistence)
+      ※ 종료 경고(`beforeunload`)는 완료. 디스크 영속은 저장 스키마 설계 문제 → Owner 판단 요청.
+- [ ] 마지막 작업 탭(active tab) 전체 복원 — lastProject/lastAgent만 복원됨
+      ※ 탭 내용 영속과 동일 설계 문제 → Owner 판단 요청.
+
+## 완료된 것 (v0.3.2 — BACKLOG 정리)
+
+- [x] `npm run dev`에 watch/HMR — `dev:client`/`dev:server`/`dev:hmr` 추가 + `ELECTRON_START_URL` 분기 (package.json, main.ts)
+- [x] DevTools가 production에서도 F12로 열림 → dev-only 게이트 (`shouldEnableDevToolsShortcut`) (src/backend/main.ts)
+- [x] `moveRun`이 런 폴더의 **최상위 파일만** 복사함 → 하위 폴더 재귀 복사 (src/backend/fs.ts)
+- [x] `exportRunMarkdown`이 폴더 경로 깊이(4세그먼트)를 가정해 헤더를 파싱함 → 끝에서부터 해석 + 짧은 경로 내성 (src/backend/fs.ts)
+- [x] 편집 탭 미저장 내용이 앱 종료 시 유실됨, 종료 경고 없음 → dirty tracking + `beforeunload` 경고 (App.tsx)
+- [x] Dogfooding 피드백 검색/Type 필터 미지원 → Type 필터 + 텍스트 검색 추가 (dogfooding.tsx)
+- [x] drag-out은 사용자 제스처(mousedown)가 필요, 키보드만으로는 불가 → Enter/Space 동작 + 경로 복사 대체 버튼 (App.tsx)
+- [x] 마지막 선택 Agent 재실행 시 복원 — `lastAgent` 설정 persist + 초기 탭/새 탭 적용 (types.ts, main.ts, App.tsx)
+- [x] electron-updater 의존성 트리 자동 점검 → `npm run check:updater` 스크립트 (scripts/verify-updater-deps.mjs)
+- [x] Quick Capture 저장 직후 pdMode가 닫혀있으면 알림만 표시 → 저장 후 목록 자동 표시 (App.tsx)
 
 ## 완료된 것 (v0.2.0)
 
