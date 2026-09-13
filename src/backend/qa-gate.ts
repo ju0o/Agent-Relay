@@ -681,6 +681,29 @@ async function handleTerminalFail(
   if (!sourceMeta.workerId || !sourceMeta.workspaceRoot) {
     throw new QaGateError('INVALID_STATE', `QA gate: failing Run ${attempt.runId} has no authoritative worker/workspace binding.`);
   }
+  // Binding pre-validation (validate before authorizing): the remediation
+  // binding is checked BEFORE any preparation is created. A preparation
+  // snapshots the failing Run's binding at creation and later reconciles
+  // reuse the existing preparation instead of re-snapshotting — so creating
+  // one from a currently-invalid binding (transient registry/workspace
+  // failure, corrupted Run meta) would poison the durable record and wedge
+  // the Task permanently, with no sanctioned recourse. Failures here create
+  // nothing and consume no budget; the Task stays RESULT_RECEIVED+PENDING
+  // and a later reconcile retries from fresh durable state.
+  // (dispatchFromPreparation re-validates for the creation→dispatch crash
+  // window — each check guards its own window.)
+  try {
+    loadWorkerRegistryRecord(dataRoot, sourceMeta.workerId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new QaGateError('INVALID_STATE', `QA gate: remediation worker unavailable: ${msg}`);
+  }
+  try {
+    validateWorkspaceRoot(sourceMeta.workspaceRoot);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new QaGateError('INVALID_STATE', `QA gate: remediation workspace revalidation failed: ${msg}`);
+  }
   let created: QaRemediationPreparationRecord;
   try {
     created = await createQaRemediationPreparation(dataRoot, project, {

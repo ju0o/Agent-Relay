@@ -37,6 +37,8 @@ import {
   listWorkerRegistryRecords,
   toPublicWorkerView,
   type WorkerRegistryPublicView,
+  type WorkerRegistryRecord,
+  type ActlDriverOptions,
   type ClaudePermissionMode,
   WorkerRegistryError,
 } from './worker-registry.js';
@@ -54,6 +56,42 @@ import {
 } from './observation-lock.js';
 import type { ExecutionBinding } from './result-bridge.js';
 import type { TaskExecutionState, TaskRecord } from '../shared/types.js';
+import {
+  ActlBridgeError,
+  composeManagedWorkerPrompt,
+  composeWirePrompt,
+  computeCommandId,
+  correlationDigestForRun,
+  ensureRelayInstanceId,
+  expectedContextFromActl,
+  expectedContextFromBinding,
+  extractPaneIdFromActlData,
+  frozenExpectedContextFromReserve,
+  invokeActlRuntimeOrThrow,
+  invokeActlRuntime,
+  isPostAttemptSendAmbiguity,
+  newRequestId,
+  obtainInputPermit,
+  readRuntimeBinding,
+  scopeFields,
+  setActlInputPermitFactory,
+  writeFileAtomicInRun,
+  writeRuntimeBinding,
+  type ActlRuntimeBinding,
+} from './actl-bridge.js';
+import {
+  tryAcquireActlManagedDataRootLock,
+  _resetActlDataRootLocksForTests,
+  actlManagedDataRootLockPath,
+  ActlDataRootLockError,
+  type ActlDataRootLockHandle,
+} from './actl-data-root-lock.js';
+import {
+  ACTL_MANAGED_ADAPTER_ID,
+  deliverActlManagedCompletion,
+  ensureActlManagedAdapterRegistered,
+} from '../integrations/actl-managed/watch.js';
+import type { AgentCompletion } from '../integrations/core/types.js';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -153,7 +191,9 @@ export class DispatcherError extends Error {
     | 'WORKER_UNAVAILABLE'
     | 'LAUNCH_FAILED'
     | 'ORPHAN_SUSPECTED'
-    | 'INTERNAL_ERROR';
+    | 'INTERNAL_ERROR'
+    /** Post-attempt send delivery unknown — Task stays DISPATCHED; never alias to LAUNCH_FAILED. */
+    | 'DELIVERY_AMBIGUOUS';
 
   constructor(code: DispatcherError['code'], message: string) {
     super(message);
@@ -201,6 +241,15 @@ let afterLinkHook: (() => Promise<void>) | null = null;
 /** Optional hook after spawn success + exit listener / before DISPATCHED→RUNNING CAS (tests only). */
 let afterSpawnHook: (() => Promise<void>) | null = null;
 
+/** Test-only: force capture arm failure on actl-managed path (proves no send). */
+let actlArmFailForTests: Error | null = null;
+
+/** Test-only: override actl collect/send timing budget. */
+let actlCollectTimeoutMsForTests: number | null = null;
+
+/** Test-only: override actl send invoke timeout (hang-send fixtures). */
+let actlSendTimeoutMsForTests: number | null = null;
+
 /** Lazy one-shot recovery keys already scanned: resolve(dataRoot)@@project */
 const recoveryScanned = new Set<string>();
 
@@ -215,6 +264,20 @@ export function _setAfterLinkHookForTests(fn: (() => Promise<void>) | null): voi
 export function _setAfterSpawnHookForTests(fn: (() => Promise<void>) | null): void {
   afterSpawnHook = fn;
 }
+
+export function _setActlArmFailForTests(err: Error | null): void {
+  actlArmFailForTests = err;
+}
+
+export function _setActlCollectTimeoutMsForTests(ms: number | null): void {
+  actlCollectTimeoutMsForTests = ms;
+}
+
+export function _setActlSendTimeoutMsForTests(ms: number | null): void {
+  actlSendTimeoutMsForTests = ms;
+}
+
+export { setActlInputPermitFactory, actlManagedDataRootLockPath };
 
 export function _resetDispatcherStateForTests(): void {
   for (const live of activeDispatches.values()) {
@@ -231,7 +294,12 @@ export function _resetDispatcherStateForTests(): void {
   spawnImpl = spawn;
   afterLinkHook = null;
   afterSpawnHook = null;
+  actlArmFailForTests = null;
+  actlCollectTimeoutMsForTests = null;
+  actlSendTimeoutMsForTests = null;
+  setActlInputPermitFactory(null);
   _resetObservationLocksForTests();
+  _resetActlDataRootLocksForTests();
 }
 
 /**
@@ -782,6 +850,34 @@ export async function dispatchTask(
       );
     }
 
+    const actlOpts = worker.driverOptions?.actl;
+    const wantsActlManaged =
+      observationAdapterId === ACTL_MANAGED_ADAPTER_ID || actlOpts !== undefined;
+    if (wantsActlManaged) {
+      if (observationAdapterId !== ACTL_MANAGED_ADAPTER_ID || !actlOpts) {
+        throw new DispatcherError(
+          'INVALID_ARGUMENT',
+          "actl-managed dispatch requires observationAdapterId='actl-managed' and driverOptions.actl",
+        );
+      }
+      return await runActlManagedDispatch({
+        root,
+        proj,
+        taskId,
+        workerId,
+        worker,
+        actl: actlOpts,
+        workspaceRoot,
+        key,
+        live,
+        dispatchedAt,
+        retryContext,
+        ownerApprovalContext,
+        qaRemediationContext,
+        afterLinkHook,
+      });
+    }
+
     // Resolve once, before Run persistence and capture arm. This is the
     // Worker launch context that must be shared with Claude observation.
     if (observationAdapterId === 'claude-code') {
@@ -1205,4 +1301,1055 @@ export async function dispatchTask(
 /** Path helper used by tests to assert trusted registry root. */
 export function trustedWorkersRoot(dataRoot: string): string {
   return path.join(path.resolve(dataRoot), '_relay', 'workers');
+}
+
+// ── Phase 2 actl-managed branch (§9.2) ───────────────────────────────────────
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function mapActlBridgeError(err: unknown): never {
+  if (err instanceof DispatcherError) throw err;
+  if (err instanceof ActlDataRootLockError) {
+    throw new DispatcherError('CONFLICT', err.message);
+  }
+  if (err instanceof ActlBridgeError) {
+    if (err.code === 'DELIVERY_AMBIGUOUS') {
+      throw new DispatcherError('DELIVERY_AMBIGUOUS', err.message);
+    }
+    if (err.code === 'BUSY' || err.code === 'CONFLICT') {
+      throw new DispatcherError('CONFLICT', err.message);
+    }
+    if (
+      err.code === 'INVALID_ARGUMENT'
+      || err.code === 'FORBIDDEN'
+      || err.code === 'UNSUPPORTED'
+      || err.code === 'MISMATCH'
+      || err.code === 'UNMAPPED'
+      || err.code === 'DOWN'
+      || err.code === 'INPUT_STATE_UNKNOWN'
+      || err.code === 'AMBIGUOUS_SESSION'
+      || err.code === 'RESULT_NOT_FINAL'
+    ) {
+      throw new DispatcherError(
+        err.code === 'DOWN' || err.code === 'UNMAPPED' ? 'WORKER_UNAVAILABLE' : 'INVALID_ARGUMENT',
+        `${err.code}: ${err.message}`,
+      );
+    }
+    if (err.code === 'LAUNCH_FAILED') {
+      throw new DispatcherError('LAUNCH_FAILED', err.message);
+    }
+    // Bare TIMEOUT outside send-ambiguity handling → INVALID_STATE (not LAUNCH_FAILED).
+    if (err.code === 'TIMEOUT') {
+      throw new DispatcherError('INVALID_STATE', `TIMEOUT: ${err.message}`);
+    }
+    throw new DispatcherError('INTERNAL_ERROR', `${err.code}: ${err.message}`);
+  }
+  throw err instanceof Error
+    ? new DispatcherError('INTERNAL_ERROR', err.message)
+    : new DispatcherError('INTERNAL_ERROR', String(err));
+}
+
+async function recordDeliveryAmbiguousAndThrow(args: {
+  root: string;
+  proj: string;
+  taskId: string;
+  runId: string;
+  goalId: string;
+  workerId: string;
+  commandId: string;
+  createdFolder: string;
+  binding: ActlRuntimeBinding;
+  err: ActlBridgeError;
+}): Promise<never> {
+  const code = args.err.code === 'DELIVERY_AMBIGUOUS' ? 'DELIVERY_AMBIGUOUS' : args.err.code;
+  const next: ActlRuntimeBinding = {
+    ...args.binding,
+    collectStatus: 'DELIVERY_AMBIGUOUS',
+    transportReceipt: args.err.envelope?.data ?? {
+      code,
+      sideEffect: args.err.sideEffect ?? 'POSSIBLE_INPUT',
+      detail: args.err.message,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  writeRuntimeBinding(args.createdFolder, next);
+  try {
+    await recordRuntimeWarning(args.root, args.proj, {
+      summary:
+        `DELIVERY_AMBIGUOUS: actl send for Task ${args.taskId} command ${args.commandId} `
+        + `(${code}, sideEffect=${args.err.sideEffect ?? 'unknown'}); do not resend.`,
+      taskId: args.taskId,
+      runId: args.runId,
+      goalId: args.goalId,
+      source: { kind: 'dispatcher', subsystem: 'actl-send' },
+      details: {
+        commandId: args.commandId,
+        workerId: args.workerId,
+        code,
+        sideEffect: args.err.sideEffect ?? null,
+      },
+    });
+  } catch { /* ignore */ }
+  // Keep Task DISPATCHED; keep observation lock + activeDispatches; never LAUNCH_FAILED.
+  throw new DispatcherError(
+    'DELIVERY_AMBIGUOUS',
+    `DELIVERY_AMBIGUOUS: ${args.err.message}`,
+  );
+}
+
+async function runActlManagedDispatch(args: {
+  root: string;
+  proj: string;
+  taskId: string;
+  workerId: string;
+  worker: WorkerRegistryRecord;
+  actl: ActlDriverOptions;
+  workspaceRoot: string;
+  key: string;
+  live: LiveDispatch;
+  dispatchedAt: string;
+  retryContext: DispatchRequest['retryContext'];
+  ownerApprovalContext: DispatchRequest['ownerApprovalContext'];
+  qaRemediationContext: DispatchRequest['qaRemediationContext'];
+  afterLinkHook: (() => Promise<void>) | null;
+}): Promise<DispatchResult> {
+  const {
+    root,
+    proj,
+    taskId,
+    workerId,
+    worker,
+    actl,
+    workspaceRoot,
+    key,
+    live,
+    dispatchedAt,
+    retryContext,
+    ownerApprovalContext,
+    qaRemediationContext,
+  } = args;
+
+  const actlAbs = worker.launchCommand;
+  if (!path.isAbsolute(actlAbs)) {
+    throw new DispatcherError(
+      'INVALID_ARGUMENT',
+      'actl-managed launchCommand must be an absolute actl executable path.',
+    );
+  }
+
+  live.observationAdapterId = ACTL_MANAGED_ADAPTER_ID;
+  live.workspaceRoot = workspaceRoot;
+
+  // §9.3: dataRoot OS advisory exclusive lock before any managed mutation.
+  let dataRootLock: ActlDataRootLockHandle | undefined;
+  try {
+    dataRootLock = await tryAcquireActlManagedDataRootLock(root);
+  } catch (err) {
+    activeDispatches.delete(key);
+    mapActlBridgeError(err);
+  }
+
+  const scope = scopeFields(actl.socketPath);
+  // Preflight context has no remapped pane — live status/reserve supply the exact paneId.
+  let expectedContext: Record<string, unknown> = expectedContextFromActl(actl, workspaceRoot);
+
+  // §9.2: actl read-only preflight BEFORE observation lock / Run commit.
+  try {
+    const status = await invokeActlRuntimeOrThrow(actlAbs, 'status', {
+      contractVersion: 1,
+      requestId: newRequestId(),
+      operation: 'status',
+      runtimeId: actl.runtimeId,
+      expectedContext,
+      ...scope,
+    });
+    const statusPane = extractPaneIdFromActlData(status.data);
+    if (statusPane) {
+      expectedContext = { ...expectedContext, paneId: statusPane };
+    }
+  } catch (err) {
+    dataRootLock?.release();
+    activeDispatches.delete(key);
+    mapActlBridgeError(err);
+  }
+
+  let observationLock: ObservationLockHandle | undefined;
+  let createdFolder: string | undefined;
+  let createdRunId: string | undefined;
+  let committedDispatch = false;
+  let sendAttempted = false;
+  /** When true, leave observation lock + activeDispatches for operator (ambiguity). */
+  let retainManagedHold = false;
+
+  try {
+    try {
+      observationLock = tryAcquireObservationLock({
+        observationAdapterId: ACTL_MANAGED_ADAPTER_ID,
+        workspaceRoot,
+        taskId,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      activeDispatches.delete(key);
+      if (err instanceof ObservationLockError) {
+        throw new DispatcherError('CONFLICT', msg);
+      }
+      throw new DispatcherError('CONFLICT', msg);
+    }
+    live.observationLock = observationLock;
+
+    const agentLabel = `worker-${worker.workerId}`;
+    const materialized = await atomicMaterializeRun(root, proj, todayString(), agentLabel);
+    createdFolder = materialized.folder;
+    createdRunId = materialized.runId;
+    observationLock = bindObservationLockRunId(observationLock, createdRunId);
+    live.observationLock = observationLock;
+    live.runId = createdRunId;
+    live.captureFolder = createdFolder;
+
+    const meta = readRunMeta(createdFolder);
+    writeRunMeta(createdFolder, {
+      ...meta,
+      workspaceRoot,
+      workerId,
+      ...(retryContext
+        ? { retryPreparationId: retryContext.preparationId, sourceRunId: retryContext.sourceRunId }
+        : {}),
+      ...(qaRemediationContext
+        ? {
+            qaRemediationPreparationId: qaRemediationContext.preparationId,
+            sourceRunId: qaRemediationContext.sourceRunId,
+          }
+        : {}),
+      ...(ownerApprovalContext
+        ? { ownerApprovedScopeFingerprint: ownerApprovalContext.scopeFingerprint }
+        : {}),
+    });
+
+    let task = getTask(root, proj, taskId);
+    await linkRunToTask(root, proj, taskId, materialized.folder);
+
+    if (args.afterLinkHook) {
+      await args.afterLinkHook();
+    }
+
+    if (retryContext) {
+      writeFileAtomicText(
+        createdFolder,
+        'retry-context.json',
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            preparationId: retryContext.preparationId,
+            sourceRunId: retryContext.sourceRunId,
+            taskId,
+            judgmentId: retryContext.judgmentId,
+            deliveryId: retryContext.deliveryId,
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      writeFileAtomicText(createdFolder, 'prompt.md', retryContext.prompt);
+    } else if (qaRemediationContext) {
+      writeFileAtomicText(
+        createdFolder,
+        'qa-remediation-context.json',
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            preparationId: qaRemediationContext.preparationId,
+            qaRemediationPreparationId: qaRemediationContext.preparationId,
+            sourceRunId: qaRemediationContext.sourceRunId,
+            taskId,
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      writeFileAtomicText(createdFolder, 'prompt.md', qaRemediationContext.prompt);
+    } else {
+      const prompt = composeManagedWorkerPrompt(task, createdRunId);
+      writeFileAtomicText(createdFolder, 'prompt.md', prompt);
+    }
+
+    const promptMd = fs.readFileSync(path.join(createdFolder, 'prompt.md'), 'utf8');
+    const relayInstanceId = ensureRelayInstanceId(root);
+    const commandId = computeCommandId({
+      relayInstanceId,
+      project: proj,
+      taskId,
+      runId: createdRunId,
+    });
+    const { wirePrompt, promptSha256 } = composeWirePrompt(commandId, promptMd);
+    writeFileAtomicInRun(createdFolder, 'wire-prompt.txt', wirePrompt);
+
+    const reserveRequestId = newRequestId();
+    let binding: ActlRuntimeBinding = {
+      schemaVersion: 1,
+      relayInstanceId,
+      project: proj,
+      taskId,
+      runId: createdRunId,
+      runtimeId: actl.runtimeId,
+      agentKind: 'codex',
+      expectedProfileRoot: actl.expectedProfileRoot,
+      socketPath: actl.socketPath,
+      workspaceRoot: path.resolve(workspaceRoot),
+      commandId,
+      wirePromptSha256: promptSha256,
+      reserveRequestId,
+      updatedAt: new Date().toISOString(),
+    };
+    writeRuntimeBinding(createdFolder, binding);
+
+    // Persist grant reference (no input yet).
+    const correlationDigest = correlationDigestForRun({
+      relayInstanceId,
+      project: proj,
+      taskId,
+      runId: createdRunId,
+      commandId,
+    });
+    const reserve = await invokeActlRuntimeOrThrow(actlAbs, 'reserve', {
+      contractVersion: 1,
+      requestId: reserveRequestId,
+      operation: 'reserve',
+      action: 'acquire',
+      runtimeId: actl.runtimeId,
+      mode: 'MANAGED',
+      expectedContext,
+      ownerRef: `relay:${relayInstanceId}:${proj}:${taskId}:${createdRunId}`,
+      correlationDigest,
+      ...scope,
+    });
+    const reservationId = String(reserve.data.reservationId ?? '');
+    const leaseToken = String(reserve.data.leaseToken ?? '');
+    const fence = String(reserve.data.fence ?? '');
+    if (!reservationId || !leaseToken || !fence) {
+      throw new ActlBridgeError('INVALID_STATE', 'reserve acquire missing reservationId/leaseToken/fence');
+    }
+    // Freeze exact Managed target from reserve — send must consume this binding unchanged.
+    expectedContext = frozenExpectedContextFromReserve(reserve.data, expectedContext);
+    const frozenPaneId = String(expectedContext.paneId ?? '');
+    binding = {
+      ...binding,
+      reservationId,
+      leaseToken,
+      fence,
+      paneId: frozenPaneId,
+      frozenExpectedContext: expectedContext,
+      observationCursor: reserve.data.observationCursor ?? undefined,
+      collectStatus: 'RESERVED',
+      updatedAt: new Date().toISOString(),
+    };
+    writeRuntimeBinding(createdFolder, binding);
+
+    // CAS READY → DISPATCHED
+    try {
+      task = await transitionTaskExecution(root, proj, taskId, {
+        expectedExecutionState: 'READY',
+        to: 'DISPATCHED',
+        reason: `dispatch:actl-managed:${workerId}`,
+      });
+    } catch (err) {
+      await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
+      createdFolder = undefined;
+      createdRunId = undefined;
+      live.captureFolder = undefined;
+      live.runId = undefined;
+      // Best-effort release of unused reservation (no commands yet).
+      try {
+        await invokeActlRuntime(actlAbs, 'reserve', {
+          contractVersion: 1,
+          requestId: newRequestId(),
+          operation: 'reserve',
+          action: 'release',
+          reservationId,
+          leaseToken,
+          fence,
+          ...scope,
+        });
+      } catch { /* preserve original error */ }
+      if (observationLock) {
+        releaseObservationLock(observationLock);
+        observationLock = undefined;
+        live.observationLock = undefined;
+      }
+      if (err instanceof RuntimeConflictError) {
+        throw new DispatcherError('CONFLICT', err.message);
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new DispatcherError(msg.includes('CONFLICT') ? 'CONFLICT' : 'INVALID_STATE', msg);
+    }
+
+    committedDispatch = true;
+    live.phase = 'dispatched';
+
+    const executionBinding: ExecutionBinding = {
+      dataRoot: root,
+      project: proj,
+      goalId: task.goalId,
+      taskId,
+      runId: createdRunId,
+    };
+
+    const actlManagedWatch = {
+      runtimeId: actl.runtimeId,
+      commandId,
+      socketPath: actl.socketPath,
+      expectedProfileRoot: actl.expectedProfileRoot,
+      agentKind: 'codex' as const,
+      reservationId,
+      fence,
+    };
+
+    try {
+      if (actlArmFailForTests) {
+        throw actlArmFailForTests;
+      }
+      const cm = ensureDispatchCaptureManager();
+      await cm.arm(createdFolder, ACTL_MANAGED_ADAPTER_ID, {
+        folder: createdFolder,
+        isDraft: false,
+        workspaceRoot,
+        actlManaged: actlManagedWatch,
+        executionBinding,
+      });
+    } catch (err) {
+      // Arm failure → no send. Preserve Run; CAS DISPATCHED → FAILED.
+      await cleanupObservationLifecycle(live);
+      observationLock = undefined;
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await transitionTaskExecution(root, proj, taskId, {
+          expectedExecutionState: 'DISPATCHED',
+          to: 'FAILED',
+          reason: `capture arm failure: ${msg}`,
+        });
+      } catch { /* ignore */ }
+      try {
+        await recordRuntimeError(root, proj, {
+          summary: `RUN_FAILED: Capture arm failed for Task ${taskId}; Run preserved; no actl send.`,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          source: { kind: 'dispatcher', subsystem: 'capture-arm' },
+          details: { workerId, observationAdapterId: ACTL_MANAGED_ADAPTER_ID, error: msg },
+        });
+      } catch { /* ignore */ }
+      activeDispatches.delete(key);
+      throw new DispatcherError('LAUNCH_FAILED', `Capture arm failed: ${msg}`);
+    }
+
+    // Fresh Owner inputPermit for the prepared command, then send once.
+    const snapshotHash =
+      typeof reserve.data.currentSnapshotHash === 'string' && reserve.data.currentSnapshotHash.trim()
+        ? reserve.data.currentSnapshotHash.trim()
+        : '';
+    if (!snapshotHash) {
+      await cleanupObservationLifecycle(live);
+      observationLock = undefined;
+      try {
+        await transitionTaskExecution(root, proj, taskId, {
+          expectedExecutionState: 'DISPATCHED',
+          to: 'FAILED',
+          reason: 'actl reserve omitted currentSnapshotHash (fail-closed)',
+        });
+      } catch { /* ignore */ }
+      activeDispatches.delete(key);
+      throw new DispatcherError(
+        'INVALID_ARGUMENT',
+        'INPUT_STATE_UNKNOWN: reserve did not return currentSnapshotHash; refusing fabricated permit',
+      );
+    }
+    let inputPermit;
+    try {
+      inputPermit = await obtainInputPermit({
+        commandId,
+        runtimeId: actl.runtimeId,
+        fence,
+        currentSnapshotHash: snapshotHash,
+      });
+    } catch (err) {
+      // Pre-send Owner permit failure — no input attempted.
+      await cleanupObservationLifecycle(live);
+      observationLock = undefined;
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await transitionTaskExecution(root, proj, taskId, {
+          expectedExecutionState: 'DISPATCHED',
+          to: 'FAILED',
+          reason: `inputPermit failure: ${msg}`,
+        });
+      } catch { /* ignore */ }
+      activeDispatches.delete(key);
+      mapActlBridgeError(err);
+    }
+
+    const observationCursor =
+      binding.observationCursor
+      ?? { kind: 'BOOTSTRAP', runtimeId: actl.runtimeId };
+
+    sendAttempted = true;
+    let sendData: Record<string, unknown>;
+    try {
+      const sendResult = await invokeActlRuntimeOrThrow(actlAbs, 'send', {
+        contractVersion: 1,
+        requestId: newRequestId(),
+        operation: 'send',
+        runtimeId: actl.runtimeId,
+        expectedContext,
+        reservationId,
+        leaseToken,
+        fence,
+        commandId,
+        correlationDigest,
+        wirePrompt,
+        promptSha256,
+        observationCursor,
+        inputPermit,
+        // Prefer Owner-confirmed permit snapshot (fresh at GO); never remap pane/runtime.
+        currentSnapshotHash: inputPermit.snapshotHash,
+        ...scope,
+      }, {
+        timeoutMs: actlSendTimeoutMsForTests ?? undefined,
+      });
+      sendData = sendResult.data;
+    } catch (err) {
+      if (err instanceof ActlBridgeError && isPostAttemptSendAmbiguity(err)) {
+        retainManagedHold = true;
+        await recordDeliveryAmbiguousAndThrow({
+          root,
+          proj,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          workerId,
+          commandId,
+          createdFolder,
+          binding,
+          err,
+        });
+      }
+      // Clean pre-ATTEMPTING / sideEffect=NONE rejection only.
+      await cleanupObservationLifecycle(live);
+      observationLock = undefined;
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await transitionTaskExecution(root, proj, taskId, {
+          expectedExecutionState: 'DISPATCHED',
+          to: 'FAILED',
+          reason: `actl send failure: ${msg}`,
+        });
+      } catch { /* ignore */ }
+      activeDispatches.delete(key);
+      mapActlBridgeError(err);
+    }
+
+    binding = {
+      ...binding,
+      transportReceipt: sendData,
+      observationCursor: sendData.observationCursor ?? binding.observationCursor,
+      collectStatus: 'SENT',
+      updatedAt: new Date().toISOString(),
+    };
+    writeRuntimeBinding(createdFolder, binding);
+
+    // Collect until AGENT_RECEIVED evidence — never treat tmux/send return as RUNNING.
+    const collectBudgetMs = actlCollectTimeoutMsForTests ?? 60_000;
+    const collectStarted = Date.now();
+    let agentReceived = false;
+    let finalPacket: Record<string, unknown> | null = null;
+    let samePollFinal = false;
+
+    while (Date.now() - collectStarted < collectBudgetMs) {
+      const collect = await invokeActlRuntime(actlAbs, 'collect', {
+        contractVersion: 1,
+        requestId: newRequestId(),
+        operation: 'collect',
+        commandId,
+        runtimeId: actl.runtimeId,
+        expectedContext,
+        ...scope,
+      });
+      const data = collect.envelope?.data ?? {};
+      const commandView = (data.command && typeof data.command === 'object')
+        ? data.command as Record<string, unknown>
+        : null;
+      const stage = commandView && typeof commandView.stage === 'string' ? commandView.stage : '';
+
+      // Same-poll FINAL: record AGENT_RECEIVED evidence first; RUNNING CAS happens below before completion.
+      if (collect.envelope?.ok && data.final && typeof data.final === 'object') {
+        finalPacket = data.final as Record<string, unknown>;
+        agentReceived = true;
+        samePollFinal = true;
+        binding = {
+          ...binding,
+          agentReceived: { stage: 'AGENT_RECEIVED', via: 'final-same-poll' },
+          finalPacket,
+          sessionId: typeof finalPacket.sessionId === 'string' ? finalPacket.sessionId : binding.sessionId,
+          turnId: typeof finalPacket.turnId === 'string' ? finalPacket.turnId : binding.turnId,
+          resultId: typeof finalPacket.resultId === 'string' ? finalPacket.resultId : binding.resultId,
+          collectStatus: 'WAITING_FINAL',
+          updatedAt: new Date().toISOString(),
+        };
+        writeRuntimeBinding(createdFolder, binding);
+        break;
+      }
+      if (stage === 'AGENT_RECEIVED') {
+        agentReceived = true;
+        binding = {
+          ...binding,
+          agentReceived: commandView ?? { stage: 'AGENT_RECEIVED' },
+          sessionId: typeof commandView?.sessionId === 'string' ? commandView.sessionId : binding.sessionId,
+          turnId: typeof commandView?.turnId === 'string' ? commandView.turnId : binding.turnId,
+          collectStatus: 'WAITING_FINAL',
+          updatedAt: new Date().toISOString(),
+        };
+        writeRuntimeBinding(createdFolder, binding);
+        break;
+      }
+      if (collect.envelope && !collect.envelope.ok) {
+        const code = collect.envelope.error?.code;
+        if (code && code !== 'RESULT_NOT_FINAL') {
+          throw new ActlBridgeError(code, collect.envelope.error?.detail ?? code, {
+            envelope: collect.envelope,
+            exitCode: collect.exitCode,
+          });
+        }
+      }
+      await sleep(25);
+    }
+
+    if (!agentReceived) {
+      binding = {
+        ...binding,
+        collectStatus: 'WAITING_AGENT_RECEIVED',
+        updatedAt: new Date().toISOString(),
+      };
+      writeRuntimeBinding(createdFolder, binding);
+      try {
+        await recordRuntimeWarning(root, proj, {
+          summary:
+            `ACTL_COLLECT_TIMEOUT: AGENT_RECEIVED not observed for Task ${taskId} within budget; `
+            + `Task left DISPATCHED. Resume via resumeActlManagedCollect(runId=${createdRunId}).`,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          source: { kind: 'dispatcher', subsystem: 'actl-collect' },
+          details: { commandId, budgetMs: collectBudgetMs, resume: 'resumeActlManagedCollect' },
+        });
+      } catch { /* ignore */ }
+      // Release process-local observation lock; durable reservation + binding remain.
+      await cleanupObservationLifecycle(live);
+      observationLock = undefined;
+      activeDispatches.delete(key);
+      throw new DispatcherError(
+        'INVALID_STATE',
+        `actl collect did not observe AGENT_RECEIVED within ${collectBudgetMs}ms; `
+          + `call resumeActlManagedCollect('${createdRunId}')`,
+      );
+    }
+
+    // CAS DISPATCHED → RUNNING only after received evidence (before completion handling).
+    try {
+      task = await transitionTaskExecution(root, proj, taskId, {
+        expectedExecutionState: 'DISPATCHED',
+        to: 'RUNNING',
+        reason: `actl-managed:AGENT_RECEIVED:${commandId}`,
+      });
+      live.phase = 'running';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await recordRuntimeWarning(root, proj, {
+          summary: `DISPATCH_RUNNING_CAS_FAILED: AGENT_RECEIVED for Task ${taskId} but DISPATCHED→RUNNING CAS failed.`,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          source: { kind: 'dispatcher', subsystem: 'actl-running-cas' },
+          details: { commandId, casError: msg, samePollFinal },
+        });
+      } catch { /* ignore */ }
+      throw new DispatcherError('CONFLICT', `AGENT_RECEIVED but RUNNING transition failed: ${msg}`);
+    }
+
+    // Continue collect until FINAL if not already present in the same poll.
+    const finalBudgetMs = actlCollectTimeoutMsForTests ?? 120_000;
+    const finalStarted = Date.now();
+    while (!finalPacket && Date.now() - finalStarted < finalBudgetMs) {
+      const collect = await invokeActlRuntime(actlAbs, 'collect', {
+        contractVersion: 1,
+        requestId: newRequestId(),
+        operation: 'collect',
+        commandId,
+        runtimeId: actl.runtimeId,
+        expectedContext,
+        ...scope,
+      });
+      const data = collect.envelope?.data ?? {};
+      if (collect.envelope?.ok && data.final && typeof data.final === 'object') {
+        finalPacket = data.final as Record<string, unknown>;
+        binding = {
+          ...binding,
+          finalPacket,
+          sessionId: typeof finalPacket.sessionId === 'string' ? finalPacket.sessionId : binding.sessionId,
+          turnId: typeof finalPacket.turnId === 'string' ? finalPacket.turnId : binding.turnId,
+          resultId: typeof finalPacket.resultId === 'string' ? finalPacket.resultId : binding.resultId,
+          updatedAt: new Date().toISOString(),
+        };
+        writeRuntimeBinding(createdFolder, binding);
+        break;
+      }
+      if (collect.envelope && !collect.envelope.ok) {
+        const code = collect.envelope.error?.code;
+        if (code && code !== 'RESULT_NOT_FINAL') {
+          throw new ActlBridgeError(code, collect.envelope.error?.detail ?? code, {
+            envelope: collect.envelope,
+            exitCode: collect.exitCode,
+          });
+        }
+      }
+      await sleep(25);
+    }
+
+    if (!finalPacket) {
+      binding = {
+        ...binding,
+        collectStatus: 'WAITING_FINAL',
+        updatedAt: new Date().toISOString(),
+      };
+      writeRuntimeBinding(createdFolder, binding);
+      try {
+        await recordRuntimeWarning(root, proj, {
+          summary:
+            `ACTL_FINAL_TIMEOUT: FINAL not observed for Task ${taskId}; left RUNNING. `
+            + `Resume via resumeActlManagedCollect(runId=${createdRunId}).`,
+          taskId,
+          runId: createdRunId,
+          goalId: task.goalId,
+          source: { kind: 'dispatcher', subsystem: 'actl-collect' },
+          details: { commandId, budgetMs: finalBudgetMs, resume: 'resumeActlManagedCollect' },
+        });
+      } catch { /* ignore */ }
+      // Release process-local observation lock; durable reservation + binding remain for resume.
+      await cleanupObservationLifecycle(live);
+      observationLock = undefined;
+      activeDispatches.delete(key);
+      return {
+        taskId,
+        runId: createdRunId,
+        workerId,
+        dispatchedAt,
+        executionState: task.executionState,
+      };
+    }
+
+    await bindFinalAndPromote({
+      root,
+      proj,
+      taskId,
+      createdFolder,
+      workspaceRoot,
+      commandId,
+      runtimeId: actl.runtimeId,
+      finalPacket,
+      binding,
+    });
+
+    // Reservation stays held through verification/PM judgment (§6.3 / §9.2).
+    // Proof CLI performs captureAck + release after ACCEPT.
+
+    activeDispatches.delete(key);
+
+    return {
+      taskId,
+      runId: createdRunId,
+      workerId,
+      dispatchedAt,
+      executionState: getTask(root, proj, taskId).executionState,
+    };
+  } catch (err) {
+    if (!committedDispatch && createdFolder && createdRunId) {
+      await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
+    }
+    if (!committedDispatch && observationLock) {
+      releaseObservationLock(observationLock);
+      live.observationLock = undefined;
+    }
+    if (!retainManagedHold && activeDispatches.get(key)?.phase === 'preparing') {
+      activeDispatches.delete(key);
+    }
+    // Ambiguity: keep activeDispatches + observation lock (retainManagedHold).
+    if (err instanceof DispatcherError) throw err;
+    if (err instanceof RuntimeConflictError) {
+      throw new DispatcherError('CONFLICT', err.message);
+    }
+    if (err instanceof ActlBridgeError) mapActlBridgeError(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new DispatcherError('INTERNAL_ERROR', msg);
+  } finally {
+    void sendAttempted;
+    // dataRoot flock is released when this controller call ends; durable actl reservation remains.
+    dataRootLock?.release();
+  }
+}
+
+async function bindFinalAndPromote(args: {
+  root: string;
+  proj: string;
+  taskId: string;
+  createdFolder: string;
+  workspaceRoot: string;
+  commandId: string;
+  runtimeId: string;
+  finalPacket: Record<string, unknown>;
+  binding: ActlRuntimeBinding;
+}): Promise<void> {
+  const { finalPacket, createdFolder, workspaceRoot, commandId, runtimeId } = args;
+  const sessionId = typeof finalPacket.sessionId === 'string' ? finalPacket.sessionId : '';
+  const rawFinalText = typeof finalPacket.rawFinalText === 'string' ? finalPacket.rawFinalText : '';
+  const resultId = typeof finalPacket.resultId === 'string' ? finalPacket.resultId : undefined;
+  if (!sessionId || !rawFinalText) {
+    throw new ActlBridgeError('INVALID_STATE', 'FINAL packet missing sessionId or rawFinalText');
+  }
+
+  ensureActlManagedAdapterRegistered();
+  const cm = ensureDispatchCaptureManager();
+  // Re-arm if watch was stopped after prior incomplete collect / process restart.
+  if (!cm.isActive(createdFolder)) {
+    const task = getTask(args.root, args.proj, args.taskId);
+    await cm.arm(createdFolder, ACTL_MANAGED_ADAPTER_ID, {
+      folder: createdFolder,
+      isDraft: false,
+      workspaceRoot,
+      actlManaged: {
+        runtimeId,
+        commandId,
+        socketPath: args.binding.socketPath,
+        expectedProfileRoot: args.binding.expectedProfileRoot,
+        agentKind: 'codex',
+        reservationId: args.binding.reservationId,
+        fence: args.binding.fence,
+        sessionId,
+        turnId: typeof finalPacket.turnId === 'string' ? finalPacket.turnId : undefined,
+        resultId,
+      },
+      executionBinding: {
+        dataRoot: args.root,
+        project: args.proj,
+        goalId: task.goalId,
+        taskId: args.taskId,
+        runId: args.binding.runId,
+      },
+    });
+  }
+
+  const bound = cm.selectSession(sessionId, createdFolder);
+  if (!bound) {
+    throw new DispatcherError(
+      'INTERNAL_ERROR',
+      `Failed to claim CaptureManager session ownership for ${sessionId}`,
+    );
+  }
+
+  const completion: AgentCompletion = {
+    adapterId: ACTL_MANAGED_ADAPTER_ID,
+    agentName: 'ActlManaged',
+    sessionId,
+    workspace: workspaceRoot,
+    observedAt:
+      typeof finalPacket.observedAt === 'string'
+        ? finalPacket.observedAt
+        : new Date().toISOString(),
+    terminalSignal: 'actl.managed.final',
+    rawFinalText,
+    rawProtocolRef: resultId ? `actl://result/${resultId}` : `actl://command/${commandId}`,
+    completionKind: 'RESPONSE_COMPLETE',
+  };
+  const delivered = deliverActlManagedCompletion(completion, { commandId, runtimeId });
+  if (delivered < 1) {
+    throw new DispatcherError('INTERNAL_ERROR', 'actl-managed watch sink did not accept FINAL completion');
+  }
+
+  writeRuntimeBinding(createdFolder, {
+    ...args.binding,
+    finalPacket,
+    sessionId,
+    turnId: typeof finalPacket.turnId === 'string' ? finalPacket.turnId : args.binding.turnId,
+    resultId,
+    collectStatus: 'FINAL_BOUND',
+    updatedAt: new Date().toISOString(),
+  });
+
+  await sleep(10);
+}
+
+/**
+ * Resume collect / FINAL admission for an actl-managed Run after incomplete collection
+ * or controller restart (§9.3). Does not resend. Uses durable runtime-binding.json.
+ */
+export async function resumeActlManagedCollect(
+  dataRoot: string,
+  project: string,
+  runId: string,
+  opts?: { collectTimeoutMs?: number },
+): Promise<{
+  taskId: string;
+  runId: string;
+  executionState: TaskExecutionState;
+  collectStatus: string;
+}> {
+  const root = requireNonEmpty(dataRoot, 'dataRoot');
+  const proj = requireNonEmpty(project, 'project');
+  const rid = requireNonEmpty(runId, 'runId');
+
+  let dataRootLock: ActlDataRootLockHandle | undefined;
+  try {
+    dataRootLock = await tryAcquireActlManagedDataRootLock(root);
+  } catch (err) {
+    mapActlBridgeError(err);
+  }
+
+  try {
+    const tasks = listTasks(root, proj);
+    let task: TaskRecord | undefined;
+    let folder: string | undefined;
+    for (const t of tasks) {
+      const link = t.linkedRuns.find((r) => r.runId === rid);
+      if (link) {
+        task = t;
+        folder = link.folder;
+        break;
+      }
+    }
+    if (!task || !folder) {
+      throw new DispatcherError('NOT_FOUND', `No Task linked to runId ${rid}`);
+    }
+
+    const binding = readRuntimeBinding(folder);
+    if (!binding) {
+      throw new DispatcherError('INVALID_STATE', `runtime-binding.json missing for run ${rid}`);
+    }
+    if (binding.collectStatus === 'DELIVERY_AMBIGUOUS') {
+      throw new DispatcherError(
+        'DELIVERY_AMBIGUOUS',
+        `Run ${rid} has DELIVERY_AMBIGUOUS transport; resume collect is allowed but send must not be retried.`,
+      );
+    }
+    if (!binding.commandId || !binding.runtimeId) {
+      throw new DispatcherError('INVALID_STATE', `runtime-binding incomplete for run ${rid}`);
+    }
+
+    const workerId = readRunMeta(folder).workerId;
+    if (!workerId) {
+      throw new DispatcherError('INVALID_STATE', `Run ${rid} meta missing workerId`);
+    }
+    const worker = loadWorkerRegistryRecord(root, workerId);
+    const actlAbs = worker.launchCommand;
+    const actl = worker.driverOptions?.actl;
+    if (!actl) {
+      throw new DispatcherError('INVALID_ARGUMENT', `Worker ${workerId} has no driverOptions.actl`);
+    }
+
+    const scope = scopeFields(binding.socketPath || actl.socketPath);
+    const expectedContext = expectedContextFromBinding(binding);
+    const budget = opts?.collectTimeoutMs ?? actlCollectTimeoutMsForTests ?? 120_000;
+    const started = Date.now();
+    let finalPacket: Record<string, unknown> | null =
+      binding.finalPacket && typeof binding.finalPacket === 'object'
+        ? binding.finalPacket as Record<string, unknown>
+        : null;
+    let sawReceived = binding.collectStatus === 'WAITING_FINAL'
+      || binding.collectStatus === 'FINAL_BOUND'
+      || !!binding.agentReceived;
+
+    while (!finalPacket && Date.now() - started < budget) {
+      const collect = await invokeActlRuntime(actlAbs, 'collect', {
+        contractVersion: 1,
+        requestId: newRequestId(),
+        operation: 'collect',
+        commandId: binding.commandId,
+        runtimeId: binding.runtimeId,
+        expectedContext,
+        ...scope,
+      });
+      const data = collect.envelope?.data ?? {};
+      const commandView = (data.command && typeof data.command === 'object')
+        ? data.command as Record<string, unknown>
+        : null;
+      const stage = commandView && typeof commandView.stage === 'string' ? commandView.stage : '';
+      if (stage === 'AGENT_RECEIVED') {
+        sawReceived = true;
+        writeRuntimeBinding(folder, {
+          ...binding,
+          agentReceived: commandView ?? { stage },
+          collectStatus: 'WAITING_FINAL',
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      if (collect.envelope?.ok && data.final && typeof data.final === 'object') {
+        finalPacket = data.final as Record<string, unknown>;
+        sawReceived = true;
+        break;
+      }
+      await sleep(25);
+    }
+
+    if (!sawReceived) {
+      throw new DispatcherError(
+        'INVALID_STATE',
+        `resumeActlManagedCollect: AGENT_RECEIVED still absent for run ${rid}`,
+      );
+    }
+
+    // Promote DISPATCHED → RUNNING if still DISPATCHED.
+    let current = getTask(root, proj, task.taskId);
+    if (current.executionState === 'DISPATCHED') {
+      current = await transitionTaskExecution(root, proj, task.taskId, {
+        expectedExecutionState: 'DISPATCHED',
+        to: 'RUNNING',
+        reason: `actl-managed:resume:AGENT_RECEIVED:${binding.commandId}`,
+      });
+    }
+
+    if (!finalPacket) {
+      writeRuntimeBinding(folder, {
+        ...readRuntimeBinding(folder)!,
+        collectStatus: 'WAITING_FINAL',
+        updatedAt: new Date().toISOString(),
+      });
+      return {
+        taskId: task.taskId,
+        runId: rid,
+        executionState: current.executionState,
+        collectStatus: 'WAITING_FINAL',
+      };
+    }
+
+    const latest = readRuntimeBinding(folder)!;
+    await bindFinalAndPromote({
+      root,
+      proj,
+      taskId: task.taskId,
+      createdFolder: folder,
+      workspaceRoot: binding.workspaceRoot,
+      commandId: binding.commandId,
+      runtimeId: binding.runtimeId,
+      finalPacket,
+      binding: latest,
+    });
+
+    return {
+      taskId: task.taskId,
+      runId: rid,
+      executionState: getTask(root, proj, task.taskId).executionState,
+      collectStatus: 'FINAL_BOUND',
+    };
+  } finally {
+    dataRootLock?.release();
+  }
 }
