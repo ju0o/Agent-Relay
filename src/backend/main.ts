@@ -18,6 +18,7 @@ import * as dispatcher from './dispatcher.js';
 import * as pmWork from './pm-work.js';
 import * as orphanResolution from './orphan-resolution.js';
 import * as taskActions from './task-actions.js';
+import { getTaskHistory } from './task-history.js';
 import { authorizeEffect } from './permission-gate.js';
 import { CaptureManager } from './capture-manager.js';
 import { setCaptureManager } from './capture-service.js';
@@ -141,6 +142,13 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       s.agentOrder = req.order.map((x) => String(x));
       saveSettings(s);
       return s.agentOrder;
+    }
+
+    case 'settings:setLastAgent': {
+      const s = currentSettings();
+      s.lastAgent = String(req.agent || '');
+      saveSettings(s);
+      return s.lastAgent;
     }
 
     case 'settings:setDataRoot': {
@@ -498,6 +506,12 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'task:list':
       return goalTask.listTasks(req.dataRoot, req.project, req.goalId);
 
+    case 'history:get': {
+      // V2 R4 — read-only Task timeline (H1 model). No state change.
+      if (!req.taskId) throw new Error('taskId가 필요합니다.');
+      return getTaskHistory(req.dataRoot, req.project, req.taskId);
+    }
+
     case 'task:update':
       return goalTask.updateTask(req.dataRoot, req.project, req.taskId, req.patch ?? {});
 
@@ -745,9 +759,27 @@ function dragIcon(): Electron.NativeImage {
   return _dragIcon;
 }
 
+/** DevTools 단축키는 개발 중에만 허용 — packaged production에서는 F12 노출 금지. */
+export function shouldEnableDevToolsShortcut(isPackaged: boolean): boolean {
+  return !isPackaged;
+}
+
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * 윈도우 아이콘 해석 — `public/icon.png`가 vite를 통해 `dist/client/icon.png`로
+ * 패키징에 포함되므로 dev/packaged 모두에서 사용 가능하다.
+ */
+function resolveWindowIcon(): string | undefined {
+  const p = path.join(__dirname, '..', '..', 'client', 'icon.png');
+  try {
+    if (fs.existsSync(p)) return p;
+  } catch { /* ignore */ }
+  return undefined;
+}
+
 function createWindow(): void {
+  const windowIcon = resolveWindowIcon();
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -756,22 +788,25 @@ function createWindow(): void {
     title: 'Agent Relay Log',
     backgroundColor: '#17181c',
     autoHideMenuBar: true,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       // contextIsolation defaults to true in Electron 28 — keep default
     },
   });
 
-  // ── F12 / Ctrl+Shift+I → DevTools (even in production builds) ──
-  mainWindow.webContents.on('before-input-event', (_e, input) => {
-    if (
-      input.type === 'keyDown' &&
-      ((input.key === 'F12') ||
-        (input.control && input.shift && input.key === 'I'))
-    ) {
-      mainWindow?.webContents.openDevTools();
-    }
-  });
+  // ── F12 / Ctrl+Shift+I → DevTools (개발 중에만; production 패키지에서는 비활성화) ──
+  if (shouldEnableDevToolsShortcut(app.isPackaged)) {
+    mainWindow.webContents.on('before-input-event', (_e, input) => {
+      if (
+        input.type === 'keyDown' &&
+        ((input.key === 'F12') ||
+          (input.control && input.shift && input.key === 'I'))
+      ) {
+        mainWindow?.webContents.openDevTools();
+      }
+    });
+  }
 
   // DevTools는 F12 또는 Ctrl+Shift+I로 열 수 있습니다 (위에 등록됨)
 
@@ -786,6 +821,14 @@ function createWindow(): void {
   });
 
   // ── Load UI ──
+  // 개발 중에는 ELECTRON_START_URL(vite dev server, HMR)을 우선한다.
+  // 설정되지 않았거나 packaged 실행이면 기존대로 빌드된 index.html을 읽는다.
+  const devUrl = process.env.ELECTRON_START_URL;
+  if (devUrl) {
+    void mainWindow.loadURL(devUrl);
+    return;
+  }
+
   if (!fs.existsSync(clientPath)) {
     dialog.showErrorBox(
       'Agent Relay Log — index.html 없음',

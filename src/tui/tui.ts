@@ -8,9 +8,14 @@ import { renderRelayFrame, renderCompact } from './render.js';
 import { resolveDetailTask, renderTaskDetail } from './views/task-detail.js';
 import { renderMemoHistory } from './views/memo-history.js';
 import { renderEventsView } from './views/events.js';
+import { renderResumeScanView } from './views/resume-scan.js';
 import { discoverConfig } from '../cli/config.js';
 import * as taskMemo from '../backend/task-memo.js';
 import * as eventKernel from '../backend/event.js';
+import { scanStuckWork } from '../backend/resume-scan.js';
+import type { ResumeScanResult } from '../backend/resume-scan.js';
+import { executeGuidedAction } from '../backend/resume-actions.js';
+import type { OrphanAction } from '../backend/orphan-resolution.js';
 import { resolveCurrentAttemptRunId } from '../backend/goal-task-runtime.js';
 import {
   deriveAvailableActions,
@@ -36,7 +41,7 @@ export interface TuiOptions {
 }
 
 type ViewState =
-  | 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS' | 'CHANGES_INPUT'
+  | 'MAIN' | 'TASK_DETAIL' | 'MEMO_INPUT' | 'MEMO_HISTORY' | 'EVENTS' | 'RESUME_SCAN' | 'CHANGES_INPUT'
   | 'TASK_EDIT_MENU' | 'TASK_EDIT_FIELD';
 
 function isTTY(): boolean {
@@ -93,6 +98,100 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
   let editTaskCtx: TaskEditContext | null = null;
   let editFieldKey: EditFieldKey | null = null;
   let editFieldState: BoundedTextState = { draft: '', error: undefined };
+  // V2 R1: cached read-only resume scan (refreshed on open / [r])
+  let resumeScanReport: ResumeScanResult | null = null;
+  let resumeScanError: string | undefined;
+  // V2 R2: guided-action selection + explicit Owner confirm (y/n) inside scan view
+  let resumeSelected = 0;
+  let resumeConfirm: { index: number; orphanAction?: OrphanAction; label: string } | null = null;
+
+  /** Re-run the read-only scan and reset selection/confirm. Read-only. */
+  function refreshResumeScan(): void {
+    try {
+      const discovered = discoverConfig(cwd);
+      if (!discovered.initialized || !discovered.config) {
+        resumeScanReport = null;
+        resumeScanError = 'not-initialized';
+      } else {
+        resumeScanReport = scanStuckWork(discovered.config.dataRoot, discovered.config.project);
+        resumeScanError = undefined;
+      }
+    } catch (e) {
+      resumeScanReport = null;
+      resumeScanError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
+    }
+    resumeSelected = 0;
+    resumeConfirm = null;
+  }
+
+  /** Current scan findings capped the same way the view renders them. */
+  function visibleResumeFindings(): ResumeScanResult['findings'] {
+    return (resumeScanReport?.findings ?? []).slice(0, 8);
+  }
+
+  function flashBanner(text: string): void {
+    banner = text;
+    bannerUntil = Date.now() + 4000;
+    setTimeout(() => { bannerUntil = 0; banner = undefined; if (running) renderToScreen(); }, 4100);
+  }
+
+  /**
+   * V2 R2 — arm (never execute): describe the guided action for the selected
+   * finding and wait for an explicit y-confirm. Orphan findings need a
+   * k/f/c choice; x on an orphan asks for that choice instead of acting.
+   */
+  function armResumeAction(key: string): void {
+    const items = visibleResumeFindings();
+    const finding = items[Math.min(resumeSelected, Math.max(0, items.length - 1))];
+    if (!finding) {
+      flashBanner('No findings to act on.');
+      return;
+    }
+    const idx = items.indexOf(finding);
+    if (finding.pattern === 'ORPHANED_DISPATCH') {
+      const map: Record<string, OrphanAction> = { k: 'KEEP_WAITING', f: 'CONFIRM_FAILED', c: 'CONFIRM_CANCELLED' };
+      const chosen = map[key];
+      if (!chosen) {
+        flashBanner('Orphan needs a choice: k=keep f=failed c=cancelled.');
+        return;
+      }
+      resumeConfirm = { index: idx, orphanAction: chosen, label: `#${idx + 1} ${finding.pattern} ${finding.taskId} via ${chosen}` };
+      return;
+    }
+    if (key !== 'x') {
+      flashBanner('k/f/c are orphan-only; press x to act on this finding.');
+      return;
+    }
+    resumeConfirm = { index: idx, label: `#${idx + 1} ${finding.pattern} ${finding.taskId}` };
+  }
+
+  /** V2 R2 — run only after an explicit y-confirm (confirmed:true). */
+  async function runResumeConfirm(confirm: { index: number; orphanAction?: OrphanAction }): Promise<void> {
+    const items = visibleResumeFindings();
+    const finding = items[confirm.index];
+    if (!finding) {
+      lastError = 'finding vanished before confirm — nothing executed';
+      renderToScreen();
+      return;
+    }
+    try {
+      const discovered = discoverConfig(cwd);
+      if (!discovered.initialized || !discovered.config) throw new Error('not-initialized');
+      const res = await executeGuidedAction(discovered.config.dataRoot, discovered.config.project, {
+        pattern: finding.pattern,
+        taskId: finding.taskId,
+        ...(finding.runId ? { runId: finding.runId } : {}),
+        ...(finding.preparationId ? { preparationId: finding.preparationId } : {}),
+        ...(confirm.orphanAction ? { orphanAction: confirm.orphanAction } : {}),
+        confirmed: true,
+      });
+      refreshResumeScan();
+      flashBanner(res.executed ? `done: ${res.summary}`.slice(0, 100) : `not executed: ${res.summary}`.slice(0, 100));
+    } catch (e) {
+      lastError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
+    }
+    renderToScreen();
+  }
 
   function enterAlt(): void {
     try {
@@ -601,11 +700,24 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
         renderToScreen();
         return;
       }
+      if (view === 'RESUME_SCAN') {
+        view = 'MAIN';
+        renderToScreen();
+        return;
+      }
     }
 
     if (view === 'MAIN') {
       if (s === 't' || s === 'T') {
         view = 'TASK_DETAIL';
+        renderToScreen();
+        return;
+      }
+      if (s === 's' || s === 'S') {
+        // V2 R1 — read-only resume scan. Actions run only via explicit
+        // confirm inside the scan view (V2 R2), never on open.
+        refreshResumeScan();
+        view = 'RESUME_SCAN';
         renderToScreen();
         return;
       }
@@ -669,6 +781,39 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
         doSnapshotRefresh();
         return;
       }
+    } else if (view === 'RESUME_SCAN') {
+      if (s === 'r' || s === 'R') {
+        refreshResumeScan();
+        renderToScreen();
+        return;
+      }
+      // V2 R2 — select a finding, arm an action, confirm explicitly (y/n).
+      // Nothing executes without the y-confirm; n/Esc cancels.
+      if (s >= '1' && s <= '8') {
+        const n = Number(s) - 1;
+        const count = Math.min(8, resumeScanReport?.findings.length ?? 0);
+        if (n < count) {
+          resumeSelected = n;
+          resumeConfirm = null;
+          renderToScreen();
+        }
+        return;
+      }
+      if (s === 'x' || s === 'X' || s === 'k' || s === 'K' || s === 'f' || s === 'F' || s === 'c' || s === 'C') {
+        armResumeAction(s.toLowerCase());
+        renderToScreen();
+        return;
+      }
+      if ((s === 'y' || s === 'Y' || s === 'n' || s === 'N') && resumeConfirm) {
+        const confirm = resumeConfirm;
+        resumeConfirm = null;
+        if (s === 'y' || s === 'Y') {
+          void runResumeConfirm(confirm);
+        } else {
+          renderToScreen();
+        }
+        return;
+      }
     } else if (view === 'TASK_EDIT_MENU') {
       handleTaskEditMenuKey(s);
       return;
@@ -728,6 +873,12 @@ export async function launchTui(opts: TuiOptions): Promise<void> {
           lastError = (e instanceof Error ? e.message : String(e)).slice(0, 120);
         }
         out = renderEventsView(events, size);
+        if (lastError) out += '\n! ' + lastError.slice(0, 80);
+      } else if (view === 'RESUME_SCAN') {
+        out = renderResumeScanView(resumeScanReport, size, resumeScanError, {
+          selected: resumeSelected,
+          ...(resumeConfirm ? { confirmPrompt: `act on ${resumeConfirm.label}? (y/n)` } : {}),
+        });
         if (lastError) out += '\n! ' + lastError.slice(0, 80);
       } else if (view === 'MEMO_INPUT') {
         // Render memo input overlay on top of main frame? Show simple prompt

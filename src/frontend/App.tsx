@@ -8,8 +8,14 @@ import { must, hasBridge, dragLocalFile, onUpdateStatus, onCaptureStatus } from 
 import { agentNameToAdapterId } from '../shared/adapter-map.js';
 import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
+import { TaskHistoryPanel } from './taskhistory.js';
 import { QuickDogfood } from './quickdf.js';
 import { renderMd } from './md.js';
+import {
+  flushWorktabSnapshots,
+  MAX_RESTORE_TABS,
+  readWorktabSnapshots,
+} from './worktabs.js';
 import { SessionBindingStatus } from './SessionBindingStatus.js';
 import {
   DEFAULT_AGENTS,
@@ -180,6 +186,8 @@ function AppInner(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [dfMode, setDfMode]             = useState(false);
   const [pdMode, setPdMode]             = useState(false);
+  // V2 R4 — Task History 읽기 전용 패널
+  const [thMode, setThMode]             = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
   const [showQuickDf, setShowQuickDf]   = useState(false);
@@ -317,8 +325,26 @@ function AppInner(): React.ReactElement {
     tabDragFrom.current = null;
     setTabDragOver(null);
     if (from === null || from === toIndex || from >= tabs.length) return;
-    // Work Tab 순서는 현재 세션 동안만 유지 (영구 저장은 BACKLOG)
+    // 순서는 작업탭 스냅샷(localStorage)으로 영속된다 — 재실행 시 복원됨.
     updateActiveSession({ tabs: reorderArray(tabs, from, toIndex) });
+  }
+
+  // ── 터치/키보드 대체 순서 이동 (BACKLOG 11번: HTML5 mouse DnD 대체 수단) ──
+  // 드래그 없이 활성 탭/세션을 한 칸씩 이동한다. 마우스 DnD와 동일한 함수를 쓰므로
+  // 영속 동작(persistProjectOrder/스냅샷)도 그대로 따라간다.
+  function moveActiveWorkTab(dir: -1 | 1): void {
+    const idx = tabs.findIndex(t => t.id === activeTabId);
+    const to = idx + dir;
+    if (idx < 0 || to < 0 || to >= tabs.length) return;
+    updateActiveSession({ tabs: reorderArray(tabs, idx, to) });
+  }
+  function moveActiveSession(dir: -1 | 1): void {
+    const idx = sessions.findIndex(s => s.id === activeSessionId);
+    const to = idx + dir;
+    if (idx < 0 || to < 0 || to >= sessions.length) return;
+    const next = reorderArray(sessions, idx, to);
+    setSessions(next);
+    persistProjectOrder(next);
   }
 
   function onAgentPillDrop(toIndex: number): void {
@@ -475,7 +501,7 @@ function AppInner(): React.ReactElement {
 
   // ── 탭 추가 ─────────────────────────────────────────────────────────────────
   async function addTab(agentName?: string): Promise<void> {
-    const agent = agentName ?? (activeTab?.agent ?? DEFAULT_AGENTS[0]);
+    const agent = agentName ?? activeTab?.agent ?? settings?.lastAgent ?? DEFAULT_AGENTS[0];
     const tab = makeTab(agent);
     setSessions(prev => prev.map(s =>
       s.id === activeSessionId
@@ -513,7 +539,7 @@ function AppInner(): React.ReactElement {
         };
       }));
     };
-    if (tab.prompt || tab.result) {
+    if ((tab.prompt.trim() && !tab.promptSaved) || (tab.result.trim() && !tab.resultSaved)) {
       setConfirm({ text: `탭 "${tab.agent} #${tab.run || '?'}"을 닫을까요?\n저장되지 않은 내용은 사라집니다.`, confirmBtn: '닫기', onOk: doRemove });
     } else {
       doRemove();
@@ -566,6 +592,9 @@ function AppInner(): React.ReactElement {
   // ── 에이전트 변경 (탭 내) ─────────────────────────────────────────────────────
   async function changeTabAgent(tabId: string, agent: string): Promise<void> {
     updateTab(tabId, { agent, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false });
+    // 마지막 선택 Agent 기억 — 다음 실행 시 새 탭 기본값으로 복원용
+    try { await must({ op: 'settings:setLastAgent', agent }); } catch { /* 무시 */ }
+    setSettings(prev => prev ? { ...prev, lastAgent: agent } : prev);
     const n = await peekNextRun(project, agent, date);
     if (n !== null) updateTab(tabId, { run: n });
   }
@@ -882,6 +911,7 @@ function AppInner(): React.ReactElement {
       confirmBtn: '영구 삭제',
         onOk: async () => {
           setPdMode(false);
+          setThMode(false);
           await must({ op: 'project:delete', dataRoot, project: projectName });
         const deletingId = sessions.find(s => s.project === projectName)?.id;
         const remaining = sessions.filter(s => s.project !== projectName);
@@ -929,11 +959,83 @@ function AppInner(): React.ReactElement {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const text = ev.target?.result as string;
-        updateTab(tabId, pane === 'prompt' ? { prompt: text } : { result: text });
+        updateTab(tabId, pane === 'prompt' ? { prompt: text, promptSaved: false } : { result: text, resultSaved: false });
         notify('info', `${file.name} 불러옴`);
       };
       reader.readAsText(file, 'utf-8');
     };
+  }
+
+  // ── 미저장 판정: 내용물이 있는데 디스크에 저장되지 않은 탭 ──
+  // 저장 후 편집하면 onChange에서 saved 플래그를 false로 되돌리므로 재경고된다.
+  function isTabUnsaved(t: EditorTab): boolean {
+    return (
+      (!!t.prompt.trim() && !t.promptSaved) ||
+      (!!t.result.trim() && !t.resultSaved)
+    );
+  }
+
+  // ── 앱 종료(새로고침/닫기) 시 미저장 내용이 있으면 네이티브 경고 ──
+  // 세션 전환 자체는 tabs 상태를 보존하므로 파괴적이지 않다; 진짜 유실 지점은
+  // 앱 종료(메모리 상태 소멸)이며, 초안 영속 저장은 별도 설계가 필요해 플래그 대상이다.
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent): void {
+      const dirty = sessions.some(s => s.tabs.some(isTabUnsaved));
+      if (dirty) {
+        e.preventDefault();
+      }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [sessions]);
+
+  // sessionsRef: pagehide 플러시가 최신 상태를 읽도록 매 렌더마다 갱신
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  // ── 작업탭 스냅샷 영속 (디바운스 저장 + 종료 플러시) ──
+  useEffect(() => {
+    const h = setTimeout(() => flushWorktabSnapshots(sessions), 500);
+    return () => clearTimeout(h);
+  }, [sessions]);
+  useEffect(() => {
+    function onFlush(): void { flushWorktabSnapshots(sessionsRef.current); }
+    window.addEventListener('pagehide', onFlush);
+    return () => window.removeEventListener('pagehide', onFlush);
+  }, []);
+
+  // ── 저장된 작업탭 복원 (폴더 → 디스크 재독, 초안 → 캐시 복원) ──
+  // 폴더가 사라졌으면 빈 탭(동일 Agent)으로 강등 — 절대 크래시하지 않는다.
+  async function restoreWorkTabs(sessId: string, projectName: string): Promise<void> {
+    const snap = readWorktabSnapshots()[projectName];
+    if (!snap || !snap.tabs.length) return;
+    const tabs: EditorTab[] = [];
+    for (const p of snap.tabs.slice(0, MAX_RESTORE_TABS)) {
+      const tab = makeTab(p.agent || DEFAULT_AGENTS[0]);
+      tab.folder = p.folder || '';
+      tab.run = p.run || '';
+      if (p.folder) {
+        try {
+          const rec = await must<{ prompt: string; result: string; tags: string[] }>({ op: 'run:read', folder: p.folder });
+          tab.prompt = rec.prompt; tab.result = rec.result;
+          tab.tags = rec.tags ?? p.tags ?? [];
+          tab.promptSaved = true; tab.resultSaved = true;
+        } catch {
+          tab.folder = ''; tab.run = '';
+          if (p.draftPrompt) tab.prompt = p.draftPrompt;
+          if (p.draftResult) tab.result = p.draftResult;
+          if (p.tags) tab.tags = [...p.tags];
+        }
+      } else {
+        if (p.draftPrompt) tab.prompt = p.draftPrompt;
+        if (p.draftResult) tab.result = p.draftResult;
+        if (p.tags) tab.tags = [...p.tags];
+      }
+      tabs.push(tab);
+    }
+    if (!tabs.length) return;
+    const activeTab = tabs[Math.min(snap.activeIndex, tabs.length - 1)]!;
+    setSessions(prev => prev.map(s => s.id === sessId ? { ...s, tabs, activeTabId: activeTab.id } : s));
   }
 
   // ── 키보드 단축키 ─────────────────────────────────────────────────────────────
@@ -965,6 +1067,16 @@ function AppInner(): React.ReactElement {
         if (!hasBridge()) { setInitError('Electron IPC 브리지를 사용할 수 없습니다.\nexe 파일을 직접 실행하세요.'); setLoading(false); return; }
         const s = await must<SettingsView>({ op: 'settings:get' });
         await applySettings(s);
+        // 마지막 선택 Agent 복원 — 빈 초기 탭에만 적용 (저장된 내용은 건드리지 않음)
+        if (s.lastAgent) {
+          const lastAgent = s.lastAgent;
+          setSessions(prev => prev.map(sess => ({
+            ...sess,
+            tabs: sess.tabs.map(t =>
+              (!t.prompt && !t.result && !t.folder ? { ...t, agent: lastAgent } : t),
+            ),
+          })));
+        }
         if (s.dataRoot && s.dataRootExists) {
           const projects = await must<ProjectInfo[]>({ op: 'projects:list', dataRoot: s.dataRoot });
           setProjects(projects);
@@ -984,16 +1096,17 @@ function AppInner(): React.ReactElement {
 
   // ── 프로젝트 세션 열기 ────────────────────────────────────────────────────────
   // 이미 열려있는 세션 → 전환. 현재 세션이 비어있으면 → 재사용. 그 외 → 새 세션 생성.
-  async function openProjectSession(name: string, root?: string): Promise<void> {
-    if (!name) return;
+  // 새로 열린 세션에는 저장된 작업탭 스냅샷이 있으면 복원한다. 세션 ID를 반환한다.
+  async function openProjectSession(name: string, root?: string): Promise<string | null> {
+    if (!name) return null;
     const rootPath = root ?? dataRoot;
-    if (!rootPath) return;
+    if (!rootPath) return null;
 
     // 이미 같은 프로젝트가 열려있으면 해당 세션으로 전환
     const existing = sessions.find(s => s.project === name);
     if (existing) {
       setActiveSessionId(existing.id);
-      return;
+      return existing.id;
     }
 
     // 현재 세션에 프로젝트가 없으면 현재 세션을 이 프로젝트로 설정
@@ -1035,12 +1148,16 @@ function AppInner(): React.ReactElement {
           : s.tabs,
       };
     }));
+
+    // 저장된 작업탭(순서 + 활성 탭 + 미저장 초안) 복원
+    await restoreWorkTabs(newSessId, name);
+    return newSessId;
   }
 
   // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
   function closeSession(id: string): void {
     const remaining = sessions.filter(s => s.id !== id);
-    if (!remaining.some(s => s.project === project)) setPdMode(false);
+    if (!remaining.some(s => s.project === project)) { setPdMode(false); setThMode(false); }
     if (remaining.length === 0) {
       const fresh = makeSession();
       setSessions([fresh]);
@@ -1213,14 +1330,20 @@ function AppInner(): React.ReactElement {
             <button
               className={`mini df-toggle${dfMode ? ' on' : ''}`}
               title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
-              onClick={() => { setDfMode(m => !m); setPdMode(false); }}
+              onClick={() => { setDfMode(m => !m); setPdMode(false); setThMode(false); }}
             >🐾 App Dogfooding</button>
             <button
               className={`mini df-toggle${pdMode ? ' on' : ''}`}
               disabled={!project}
               title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
-              onClick={() => { setPdMode(m => !m); setDfMode(false); }}
+              onClick={() => { setPdMode(m => !m); setDfMode(false); setThMode(false); }}
             >📋 Project Dogfooding</button>
+            <button
+              className={`mini df-toggle${thMode ? ' on' : ''}`}
+              disabled={!project}
+              title={project ? `"${projectLabel(project)}" Task 타임라인 조회 (읽기 전용)` : '프로젝트를 먼저 선택하세요'}
+              onClick={() => { setThMode(m => !m); setDfMode(false); setPdMode(false); }}
+            >📜 Task History</button>
             <button
               className="mini qdf-toggle"
               disabled={!project}
@@ -1262,6 +1385,15 @@ function AppInner(): React.ReactElement {
               notify={notify}
               refreshSignal={pdRefreshSignal}
               onClose={() => setPdMode(false)}
+            />
+          ) : thMode && project ? (
+            /* ── V2 R4 — Task History 읽기 전용 패널 (H1 모델) ── */
+            <TaskHistoryPanel
+              key={`th:${project}`}
+              dataRoot={dataRoot}
+              project={project}
+              notify={notify}
+              onClose={() => setThMode(false)}
             />
           ) : (
             <>
@@ -1314,6 +1446,16 @@ function AppInner(): React.ReactElement {
               onClick={addSession}
               title="새 프로젝트 탭 추가"
             >+</button>
+            <button
+              className="proj-tab-add"
+              onClick={() => moveActiveSession(-1)}
+              title="활성 프로젝트 탭을 왼쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+            >‹</button>
+            <button
+              className="proj-tab-add"
+              onClick={() => moveActiveSession(1)}
+              title="활성 프로젝트 탭을 오른쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+            >›</button>
           </div>
 
           {/* 글로벌 필드 (날짜 + 저장위치) */}
@@ -1398,7 +1540,7 @@ function AppInner(): React.ReactElement {
                       {tab.agent}
                       {tab.run && <span className="tab-runnum"> #{tab.run}</span>}
                     </span>
-                    {(tab.prompt || tab.result) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
+                    {isTabUnsaved(tab) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
                     <button
                       className="tab-close"
                       onClick={e => { e.stopPropagation(); removeTab(tab.id); }}
@@ -1411,6 +1553,16 @@ function AppInner(): React.ReactElement {
                   onClick={() => void addTab()}
                   title="새 병렬 탭 추가 (Ctrl+T)"
                 >+ 새 탭</button>
+                <button
+                  className="tab-btn add"
+                  onClick={() => moveActiveWorkTab(-1)}
+                  title="활성 작업 탭을 왼쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+                >‹</button>
+                <button
+                  className="tab-btn add"
+                  onClick={() => moveActiveWorkTab(1)}
+                  title="활성 작업 탭을 오른쪽으로 이동 (드래그 없이 — 터치/키보드용)"
+                >›</button>
               </div>
 
               {/* 탭 헤더: 에이전트 선택 + 태그 + 액션 */}
@@ -1519,7 +1671,7 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.prompt) }} />
                       : <textarea
                           value={activeTab.prompt}
-                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value })}
+                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value, promptSaved: false })}
                           placeholder={'# GPT에게 받은 다음 프롬프트를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
                           spellCheck={false}
                         />
@@ -1540,9 +1692,25 @@ function AppInner(): React.ReactElement {
                           <button
                             className="mini drag-chip"
                             draggable={false}
-                            title="이 버튼을 누른 채 ChatGPT 입력창으로 끌어다 놓으세요 (result.md 첨부)"
+                            title="마우스로 끌어다 놓거나, 키보드 Enter로 드래그 시작 (result.md 첨부). 드래그가 안 되면 위치 열기/복사를 사용하세요."
                             onMouseDown={e => { e.preventDefault(); dragResultToGpt(activeTab); }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                dragResultToGpt(activeTab);
+                              }
+                            }}
                           >📤 GPT로 드래그</button>
+                        )}
+                        {activeTab.resultSaved && activeTab.folder && (
+                          <button
+                            className="mini"
+                            title="키보드 전용 대체 경로 — result.md 파일 경로를 클립보드에 복사"
+                            onClick={() => {
+                              copyText(mdFilePath(activeTab.folder, 'result.md'));
+                              notify('ok', 'result.md 경로가 복사되었습니다. ChatGPT 입력창에 붙여넣으세요.');
+                            }}
+                          >경로 복사</button>
                         )}
                         {activeTab.resultSaved && activeTab.folder && (
                           <button
@@ -1625,7 +1793,7 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.result) }} />
                       : <textarea
                           value={activeTab.result}
-                          onChange={e => updateTab(activeTab.id, { result: e.target.value })}
+                          onChange={e => updateTab(activeTab.id, { result: e.target.value, resultSaved: false })}
                           placeholder={'# 에이전트 실행 결과 보고서를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
                           spellCheck={false}
                         />
@@ -1647,7 +1815,12 @@ function AppInner(): React.ReactElement {
           context={dfContext()}
           notify={notify}
           onClose={() => setShowQuickDf(false)}
-          onSaved={() => setPdRefreshSignal(n => n + 1)}
+          onSaved={() => {
+            setPdRefreshSignal(n => n + 1);
+            // Quick Capture 저장 직후 목록을 바로 보여준다 — 다시 열 필요가 없도록.
+            setPdMode(true);
+            setDfMode(false);
+          }}
         />
       )}
 

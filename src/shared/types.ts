@@ -27,6 +27,8 @@ export interface AppSettings {
   projectOrder?: string[];
   /** 사용자가 지정한 에이전트 표시 순서 (에이전트 이름 배열). UI 정렬 전용. */
   agentOrder?: string[];
+  /** 마지막으로 선택한 Agent — 다음 실행 시 새 탭 기본값으로 복원. */
+  lastAgent?: string;
 }
 
 /** A selectable project (a folder under DATA_ROOT/Projects). */
@@ -91,8 +93,9 @@ export type RelayRequest =
  | { op: 'pdf:create'; dataRoot: string; project: string; type: DfType; priority: DfPriority; feedback: string; desired: string; agent?: string; run?: string }
  | { op: 'pdf:setStatus'; dataRoot: string; project: string; id: string; status: DfStatus }
  | { op: 'pdf:read'; dataRoot: string; project: string; id: string }
- | { op: 'settings:setProjectOrder'; order: string[] }
- | { op: 'settings:setAgentOrder'; order: string[] }
+  | { op: 'settings:setProjectOrder'; order: string[] }
+  | { op: 'settings:setAgentOrder'; order: string[] }
+  | { op: 'settings:setLastAgent'; agent: string }
  | { op: 'adapters:list' }
  | { op: 'capture:arm'; captureId?: string; folder?: string; adapterId?: string; isDraft?: boolean; materializeParams?: MaterializeParams }
  | { op: 'capture:disarm'; captureId?: string; folder?: string }
@@ -113,8 +116,10 @@ export type RelayRequest =
  | { op: 'task:resolveOrphan'; dataRoot: string; project: string; taskId: string; action: 'KEEP_WAITING' | 'CONFIRM_FAILED' | 'CONFIRM_CANCELLED'; expectedExecutionState?: TaskExecutionState; reason?: string }
  | { op: 'pm:getNextWork'; dataRoot: string; project: string }
  | { op: 'workers:list'; dataRoot: string }
- | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
- | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
+  | { op: 'task:get'; dataRoot: string; project: string; taskId: string }
+  | { op: 'task:list'; dataRoot: string; project: string; goalId?: string }
+  /** V2 R4 — read-only Task timeline (H1 model). No state change. */
+  | { op: 'history:get'; dataRoot: string; project: string; taskId: string }
  | { op: 'task:update'; dataRoot: string; project: string; taskId: string; patch: TaskUpdatePatch }
  | { op: 'task:linkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }
  | { op: 'task:unlinkRun'; dataRoot: string; project: string; taskId: string; runFolder: string }

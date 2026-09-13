@@ -215,6 +215,20 @@ export async function promoteObservedResult(
   // Best-effort like the Delivery mint: promotion above already committed,
   // and reconcileQaGate recovers any gate work left incomplete.
   if (qaGated) {
+    // STABLE_HARDENING_01 (BUG-001): the completed Run no longer owns the
+    // observation lock once terminal promotion above is committed — release
+    // it here, before the gate runs, exactly as the ordinary path does
+    // below. Binding-matched (taskId+runId), so an already-released or
+    // foreign lock is a safe no-op; remediation/semantic/successor dispatch
+    // can then acquire the slot instead of CONFLICTing on a stale holder.
+    if (input.observationAdapterId && input.workspaceRoot) {
+      releaseObservationLockByBinding({
+        observationAdapterId: input.observationAdapterId,
+        workspaceRoot: input.workspaceRoot,
+        taskId,
+        runId,
+      });
+    }
     try {
       await runOrResumeQaGate(dataRoot, project, taskId);
     } catch {

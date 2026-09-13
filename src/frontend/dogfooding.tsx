@@ -60,6 +60,8 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
   const project = isProject ? (props.project ?? '') : '';
   const [items, setItems] = useState<DfItem[]>([]);
   const [filter, setFilter] = useState<Filter>('ALL');
+  const [typeFilter, setTypeFilter] = useState<'ALL' | DfType>('ALL');
+  const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [type, setType] = useState<DfType>(isProject ? 'UX' : 'UX');
   const [priority, setPriority] = useState<DfPriority>('MEDIUM');
@@ -165,7 +167,18 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
     void must({ op: 'file:reveal', path: item.folder }).catch(() => props.notify('err', '파일을 열 수 없습니다.'));
   }
 
-  const shown = filter === 'ALL' ? items : items.filter(i => i.status === filter);
+  const shown = items
+    .filter(i => filter === 'ALL' || i.status === filter)
+    .filter(i => typeFilter === 'ALL' || i.type === typeFilter)
+    .filter(i => {
+      const q = search.toLowerCase().trim();
+      if (!q) return true;
+      return (
+        i.id.toLowerCase().includes(q) ||
+        i.feedback.toLowerCase().includes(q) ||
+        (i.desired || '').toLowerCase().includes(q)
+      );
+    });
   const countOf = (s: DfStatus): number => items.filter(i => i.status === s).length;
 
   return (
@@ -179,6 +192,23 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
           {FILTERS.map(f => (
             <button key={f} className={`df-filter${filter === f ? ' on' : ''}`} onClick={() => setFilter(f)}>{f}</button>
           ))}
+          <select
+            className="mini"
+            value={typeFilter}
+            title="Type 필터"
+            onChange={e => setTypeFilter(e.target.value as 'ALL' | DfType)}
+          >
+            <option value="ALL">Type: 전체</option>
+            {typeOptions.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+          <input
+            className="mini"
+            style={{ width: 140 }}
+            placeholder="🔍 검색 (내용/ID)"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          {search && <button className="mini" onClick={() => setSearch('')} title="검색 초기화">✕</button>}
         </div>
         <div style={{ flex: 1 }} />
         {isProject && (

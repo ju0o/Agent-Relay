@@ -67,8 +67,6 @@
  * attempt, never consumes any remediation budget — Slice 4's concern) before
  * finalizing BLOCKED.
  */
-import { spawn } from 'node:child_process';
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { relayDir } from './goal-task.js';

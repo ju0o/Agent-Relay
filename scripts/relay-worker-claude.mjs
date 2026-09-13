@@ -14,6 +14,21 @@
  *
  * Observation is handled by the claude-code adapter, not by this wrapper.
  * This wrapper never calls markResultReceived, creates Evidence, or calls MCP.
+ *
+ * V1.6 Slice 8 — QA passthrough mode (additive, relay path unchanged):
+ *   The Semantic QA evaluator (qa-semantic-evaluator.ts invokeOnce) spawns the
+ *   QA worker's own launchCommand + launchArgsPrefix with a trailing
+ *   `--print <prompt>`. When that worker row IS this wrapper (frozen dogfood
+ *   uses qaWorkerId 'claude-code' for both roles), the invocation arrives as
+ *   `relay-worker-claude.mjs --print <prompt>` with NO relay args. That shape
+ *   is served here as a bare passthrough: `claude --print <prompt>` with the
+ *   wrapper's own cwd (the evaluator already spawns with the implementation
+ *   Run's authoritative workspaceRoot), default permission mode, and the same
+ *   Owner profile routing below. No Task is loaded, no prompt.md is written,
+ *   no launch log is minted, no Result/Evidence/MCP is touched — Claude's
+ *   stdout is forwarded verbatim (the semantic parser tolerates surrounding
+ *   whitespace but must see the structured block), diagnostics go to stderr
+ *   only, and Claude's exit code is propagated.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -321,6 +336,98 @@ function readRetryContext(runFolder) {
 }
 
 /**
+ * V1.6: read and minimally validate qa-remediation-context.json from a Run
+ * folder. Returns null for non-remediation Runs (file absent). Malformed
+ * context fails safe (throw) rather than silently falling back to the initial
+ * prompt — same discipline as readRetryContext. Never coexists with
+ * retry-context.json (dispatchers enforce mutual exclusivity; both present
+ * is corruption → the caller refuses).
+ *
+ * @param {string} runFolder
+ * @returns {{ preparationId: string; sourceRunId: string; taskId: string } | null}
+ */
+function readQaRemediationContext(runFolder) {
+  const ctxPath = path.join(runFolder, 'qa-remediation-context.json');
+  if (!fs.existsSync(ctxPath)) return null;
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(ctxPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`qa-remediation-context.json unreadable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  for (const f of ['preparationId', 'sourceRunId', 'taskId']) {
+    if (!raw || typeof raw[f] !== 'string' || !raw[f]) {
+      throw new Error(`qa-remediation-context.json missing field: ${f}`);
+    }
+  }
+  return {
+    preparationId: raw.preparationId,
+    sourceRunId: raw.sourceRunId,
+    taskId: raw.taskId,
+  };
+}
+
+/**
+ * V1.6: recompute the QA remediation prompt with the shared dist composer
+ * (identical bytes to the backend pre-write in qa-gate.ts
+ * dispatchFromPreparation, via the same durable inputs). Reads the durable
+ * preparation + attempt + frozen Task + bounded prior excerpt — never Worker
+ * output, never caller narrative.
+ */
+async function buildQaRemediationPrompt(dataRoot, project, task, qaCtx) {
+  if (qaCtx.taskId !== task.taskId) {
+    throw new Error(`qa-remediation-context taskId mismatch: ${qaCtx.taskId} ≠ ${task.taskId}`);
+  }
+  const promptPath = path.join(DIST_BACKEND, 'qa-remediation-prompt.js');
+  const attemptPath = path.join(DIST_BACKEND, 'qa-attempt.js');
+  const prepPath = path.join(DIST_BACKEND, 'qa-remediation-preparation.js');
+  const gatePath = path.join(DIST_BACKEND, 'qa-gate.js');
+  for (const p of [promptPath, attemptPath, prepPath, gatePath]) {
+    if (!fs.existsSync(p)) {
+      throw new Error(
+        'Relay backend dist not found for QA remediation prompt composition.\n' +
+        'Run "npm run build" before using the relay worker.',
+      );
+    }
+  }
+  const qp = await import(pathToFileURL(promptPath).href);
+  const qa = await import(pathToFileURL(attemptPath).href);
+  const qrp = await import(pathToFileURL(prepPath).href);
+  const gate = await import(pathToFileURL(gatePath).href);
+  const prep = qrp.getQaRemediationPreparation(dataRoot, project, qaCtx.preparationId);
+  if (prep.taskId !== task.taskId || prep.sourceRunId !== qaCtx.sourceRunId) {
+    throw new Error('qa-remediation-context does not match its durable preparation.');
+  }
+  const attempt = qa.getQaAttempt(dataRoot, project, prep.sourceQaAttemptId);
+  const sourceLink = task.linkedRuns.find((r) => r.runId === qaCtx.sourceRunId);
+  if (!sourceLink) {
+    throw new Error(`Source Run ${qaCtx.sourceRunId} is no longer linked.`);
+  }
+  const prior = qp.readPriorResultExcerpt(sourceLink.folder);
+  const semanticReason = gate.semanticReasonFromAttempt(attempt);
+  return qp.composeQaRemediationPrompt({
+    task: {
+      taskId: task.taskId,
+      title: task.title,
+      goal: task.goal,
+      reason: task.reason,
+      scope: task.scope,
+      completionCriteria: task.completionCriteria,
+      ...(task.acceptanceCriteria ? { acceptanceCriteria: task.acceptanceCriteria } : {}),
+    },
+    preparationId: prep.preparationId,
+    sourceRunId: prep.sourceRunId,
+    qaRemediationNumber: prep.qaRemediationNumber,
+    failedCriteria: [...attempt.failedCriteria],
+    deterministicSummary: gate.summarizeAttemptDeterministic(attempt),
+    ...(semanticReason ? { semanticReason } : {}),
+    ...(attempt.remediationInstruction ? { remediationInstruction: attempt.remediationInstruction } : {}),
+    priorExcerpt: prior.excerpt,
+    priorAvailable: prior.available,
+  });
+}
+
+/**
  * V1-G5-C: recompute the retry prompt with the shared dist composer
  * (identical bytes to the backend pre-write). Reads the durable
  * instruction + reason from the G5-A judgment/intent and the bounded prior
@@ -541,6 +648,110 @@ function redactedArgvShape(exe, args) {
   })];
 }
 
+// ── V1.6 Slice 8: QA passthrough mode ─────────────────────────────────────────
+
+/**
+ * Serve a bare `--print <prompt>` invocation with no relay args (the exact
+ * shape qa-semantic-evaluator.ts invokeOnce produces against this wrapper's
+ * own registry row) as a direct `claude --print <prompt>` passthrough.
+ *
+ * Security posture (mirrors the relay path, narrowed):
+ *   - spawn cwd is the wrapper's own cwd — the evaluator sets it to the
+ *     implementation Run's authoritative workspaceRoot. Never derived from
+ *     prompt text or any Task narrative available here.
+ *   - No --permission-mode flag (least privilege); QA only judges, never edits.
+ *   - Profile routing identical to the relay path (inherited
+ *     CLAUDE_CONFIG_DIR, else Owner Team/Pro routing by cwd); credentials
+ *     stay in Claude's own storage, never read here.
+ *   - stdout carries Claude's output verbatim (no wrapper chatter — the
+ *     semantic line parser must see the structured block); all wrapper
+ *     diagnostics go to stderr.
+ *   - Parent signals are forwarded so evaluator timeouts cannot orphan Claude.
+ *
+ * @param {string} prompt  already-bounded QA prompt (composed by the evaluator)
+ * @returns {Promise<never>} always exits the process with Claude's exit code
+ */
+async function runQaPrintPassthrough(prompt) {
+  const cwd = process.cwd();
+  const claudeExe = resolveClaudeExecutable();
+  let configDir;
+  try {
+    const routed = resolveClaudeConfigDir(cwd);
+    configDir = routed.configDir;
+  } catch {
+    configDir = undefined;
+  }
+  const exitCode = await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(claudeExe, ['--print', prompt], {
+        cwd,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: {
+          ...process.env,
+          ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[relay-worker-claude:qa] Claude spawn threw: ${msg}\n`);
+      resolve(1);
+      return;
+    }
+    const onSigterm = () => { try { child.kill('SIGTERM'); } catch { /* already gone */ } };
+    const onSigint = () => { try { child.kill('SIGINT'); } catch { /* already gone */ } };
+    process.on('SIGTERM', onSigterm);
+    process.on('SIGINT', onSigint);
+    // Bounded stderr buffer (P2 hardening): keep at most 4× the emitted
+    // excerpt bound in memory; a cut stream still fails closed downstream.
+    const ERR_BUF_MAX = MAX_WORKER_DIAG_CHARS * 4;
+    let errBuffered = 0;
+    const errChunks = [];
+    child.stdout.on('data', (d) => { process.stdout.write(d); });
+    child.stderr.on('data', (d) => {
+      if (errBuffered < ERR_BUF_MAX) {
+        const room = ERR_BUF_MAX - errBuffered;
+        errChunks.push(d.length > room ? d.slice(0, room) : d);
+        errBuffered += Math.min(d.length, room);
+      }
+    });
+    child.on('error', (err) => {
+      process.stderr.write(`[relay-worker-claude:qa] Claude spawn error: ${err.message}\n`);
+      resolve(1);
+    });
+    child.on('exit', (code, sig) => {
+      process.removeListener('SIGTERM', onSigterm);
+      process.removeListener('SIGINT', onSigint);
+      if (errChunks.length > 0) {
+        const excerpt = Buffer.concat(errChunks).toString('utf8').trim().slice(0, MAX_WORKER_DIAG_CHARS);
+        if (excerpt) process.stderr.write(`${excerpt}\n`);
+      }
+      resolve(code ?? (sig ? 1 : 0));
+    });
+  });
+  process.exit(exitCode);
+}
+
+/**
+ * Detect the QA passthrough shape: zero relay-arg tokens present AND a
+ * `--print <prompt>` pair present with a non-flag prompt value.
+ *
+ * @param {string[]} argv  process.argv.slice(2)
+ * @returns {string|null} the prompt, or null when this is not QA shape
+ */
+function detectQaPassthroughPrompt(argv) {
+  for (const tok of argv) {
+    if (RELAY_ARGS.has(tok)) return null; // relay path takes precedence, always
+  }
+  const idx = argv.indexOf('--print');
+  if (idx === -1) return null;
+  const prompt = argv[idx + 1];
+  if (prompt === undefined || prompt.startsWith('--')) return null;
+  return prompt;
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -551,7 +762,16 @@ async function main() {
 
   try {
     // ── 1. Parse Relay args (no shell, no eval, process.argv array only) ──────
-    const args = parseRelayArgs(process.argv.slice(2));
+    // V1.6 Slice 8: a bare `--print <prompt>` with no relay args is the
+    // Semantic QA evaluator invoking this wrapper's own registry row — serve
+    // it as a direct passthrough (never Fatal, never a Task load attempt).
+    const rawArgv = process.argv.slice(2);
+    const qaPrompt = detectQaPassthroughPrompt(rawArgv);
+    if (qaPrompt !== null) {
+      await runQaPrintPassthrough(qaPrompt);
+      return; // unreachable — runQaPrintPassthrough always exits
+    }
+    const args = parseRelayArgs(rawArgv);
     taskId = args.taskId;
     runId = args.runId;
     const permissionMode = args.permissionMode; // 'default' | 'acceptEdits' | undefined
@@ -586,10 +806,20 @@ async function main() {
     // identical retry prompt via the shared dist composer so the idempotent
     // prompt.md write below agrees byte-for-byte; initial Runs use the
     // canonical Task prompt as before.
+    // V1.6: QA remediation Runs carry qa-remediation-context.json instead
+    // (mutually exclusive with retry-context.json — both present is
+    // corruption and refuses). Recompute via the shared QA composer so the
+    // pre-written prompt.md agrees byte-for-byte.
     let prompt;
     try {
       const retryCtx = readRetryContext(runFolder);
-      if (retryCtx) {
+      const qaCtx = readQaRemediationContext(runFolder);
+      if (retryCtx && qaCtx) {
+        throw new Error('Run folder carries both retry-context.json and qa-remediation-context.json; lineages are mutually exclusive.');
+      }
+      if (qaCtx) {
+        prompt = await buildQaRemediationPrompt(args.dataRoot, args.project, task, qaCtx);
+      } else if (retryCtx) {
         prompt = await buildRetryPrompt(args.dataRoot, args.project, task, retryCtx);
       } else {
         prompt = buildWorkerPrompt(task, args.runId);

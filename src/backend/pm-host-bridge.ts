@@ -33,6 +33,8 @@ import { submitPmJudgment } from './pm-judgment.js';
 import { prepareRetryForJudgment } from './retry-preparation.js';
 import { dispatchV1Retry } from './retry-dispatch.js';
 import { reconcileReadyRetryDispatches } from './retry-dispatch.js';
+import { scanStuckWork } from './resume-scan.js';
+import type { ResumeScanResult, ScanFinding } from './resume-scan.js';
 
 /** Host protocol version (bridge ↔ PM Host child). */
 export const PM_HOST_PROTOCOL_VERSION = 1;
@@ -172,6 +174,11 @@ export interface HostBridgeOnceResult {
   reconciled: string[];
   delivered: string[];
   acknowledged: string[];
+  /**
+   * V2 R3 — read-only stuck-work scan snapshot (never blocks the drain).
+   * Capped: at most 25 findings, `truncated` set when capped.
+   */
+  resumeScan: { scannedTasks: number; findings: ScanFinding[]; truncated: boolean };
 }
 
 interface InFlight {
@@ -182,6 +189,28 @@ interface InFlight {
 function clampPollMs(v: unknown): number {
   if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_POLL_MS;
   return Math.min(60_000, Math.max(25, Math.floor(v)));
+}
+
+const RESUME_SCAN_LOG_MAX = 8;
+const RESUME_SCAN_RESULT_MAX = 25;
+
+/**
+ * V2 R3 — best-effort read-only stuck-work scan. Never throws, never
+ * executes anything. Returns a zeroed snapshot on any failure so bridge
+ * startup / drain can never break on it.
+ */
+function scanStuckBestEffort(dataRoot: string, project: string): {
+  scannedTasks: number;
+  findings: ScanFinding[];
+  truncated: boolean;
+} {
+  try {
+    const r: ResumeScanResult = scanStuckWork(dataRoot, project);
+    const capped = r.findings.slice(0, RESUME_SCAN_RESULT_MAX);
+    return { scannedTasks: r.scannedTasks, findings: capped, truncated: r.findings.length > capped.length };
+  } catch {
+    return { scannedTasks: 0, findings: [], truncated: false };
+  }
 }
 
 /**
@@ -267,6 +296,15 @@ export class PmHostBridge {
     } catch (err) {
       this.log(`Retry reconcile failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // V2 R3 — restart integration: read-only stuck-work scan at startup.
+    // Report only via the log channel; executes nothing; never breaks startup.
+    const stuck = scanStuckBestEffort(this.dataRoot, this.project);
+    if (stuck.findings.length > 0) {
+      this.log(`Resume scan: ${stuck.findings.length} stuck finding(s) in ${stuck.scannedTasks} task(s) — report only, see TUI [s] / resume-scan`);
+      for (const f of stuck.findings.slice(0, RESUME_SCAN_LOG_MAX)) {
+        this.log(`  [${f.pattern}] ${f.taskId}: ${f.detail.slice(0, 120)}`);
+      }
+    }
     await this.tick();
     this.timer = setInterval(() => {
       void this.tick().catch((err) => {
@@ -302,11 +340,13 @@ export class PmHostBridge {
     const rec = await reconcilePmDeliveries(this.dataRoot, this.project);
     const delivered: string[] = [];
     const acknowledged: string[] = [];
+    // V2 R3 — same read-only scan snapshot for the single-pass path.
+    const resumeScan = scanStuckBestEffort(this.dataRoot, this.project);
     const max = typeof opts?.maxDeliveries === 'number' && opts.maxDeliveries > 0
       ? Math.min(Math.floor(opts.maxDeliveries), RUN_ONCE_MAX_ITERATIONS)
       : RUN_ONCE_MAX_ITERATIONS;
     if (!this.ensureChild()) {
-      return { reconciled: rec.ensured, delivered, acknowledged };
+      return { reconciled: rec.ensured, delivered, acknowledged, resumeScan };
     }
     for (let i = 0; i < max; i++) {
       if (this.stopping) break;
@@ -322,7 +362,7 @@ export class PmHostBridge {
         acknowledged.push(next.deliveryId);
       }
     }
-    return { reconciled: rec.ensured, delivered, acknowledged };
+    return { reconciled: rec.ensured, delivered, acknowledged, resumeScan };
   }
 
   // ── internal tick ──────────────────────────────────────────────────────────

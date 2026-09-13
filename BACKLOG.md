@@ -4,19 +4,29 @@
 
 ## 남은 개선 후보
 
-- [ ] `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행 (package.json)
-- [ ] DevTools가 production에서도 F12로 열림 (src/backend/main.ts)
-- [ ] `moveRun`이 런 폴더의 **최상위 파일만** 복사함 — 하위 폴더는 이동하지 않음 (src/backend/fs.ts)
-- [ ] `exportRunMarkdown`이 폴더 경로 깊이(4세그먼트)를 가정해 헤더를 파싱함 (src/backend/fs.ts)
-- [ ] 편집 탭 미저장 내용이 프로젝트 세션 전환/앱 종료 시 유실됨 — 종료 경고 없음
-- [ ] Dogfooding 피드백 검색/Type 필터는 미지원 (Status 필터만 있음)
-- [ ] drag-out은 사용자 제스처(mousedown)가 필요 — 키보드만으로는 불가
-- [ ] 앱 아이콘 미설정 — electron-builder 기본 Electron 아이콘 사용 중 (build/ 리소스 필요)
-- [ ] Work Tab 순서 영구 저장 — v0.3은 session-only (App.tsx onWorkTabDrop 주석 참조)
-- [ ] 마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원 — lastProject만 복원됨
-- [ ] Drag Reorder 터치 지원 — v0.3은 HTML5 mouse DnD만 (Windows Desktop 우선 원칙)
-- [ ] electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨
-- [ ] Quick Capture 저장 직후 pdMode가 닫혀있으면 알림만 표시 — 목록 확인은 다시 열어야 함
+없음 — 2026-09-12 정리 라운드에서 13건 모두 처리됨 (아래 완료 섹션 참조).
+
+## 완료된 것 (v0.3.3 — BACKLOG 잔여 5건, 추천 방안)
+
+- [x] 앱 아이콘 — 릴레이 셰브론 아트워크 생성 (`build/icon.png`/`.ico`/`.icns`,
+      `public/icon.png`) + `win.icon` 패키징 배선 + 윈도우 아이콘 자동 사용
+- [x] Work Tab 순서 영구 저장 — 프로젝트별 작업탭 스냅샷(localStorage)으로 순서 영속 (worktabs.ts)
+- [x] 마지막 작업 탭(active tab) 복원 — 스냅샷 `activeIndex` 복원 (lastProject/lastAgent에 추가)
+- [x] 편집 탭 미저장 초안의 재실행 후 복원 — 상한 내 초안 캐시 + 디스크 재독 우선, 폴더 소실 시 강등
+- [x] Drag Reorder 터치 지원 — 드래그 없는 ‹ › 이동 버튼 (프로젝트 탭 + 작업 탭, 터치/키보드 공용)
+
+## 완료된 것 (v0.3.2 — BACKLOG 정리)
+
+- [x] `npm run dev`에 watch/HMR — `dev:client`/`dev:server`/`dev:hmr` 추가 + `ELECTRON_START_URL` 분기 (package.json, main.ts)
+- [x] DevTools가 production에서도 F12로 열림 → dev-only 게이트 (`shouldEnableDevToolsShortcut`) (src/backend/main.ts)
+- [x] `moveRun`이 런 폴더의 **최상위 파일만** 복사함 → 하위 폴더 재귀 복사 (src/backend/fs.ts)
+- [x] `exportRunMarkdown`이 폴더 경로 깊이(4세그먼트)를 가정해 헤더를 파싱함 → 끝에서부터 해석 + 짧은 경로 내성 (src/backend/fs.ts)
+- [x] 편집 탭 미저장 내용이 앱 종료 시 유실됨, 종료 경고 없음 → dirty tracking + `beforeunload` 경고 (App.tsx)
+- [x] Dogfooding 피드백 검색/Type 필터 미지원 → Type 필터 + 텍스트 검색 추가 (dogfooding.tsx)
+- [x] drag-out은 사용자 제스처(mousedown)가 필요, 키보드만으로는 불가 → Enter/Space 동작 + 경로 복사 대체 버튼 (App.tsx)
+- [x] 마지막 선택 Agent 재실행 시 복원 — `lastAgent` 설정 persist + 초기 탭/새 탭 적용 (types.ts, main.ts, App.tsx)
+- [x] electron-updater 의존성 트리 자동 점검 → `npm run check:updater` 스크립트 (scripts/verify-updater-deps.mjs)
+- [x] Quick Capture 저장 직후 pdMode가 닫혀있으면 알림만 표시 → 저장 후 목록 자동 표시 (App.tsx)
 
 ## 완료된 것 (v0.2.0)
 

@@ -5,6 +5,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'node:readline';
 import { discoverConfig, notInitializedMessage } from './config.js';
 import { buildStatusSnapshot, renderStatusHuman, STATUS_SCHEMA_VERSION } from './status.js';
 import { runDoctor, renderDoctorHuman, DOCTOR_SCHEMA_VERSION } from './doctor.js';
@@ -20,6 +21,9 @@ Usage:
 Commands:
   status              Show project status snapshot
   doctor              Run infrastructure health checks
+  history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
+  resume-scan         Scan stuck/interrupted work (V2 R1, read-only report)
+  resume act          Run one guided recovery action (V2 R2, Owner confirm required)
   init                Initialize project (interactive or --yes)
   connect <client>    Configure PM MCP (claude-code)
   host watch          Watch pending PM Deliveries and hand them to the PM Host
@@ -40,6 +44,11 @@ Examples:
   agent-relay status --json
   agent-relay doctor
   agent-relay doctor --json
+  agent-relay history TASK-0001
+  agent-relay history TASK-0001 --json
+  agent-relay resume-scan
+  agent-relay resume-scan --json
+  agent-relay resume act --task TASK-0001 --pattern ORPHANED_DISPATCH --orphan-action KEEP_WAITING --yes
   agent-relay init
   agent-relay init --yes
   agent-relay init --yes --json
@@ -49,10 +58,17 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
+  let taskId: string | null = null;
+  let task: string | null = null;
+  let pattern: string | null = null;
+  let run: string | null = null;
+  let prep: string | null = null;
+  let orphanAction: string | null = null;
+  let reason: string | null = null;
   let json = false;
   let noTui = false;
   let help = false;
@@ -73,13 +89,25 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--yes') yes = true;
     else if (a === '--force') force = true;
     else if (a === '--once') once = true;
-    else if (a === '--poll-ms' || a === '--host-config') {
+    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) { unknown = a; break; }
       if (a === '--poll-ms') {
         const n = Number(next);
         if (!Number.isFinite(n)) { unknown = `${a} ${next}`; break; }
         pollMs = n;
+      } else if (a === '--task') {
+        task = next;
+      } else if (a === '--pattern') {
+        pattern = next;
+      } else if (a === '--run') {
+        run = next;
+      } else if (a === '--prep') {
+        prep = next;
+      } else if (a === '--orphan-action') {
+        orphanAction = next;
+      } else if (a === '--reason') {
+        reason = next;
       } else {
         hostConfig = next;
       }
@@ -87,21 +115,34 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'init' || a === 'connect' || a === 'host')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host')) {
       command = a;
-    } else if ((command === 'connect' || command === 'host') && !sub) {
+    } else if ((command === 'connect' || command === 'host' || command === 'resume') && !sub) {
       sub = a;
+    } else if (command === 'history' && !taskId) {
+      taskId = a;
     } else {
       unknown = a;
       break;
     }
   }
 
-  return { command, sub, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+}
+
+async function promptOwnerConfirm(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((resolve) => rl.question(`${question} [y/N] `, resolve));
+    return answer.trim().toLowerCase() === 'y';
+  } finally {
+    rl.close();
+  }
 }
 
 async function main(): Promise<void> {
-  const { command, sub, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -171,6 +212,83 @@ async function main(): Promise<void> {
       console.log(renderDoctorHuman(result));
     }
     process.exit(result.ok ? 0 : 1);
+  }
+
+  if (command === 'history') {
+    const { runHistory, renderHistoryHuman, HISTORY_SCHEMA_VERSION } = await import('./history.js');
+    if (!taskId) {
+      const msg = 'Usage: agent-relay history <taskId> [--json]';
+      if (json) console.log(JSON.stringify({ schemaVersion: HISTORY_SCHEMA_VERSION, ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const res = runHistory(cwd, taskId);
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!res.ok && res.error === 'not-initialized') {
+      console.log(notInitializedMessage());
+    } else {
+      console.log(renderHistoryHuman(res));
+    }
+    process.exit(res.ok ? 0 : 1);
+  }
+
+  if (command === 'resume-scan') {
+    const { runResumeScan, renderResumeScanHuman, RESUME_SCAN_SCHEMA_VERSION } = await import('./resume-scan.js');
+    const res = runResumeScan(cwd);
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!res.ok && res.error === 'not-initialized') {
+      console.log(notInitializedMessage());
+    } else {
+      console.log(renderResumeScanHuman(res));
+    }
+    process.exit(res.ok ? 0 : 1);
+  }
+
+  // V2 R2 — guided recovery action. Locked rule: explicit Owner confirm
+  // every time. --yes counts as explicit; otherwise an interactive [y/N]
+  // prompt is required (TTY). Non-TTY without --yes refuses outright.
+  if (command === 'resume') {
+    const { runResumeAct, renderResumeActHuman, resumeActUsage, RESUME_SCHEMA_VERSION } = await import('./resume.js');
+    if (sub !== 'act') {
+      if (json) console.log(JSON.stringify({ schemaVersion: RESUME_SCHEMA_VERSION, ok: false, error: resumeActUsage() }, null, 2));
+      else console.error(resumeActUsage());
+      process.exit(1);
+    }
+    if (!task || !pattern) {
+      if (json) console.log(JSON.stringify({ schemaVersion: RESUME_SCHEMA_VERSION, ok: false, error: resumeActUsage() }, null, 2));
+      else console.error(resumeActUsage());
+      process.exit(1);
+    }
+    let confirmed = yes;
+    if (!confirmed) {
+      if (process.stdin.isTTY) {
+        confirmed = await promptOwnerConfirm(`Execute guided action ${pattern} on ${task}?`);
+      }
+      if (!confirmed) {
+        const msg = 'refused: Owner confirmation required (--yes or interactive y). Nothing executed.';
+        if (json) console.log(JSON.stringify({ schemaVersion: RESUME_SCHEMA_VERSION, ok: false, error: msg }, null, 2));
+        else console.error(msg);
+        process.exit(1);
+      }
+    }
+    const res = await runResumeAct(cwd, {
+      pattern, taskId: task,
+      ...(run ? { runId: run } : {}),
+      ...(prep ? { preparationId: prep } : {}),
+      ...(orphanAction ? { orphanAction } : {}),
+      ...(reason ? { reason } : {}),
+      confirmed,
+    });
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!res.ok && res.error === 'not-initialized') {
+      console.log(notInitializedMessage());
+    } else {
+      console.log(renderResumeActHuman(res));
+    }
+    process.exit(res.ok ? 0 : 1);
   }
 
   if (command === 'init') {

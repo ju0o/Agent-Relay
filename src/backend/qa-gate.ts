@@ -199,8 +199,13 @@ export function findQaRemediationRunForPreparation(
 }
 
 /** Bounded deterministic verdict summary from the durable attempt (check
- * ids + verdicts only — never raw stdout dumps). */
-function summarizeAttemptDeterministic(attempt: QaAttemptRecord): string {
+ * ids + verdicts only — never raw stdout dumps).
+ *
+ * Exported for scripts/relay-worker-claude.mjs, which recomputes the
+ * byte-identical QA remediation prompt from the same durable inputs
+ * (V1-G5-C pattern: dispatcher pre-write vs wrapper recompute must agree).
+ */
+export function summarizeAttemptDeterministic(attempt: QaAttemptRecord): string {
   const checks = attempt.deterministic?.checks ?? [];
   if (checks.length === 0) return '(no deterministic checks recorded)';
   return checks
@@ -211,8 +216,11 @@ function summarizeAttemptDeterministic(attempt: QaAttemptRecord): string {
 
 /** Semantic failure reason from the durable attempt: the distinct notes
  * attached to the failed criteria (the parser stores the bounded `reason`
- * there), joined and bounded. */
-function semanticReasonFromAttempt(attempt: QaAttemptRecord): string | undefined {
+ * there), joined and bounded.
+ *
+ * Exported for scripts/relay-worker-claude.mjs (same recompute contract as
+ * summarizeAttemptDeterministic above). */
+export function semanticReasonFromAttempt(attempt: QaAttemptRecord): string | undefined {
   if (!attempt.semantic || attempt.semantic.status !== 'FAIL') return undefined;
   const failed = new Set(attempt.failedCriteria);
   const notes = new Set<string>();
