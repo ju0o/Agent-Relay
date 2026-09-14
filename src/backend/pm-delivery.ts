@@ -279,6 +279,44 @@ export function listPendingPmDeliveries(dataRoot: string, project: string): PmDe
   );
 }
 
+/** Reconcile Delivery consumption from already-final Task truth. */
+export async function reconcileFinalizedPmDeliveries(
+  dataRoot: string,
+  project: string,
+): Promise<{ acknowledged: string[]; ignored: string[] }> {
+  const acknowledged: string[] = [];
+  const ignored: string[] = [];
+  for (const delivery of listPendingPmDeliveries(dataRoot, project)) {
+    let task;
+    try {
+      task = getTask(dataRoot, project, delivery.taskId);
+    } catch {
+      continue;
+    }
+    const finalized = task.pmState === 'ACCEPTED' && task.acceptedRunId === delivery.runId;
+    const currentRunId = resolveCurrentAttemptRunId(task);
+    if (!finalized && currentRunId === delivery.runId) continue;
+    const target = finalized ? 'ACKNOWLEDGED' : 'IGNORED';
+    try {
+      if (delivery.status === 'PENDING') {
+        await markPmDeliveryDelivered(dataRoot, project, delivery.deliveryId, 'PENDING');
+      }
+      if (finalized) {
+        await acknowledgePmDelivery(dataRoot, project, delivery.deliveryId, 'DELIVERED');
+        acknowledged.push(delivery.deliveryId);
+      } else {
+        await ignorePmDelivery(dataRoot, project, delivery.deliveryId, 'DELIVERED');
+        ignored.push(delivery.deliveryId);
+      }
+    } catch (err) {
+      if (!(err instanceof PmDeliveryError) || err.code !== 'CONFLICT') throw err;
+      const latest = readDeliveryRecord(dataRoot, project, delivery.deliveryId);
+      if (latest.status === target) (finalized ? acknowledged : ignored).push(delivery.deliveryId);
+    }
+  }
+  return { acknowledged, ignored };
+}
+
 // ── mint / reconcile ─────────────────────────────────────────────────────────
 
 /**

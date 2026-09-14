@@ -200,6 +200,7 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
       handler: async (args) => {
         rejectUnknownFields(args, []);
         try {
+          await pmDelivery.reconcileFinalizedPmDeliveries(dataRoot, project);
           return { project, deliveries: pmDelivery.listPendingPmDeliveries(dataRoot, project) };
         } catch (err) {
           throw mapCoreError(err);

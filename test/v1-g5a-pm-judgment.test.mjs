@@ -188,6 +188,24 @@ console.log('\n-- N: duplicate ACCEPT --');
   check(pmJud.listPmJudgments(TEST_ROOT, project).length === before, 'N no duplicate record');
 }
 
+// ── N2: finalized Task reconciles a stale PENDING Delivery at widget listing ──
+console.log('\n-- N2: finalized Delivery reconciliation --');
+{
+  const file = path.join(pmDel.pmDeliveryFolder(TEST_ROOT, project, DA), 'delivery.json');
+  const stale = JSON.parse(fs.readFileSync(file, 'utf8'));
+  stale.status = 'PENDING';
+  delete stale.deliveredAt;
+  delete stale.acknowledgedAt;
+  fs.writeFileSync(file, JSON.stringify(stale, null, 2) + '\n');
+  const before = pmJud.listPmJudgments(TEST_ROOT, project).length;
+  const listed = await get('relay_pm_list_pending_deliveries').handler({});
+  check(listed.deliveries.every((d) => d.deliveryId !== DA), 'N2 widget listing suppresses finalized stale delivery');
+  check(pmDel.getPmDelivery(TEST_ROOT, project, DA).status === 'ACKNOWLEDGED', 'N2 PENDING → DELIVERED → ACKNOWLEDGED');
+  await pmDel.reconcileFinalizedPmDeliveries(TEST_ROOT, project);
+  check(pmDel.getPmDelivery(TEST_ROOT, project, DA).status === 'ACKNOWLEDGED', 'N2 repeated reconciliation is idempotent');
+  check(pmJud.listPmJudgments(TEST_ROOT, project).length === before, 'N2 no duplicate judgment record');
+}
+
 // ── O: conflicting decision ──
 console.log('\n-- O: conflict --');
 {

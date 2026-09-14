@@ -405,7 +405,7 @@ console.log('\n-- Q: bridge restart --');
   await resetProcessLocal();
 }
 
-// ── R: historical packet stays NO_JUDGMENT through the bridge ──
+// ── R: historical delivery is ignored without waking the host ──
 console.log('\n-- R: historical via bridge --');
 {
   const project = 'V1G4C-R';
@@ -427,14 +427,13 @@ console.log('\n-- R: historical via bridge --');
   const rec = path.join(TEST_ROOT, 'rec-r.ndjson');
   const { bridge } = makeBridge(project, rec, 'ack');
   await bridge.start();
-  await waitFor('r ack', () => {
-    try { return pmDel.getPmDelivery(TEST_ROOT, project, D1).status === 'ACKNOWLEDGED'; } catch { return false; }
+  await waitFor('r ignored', () => {
+    try { return pmDel.getPmDelivery(TEST_ROOT, project, D1).status === 'IGNORED'; } catch { return false; }
   });
   await bridge.stop();
   clearHostEnv();
-  const got = readRecords(rec).find((r) => r.deliveryId === D1);
-  check(got?.packet?.attempt?.isCurrentAttempt === false, 'R historical packet explicit non-current');
-  check(JSON.stringify(got?.packet?.reviewActions) === JSON.stringify(['NO_JUDGMENT']), 'R historical packet NO_JUDGMENT');
+  check(!readRecords(rec).some((r) => r.deliveryId === D1), 'R historical delivery never wakes host');
+  check(pmDel.listPendingPmDeliveries(TEST_ROOT, project).every((d) => d.deliveryId !== D1), 'R ignored delivery does not resurface');
   await resetProcessLocal();
 }
 

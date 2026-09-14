@@ -21,7 +21,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { relayDir, writeJsonAtomic, getTask } from './goal-task.js';
 import { resolveCurrentAttemptRunId } from './goal-task-runtime.js';
-import { getPmDelivery } from './pm-delivery.js';
+import { acknowledgePmDelivery, getPmDelivery, markPmDeliveryDelivered } from './pm-delivery.js';
 import { acceptTaskResult } from './task-actions.js';
 import type { TaskRecord } from '../shared/types.js';
 
@@ -686,6 +686,17 @@ async function applyAccept(
   }
   // Idempotent reconcile: already ACCEPTED for the same run → APPLIED.
   if (task.pmState === 'ACCEPTED' && task.acceptedRunId === record.runId) {
+    try {
+      const delivery = getPmDelivery(dataRoot, project, record.deliveryId);
+      if (delivery.status === 'PENDING') {
+        await markPmDeliveryDelivered(dataRoot, project, delivery.deliveryId, 'PENDING');
+      }
+      if (delivery.status === 'PENDING' || delivery.status === 'DELIVERED') {
+        await acknowledgePmDelivery(dataRoot, project, delivery.deliveryId, 'DELIVERED');
+      }
+    } catch (err) {
+      if (!(err instanceof Error) || (err as { code?: string }).code !== 'CONFLICT') throw err;
+    }
     const done: PmJudgmentRecord = { ...record, status: 'APPLIED', updatedAt: nowIso(), appliedAt: nowIso() };
     persistJudgmentRecord(folder, done);
     return { judgment: done, applied: false, task };

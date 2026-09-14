@@ -26,6 +26,7 @@ import {
   listPendingPmDeliveries,
   markPmDeliveryDelivered,
   reconcilePmDeliveries,
+  reconcileFinalizedPmDeliveries,
   type PmDeliveryRecord,
 } from './pm-delivery.js';
 import { getVerificationContextForDelivery } from './pm-verification-context.js';
@@ -338,6 +339,7 @@ export class PmHostBridge {
    */
   async runOnce(opts?: { maxDeliveries?: number }): Promise<HostBridgeOnceResult> {
     const rec = await reconcilePmDeliveries(this.dataRoot, this.project);
+    await reconcileFinalizedPmDeliveries(this.dataRoot, this.project);
     const delivered: string[] = [];
     const acknowledged: string[] = [];
     // V2 R3 — same read-only scan snapshot for the single-pass path.
@@ -350,7 +352,7 @@ export class PmHostBridge {
     }
     for (let i = 0; i < max; i++) {
       if (this.stopping) break;
-      const next = this.pickNext();
+      const next = await this.pickNext();
       if (!next) break;
       const sent = await this.sendDelivery(next);
       if (!sent) {
@@ -386,7 +388,7 @@ export class PmHostBridge {
         this.inFlight = null;
       }
     }
-    const next = this.pickNext();
+    const next = await this.pickNext();
     if (!next) {
       this.logIdle('Waiting for pending deliveries…');
       return;
@@ -396,7 +398,8 @@ export class PmHostBridge {
   }
 
   /** First non-terminal delivery (re-read latest; defensive terminal skip). */
-  private pickNext(): PmDeliveryRecord | null {
+  private async pickNext(): Promise<PmDeliveryRecord | null> {
+    await reconcileFinalizedPmDeliveries(this.dataRoot, this.project);
     let queue: PmDeliveryRecord[];
     try {
       queue = listPendingPmDeliveries(this.dataRoot, this.project);
