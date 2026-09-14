@@ -10,6 +10,10 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { readRunMeta } from './fs.js';
+import { loadWorkerRegistryRecord } from './worker-registry.js';
+import { recordRuntimeWarning } from './event.js';
+import type { TaskRecord } from '../shared/types.js';
 import type { ActlDriverOptions } from './worker-registry.js';
 
 export const ACTL_CONTRACT_VERSION = 1 as const;
@@ -94,7 +98,16 @@ export interface ActlRuntimeBinding {
     | 'WAITING_AGENT_RECEIVED'
     | 'WAITING_FINAL'
     | 'FINAL_BOUND';
+  /** True only after actl accepted the managed send. */
+  commandAttached?: boolean;
+  closeoutStatus?: 'CAPTURE_ACKED' | 'RELEASED';
   updatedAt: string;
+}
+
+export interface ActlManagedCloseoutOptions {
+  /** True only after the PM has accepted the bound result. */
+  accepted?: boolean;
+  disposition?: 'FAILED' | 'CANCEL_REQUESTED' | 'DELIVERY_AMBIGUOUS';
 }
 
 export class ActlBridgeError extends Error {
@@ -602,12 +615,127 @@ export function setActlInputPermitFactory(factory: ActlInputPermitFactory | null
   inputPermitFactory = factory ?? refuseInputPermitFactory;
 }
 
+/**
+ * A single durable reservation closeout path. The binding is the source of
+ * truth for every private actl credential; callers must never reconstruct or
+ * remap these values from a registry entry. DELIVERY_AMBIGUOUS is permanently
+ * held because the send side effect is unknown.
+ */
+export async function closeActlManagedReservation(
+  actlAbsPath: string,
+  binding: ActlRuntimeBinding,
+  opts: ActlManagedCloseoutOptions = {},
+): Promise<ActlRuntimeBinding> {
+  if (binding.collectStatus === 'DELIVERY_AMBIGUOUS') {
+    throw new ActlBridgeError(
+      'DELIVERY_AMBIGUOUS',
+      'reservation closeout is forbidden while delivery is ambiguous',
+      { sideEffect: 'POSSIBLE_INPUT' },
+    );
+  }
+  const finalPacketPresent = binding.finalPacket !== undefined || binding.collectStatus === 'FINAL_BOUND';
+  if (opts.accepted === true && !finalPacketPresent) {
+    throw new ActlBridgeError('INVALID_STATE', 'accepted closeout requires a bound FINAL result', { sideEffect: 'NONE' });
+  }
+  const reservationId = String(binding.reservationId ?? '');
+  const leaseToken = String(binding.leaseToken ?? '');
+  const fence = String(binding.fence ?? '');
+  if (!reservationId || !leaseToken || !fence || !binding.runtimeId) {
+    throw new ActlBridgeError('INVALID_STATE', 'closeout binding is missing reservation credentials', { sideEffect: 'NONE' });
+  }
+  const scope = scopeFields(binding.socketPath);
+  const hasCommand = binding.commandAttached === true || finalPacketPresent;
+  if (hasCommand && !binding.commandId) {
+    throw new ActlBridgeError('INVALID_STATE', 'closeout command-attached binding is missing commandId', { sideEffect: 'NONE' });
+  }
+  if (binding.closeoutStatus === 'RELEASED') return binding;
+  const finalPacket = binding.finalPacket && typeof binding.finalPacket === 'object'
+    ? binding.finalPacket as Record<string, unknown>
+    : {};
+  const captureAck = finalPacketPresent
+    ? {
+        kind: 'FINAL_CAPTURE',
+        resultId: String(binding.resultId ?? finalPacket.resultId ?? ''),
+        acknowledged: true,
+      }
+    : {
+        kind: 'RECONCILE',
+        commandId: String(binding.commandId ?? ''),
+        disposition: opts.disposition ?? 'FAILED',
+        acknowledged: true,
+      };
+  if (finalPacketPresent && !captureAck.resultId) {
+    throw new ActlBridgeError('INVALID_STATE', 'FINAL closeout is missing resultId', { sideEffect: 'NONE' });
+  }
+  if (!finalPacketPresent && hasCommand && !captureAck.commandId) {
+    throw new ActlBridgeError('INVALID_STATE', 'RECONCILE closeout is missing commandId', { sideEffect: 'NONE' });
+  }
+  try {
+    await invokeActlRuntimeOrThrow(actlAbsPath, 'reserve', {
+      contractVersion: ACTL_CONTRACT_VERSION,
+      requestId: newRequestId(),
+      operation: 'reserve',
+      action: 'release',
+      runtimeId: binding.runtimeId,
+      reservationId,
+      leaseToken,
+      fence,
+      captureAck,
+      ...scope,
+    });
+  } catch (err) {
+    const detail = err instanceof ActlBridgeError
+      ? String(err.envelope?.error?.detail ?? err.message)
+      : '';
+    if (!(err instanceof ActlBridgeError)
+      || err.code !== 'INVALID_ARGUMENT'
+      || !/reservation already released/i.test(detail)) {
+      throw err;
+    }
+  }
+  return { ...binding, closeoutStatus: 'RELEASED', updatedAt: new Date().toISOString() };
+}
+
+/** Shared best-effort closeout used by every ACCEPT/CHANGES surface. */
+export async function closeActlManagedReservationForTask(args: {
+  dataRoot: string;
+  project: string;
+  task: TaskRecord;
+  runId: string;
+  disposition?: ActlManagedCloseoutOptions['disposition'];
+}): Promise<void> {
+  try {
+    const linked = args.task.linkedRuns.find(run => run.runId === args.runId);
+    if (!linked) return;
+    const binding = readRuntimeBinding(linked.folder);
+    if (!binding?.reservationId || binding.collectStatus === 'DELIVERY_AMBIGUOUS') return;
+    const meta = readRunMeta(linked.folder);
+    if (!meta.workerId) return;
+    const worker = loadWorkerRegistryRecord(args.dataRoot, meta.workerId);
+    if (!worker.driverOptions?.actl) return;
+    const closed = await closeActlManagedReservation(worker.launchCommand, binding, {
+      accepted: args.disposition === undefined,
+      disposition: args.disposition ?? 'FAILED',
+    });
+    writeRuntimeBinding(linked.folder, closed);
+  } catch (err) {
+    await recordRuntimeWarning(args.dataRoot, args.project, {
+      summary: `actl reservation closeout failed for Task ${args.task.taskId}; durable judgment remains authoritative.`,
+      taskId: args.task.taskId,
+      runId: args.runId,
+      goalId: args.task.goalId,
+      source: { kind: 'actl-bridge', subsystem: 'reservation-closeout' },
+      details: { error: err instanceof Error ? err.message : String(err) },
+    }).catch(() => undefined);
+  }
+}
+
 export async function obtainInputPermit(args: {
   commandId: string;
   runtimeId: string;
   fence: string;
   currentSnapshotHash: string;
-}): Promise<ActlInputPermit> {
+}, factory?: ActlInputPermitFactory): Promise<ActlInputPermit> {
   if (!args.currentSnapshotHash || !String(args.currentSnapshotHash).trim()) {
     throw new ActlBridgeError(
       'INPUT_STATE_UNKNOWN',
@@ -615,7 +743,7 @@ export async function obtainInputPermit(args: {
       { sideEffect: 'NONE' },
     );
   }
-  return inputPermitFactory(args);
+  return (factory ?? inputPermitFactory)(args);
 }
 
 export function correlationDigestForRun(args: {

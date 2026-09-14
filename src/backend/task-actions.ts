@@ -30,6 +30,7 @@ import {
   recordTaskRetryRequested,
 } from './event.js';
 import { continueExecutionPlanAfterTaskAccepted } from './execution-plan-continuation.js';
+import { closeActlManagedReservationForTask } from './actl-bridge.js';
 import type {
   PermissionPolicy,
   TaskExecutionState,
@@ -99,6 +100,8 @@ export async function acceptTaskResult(input: AcceptTaskResultInput): Promise<Ta
     goalId, expectedExecutionState, expectedPmState, reason,
   });
 
+  await closeActlManagedReservationForTask({ dataRoot, project, task: after, runId });
+
   try {
     await recordTaskResultAccepted(dataRoot, project, {
       summary: `Task ${taskId} result accepted (run ${runId})`,
@@ -154,6 +157,10 @@ export async function requestTaskChanges(input: RequestTaskChangesInput): Promis
   const beforeSnap = beforeSnapshot(before);
   const after = await requestChangesRuntime(dataRoot, project, taskId, runId, {
     goalId, reason, expectedExecutionState, expectedPmState,
+  });
+
+  await closeActlManagedReservationForTask({
+    dataRoot, project, task: after, runId, disposition: 'FAILED',
   });
 
   try {

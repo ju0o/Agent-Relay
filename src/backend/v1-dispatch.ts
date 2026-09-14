@@ -26,6 +26,7 @@
 import { getGoal, getTask } from './goal-task.js';
 import { authorizeEffect } from './permission-gate.js';
 import { DispatcherError, dispatchTask, type DispatchResult } from './dispatcher.js';
+import type { ActlInputPermitFactory } from './actl-bridge.js';
 import { computeTaskScopeFingerprint, mintRetryAuthorization } from './retry-authorization.js';
 import { recordRuntimeWarning } from './event.js';
 
@@ -34,6 +35,8 @@ export interface V1OwnerApprovedDispatchInput {
   workerId: string;
   workspaceRoot: string;
   expectedExecutionState: 'READY';
+  /** Process-local Owner approval callback; never serialized through PM/MCP. */
+  ownerInputPermitFactory?: ActlInputPermitFactory;
 }
 
 function requireNonEmptyString(value: unknown, field: string): string {
@@ -119,6 +122,7 @@ export async function dispatchV1OwnerApproved(
     workspaceRoot,
     expectedExecutionState: 'READY',
     ownerApprovalContext: { scopeFingerprint: ownerApprovedScopeFingerprint },
+    ...(input.ownerInputPermitFactory ? { ownerInputPermitFactory: input.ownerInputPermitFactory } : {}),
   });
 
   // V1-G5-C: mint the narrow retry authorization ONLY after the canonical

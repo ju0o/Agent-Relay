@@ -58,6 +58,7 @@ import type { ExecutionBinding } from './result-bridge.js';
 import type { TaskExecutionState, TaskRecord } from '../shared/types.js';
 import {
   ActlBridgeError,
+  closeActlManagedReservation,
   composeManagedWorkerPrompt,
   composeWirePrompt,
   computeCommandId,
@@ -78,6 +79,7 @@ import {
   writeFileAtomicInRun,
   writeRuntimeBinding,
   type ActlRuntimeBinding,
+  type ActlInputPermitFactory,
 } from './actl-bridge.js';
 import {
   tryAcquireActlManagedDataRootLock,
@@ -129,6 +131,8 @@ export interface DispatchRequest {
   ownerApprovalContext?: {
     scopeFingerprint: string;
   };
+  /** Internal owner boundary only; never accepted from serialized PM/Worker input. */
+  ownerInputPermitFactory?: ActlInputPermitFactory;
   /**
    * V1.6 Slice 4 trusted internal QA-remediation correlation. ONLY the QA
    * gate backend (qa-gate.ts) may set this; it is never accepted from
@@ -710,6 +714,10 @@ export async function dispatchTask(
   // V1.6 Slice 4: trusted internal QA-remediation correlation (same posture).
   const retryContext = request?.retryContext;
   const ownerApprovalContext = request?.ownerApprovalContext;
+  const ownerInputPermitFactory = request?.ownerInputPermitFactory;
+  if (ownerInputPermitFactory !== undefined && ownerApprovalContext === undefined) {
+    throw new DispatcherError('INVALID_ARGUMENT', 'ownerInputPermitFactory requires ownerApprovalContext.');
+  }
   const qaRemediationContext = request?.qaRemediationContext;
   const correlationCount = [retryContext, ownerApprovalContext, qaRemediationContext].filter((c) => c !== undefined).length;
   if (correlationCount > 1) {
@@ -873,6 +881,7 @@ export async function dispatchTask(
         dispatchedAt,
         retryContext,
         ownerApprovalContext,
+        ownerInputPermitFactory,
         qaRemediationContext,
         afterLinkHook,
       });
@@ -1412,6 +1421,7 @@ async function runActlManagedDispatch(args: {
   dispatchedAt: string;
   retryContext: DispatchRequest['retryContext'];
   ownerApprovalContext: DispatchRequest['ownerApprovalContext'];
+  ownerInputPermitFactory: DispatchRequest['ownerInputPermitFactory'];
   qaRemediationContext: DispatchRequest['qaRemediationContext'];
   afterLinkHook: (() => Promise<void>) | null;
 }): Promise<DispatchResult> {
@@ -1655,24 +1665,15 @@ async function runActlManagedDispatch(args: {
         reason: `dispatch:actl-managed:${workerId}`,
       });
     } catch (err) {
+      try {
+        const closed = await closeActlManagedReservation(actlAbs, binding, { disposition: 'FAILED' });
+        writeRuntimeBinding(createdFolder, closed);
+      } catch { /* preserve the CAS failure */ }
       await rollbackPreCommitRun(root, proj, taskId, createdRunId, createdFolder);
       createdFolder = undefined;
       createdRunId = undefined;
       live.captureFolder = undefined;
       live.runId = undefined;
-      // Best-effort release of unused reservation (no commands yet).
-      try {
-        await invokeActlRuntime(actlAbs, 'reserve', {
-          contractVersion: 1,
-          requestId: newRequestId(),
-          operation: 'reserve',
-          action: 'release',
-          reservationId,
-          leaseToken,
-          fence,
-          ...scope,
-        });
-      } catch { /* preserve original error */ }
       if (observationLock) {
         releaseObservationLock(observationLock);
         observationLock = undefined;
@@ -1718,8 +1719,12 @@ async function runActlManagedDispatch(args: {
         actlManaged: actlManagedWatch,
         executionBinding,
       });
-    } catch (err) {
+      } catch (err) {
       // Arm failure → no send. Preserve Run; CAS DISPATCHED → FAILED.
+      try {
+        const closed = await closeActlManagedReservation(actlAbs, binding, { disposition: 'FAILED' });
+        writeRuntimeBinding(createdFolder, closed);
+      } catch { /* preserve arm failure */ }
       await cleanupObservationLifecycle(live);
       observationLock = undefined;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1750,6 +1755,10 @@ async function runActlManagedDispatch(args: {
         ? reserve.data.currentSnapshotHash.trim()
         : '';
     if (!snapshotHash) {
+      try {
+        const closed = await closeActlManagedReservation(actlAbs, binding, { disposition: 'FAILED' });
+        writeRuntimeBinding(createdFolder, closed);
+      } catch { /* preserve missing snapshot failure */ }
       await cleanupObservationLifecycle(live);
       observationLock = undefined;
       try {
@@ -1772,9 +1781,13 @@ async function runActlManagedDispatch(args: {
         runtimeId: actl.runtimeId,
         fence,
         currentSnapshotHash: snapshotHash,
-      });
+      }, args.ownerInputPermitFactory);
     } catch (err) {
       // Pre-send Owner permit failure — no input attempted.
+      try {
+        const closed = await closeActlManagedReservation(actlAbs, binding, { accepted: false });
+        writeRuntimeBinding(createdFolder, closed);
+      } catch { /* preserve the permit failure; reconcile closeout later */ }
       await cleanupObservationLifecycle(live);
       observationLock = undefined;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1835,6 +1848,12 @@ async function runActlManagedDispatch(args: {
         });
       }
       // Clean pre-ATTEMPTING / sideEffect=NONE rejection only.
+      if (err instanceof ActlBridgeError && err.sideEffect === 'NONE') {
+        try {
+          const closed = await closeActlManagedReservation(actlAbs, binding, { accepted: false });
+          writeRuntimeBinding(createdFolder, closed);
+        } catch { /* preserve the clean rejection */ }
+      }
       await cleanupObservationLifecycle(live);
       observationLock = undefined;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1852,6 +1871,7 @@ async function runActlManagedDispatch(args: {
     binding = {
       ...binding,
       transportReceipt: sendData,
+      commandAttached: true,
       observationCursor: sendData.observationCursor ?? binding.observationCursor,
       collectStatus: 'SENT',
       updatedAt: new Date().toISOString(),
@@ -1964,6 +1984,9 @@ async function runActlManagedDispatch(args: {
       live.phase = 'running';
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // AGENT_RECEIVED proves the turn may still be live. Hold the reservation
+      // for resume/timeout reconciliation; releasing here could invite a
+      // second dispatcher to send into the same pane mid-turn.
       try {
         await recordRuntimeWarning(root, proj, {
           summary: `DISPATCH_RUNNING_CAS_FAILED: AGENT_RECEIVED for Task ${taskId} but DISPATCHED→RUNNING CAS failed.`,
@@ -2060,8 +2083,8 @@ async function runActlManagedDispatch(args: {
       binding,
     });
 
-    // Reservation stays held through verification/PM judgment (§6.3 / §9.2).
-    // Proof CLI performs captureAck + release after ACCEPT.
+    // Reservation stays held through verification; PM judgment performs the
+    // protocol-correct captureAck-bearing release after ACCEPT/CHANGES.
 
     activeDispatches.delete(key);
 

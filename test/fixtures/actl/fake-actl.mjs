@@ -150,6 +150,27 @@ if (cliOp === 'reserve') {
     }), 0);
   }
   if (action === 'release') {
+    const held = state.reservations[request.reservationId];
+    if (!held || held.leaseToken !== request.leaseToken || String(held.fence) !== String(request.fence)) {
+      emit(envelope(requestId, false, null, { code: 'BUSY', detail: 'stale reservation credentials', sideEffect: 'NONE' }), 2);
+    }
+    if (held.state === 'RELEASED') {
+      emit(envelope(requestId, false, null, {
+        code: 'INVALID_ARGUMENT', detail: 'reservation already released', sideEffect: 'NONE',
+      }), 3);
+    }
+    if (held.commandAttached) {
+      const ack = request.captureAck;
+      const validFinal = ack && ack.kind === 'FINAL_CAPTURE' && ack.acknowledged === true && ack.resultId;
+      const validReconcile = ack && ack.kind === 'RECONCILE' && ack.commandId && ack.acknowledged === true
+        && ['FAILED', 'CANCEL_REQUESTED', 'DELIVERY_AMBIGUOUS'].includes(ack.disposition);
+      if (!validFinal && !validReconcile) {
+        emit(envelope(requestId, false, null, { code: 'INVALID_ARGUMENT', detail: 'captureAck required when commands are attached', sideEffect: 'NONE' }), 3);
+      }
+      held.captureAck = ack;
+    }
+    held.state = 'RELEASED';
+    saveState(state);
     emit(envelope(requestId, true, {
       reservationId: request.reservationId,
       runtimeId: request.runtimeId,
@@ -253,6 +274,7 @@ if (cliOp === 'send') {
     sessionId: null,
     turnId: null,
   };
+  if (rsv) rsv.commandAttached = true;
   saveState(state);
   emit(envelope(requestId, true, {
     commandId: request.commandId,
