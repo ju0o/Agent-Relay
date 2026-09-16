@@ -329,6 +329,13 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused o
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; orchestrator + actl + QA-loop + adapter tests — **59 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
 
+## CHANGES round 21 (TASK-0074 ACCEPT_AND_NEXT contract normalization)
+
+- `src/orchestrator/role-loop.ts`: `ACCEPT_AND_NEXT` now applies the same QA-worker normalization as `CREATE_TASK`, injecting the configured `qa-worker:<workerId>` and auditing overrides. Contract/QA validation errors receive bounded correction rounds using the existing `maxValidationReasks` budget; the ACCEPT judgment is submitted once before the next-task correction loop.
+- `test/v1-orchestrator.test.mjs`: added semantic-true injection coverage and invalid-then-corrected next-task coverage, asserting one created/dispatched Task and one canonical ACCEPT judgment.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; orchestrator + actl + QA-loop + adapter tests — **61 passed, 0 failed**; B15 suites — **31 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
+
 ## CHANGES round 19 (TASK-0072 PM instructions path)
 
 - `src/orchestrator/role-loop.ts`: PM instructions resolve from the compiled module directory (`dist/server/orchestrator/../../../docs/PM_ROLE_INSTRUCTIONS.md`), with a source-tree fallback and an explicit `RoleLoopConfig.pmInstructionsPath` override. The file is read before adapter/session creation; missing or unreadable instructions produce `BLOCKED_RUNTIME: pm instructions missing` without a PM send.

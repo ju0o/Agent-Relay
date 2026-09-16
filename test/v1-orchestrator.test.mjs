@@ -579,6 +579,48 @@ test('ACCEPT_AND_NEXT creates the next Task with a contract_hash and dispatches 
   assert.equal(nextTask.goalId, task.goalId, 'next Task stays in the same (V1 container) Goal scope');
 });
 
+test('ACCEPT_AND_NEXT injects the configured QA worker when the PM uses semantic true', async () => {
+  const project = 'OrchAcceptNextQaInjection';
+  const d = await mintPendingDelivery(project);
+  const roleConfig = makeRoleConfig(project);
+  roleConfig.assignments.push({ roleId: 'qa', runtimeAdapterId: 'qa-worker:configured-next-qa', workspace: { project, workspaceRoot: ROOT }, sessionPolicy: 'per-task', permissionProfile: 'read-only', capabilityRequirements: {}, zeroExtraBilling: true, fallbackChain: [], enabled: true });
+  const packet = (await import('../dist/server/orchestrator/pm-packets.js')).buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const nextContract = { project, goal: 'follow-up', bounded_scope: 'out2.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'SEMANTIC' }], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out2.txt' }], semantic: true } };
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT_AND_NEXT', retry: 'NONE', reason: 'accepted', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash, next_task_contract: nextContract })] });
+  const dispatchCalls = [];
+  const { auditDir, stateFile } = mkTestDirs('accept-next-qa-injection');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook(dispatchCalls), auditDir, stateFile }, d.deliveryId);
+  const nextTask = gt.getTask(dataRoot, project, result.nextTask.taskId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(nextTask.contract.qa_route.semantic.qaWorkerId, 'configured-next-qa');
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(pmJud.listPmJudgments(dataRoot, project).filter((j) => j.deliveryId === d.deliveryId).length, 1);
+});
+
+test('ACCEPT_AND_NEXT validation error re-asks once and creates one corrected next Task while applying ACCEPT once', async () => {
+  const project = 'OrchAcceptNextValidation';
+  const d = await mintPendingDelivery(project);
+  const roleConfig = makeRoleConfig(project);
+  roleConfig.assignments.push({ roleId: 'qa', runtimeAdapterId: 'qa-worker:configured-next-qa', workspace: { project, workspaceRoot: ROOT }, sessionPolicy: 'per-task', permissionProfile: 'read-only', capabilityRequirements: {}, zeroExtraBilling: true, fallbackChain: [], enabled: true });
+  const packet = (await import('../dist/server/orchestrator/pm-packets.js')).buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const bad = { project, goal: 'follow-up', bounded_scope: 'out2.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }], qa_route: { deterministic: [{ kind: 'command', criterionId: 'AC-01', command: 'node --bad', args: [] }], semantic: true } };
+  const good = { project, goal: 'follow-up', bounded_scope: 'out2.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out2.txt' }], semantic: true } };
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [
+    fence('PM_JUDGMENT v1', { decision: 'ACCEPT_AND_NEXT', retry: 'NONE', reason: 'accepted', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash, next_task_contract: bad }),
+    fence('PM_JUDGMENT v1', { decision: 'ACCEPT_AND_NEXT', retry: 'NONE', reason: 'corrected', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash, next_task_contract: good }),
+  ] });
+  const dispatchCalls = [];
+  const { auditDir, stateFile } = mkTestDirs('accept-next-validation');
+  const before = gt.listTasks(dataRoot, project).length;
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook(dispatchCalls), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(adapter.sendLog.length, 2);
+  assert.equal(gt.listTasks(dataRoot, project).length, before + 1);
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(pmJud.listPmJudgments(dataRoot, project).filter((j) => j.deliveryId === d.deliveryId).length, 1, 'ACCEPT is submitted once despite next-task re-ask');
+  assert.ok(auditLines(auditDir).some((line) => line.outcome === 'VALIDATION_REASK 1/3'));
+});
+
 test('ACCEPT_AND_NEXT with an out-of-scope project is OWNER_REQUIRED for the next-Task half only', async () => {
   const project = 'OrchAcceptNextScope';
   const d = await mintPendingDelivery(project);

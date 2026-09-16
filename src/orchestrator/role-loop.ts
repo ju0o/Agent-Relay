@@ -516,24 +516,45 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
 
 // ── WBS-8: PM final gate ─────────────────────────────────────────────────────
 
-async function handleAcceptAndNext(cfg: RoleLoopConfig, currentTask: TaskRecord, judgment: PmJudgment): Promise<Record<string, unknown>> {
-  const raw = judgment.next_task_contract!;
-  if (typeof raw.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === raw.task_id)) {
-    return { status: 'CONTRACT_FROZEN', reason: `CONTRACT_FROZEN: next_task_contract.task_id ${raw.task_id} already exists` };
-  }
-  const proposedProject = typeof raw.project === 'string' ? raw.project : cfg.project;
-  if (proposedProject !== cfg.project) {
-    return { status: 'OWNER_REQUIRED', reason: `next_task_contract.project (${proposedProject}) is outside the approved scope (${cfg.project})` };
-  }
+async function handleAcceptAndNext(
+  cfg: RoleLoopConfig,
+  currentTask: TaskRecord,
+  judgment: PmJudgment,
+  correct?: (error: string) => Promise<PmJudgment>,
+): Promise<Record<string, unknown>> {
+  let raw = judgment.next_task_contract!;
+  let overridden = false;
   const { goal } = await ensureV1ContainerGoal(cfg.dataRoot, cfg.project);
   if (currentTask.goalId !== goal.goalId) {
     return { status: 'OWNER_REQUIRED', reason: 'current Task is outside the V1 container Goal; refusing automatic next-Task creation' };
   }
-  try {
-    dryRunValidateContract(cfg.project, raw);
-  } catch (err) {
-    return { status: 'OWNER_REQUIRED', reason: `next_task_contract is invalid: ${err instanceof Error ? err.message : String(err)}` };
+  for (let round = 0; ; round += 1) {
+    if (typeof raw.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === raw.task_id)) {
+      return { status: 'CONTRACT_FROZEN', reason: `CONTRACT_FROZEN: next_task_contract.task_id ${raw.task_id} already exists` };
+    }
+    const proposedProject = typeof raw.project === 'string' ? raw.project : cfg.project;
+    if (proposedProject !== cfg.project) {
+      return { status: 'OWNER_REQUIRED', reason: `next_task_contract.project (${proposedProject}) is outside the approved scope (${cfg.project})` };
+    }
+    try {
+      const normalized = normalizePmTaskContract(cfg.roleConfig, raw);
+      dryRunValidateContract(cfg.project, normalized.contract);
+      raw = normalized.contract;
+      overridden ||= normalized.overridden;
+      break;
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      const max = cfg.maxValidationReasks ?? 3;
+      if (!correct || round >= max) return { status: 'OWNER_REQUIRED', reason: `next_task_contract is invalid: ${error}` };
+      audit(cfg.auditDir, { step: 'final-gate', outcome: `VALIDATION_REASK ${round + 1}/${max}`, reason: error });
+      const corrected = await correct(error);
+      if (corrected.decision !== 'ACCEPT_AND_NEXT' || !corrected.next_task_contract) {
+        return { status: 'OWNER_REQUIRED', reason: 'next_task_contract correction did not return ACCEPT_AND_NEXT' };
+      }
+      raw = corrected.next_task_contract;
+    }
   }
+  if (overridden) audit(cfg.auditDir, { step: 'final-gate', outcome: 'QA_WORKER_OVERRIDDEN', reason: 'next_task_contract.qa_route.semantic.qaWorkerId is controlled by role config' });
   const created = await createTask(cfg.dataRoot, cfg.project, {
     goalId: goal.goalId,
     title: deriveTitle(raw),
@@ -555,7 +576,7 @@ async function handleAcceptAndNext(cfg: RoleLoopConfig, currentTask: TaskRecord,
   }
 }
 
-async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, packet: PmFinalGatePacket, judgment: PmJudgment): Promise<Record<string, unknown>> {
+async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, packet: PmFinalGatePacket, judgment: PmJudgment, adapter: RoleRuntimeAdapter, sessionId: string): Promise<Record<string, unknown>> {
   const currentTask = getTask(cfg.dataRoot, cfg.project, packet.context.task.taskId);
   if (judgment.decision === 'ACCEPT_AND_NEXT' && typeof judgment.next_task_contract?.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === judgment.next_task_contract!.task_id)) {
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'CONTRACT_FROZEN', reason: `next_task_contract.task_id ${judgment.next_task_contract.task_id} already exists` });
@@ -574,7 +595,16 @@ async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, p
   if (judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT') {
     const result = await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'ACCEPT', reason: judgment.reason });
     let nextTask: Record<string, unknown> | undefined;
-    if (judgment.decision === 'ACCEPT_AND_NEXT') nextTask = await handleAcceptAndNext(cfg, currentTask, judgment);
+    if (judgment.decision === 'ACCEPT_AND_NEXT') {
+      nextTask = await handleAcceptAndNext(cfg, currentTask, judgment, async (error) => {
+        const correction = await sendAndParseOnce(adapter, sessionId, {
+          kind: 'PM_FINAL_GATE', schemaVersion: 'pm-final-gate-packet.v1', contractHash: packet.context.task.contract_hash, contextHash: packet.contextHash,
+          body: `${packet.text}\n\n---\nCONTRACT_VALIDATION_ERROR: ${error}\nReturn the COMPLETE corrected PM_JUDGMENT v1 block; keep everything else unchanged.`,
+        }, parsePmJudgment, cfg.pmSendTimeoutMs ?? 120_000);
+        if (!correction.ok) throw new Error(correction.error);
+        return correction.value;
+      });
+    }
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'APPLIED', decision: judgment.decision, applied: result.applied, nextTask });
     return { outcome: 'APPLIED', decision: judgment.decision, nextTask };
   }
@@ -669,7 +699,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
         body: `${packet.text}\n\n---\nHASH_ECHO_ERROR: echo contract_hash and context_hash exactly from the HASHES TO ECHO EXACTLY block.\ncontract_hash: ${packet.context.task.contract_hash}\ncontext_hash: ${packet.contextHash}`,
       }, parsePmJudgment, timeoutMs);
       if (!retry.ok) { audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason: retry.error }); return { outcome: 'BLOCKED', reason: retry.error }; }
-      return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value);
+      return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value, adapter, sessionId);
     }
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'REJECTED_STALE', reason: 'canonical state moved (context_hash mismatch after sent packet)' });
     return { outcome: 'REJECTED_STALE' };
@@ -684,7 +714,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
         body: `${packet.text}\n\n---\nHASH_ECHO_ERROR: echo contract_hash and context_hash exactly from the HASHES TO ECHO EXACTLY block.\ncontract_hash: ${currentContractHash}\ncontext_hash: ${packet.contextHash}`,
       }, parsePmJudgment, timeoutMs);
       if (!retry.ok) { audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason: retry.error }); return { outcome: 'BLOCKED', reason: retry.error }; }
-      return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value);
+      return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value, adapter, sessionId);
     }
     audit(cfg.auditDir, {
       step: 'final-gate', deliveryId, outcome: 'REJECTED_STALE',
@@ -693,7 +723,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
     return { outcome: 'REJECTED_STALE' };
   }
 
-  return applyFinalGateJudgment(cfg, deliveryId, packet, judgment);
+  return applyFinalGateJudgment(cfg, deliveryId, packet, judgment, adapter, sessionId);
 }
 
 // ── top-level pass ────────────────────────────────────────────────────────────
