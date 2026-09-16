@@ -37,6 +37,7 @@ class FakePmAdapter {
     this.scripted = [...(opts.scripted ?? [])];
     this.freeTier = opts.freeTier ?? true;
     this.hang = opts.hang ?? false;
+    this.lateMs = opts.lateMs ?? 0;
     this.sessions = new Map();
     this.sendLog = [];
   }
@@ -56,7 +57,7 @@ class FakePmAdapter {
       this._pending = new Promise(() => {}); // never resolves; role-loop's own timeout race handles it
     } else {
       const text = this.scripted.length ? this.scripted.shift() : '';
-      this._pending = Promise.resolve({ text });
+      this._pending = this.lateMs ? new Promise((resolve) => setTimeout(() => resolve({ text }), this.lateMs)) : Promise.resolve({ text });
     }
     this._pendingByRequest ??= new Map();
     this._pendingByRequest.set(requestId, this._pending);
@@ -148,7 +149,7 @@ async function mintPendingDelivery(project) {
   fs.writeFileSync(path.join(folder, 'evidence', 'adapter.json'), '{}');
   fs.writeFileSync(path.join(folder, 'result.md'), `orchestrator result text for task ${n}`);
   fs.writeFileSync(path.join(workspaceRoot, '.builder-attempt'), '1'); // pre-seeded so the fake builder writes 'correct' immediately
-  spawnSync(NODE, [BUILDER_WORKER], { cwd: workspaceRoot, env: { ...process.env } });
+  spawnSync(NODE, [BUILDER_WORKER], { cwd: workspaceRoot, env: { ...process.env, FAKE_BUILDER_OUTPUT: path.join(workspaceRoot, 'out.txt'), FAKE_BUILDER_COUNTER: path.join(workspaceRoot, '.builder-attempt') } });
   obs.releaseObservationLockByBinding({ observationAdapterId: 'test-fixture', workspaceRoot, taskId: t.taskId, runId });
   await rt.markQaResultReceived(dataRoot, project, t.taskId, runId);
 
@@ -447,7 +448,7 @@ test('(a) billing guard: assertBillingAllowed is a pure, directly-testable unit'
   assert.throws(() => roleLoop.assertBillingAllowed({ roleId: 'pm', model: 'gpt-5-paid', zeroExtraBilling: true }), /BLOCKED_BILLING/);
   assert.doesNotThrow(() => roleLoop.assertBillingAllowed({ roleId: 'pm', model: 'nemotron-3.5-lightning-free', zeroExtraBilling: true }));
   assert.doesNotThrow(() => roleLoop.assertBillingAllowed({ roleId: 'pm', model: 'big-pickle', zeroExtraBilling: true }));
-  assert.doesNotThrow(() => roleLoop.assertBillingAllowed({ roleId: 'pm', model: 'gpt-5-paid', zeroExtraBilling: false }), 'explicit opt-out bypasses the free-tier requirement');
+  assert.throws(() => roleLoop.assertBillingAllowed({ roleId: 'pm', model: 'gpt-5-paid', zeroExtraBilling: false }), /OWNER_REQUIRED/);
 });
 
 // ── (b) fallbackChain walker ─────────────────────────────────────────────────
@@ -461,7 +462,7 @@ test('(b) fallbackChain: a paid primary walks to the first registered, free-tier
   const fallback = new FakePmAdapter('opencode/big-pickle', {
     scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'accepted via fallback adapter', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })],
   });
-  const registry = new Map([['opencode/big-pickle', fallback]]); // 'opencode/unregistered-free' deliberately absent
+  const registry = new Map([['fake-pm', primary], ['opencode/big-pickle', fallback]]); // 'opencode/unregistered-free' deliberately absent
   const { auditDir, stateFile } = mkTestDirs('fallback');
   const cfg = {
     dataRoot, project, roleConfig, pmAdapter: primary, dispatchHook: fakeDispatchHook([]), auditDir, stateFile,
@@ -494,7 +495,7 @@ test('(b) fallbackChain: an unregistered/paid-only chain is exhausted -> OWNER_R
 });
 
 // ── (d) PM send timeout: bounded, one retry, then BLOCKED_RUNTIME ───────────
-test('(d) PM send timeout: a hanging adapter is retried once, then BLOCKED_RUNTIME with canonical untouched', async () => {
+test('(d) PM send timeout: a hanging adapter is not resent, then BLOCKED_RUNTIME with canonical untouched', async () => {
   const project = 'OrchTimeout';
   const d = await mintPendingDelivery(project);
   const roleConfig = makeRoleConfig(project);
@@ -503,11 +504,48 @@ test('(d) PM send timeout: a hanging adapter is retried once, then BLOCKED_RUNTI
   const cfg = { dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile, pmSendTimeoutMs: 200 };
   const result = await roleLoop.processFinalGate(cfg, d.deliveryId);
   assert.equal(result.outcome, 'BLOCKED_RUNTIME');
-  assert.equal(adapter.sendLog.length, 2, 'sent once, retried once, then gave up');
+  assert.equal(adapter.sendLog.length, 1, 'the timed-out envelope is never blindly resent');
   const delivery = pmDel.getPmDelivery(dataRoot, project, d.deliveryId);
   assert.equal(delivery.status, 'PENDING', 'canonical state untouched by the timeout');
   const lines = auditLines(auditDir);
   assert.ok(lines.some((l) => l.outcome === 'BLOCKED_RUNTIME'));
+});
+
+test('(d) PM late response after timeout is collected without a second send', async () => {
+  const project = 'OrchLateResponse';
+  const d = await mintPendingDelivery(project);
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const adapter = new FakePmAdapter('fake-pm', { lateMs: 60, scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'late but valid response', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })] });
+  const { auditDir, stateFile } = mkTestDirs('late-response');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile, pmSendTimeoutMs: 30 }, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(adapter.sendLog.length, 1);
+});
+
+test('(a) primary PM adapter must be registered and zeroExtraBilling must be true', async () => {
+  const project = 'OrchPrimaryRegistry';
+  const d = await mintPendingDelivery(project);
+  const roleConfig = makeRoleConfig(project, { runtimeAdapterId: 'registered-id' });
+  const adapter = new FakePmAdapter('injected-unregistered');
+  const { auditDir, stateFile } = mkTestDirs('primary-registry');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, resolveAdapter: () => null, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'OWNER_REQUIRED');
+  assert.equal(adapter.sendLog.length, 0);
+  roleConfig.assignments[0].runtimeAdapterId = 'fake-pm';
+  roleConfig.assignments[0].zeroExtraBilling = false;
+  const result2 = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, resolveAdapter: () => adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result2.outcome, 'OWNER_REQUIRED');
+  assert.equal(adapter.sendLog.length, 0);
+});
+
+test('(P1-3) default worker selector matches actl-managed adapter identity and rejects missing/ambiguous records', async () => {
+  const { selectBuilderWorker } = await import('../dist/server/orchestrator/main.js');
+  const record = (workerId) => ({ workerId, role: 'implementation' });
+  assert.equal(selectBuilderWorker([record('builder-1')], 'actl-managed:builder-1').workerId, 'builder-1');
+  assert.throws(() => selectBuilderWorker([], 'actl-managed:builder-1'), /missing/);
+  assert.throws(() => selectBuilderWorker([record('builder-1'), record('builder-1')], 'actl-managed:builder-1'), /ambiguous/);
 });
 
 // ── zero live-dataRoot writes ─────────────────────────────────────────────────

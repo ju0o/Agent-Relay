@@ -75,10 +75,17 @@ function ensurePmAdaptersRegistered(dataRoot: string, roleConfig: ReturnType<typ
   }
 }
 
+export function selectBuilderWorker(records: ReturnType<typeof listWorkerRegistryRecords>, runtimeAdapterId: string) {
+  const workerId = runtimeAdapterId.startsWith('actl-managed:') ? runtimeAdapterId.slice('actl-managed:'.length) : runtimeAdapterId;
+  const matches = records.filter((record) => record.role === 'implementation' && record.workerId === workerId);
+  if (matches.length !== 1) throw new Error(`builder worker selection is ${matches.length === 0 ? 'missing' : 'ambiguous'} for ${runtimeAdapterId}`);
+  return matches[0]!;
+}
+
 function defaultDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): DispatchHook {
   return async (dr, project, task) => {
     const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
-    const worker = listWorkerRegistryRecords(dr).find((w) => w.role === 'implementation');
+    const worker = builder ? selectBuilderWorker(listWorkerRegistryRecords(dr), builder.runtimeAdapterId) : null;
     if (!builder || !worker) throw new Error('no builder RoleAssignment/worker-registry record (role: implementation) available for dispatch');
     return dispatchV1OwnerApproved(dr, project, {
       taskId: task.taskId,

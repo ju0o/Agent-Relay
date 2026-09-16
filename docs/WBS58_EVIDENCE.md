@@ -142,3 +142,14 @@ this task started, exactly the names cp-wbs58-redirect.md named. Imported direct
   scope" as gating only the dispatch-the-next-Task half, not the ACCEPT of the just-reviewed
   work — an out-of-scope `next_task_contract.project` degrades that half to `OWNER_REQUIRED`
   (audit, no Task created) while the ACCEPT itself still applies. Tested explicitly.
+
+## CHANGES round 1
+
+Implemented the review P1/P2 findings and WBS-9 D2/D3/D6/D8 fixes.
+
+- `src/orchestrator/role-loop.ts`: timeout recovery interrupts then performs one bounded collect-only retry; no same-cycle resend; all session/send runtime failures become durable `BLOCKED_RUNTIME` audit entries, including `retryAfter`; timeout timers are cleared; primary adapters must resolve through the configured registry and `zeroExtraBilling` must be exactly `true`; existing READY Tasks with no linked Run are dispatched by `runOnce`; existing `next_task_contract.task_id` is rejected as `CONTRACT_FROZEN` before judgment mutation.
+- `src/orchestrator/main.ts`: exported pure `selectBuilderWorker()` matches `actl-managed:<workerId>` to exactly one implementation worker and fails closed for missing/ambiguous records.
+- `test/v1-orchestrator.test.mjs`: added late-response, registry/billing, and worker-selector tests; timeout expectation now proves one send; Builder subprocess receives explicit temporary output/counter paths.
+- `test/v1-orchestrator-drills.test.mjs`: drills 2/3/6/8 now assert fixed behavior.
+
+Fallback entries remain documented as model-qualified `<provider>/<model>` keys (for example `opencode/big-pickle`); symbolic names such as `free-B` are intentionally not certified.

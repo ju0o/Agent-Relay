@@ -43,6 +43,8 @@ export class PmTimeoutError extends Error {
 // ── (a) runtime billing guard ────────────────────────────────────────────────
 
 function isFreeTierModel(model: string | undefined): boolean {
+  // ponytail: this is a deliberately small model-ref allowlist; provider policy
+  // remains outside the orchestrator until the runtime registry exposes it.
   if (!model) return false;
   const bare = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
   return /-free$/.test(bare) || bare === 'big-pickle';
@@ -58,7 +60,9 @@ function isFreeTierModel(model: string | undefined): boolean {
  * is defense in depth, not a re-statement of that validation).
  */
 export function assertBillingAllowed(assignment: { roleId: string; model?: string; zeroExtraBilling: boolean }): void {
-  if (assignment.zeroExtraBilling === false) return; // explicit opt-out (unreachable via validated role-config today; honored anyway)
+  if (assignment.zeroExtraBilling !== true) {
+    throw new PmOwnerRequiredError(`OWNER_REQUIRED: role "${assignment.roleId}" must set zeroExtraBilling=true`);
+  }
   if (!isFreeTierModel(assignment.model)) {
     throw new BillingGuardError(
       `BLOCKED_BILLING: model "${assignment.model ?? '(none)'}" for role "${assignment.roleId}" is not a recognized free-tier model (opencode/*-free or opencode/big-pickle) and zeroExtraBilling is not explicitly false`,
@@ -78,10 +82,13 @@ export function assertBillingAllowed(assignment: { roleId: string; model?: strin
  * OWNER_REQUIRED.
  */
 export function resolvePmAdapterForTurn(cfg: RoleLoopConfig, assignment: RoleAssignment): RoleRuntimeAdapter {
+  const primary = cfg.resolveAdapter ? cfg.resolveAdapter(assignment.runtimeAdapterId) : (cfg.pmAdapter.id === assignment.runtimeAdapterId ? cfg.pmAdapter : null);
+  if (!primary) throw new PmOwnerRequiredError(`OWNER_REQUIRED: PM adapter "${assignment.runtimeAdapterId}" is not registered`);
   try {
     assertBillingAllowed(assignment);
-    return cfg.pmAdapter;
+    return primary;
   } catch (primaryErr) {
+    if (assignment.zeroExtraBilling !== true) throw primaryErr;
     if (!assignment.fallbackChain || assignment.fallbackChain.length === 0) {
       // No fallback configured at all: a plain billing block, not an
       // exhausted chain — surface the guard's own error/outcome directly.
@@ -106,14 +113,13 @@ export function resolvePmAdapterForTurn(cfg: RoleLoopConfig, assignment: RoleAss
   }
 }
 
-// ── (d) PM send timeout: bounded, one retry, then BLOCKED_RUNTIME ───────────
-
-function timeoutAfter(ms: number): Promise<never> {
-  return new Promise((_, reject) => setTimeout(() => reject(new PmTimeoutError(`BLOCKED_RUNTIME: PM adapter did not respond within ${ms}ms`)), ms));
-}
+// ── (d) PM send timeout: bounded, collect-only recovery ─────────────────────
 
 async function collectWithTimeout(adapter: RoleRuntimeAdapter, sessionId: string, requestId: string, timeoutMs: number) {
-  return Promise.race([adapter.collect(sessionId, requestId, { timeoutMs }), timeoutAfter(timeoutMs)]);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new PmTimeoutError(`BLOCKED_RUNTIME: PM adapter did not respond within ${timeoutMs}ms`)), timeoutMs); });
+  try { return await Promise.race([adapter.collect(sessionId, requestId, { timeoutMs }), timeout]); }
+  finally { if (timer) clearTimeout(timer); }
 }
 
 async function sendAndCollect(adapter: RoleRuntimeAdapter, sessionId: string, envelope: InputEnvelope, timeoutMs: number) {
@@ -127,9 +133,10 @@ async function sendAndCollect(adapter: RoleRuntimeAdapter, sessionId: string, en
     } catch {
       /* best-effort */
     }
-    const { requestId: retryId } = await adapter.send(sessionId, envelope);
     try {
-      return await collectWithTimeout(adapter, sessionId, retryId, timeoutMs);
+      // The first send may have been accepted even though collection timed out.
+      // Collect once more, but never resend the same envelope in this cycle.
+      return await collectWithTimeout(adapter, sessionId, requestId, Math.min(timeoutMs, 15_000));
     } catch (err2) {
       if (err2 instanceof PmTimeoutError) {
         throw new PmTimeoutError(`BLOCKED_RUNTIME: PM adapter timed out twice (initial + one retry) at ${timeoutMs}ms each`);
@@ -169,13 +176,14 @@ async function sendAndParseWithReask<T>(
 interface OrchestratorStateFile {
   schemaVersion: 1;
   blocked: Record<string, { contextHash: string; reason: string; updatedAt: string }>;
+  pendingReask?: Record<string, { contextHash: string; reason: string; retryAfter?: number; updatedAt: string }>;
 }
 
 function readState(stateFile: string): OrchestratorStateFile {
   try {
     return JSON.parse(fs.readFileSync(stateFile, 'utf8')) as OrchestratorStateFile;
   } catch {
-    return { schemaVersion: 1, blocked: {} };
+    return { schemaVersion: 1, blocked: {}, pendingReask: {} };
   }
 }
 
@@ -189,6 +197,20 @@ function writeState(stateFile: string, state: OrchestratorStateFile): void {
 function audit(auditDir: string, item: Record<string, unknown>): void {
   fs.mkdirSync(auditDir, { recursive: true });
   fs.appendFileSync(path.join(auditDir, 'role-loop.jsonl'), JSON.stringify({ ts: new Date().toISOString(), ...item }) + '\n');
+}
+
+function runtimeFailure(err: unknown): { reason: string; retryAfter?: number } {
+  const e = err as { message?: string; retryAfter?: number; status?: number; code?: string };
+  return { reason: e?.message ?? String(err), ...(typeof e?.retryAfter === 'number' ? { retryAfter: e.retryAfter } : {}) };
+}
+
+function recordRuntimeBlock(cfg: RoleLoopConfig, state: OrchestratorStateFile, key: string, contextHash: string, err: unknown): Record<string, unknown> {
+  const failure = runtimeFailure(err);
+  state.pendingReask ??= {};
+  state.pendingReask[key] = { contextHash, reason: failure.reason, ...(failure.retryAfter === undefined ? {} : { retryAfter: failure.retryAfter }), updatedAt: new Date().toISOString() };
+  writeState(cfg.stateFile, state);
+  audit(cfg.auditDir, { step: key.startsWith('final-gate:') ? 'final-gate' : 'bootstrap', ...(key.startsWith('final-gate:') ? { deliveryId: key.slice('final-gate:'.length) } : {}), outcome: 'BLOCKED_RUNTIME', reason: failure.reason, ...(failure.retryAfter === undefined ? {} : { retryAfter: failure.retryAfter }) });
+  return { outcome: 'BLOCKED_RUNTIME', reason: failure.reason, ...(failure.retryAfter === undefined ? {} : { retryAfter: failure.retryAfter }) };
 }
 
 function hasOpenTask(dataRoot: string, project: string): boolean {
@@ -267,7 +289,7 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
       audit(cfg.auditDir, { step: 'bootstrap', outcome, reason: err.message });
       return { outcome, reason: err.message };
     }
-    throw err;
+    return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
   }
 
   const envelope: InputEnvelope = { kind: 'PM_BOOTSTRAP', schemaVersion: 'pm-bootstrap-packet.v1', contextHash: packet.contextHash, body: packet.text };
@@ -283,10 +305,9 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
     );
   } catch (err) {
     if (err instanceof PmTimeoutError) {
-      audit(cfg.auditDir, { step: 'bootstrap', outcome: 'BLOCKED_RUNTIME', reason: err.message });
-      return { outcome: 'BLOCKED_RUNTIME', reason: err.message };
+      return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
     }
-    throw err;
+    return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
   }
 
   if (!parsed.ok) {
@@ -346,6 +367,9 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
 
 async function handleAcceptAndNext(cfg: RoleLoopConfig, currentTask: TaskRecord, judgment: PmJudgment): Promise<Record<string, unknown>> {
   const raw = judgment.next_task_contract!;
+  if (typeof raw.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === raw.task_id)) {
+    return { status: 'CONTRACT_FROZEN', reason: `CONTRACT_FROZEN: next_task_contract.task_id ${raw.task_id} already exists` };
+  }
   const proposedProject = typeof raw.project === 'string' ? raw.project : cfg.project;
   if (proposedProject !== cfg.project) {
     return { status: 'OWNER_REQUIRED', reason: `next_task_contract.project (${proposedProject}) is outside the approved scope (${cfg.project})` };
@@ -413,7 +437,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
       audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome, reason: err.message });
       return { outcome, reason: err.message };
     }
-    throw err;
+    return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
   }
 
   const envelope: InputEnvelope = {
@@ -435,10 +459,9 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
     );
   } catch (err) {
     if (err instanceof PmTimeoutError) {
-      audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED_RUNTIME', reason: err.message });
-      return { outcome: 'BLOCKED_RUNTIME', reason: err.message };
+      return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
     }
-    throw err;
+    return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
   }
 
   if (!parsed.ok) {
@@ -470,6 +493,11 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
     return { outcome: 'REJECTED_STALE' };
   }
 
+  if (judgment.decision === 'ACCEPT_AND_NEXT' && typeof judgment.next_task_contract?.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === judgment.next_task_contract!.task_id)) {
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'CONTRACT_FROZEN', reason: `next_task_contract.task_id ${judgment.next_task_contract.task_id} already exists` });
+    return { outcome: 'CONTRACT_FROZEN' };
+  }
+
   if (judgment.decision === 'OWNER_REQUIRED') {
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'OWNER_REQUIRED', reason: judgment.reason });
     return { outcome: 'OWNER_REQUIRED' };
@@ -498,6 +526,15 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
 export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Record<string, unknown>> }> {
   const steps: Array<Record<string, unknown>> = [];
   await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
+
+  // A crash after createTask() but before dispatch leaves one canonical READY
+  // Task with no linked Run. Adopt it before consulting PM again.
+  for (const task of listTasks(cfg.dataRoot, cfg.project)) {
+    if (task.executionState !== 'READY' || task.linkedRuns.length !== 0) continue;
+    const dispatch = await cfg.dispatchHook(cfg.dataRoot, cfg.project, task);
+    audit(cfg.auditDir, { step: 'dispatch-existing-ready', outcome: 'DISPATCHED', taskId: task.taskId, runId: dispatch?.runId });
+    steps.push({ step: 'dispatch-existing-ready', taskId: task.taskId, runId: dispatch?.runId });
+  }
 
   for (const d of listPendingPmDeliveries(cfg.dataRoot, cfg.project)) {
     const result = await processFinalGate(cfg, d.deliveryId);
