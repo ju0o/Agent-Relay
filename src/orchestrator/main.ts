@@ -35,10 +35,12 @@ interface Args {
 const execFileAsync = promisify(execFile);
 
 function idlePromptMatches(agentKind: string, snapshot: string): boolean {
-  const lines = snapshot.split(/\r?\n/).slice(-12);
-  const text = lines.join('\n');
+  const lines = snapshot.replace(/\r/g, '').split('\n');
+  while (lines.length && !lines[lines.length - 1]!.trim()) lines.pop();
+  const recent = lines.slice(-12);
+  const text = recent.join('\n');
   if (/Working \(|esc to interrupt|Press enter to continue|Do you trust/.test(text)) return false;
-  return agentKind === 'claude' ? lines.some((line) => /^❯/.test(line.trim())) : lines.some((line) => /› Ask Codex to do anything/.test(line));
+  return agentKind === 'claude' ? recent.some((line) => /^❯/.test(line.trim())) : recent.some((line) => /› Ask Codex to do anything/.test(line));
 }
 
 async function captureIdleSnapshot(socketPath: string, paneId: string): Promise<string> {

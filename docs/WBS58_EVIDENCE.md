@@ -277,3 +277,11 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --t
 - `test/v1-orchestrator-actl-dispatch.test.mjs`: covers UNKNOWN+idle dispatch, UNKNOWN+busy refusal, UNKNOWN+missing snapshot refusal, and existing READY dispatch.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator-actl-dispatch.test.mjs` — 6 passed, 0 failed; requested full V1 + B15 + adapter command — 87 top-level tests, 85 passed, 2 failed (pre-existing G4A/G4C). `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 14 (TASK-0067 trailing snapshot rows)
+
+- `src/orchestrator/main.ts`: `idlePromptMatches` now removes CR characters and trailing whitespace-only capture rows before selecting the last 12 lines. Busy-marker rejection and agent-specific idle-prompt matching both use that normalized window.
+- `test/fixtures/actl/fake-actl.mjs`: UNKNOWN idle and busy fixtures now append 40 blank rows, matching the real tmux capture shape.
+- `test/v1-orchestrator-actl-dispatch.test.mjs`: the UNKNOWN idle-prompt and busy-marker tests exercise the trailing-row case; idle dispatch succeeds and busy dispatch remains refused.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator-actl-dispatch.test.mjs test/v1-orchestrator.test.mjs` — 41 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.

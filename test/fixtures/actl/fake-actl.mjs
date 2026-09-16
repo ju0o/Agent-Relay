@@ -112,8 +112,8 @@ if (cliOp === 'status') {
     context: ctx,
     identityEvidence: { paneId: fixturePane },
     currentSnapshotHash: process.env.FAKE_ACTL_SNAPSHOT || 'fixture-snapshot',
-    ...(mode === 'status-unknown-idle' ? { snapshotText: '› Ask Codex to do anything\n' } : {}),
-    ...(mode === 'status-unknown-busy' ? { snapshotText: 'Working (1s)\nesc to interrupt\n' } : {}),
+    ...(mode === 'status-unknown-idle' ? { snapshotText: '› Ask Codex to do anything\n' + '\n'.repeat(40) } : {}),
+    ...(mode === 'status-unknown-busy' ? { snapshotText: 'Working (1s)\nesc to interrupt\n' + '\n'.repeat(40) } : {}),
     capabilities: { 'managed.collect.final': true },
   }), 0);
 }
