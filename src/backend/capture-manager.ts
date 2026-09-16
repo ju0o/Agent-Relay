@@ -9,6 +9,8 @@ import { createCodexAdapter } from '../integrations/codex/watch.js';
 import { createCommandCodeAdapter } from '../integrations/commandcode/watch.js';
 import { createClineAdapter } from '../integrations/cline/watch.js';
 import { createGrokAdapter } from '../integrations/grok/watch.js';
+import { createActlManagedAdapter } from '../integrations/actl-managed/watch.js';
+import type { ActlManagedWatchBinding } from '../integrations/core/types.js';
 import { CaptureCandidateView, CaptureStatusView, MaterializeParams } from '../shared/types.js';
 import {
   promoteObservedResult,
@@ -127,6 +129,7 @@ export class CaptureManager {
       ['commandcode', createCommandCodeAdapter],
       ['cline', createClineAdapter],
       ['grok', createGrokAdapter],
+      ['actl-managed', createActlManagedAdapter],
     ] as const) {
       if (!getAdapter(id)) {
         try {
@@ -189,6 +192,8 @@ export class CaptureManager {
       workspaceRoot?: string;
       /** Run-bound Claude profile context from the authoritative Worker launch. */
       claudeConfigDir?: string;
+      /** Trusted actl-managed binding for the SAME Run (Phase 2). */
+      actlManaged?: ActlManagedWatchBinding;
       executionBinding?: ExecutionBinding;
     },
   ): Promise<void> {
@@ -269,6 +274,7 @@ export class CaptureManager {
     const target = {
       ...(opts?.workspaceRoot ? { workspaceRoot: opts.workspaceRoot } : {}),
       ...(opts?.claudeConfigDir ? { claudeConfigDir: opts.claudeConfigDir } : {}),
+      ...(opts?.actlManaged ? { actlManaged: opts.actlManaged } : {}),
     };
 
     try {

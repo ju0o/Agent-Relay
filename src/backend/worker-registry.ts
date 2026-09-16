@@ -41,12 +41,31 @@ export interface ClaudeDriverOptions {
 }
 
 /**
+ * Phase 2 — trusted actl Managed driver options (opt-in only).
+ * Absolute paths only; never arbitrary CLI flags or shell fragments.
+ */
+export interface ActlDriverOptions {
+  /** Managed contract version — only 1 is accepted. */
+  contractVersion: 1;
+  /** Frozen actl runtime identity (not derived from Task narrative). */
+  runtimeId: string;
+  /** v1 Managed agent kind — Codex only for Phase 2. */
+  agentKind: 'codex';
+  /** Absolute Codex profile root expected on the live runtime. */
+  expectedProfileRoot: string;
+  /** Absolute explicit tmux socket path (never default-server inference). */
+  socketPath: string;
+}
+
+/**
  * Driver-specific execution options, keyed by driver name.
  * Stored in trusted Worker Registry only — never from Task/Goal/PM narrative.
  */
 export interface WorkerDriverOptions {
   /** Options specific to the 'claude-code' driver (relay-worker-claude.mjs). */
   claude?: ClaudeDriverOptions;
+  /** Options specific to the actl-managed observation/execution branch. */
+  actl?: ActlDriverOptions;
 }
 
 /** Allowed permissionMode enum values for Claude driver. */
@@ -54,6 +73,68 @@ export const ALLOWED_CLAUDE_PERMISSION_MODES: ReadonlySet<ClaudePermissionMode> 
   'default',
   'acceptEdits',
 ]);
+
+const ACTL_DRIVER_KEYS = new Set([
+  'contractVersion',
+  'runtimeId',
+  'agentKind',
+  'expectedProfileRoot',
+  'socketPath',
+]);
+
+function requireAbsolutePath(value: unknown, field: string): string {
+  const s = requireNonEmptyString(value, field);
+  if (!path.isAbsolute(s)) {
+    throw new WorkerRegistryError('INVALID_ARGUMENT', `${field} must be an absolute path.`);
+  }
+  if (FORBIDDEN_LAUNCH_MARKERS.test(s) || s.includes('\t')) {
+    throw new WorkerRegistryError('INVALID_ARGUMENT', `${field} path is invalid.`);
+  }
+  return path.resolve(s);
+}
+
+/** Validate narrowly typed driverOptions.actl (unknown keys rejected). */
+export function validateActlDriverOptions(raw: unknown): ActlDriverOptions {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new WorkerRegistryError('INVALID_ARGUMENT', 'driverOptions.actl must be an object.');
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!ACTL_DRIVER_KEYS.has(key)) {
+      throw new WorkerRegistryError(
+        'INVALID_ARGUMENT',
+        `Unknown driverOptions.actl key: '${key}'. Allowed: contractVersion, runtimeId, agentKind, expectedProfileRoot, socketPath.`,
+      );
+    }
+  }
+  if (obj.contractVersion !== 1) {
+    throw new WorkerRegistryError(
+      'INVALID_ARGUMENT',
+      `driverOptions.actl.contractVersion must be 1 (got ${String(obj.contractVersion)}).`,
+    );
+  }
+  const runtimeId = requireNonEmptyString(obj.runtimeId, 'driverOptions.actl.runtimeId');
+  if (obj.agentKind !== 'codex') {
+    throw new WorkerRegistryError(
+      'INVALID_ARGUMENT',
+      `driverOptions.actl.agentKind must be 'codex' (got ${String(obj.agentKind)}).`,
+    );
+  }
+  const expectedProfileRoot = requireAbsolutePath(obj.expectedProfileRoot, 'driverOptions.actl.expectedProfileRoot');
+  const socketPath = requireAbsolutePath(obj.socketPath, 'driverOptions.actl.socketPath');
+  return {
+    contractVersion: 1,
+    runtimeId,
+    agentKind: 'codex',
+    expectedProfileRoot,
+    socketPath,
+  };
+}
+
+/** True when the trusted registry record opts into the actl-managed branch. */
+export function hasActlManagedDriver(rec: WorkerRegistryRecord): boolean {
+  return rec.driverOptions?.actl !== undefined;
+}
 
 export interface WorkerRegistryRecord {
   schemaVersion: typeof WORKER_REGISTRY_SCHEMA_VERSION;
@@ -245,7 +326,7 @@ export function validateWorkerRegistryRecord(
     // Do not hard-code adapter allowlist here — dispatch validates via adapter registry.
   }
 
-  // Phase I: validate driverOptions (narrowly typed — no arbitrary flags).
+  // Phase I / Phase 2: validate driverOptions (narrowly typed — no arbitrary flags).
   let driverOptions: WorkerDriverOptions | undefined;
   if (obj.driverOptions !== undefined && obj.driverOptions !== null) {
     if (typeof obj.driverOptions !== 'object' || Array.isArray(obj.driverOptions)) {
@@ -253,10 +334,13 @@ export function validateWorkerRegistryRecord(
     }
     const doObj = obj.driverOptions as Record<string, unknown>;
 
-    // Only 'claude' key allowed under driverOptions.
+    // Only 'claude' and 'actl' keys allowed under driverOptions.
     for (const key of Object.keys(doObj)) {
-      if (key !== 'claude') {
-        throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown driverOptions key: '${key}'. Only 'claude' is allowed.`);
+      if (key !== 'claude' && key !== 'actl') {
+        throw new WorkerRegistryError(
+          'INVALID_ARGUMENT',
+          `Unknown driverOptions key: '${key}'. Only 'claude' and 'actl' are allowed.`,
+        );
       }
     }
 
@@ -297,11 +381,15 @@ export function validateWorkerRegistryRecord(
       }
     }
 
-    if (claudeDriverOpts !== undefined) {
-      driverOptions = { claude: claudeDriverOpts };
-    } else {
-      driverOptions = {};
+    let actlDriverOpts: ActlDriverOptions | undefined;
+    if (doObj.actl !== undefined && doObj.actl !== null) {
+      actlDriverOpts = validateActlDriverOptions(doObj.actl);
     }
+
+    driverOptions = {
+      ...(claudeDriverOpts !== undefined ? { claude: claudeDriverOpts } : {}),
+      ...(actlDriverOpts !== undefined ? { actl: actlDriverOpts } : {}),
+    };
   }
 
   // V1.6 Slice 3 additive: role tag (§10 Q14/Q15). Absent ≡ 'implementation'.
@@ -329,6 +417,28 @@ export function validateWorkerRegistryRecord(
   for (const key of Object.keys(obj)) {
     if (!allowed.has(key)) {
       throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown worker registry field: ${key}`);
+    }
+  }
+
+  // §9.1: when driverOptions.actl is present, enforce managed pairing at write time.
+  if (driverOptions?.actl) {
+    if (!path.isAbsolute(launchCommand)) {
+      throw new WorkerRegistryError(
+        'INVALID_ARGUMENT',
+        'driverOptions.actl requires launchCommand to be an absolute actl executable path.',
+      );
+    }
+    if (launchArgsPrefix.length !== 0) {
+      throw new WorkerRegistryError(
+        'INVALID_ARGUMENT',
+        'driverOptions.actl requires launchArgsPrefix to be [] (actl bridge supplies runtime argv).',
+      );
+    }
+    if (observationAdapterId !== 'actl-managed') {
+      throw new WorkerRegistryError(
+        'INVALID_ARGUMENT',
+        "driverOptions.actl requires observationAdapterId='actl-managed'.",
+      );
     }
   }
 

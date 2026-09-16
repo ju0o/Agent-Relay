@@ -28,6 +28,9 @@ import {
   PmDeliveryError,
 } from './pm-delivery.js';
 import { acceptTaskResult } from './task-actions.js';
+import { recordPmDecision } from './evidence.js';
+import { closeActlManagedReservationForTask } from './actl-bridge.js';
+import { recordRuntimeWarning } from './event.js';
 import type { TaskRecord } from '../shared/types.js';
 
 /** PM Judgment record schema version. */
@@ -90,6 +93,46 @@ export interface PmJudgmentResult {
   applied: boolean;
   /** Task snapshot after apply (ACCEPT) or at resolve time (CHANGES). */
   task: TaskRecord;
+}
+
+async function persistDecisionEvidence(
+  dataRoot: string,
+  project: string,
+  result: PmJudgmentResult,
+): Promise<PmJudgmentResult> {
+  const { judgment, task } = result;
+  if (task.taskId === 'unknown' || !judgment.runId || judgment.runId === 'unknown') return result;
+  if (judgment.decision !== 'ACCEPT') {
+    await closeActlManagedReservationForTask({
+      dataRoot, project, task, runId: judgment.runId, disposition: 'FAILED',
+    });
+    return result;
+  }
+  if (judgment.status !== 'APPLIED') return result;
+  await closeActlManagedReservationForTask({ dataRoot, project, task, runId: judgment.runId });
+  try {
+    await recordPmDecision(dataRoot, project, {
+      verdict: 'ACCEPTED',
+      summary: `PM judgment ACCEPT for delivery ${judgment.deliveryId}`,
+      reason: judgment.reason,
+      goalId: task.goalId,
+      taskId: task.taskId,
+      runId: judgment.runId,
+      targetRunId: judgment.runId,
+      source: { kind: 'pm' },
+      sourceEventId: `pm-decision:${judgment.judgmentId}`,
+    });
+  } catch (err) {
+    await recordRuntimeWarning(dataRoot, project, {
+      summary: `PM_DECISION evidence failed for applied Task ${task.taskId}; judgment remains applied.`,
+      taskId: task.taskId,
+      runId: judgment.runId,
+      goalId: task.goalId,
+      source: { kind: 'pm-judgment', subsystem: 'evidence' },
+      details: { error: err instanceof Error ? err.message : String(err) },
+    }).catch(() => undefined);
+  }
+  return result;
 }
 
 export class PmJudgmentError extends Error {
@@ -558,19 +601,19 @@ export function submitPmJudgment(
       // Idempotent replay of the identical judgment.
       if (existing.status === 'APPLIED') {
         await reconcileJudgedDelivery(dataRoot, project, existing.deliveryId);
-        return { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) };
+        return persistDecisionEvidence(dataRoot, project, { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) });
       }
       if (existing.status === 'REJECTED' || existing.status === 'FAILED') {
-        return { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) };
+        return persistDecisionEvidence(dataRoot, project, { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) });
       }
       if (decision === 'ACCEPT') {
         // RECEIVED or APPLYING: (re)run apply — reconciles an already
         // ACCEPTED same run idempotently (crash between persist and apply).
-        return resumeAcceptApply(dataRoot, project, folder, existing);
+        return resumeAcceptApply(dataRoot, project, folder, existing).then(result => persistDecisionEvidence(dataRoot, project, result));
       }
       // CHANGES RECEIVED: intent already durable; nothing further in G5-A.
       await reconcileJudgedDelivery(dataRoot, project, existing.deliveryId);
-      return { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) };
+      return persistDecisionEvidence(dataRoot, project, { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) });
     }
 
     // Fresh intake: resolve identity BEFORE persisting any intent.
@@ -609,7 +652,7 @@ export function submitPmJudgment(
       };
       persistJudgmentRecord(folder, record);
       await reconcileJudgedDelivery(dataRoot, project, deliveryId);
-      return { judgment: record, applied: false, task: resolved.task };
+      return persistDecisionEvidence(dataRoot, project, { judgment: record, applied: false, task: resolved.task });
     }
 
     // ACCEPT: RECEIVED → APPLYING → canonical apply → APPLIED.
@@ -631,7 +674,7 @@ export function submitPmJudgment(
     persistJudgmentRecord(folder, record);
     record = { ...record, status: 'APPLYING', updatedAt: nowIso() };
     persistJudgmentRecord(folder, record);
-    return applyAccept(dataRoot, project, folder, record);
+    return applyAccept(dataRoot, project, folder, record).then(result => persistDecisionEvidence(dataRoot, project, result));
   });
 }
 

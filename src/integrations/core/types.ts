@@ -67,6 +67,23 @@ export type AdapterEvent =
    */
   | { type: 'sessions'; sessions: SessionObservation[]; armPass: boolean };
 
+/**
+ * Trusted actl Managed binding carried on WatchTarget (Phase 2).
+ * Set only by Dispatcher from registry + Run binding — never Task narrative.
+ */
+export interface ActlManagedWatchBinding {
+  runtimeId: string;
+  commandId: string;
+  socketPath: string;
+  expectedProfileRoot: string;
+  agentKind: 'codex';
+  reservationId?: string;
+  fence?: string;
+  sessionId?: string;
+  turnId?: string;
+  resultId?: string;
+}
+
 export interface WatchTarget {
   /** Optional workspace directory hint for scoping observation. */
   workspaceRoot?: string;
@@ -75,6 +92,11 @@ export interface WatchTarget {
    * Worker launch context; adapters must prefer it over ambient process env.
    */
   claudeConfigDir?: string;
+  /**
+   * Optional trusted actl-managed binding for the SAME Run.
+   * Adapters must not invent or overwrite these fields.
+   */
+  actlManaged?: ActlManagedWatchBinding;
 }
 
 export interface WatchHandle {
