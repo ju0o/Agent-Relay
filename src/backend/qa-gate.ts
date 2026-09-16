@@ -892,6 +892,9 @@ async function reconcileQaGateInner(dataRoot: string, project: string, taskId: s
           task.linkedRuns.find((r) => r.runId === runId)?.taskRunSequence ?? 1,
         ...(derived!.qaWorkerId ? { qaWorkerId: derived!.qaWorkerId } : {}),
         criteriaValidationModes: { ...derived!.criteriaValidationModes },
+        ...(task.contract?.contract_hash
+          ? { contractHash: task.contract.contract_hash }
+          : {}),
       });
     } catch (createErr) {
       wrapGateError(createErr, 'CONFLICT');

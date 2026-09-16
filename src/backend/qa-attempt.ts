@@ -152,6 +152,8 @@ export interface QaAttemptRecord {
    * Task storage by this kernel) — used only to enforce the BOTH-mode
    * "both layers required before PASS" invariant. */
   criteriaValidationModes?: Record<string, QaCriterionValidationMode>;
+  /** WBS-4 additive — TASK_CONTRACT hash snapshot at attempt creation (optional). */
+  contractHash?: string;
   deterministic?: QaDeterministicEvidence;
   semantic?: QaSemanticEvidence;
   finalQaStatus: QaFinalStatus;
@@ -330,6 +332,11 @@ export function validateQaAttemptRecord(r: QaAttemptRecord): void {
   }
   if (typeof r.qaAttemptNumber !== 'number' || !Number.isInteger(r.qaAttemptNumber) || r.qaAttemptNumber < 1) {
     throw new QaAttemptError('INVALID_STATE', 'qaAttemptNumber는 1 이상의 정수여야 합니다.');
+  }
+  if (r.contractHash !== undefined) {
+    if (typeof r.contractHash !== 'string' || !/^[0-9a-f]{64}$/.test(r.contractHash)) {
+      throw new QaAttemptError('INVALID_STATE', 'contractHash는 sha256 hex 문자열이어야 합니다.');
+    }
   }
   if (!isQaFinalStatus(r.finalQaStatus)) {
     throw new QaAttemptError('INVALID_STATE', `알 수 없는 finalQaStatus: ${String(r.finalQaStatus)}`);
@@ -535,6 +542,8 @@ export interface CreateQaAttemptInput {
   qaAttemptNumber: number;
   qaWorkerId?: string;
   criteriaValidationModes?: Record<string, QaCriterionValidationMode>;
+  /** WBS-4 additive optional snapshot of Task.contract.contract_hash. */
+  contractHash?: string;
 }
 
 /**
@@ -569,6 +578,7 @@ export function createQaAttempt(
       const sameIdentity =
         existing.qaAttemptNumber === input.qaAttemptNumber
         && existing.qaWorkerId === input.qaWorkerId
+        && existing.contractHash === input.contractHash
         && JSON.stringify(existing.criteriaValidationModes ?? {}) === JSON.stringify(input.criteriaValidationModes ?? {});
       if (!sameIdentity) {
         throw new QaAttemptError('CONFLICT', `QA Attempt ${qaAttemptId}가 이미 다른 내용으로 존재합니다.`);
@@ -585,6 +595,7 @@ export function createQaAttempt(
       qaAttemptNumber: input.qaAttemptNumber,
       ...(input.qaWorkerId !== undefined ? { qaWorkerId: input.qaWorkerId } : {}),
       ...(input.criteriaValidationModes !== undefined ? { criteriaValidationModes: input.criteriaValidationModes } : {}),
+      ...(input.contractHash !== undefined ? { contractHash: input.contractHash } : {}),
       finalQaStatus: 'PENDING',
       failedCriteria: [],
       createdAt: ts,

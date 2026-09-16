@@ -39,6 +39,7 @@ import type {
   EvidenceType,
   TaskExecutionState,
   TaskPmState,
+  TaskRecord,
 } from '../shared/types.js';
 import type { PmDeliveryStatus } from './pm-delivery.js';
 
@@ -81,6 +82,9 @@ export interface VerificationTaskView {
   reason: string;
   scope: string;
   completionCriteria: string[];
+  /** WBS-4 additive — present only when Task has TASK_CONTRACT v1. */
+  contract?: TaskRecord['contract'];
+  contract_hash?: string;
 }
 
 export interface VerificationAttemptView {
@@ -382,6 +386,9 @@ export function getVerificationContextForDelivery(
         .map((c) => (c.length > VERIFICATION_MAX_CRITERION_CHARS
           ? c.slice(0, VERIFICATION_MAX_CRITERION_CHARS) + '…'
           : c)),
+      ...(task.contract
+        ? { contract: task.contract, contract_hash: task.contract.contract_hash }
+        : {}),
     },
     attempt: {
       runId: delivery.runId,

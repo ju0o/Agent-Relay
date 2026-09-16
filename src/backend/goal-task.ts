@@ -38,6 +38,14 @@ import {
 } from '../shared/types.js';
 import { ensureRunId, projectDir, readRunMeta, writeRunMeta } from './fs.js';
 import { validateTaskQaContractFields } from './qa-contract.js';
+import {
+  buildTaskContract,
+  deriveAcceptanceAndQaFromContract,
+  freezeCheck,
+  persistContractRevision,
+  validateTaskContract,
+  type TaskContract,
+} from './task-contract.js';
 
 const GOAL_ID_RE = /^GOAL-(\d+)$/;
 const TASK_ID_RE = /^TASK-(\d+)$/;
@@ -592,6 +600,15 @@ export function validateTaskRecord(t: TaskRecord): void {
     acceptanceCriteria: t.acceptanceCriteria,
     qaContract: t.qaContract,
   });
+  if (t.contract !== undefined) {
+    const c = validateTaskContract(t.contract);
+    if (c.task_id !== t.taskId || c.project !== t.project) {
+      throw new Error('Task.contract identity mismatch (task_id/project)');
+    }
+    if (c.contract_hash !== t.contract.contract_hash) {
+      throw new Error('Task.contract.contract_hash invalid');
+    }
+  }
 }
 
 // ── v1 → v2 Task migration ──────────────────────────────────────────────────
@@ -728,7 +745,13 @@ export function normalizeTaskRecord(raw: Record<string, unknown>): TaskRecord {
   // validated-normalized form (fail closed on a hand-corrupted task.json —
   // validateTaskRecord below re-checks, so a malformed contract can never
   // load as valid).
-  if (raw.acceptanceCriteria !== undefined || raw.qaContract !== undefined) {
+  if (raw.contract !== undefined && raw.contract !== null) {
+    const contract = validateTaskContract(raw.contract);
+    const derived = deriveAcceptanceAndQaFromContract(contract);
+    record.contract = contract;
+    record.acceptanceCriteria = derived.acceptanceCriteria;
+    record.qaContract = derived.qaContract;
+  } else if (raw.acceptanceCriteria !== undefined || raw.qaContract !== undefined) {
     const validated = validateTaskQaContractFields({
       scope: record.scope,
       acceptanceCriteria: raw.acceptanceCriteria,
@@ -1015,9 +1038,15 @@ export interface TaskCreateInput {
   /**
    * V1.6 QA Gate contract (§7) — both-or-neither, frozen at creation.
    * Validated fail-closed here; absent = no QA Gate for this Task.
+   * When `contract` is provided, these are derived from it (ignored as inputs).
    */
   acceptanceCriteria?: unknown;
   qaContract?: unknown;
+  /**
+   * WBS-4 TASK_CONTRACT v1 — optional. When set, becomes the SSOT for
+   * acceptanceCriteria + qaContract (derived). Legacy Tasks omit this.
+   */
+  contract?: unknown;
 }
 
 function listTaskIds(dataRoot: string, project: string): Set<string> {
@@ -1055,12 +1084,15 @@ export function createTask(
       : (() => { throw new Error(`알 수 없는 Task pmState: ${String(input.pmState)}`); })());
 
   const completionCriteria = normalizeCriteria(input.completionCriteria);
-  // V1.6 QA Gate (§7): validate the frozen contract at creation, fail closed.
-  const validatedQa = validateTaskQaContractFields({
-    scope: input.scope,
-    acceptanceCriteria: input.acceptanceCriteria,
-    qaContract: input.qaContract,
-  });
+  const hasContractInput = input.contract !== undefined && input.contract !== null;
+  // Legacy path: validate AC/qaContract when no TASK_CONTRACT is supplied.
+  const validatedQa = hasContractInput
+    ? null
+    : validateTaskQaContractFields({
+      scope: input.scope,
+      acceptanceCriteria: input.acceptanceCriteria,
+      qaContract: input.qaContract,
+    });
   const graph = buildTaskGraphMeta(dataRoot, project);
   const dependencies = normalizeDependencies(input.dependencies, null, graph.ids, {
     goalId,
@@ -1077,6 +1109,50 @@ export function createTask(
       adjacency: graph.adjacency,
     });
     const ts = nowIso();
+
+    let contractFields: {
+      acceptanceCriteria?: TaskRecord['acceptanceCriteria'];
+      qaContract?: TaskRecord['qaContract'];
+      contract?: TaskRecord['contract'];
+    } = {};
+    if (hasContractInput) {
+      const raw = input.contract as Record<string, unknown>;
+      const built = buildTaskContract({
+        project,
+        task_id: taskId,
+        goal: typeof raw.goal === 'string' ? raw.goal : goal,
+        bounded_scope: typeof raw.bounded_scope === 'string' ? raw.bounded_scope : input.scope,
+        acceptance_criteria: raw.acceptance_criteria ?? input.acceptanceCriteria,
+        required_evidence: Array.isArray(raw.required_evidence) ? raw.required_evidence as string[] : undefined,
+        qa_route: raw.qa_route ?? input.qaContract,
+        retry_policy: (raw.retry_policy as Partial<TaskContract['retry_policy']>) ?? undefined,
+        owner_gate_conditions: Array.isArray(raw.owner_gate_conditions)
+          ? raw.owner_gate_conditions as string[]
+          : undefined,
+        contract_revision: typeof raw.contract_revision === 'number' ? raw.contract_revision : 1,
+      });
+      const derived = deriveAcceptanceAndQaFromContract(built);
+      contractFields = {
+        contract: built,
+        acceptanceCriteria: derived.acceptanceCriteria,
+        qaContract: derived.qaContract,
+      };
+      persistContractRevision(dataRoot, project, {
+        taskId,
+        contract_revision: built.contract_revision,
+        revision_reason: 'initial',
+        contract_hash: built.contract_hash,
+        previous_hash: null,
+        createdAt: ts,
+        contract: built,
+      });
+    } else if (validatedQa) {
+      contractFields = {
+        acceptanceCriteria: validatedQa.acceptanceCriteria,
+        qaContract: validatedQa.qaContract,
+      };
+    }
+
     const record: TaskRecord = {
       schemaVersion: GOAL_TASK_SCHEMA_VERSION,
       taskId,
@@ -1094,8 +1170,7 @@ export function createTask(
       nextTaskRunSequence: 1,
       createdAt: ts,
       updatedAt: ts,
-      // V1.6 QA Gate (§7): frozen at creation, stored in validated form.
-      ...(validatedQa ? { acceptanceCriteria: validatedQa.acceptanceCriteria, qaContract: validatedQa.qaContract } : {}),
+      ...contractFields,
     };
     validateTaskRecord(record);
     persistTaskFiles(taskFolder(dataRoot, project, taskId), record);
@@ -1110,6 +1185,70 @@ export function getTask(dataRoot: string, project: string, taskId: string): Task
   if (!TASK_ID_RE.test(id)) throw new Error(`잘못된 Task ID: ${id}`);
   const file = path.join(taskFolder(dataRoot, project, id), 'task.json');
   return loadTaskRecord(file);
+}
+
+/**
+ * Pre-dispatch TASK_CONTRACT revision. Persists rev-N.json then updates the Task.
+ * After the first linked Run exists, freezeCheck throws CONTRACT_FROZEN.
+ */
+export function reviseTaskContract(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  next: {
+    goal?: string;
+    bounded_scope?: string;
+    acceptance_criteria?: unknown;
+    qa_route?: unknown;
+    required_evidence?: string[];
+    retry_policy?: Partial<TaskContract['retry_policy']>;
+    owner_gate_conditions?: string[];
+    revision_reason: string;
+  },
+): TaskRecord {
+  const existing = getTask(dataRoot, project, taskId);
+  if (!existing.contract) {
+    throw new Error('Task has no contract to revise');
+  }
+  if (typeof next.revision_reason !== 'string' || !next.revision_reason.trim()) {
+    throw new Error('revision_reason is required');
+  }
+  const built = buildTaskContract({
+    project: existing.project,
+    task_id: existing.taskId,
+    goal: next.goal ?? existing.contract.goal,
+    bounded_scope: next.bounded_scope ?? existing.contract.bounded_scope,
+    acceptance_criteria: next.acceptance_criteria ?? existing.contract.acceptance_criteria,
+    qa_route: next.qa_route ?? existing.contract.qa_route,
+    required_evidence: next.required_evidence ?? existing.contract.required_evidence,
+    retry_policy: next.retry_policy ?? existing.contract.retry_policy,
+    owner_gate_conditions: next.owner_gate_conditions ?? existing.contract.owner_gate_conditions,
+    contract_revision: existing.contract.contract_revision + 1,
+  });
+  freezeCheck(existing, built);
+  const ts = nowIso();
+  persistContractRevision(dataRoot, project, {
+    taskId: existing.taskId,
+    contract_revision: built.contract_revision,
+    revision_reason: next.revision_reason.trim(),
+    contract_hash: built.contract_hash,
+    previous_hash: existing.contract.contract_hash,
+    createdAt: ts,
+    contract: built,
+  });
+  const derived = deriveAcceptanceAndQaFromContract(built);
+  const updated: TaskRecord = {
+    ...existing,
+    goal: built.goal,
+    scope: built.bounded_scope,
+    contract: built,
+    acceptanceCriteria: derived.acceptanceCriteria,
+    qaContract: derived.qaContract,
+    updatedAt: ts,
+  };
+  validateTaskRecord(updated);
+  persistTaskFiles(taskFolder(dataRoot, project, updated.taskId), updated);
+  return updated;
 }
 
 export interface ListTasksResult {
@@ -1170,8 +1309,9 @@ export function updateTask(
   if (
     (patch as Record<string, unknown>).acceptanceCriteria !== undefined
     || (patch as Record<string, unknown>).qaContract !== undefined
+    || (patch as Record<string, unknown>).contract !== undefined
   ) {
-    throw new Error('acceptanceCriteria/qaContract는 Task 생성 시 고정되며 task:update로 변경할 수 없습니다.');
+    throw new Error('acceptanceCriteria/qaContract/contract는 task:update로 변경할 수 없습니다; reviseTaskContract를 사용하세요.');
   }
 
   const existing = getTask(dataRoot, project, taskId);

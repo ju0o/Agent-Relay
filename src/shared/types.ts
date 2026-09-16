@@ -527,6 +527,29 @@ export interface TaskRecord {
    */
   acceptanceCriteria?: AcceptanceCriterion[];
   qaContract?: QaContract;
+  /**
+   * WBS-4 / V1-01 TASK_CONTRACT v1 — optional. When present, acceptanceCriteria
+   * and qaContract are derived from it (single source). Absent = legacy Task.
+   * Shape owned/validated by `src/backend/task-contract.ts`.
+   */
+  contract?: {
+    schema_version: 'task-contract.v1';
+    project: string;
+    task_id: string;
+    goal: string;
+    bounded_scope: string;
+    acceptance_criteria: AcceptanceCriterion[];
+    required_evidence: string[];
+    qa_route: QaContract;
+    retry_policy: {
+      same_task_only: boolean;
+      max_qa_remediations: number;
+      max_pm_changes: number;
+    };
+    owner_gate_conditions: string[];
+    contract_revision: number;
+    contract_hash: string;
+  };
 }
 
 // ── V1.5 Execution Plan kernel ─────────────────────────────────────────────
