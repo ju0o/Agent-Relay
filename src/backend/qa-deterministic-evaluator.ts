@@ -356,7 +356,7 @@ export function runProcess(cmd: string, args: string[], cwd: string, timeoutMs: 
     const start = Date.now();
     let child;
     try {
-      child = spawn(cmd, args, { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(cmd, args, { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PWD: cwd } });
     } catch (err) {
       resolve({
         exitCode: null,

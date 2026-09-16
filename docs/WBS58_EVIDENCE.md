@@ -390,3 +390,18 @@ Verification: server build passed; requested QA + orchestrator checks passed; `L
 - Documented the unconditional per-attempt `attempt-N-stderr.txt` persistence alongside `run-meta.json`; raw diagnostic output remains outside logs.
 
 Verification: server build/typecheck and the requested semantic QA, wrapper, QA-loop, orchestrator, and adapter suites passed serially; `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 27 (ar/v1-pm)
+
+- `scripts/relay-worker-claude.mjs`: QA and relay Claude children retain PWD/OLDPWD normalisation as harmless hygiene; both paths pass `--add-dir <workspaceRoot>` before `--print`.
+- `src/backend/qa-deterministic-evaluator.ts`: shared `runProcess` retains child PWD normalisation for consistency. Exact replays with mismatched PWD passed, so PWD was disproven as the root cause.
+- `src/backend/qa-semantic-evaluator.ts`: semantic run metadata records the `--add-dir <cwd> --print <prompt>` argv shape; diagnostic tails strip ANSI escapes before scrubbing and bounding.
+- Tests cover wrapper argv/env propagation, shared `runProcess` PWD, metadata, and ANSI-free scrubbed reasons.
+
+Verification: server build/typecheck and the requested wrapper, semantic QA, deterministic QA, QA-loop, and orchestrator suites passed serially; `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 28 (ar/v1-pm)
+
+- `src/backend/qa-semantic-evaluator.ts`: semantic prompts forbid shell globs/wildcard paths and require runtime-denial reporting; denial-shaped worker output is forced to bounded `BLOCKED`, never accepted as a semantic verdict.
+- Verified mechanism: wildcard Bash calls are auto-rejected as `external_directory` in `--print` (round 28). Whether `--add-dir` alone prevents that rejection remains UNVERIFIED pending a live QA run.
+- Tests cover the no-wildcard prompt contract and a parseable `PASS` accompanied by `external_directory`/permission denial.

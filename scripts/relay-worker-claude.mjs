@@ -684,7 +684,7 @@ async function runQaPrintPassthrough(prompt, options = {}) {
     process.stderr.write(`[relay-worker-claude:qa] ${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(1);
   }
-  const claudeArgs = ['--print'];
+  const claudeArgs = ['--add-dir', cwd, '--print'];
   claudeArgs.push(prompt);
   const exitCode = await new Promise((resolve) => {
     let child;
@@ -696,6 +696,8 @@ async function runQaPrintPassthrough(prompt, options = {}) {
         windowsHide: true,
         env: {
           ...process.env,
+          PWD: cwd,
+          OLDPWD: undefined,
           ...(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}),
         },
       });
@@ -897,9 +899,9 @@ async function main() {
     // The prompt is passed as a direct argv element — NOT through a shell.
     // No shell interpolation, no command concatenation, no eval.
     //
-    // Claude CLI: `claude --print [--permission-mode acceptEdits] <prompt>`
+    // Claude CLI: `claude --add-dir <workspaceRoot> --print <prompt>`
     //   --print is a boolean flag; prompt is positional.
-    //   --permission-mode acceptEdits is injected ONLY when registry specifies 'acceptEdits'.
+    //   Permission mode is injected only for the Builder relay path below.
     //
     // Relay args (--dataRoot etc.) are NOT forwarded here.
     // workspaceRoot is used only as spawn cwd.
@@ -908,7 +910,7 @@ async function main() {
     //   'acceptEdits' → --permission-mode acceptEdits
     //   'default' / undefined → no --permission-mode flag (least privilege)
     //
-    const claudeArgs = ['--print'];
+    const claudeArgs = ['--add-dir', workspaceRoot, '--print'];
     if (permissionMode === 'acceptEdits') {
       claudeArgs.push('--permission-mode', 'acceptEdits');
     }
@@ -930,6 +932,8 @@ async function main() {
           // profile; no Task-derived environment values or secrets are added.
           env: {
             ...process.env,
+            PWD: workspaceRoot,
+            OLDPWD: undefined,
             ...(claudeConfig.configDir ? { CLAUDE_CONFIG_DIR: claudeConfig.configDir } : {}),
           },
         });

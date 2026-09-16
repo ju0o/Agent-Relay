@@ -31,7 +31,7 @@ const check = (c, m) => {
 
 const CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-v16-s8-wrap-'));
 const ARGV = path.join(CWD, 'fake-claude-argv.mjs');
-fs.writeFileSync(ARGV, "#!/usr/bin/env node\nconsole.log(process.argv.slice(2).join('|') + '|CONFIG=' + (process.env.CLAUDE_CONFIG_DIR || ''));\n", 'utf8');
+fs.writeFileSync(ARGV, "#!/usr/bin/env node\nconsole.log(process.argv.slice(2).join('|') + '|CONFIG=' + (process.env.CLAUDE_CONFIG_DIR || '') + '|PWD=' + (process.env.PWD || ''));\n", 'utf8');
 fs.chmodSync(ARGV, 0o755);
 
 // 1. QA shape forwards prompt verbatim, stdout passes through, exit 0.
@@ -65,7 +65,7 @@ fs.chmodSync(ARGV, 0o755);
     cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
     env: { ...process.env, CLAUDE_EXE: ARGV },
   });
-  check(r.status === 0 && (r.stdout || '').includes('OPTIONS-PROMPT') && (r.stdout || '').includes(`CONFIG=${profile}`), 'QA passthrough applies explicit config without permission mode');
+  check(r.status === 0 && (r.stdout || '').includes(`--add-dir|${CWD}|--print|OPTIONS-PROMPT`) && (r.stdout || '').includes(`CONFIG=${profile}`) && (r.stdout || '').includes(`PWD=${CWD}`), 'QA passthrough applies config, add-dir, and spawn PWD without permission mode');
 }
 
 // 2. Non-zero Claude exit propagates (evaluator treats as reattempt-eligible, not success).

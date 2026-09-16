@@ -169,10 +169,10 @@ console.log('-- 8b) diagnostic tail scrubs credential-shaped output --');
     'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signaturevalue',
     'AKIAIOSFODNN7EXAMPLE', 'ghp_abcdefghijklmnopqrstuvwxyz123456', 'xoxb-1234567890',
     '0123456789abcdef0123456789abcdef', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv',
-    '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----',
+    '\u001b[31mANSI diagnostic\u001b[0m', '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----',
   ].join('\n');
   const tail = sem.workerOutputTail({ stdout: secretText, stderr: '', exitCode: 1, timedOut: false, stdoutTruncated: false, stderrTruncated: false, durationMs: 1 });
-  check(tail.length <= 400 && !/(sk-live-secret|abc123|hunter2|AKIAIOS|ghp_|xoxb-|0123456789abcdef|ABCDEFGHIJKLMNOPQRSTUVWXYZ|BEGIN PRIVATE KEY)/i.test(tail), '8b diagnostic tail masks listed secret shapes and stays bounded');
+  check(tail.length <= 400 && !/\u001b\[|(?:sk-live-secret|abc123|hunter2|AKIAIOS|ghp_|xoxb-|0123456789abcdef|ABCDEFGHIJKLMNOPQRSTUVWXYZ|BEGIN PRIVATE KEY)/i.test(tail), '8b diagnostic tail masks listed secret shapes, strips ANSI, and stays bounded');
 }
 
 console.log('\n== PROMPT COMPOSITION (direct unit tests) ==');
@@ -188,8 +188,28 @@ console.log('-- 9) composed prompt stays under the 16 KiB cap for a normal input
     workspaceRoot: '/absolute/workspace',
   });
   check(Buffer.byteLength(prompt, 'utf8') <= sem.SEMANTIC_QA_PROMPT_SIZE_LIMIT_BYTES, '9a prompt within 16 KiB cap');
-  check(prompt.includes('AC-1') && prompt.includes('must do the thing') && prompt.includes('/absolute/workspace') && prompt.includes('absolute paths'), '9b prompt carries criterion, absolute root, and path rules');
+  check(prompt.includes('AC-1') && prompt.includes('must do the thing') && prompt.includes('/absolute/workspace') && prompt.includes('absolute paths') && prompt.includes('Never use shell globs'), '9b prompt carries criterion, absolute root, and no-wildcard path rules');
   check(!prompt.includes('chain-of-thought') , '9c sanity: no accidental placeholder text leaked');
+}
+
+console.log('-- 9d) runtime denial cannot become a semantic verdict --');
+{
+  const { task, runId } = await makeTaskWithRun();
+  const workerId = registerFakeQaWorker("process.stderr.write('external_directory permission denied\\n'); console.log('status: PASS'); console.log('criteria:'); console.log('- AC-1: PASS');");
+  const attempt = await qa.createQaAttempt(ROOT, project, { taskId: task.taskId, runId, qaAttemptNumber: 1, qaWorkerId: workerId, criteriaValidationModes: { 'AC-1': 'SEMANTIC' } });
+  await qa.recordDeterministicEvidence(ROOT, project, attempt.qaAttemptId, { status: 'PASS', checks: [] });
+  const out = await sem.evaluateSemanticQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, task: { title: 't', goal: 'g', reason: 'r', scope: 's' }, criteriaText: { 'AC-1': 'x' } });
+  check(out.record.finalQaStatus === 'BLOCKED' && out.record.reason.includes('QA_RUNTIME_DENIED'), '9d runtime denial is BLOCKED even with parseable PASS output');
+}
+
+console.log('-- 9e) quota denial is BLOCKED with an explicit quota reason --');
+{
+  const { task, runId } = await makeTaskWithRun();
+  const workerId = registerFakeQaWorker("process.stdout.write(\"You've hit your session limit · resets 3am (Asia/Seoul)\");");
+  const attempt = await qa.createQaAttempt(ROOT, project, { taskId: task.taskId, runId, qaAttemptNumber: 1, qaWorkerId: workerId, criteriaValidationModes: { 'AC-1': 'SEMANTIC' } });
+  await qa.recordDeterministicEvidence(ROOT, project, attempt.qaAttemptId, { status: 'PASS', checks: [] });
+  const out = await sem.evaluateSemanticQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, task: { title: 't', goal: 'g', reason: 'r', scope: 's' }, criteriaText: { 'AC-1': 'x' } });
+  check(out.record.finalQaStatus === 'BLOCKED' && out.record.reason.includes('QA_RUNTIME_QUOTA:'), '9e quota denial is BLOCKED with QA_RUNTIME_QUOTA reason');
 }
 
 console.log('-- 12b) semantic FAIL contradicting deterministic fileExists PASS → BLOCKED --');
@@ -298,7 +318,7 @@ console.log('-- 14) unparseable output on both attempts → BLOCKED, exactly 2 i
   const raw = fs.readFileSync(path.join(qa.qaAttemptFolder(ROOT, project, attempt.qaAttemptId), 'semantic-output-attempt-2.txt'), 'utf8');
   check(raw.includes('sk-live-secret') && raw.includes('Bearer bearer-secret'), '14d raw stdout/stderr is persisted in the QA attempt folder');
   const runMeta = JSON.parse(fs.readFileSync(path.join(ROOT, project, '_relay', 'qa-semantic-runs', attempt.qaAttemptId, 'run-meta.json'), 'utf8'));
-  check(runMeta.cwd && Array.isArray(runMeta.envKeys) && !Object.values(runMeta).some((v) => typeof v === 'string' && /secret|password|bearer/i.test(v)), '14e run-meta persists cwd and env keys without env values');
+  check(runMeta.cwd && Array.isArray(runMeta.argvShape) && JSON.stringify(runMeta.argvShape) === JSON.stringify(['--add-dir', '<cwd>', '--print', '<prompt>']) && Array.isArray(runMeta.envKeys) && !('pwdFixed' in runMeta) && !Object.values(runMeta).some((v) => typeof v === 'string' && /secret|password|bearer/i.test(v)), '14e run-meta persists argv shape and env keys without env values or a PWD claim');
 }
 
 console.log('-- 15) first attempt unparseable, second attempt succeeds → uses the second result --');

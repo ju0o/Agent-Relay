@@ -114,7 +114,8 @@ function boundText(value: unknown, maxChars: number): string {
 }
 
 export function workerOutputTail(outcome: ProcessOutcome): string {
-  const raw = [outcome.stdout, outcome.stderr].filter(Boolean).join('\n[stderr]\n');
+  const raw = [outcome.stdout, outcome.stderr].filter(Boolean).join('\n[stderr]\n')
+    .replace(/[\u001B\u009B][[\]()#;?]*(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '');
   const scrubbed = raw
     .replace(/-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----/gi, '[REDACTED_PEM]')
     .replace(/sk-[^\s"']+/gi, '[REDACTED]')
@@ -124,6 +125,15 @@ export function workerOutputTail(outcome: ProcessOutcome): string {
     .replace(/\b(?:AKIA|ghp_|gho_|github_pat_|xox[baprs]-?)[A-Za-z0-9_-]+\b/gi, '[REDACTED_TOKEN]')
     .replace(/\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9+/]{24,}={0,2})\b/g, '[REDACTED_BLOB]');
   return scrubbed.slice(-400) || '(no worker output)';
+}
+
+function hasRuntimeDenial(outcome: ProcessOutcome): boolean {
+  return /external[_ -]?directory|permission denied|access denied|operation not permitted|approval required|permission.{0,24}(?:denied|rejected|required)|(?:denied|rejected).{0,24}permission/i
+    .test(`${outcome.stdout}\n${outcome.stderr}`);
+}
+
+function hasQuotaDenial(outcome: ProcessOutcome): boolean {
+  return /hit your (?:session|usage) limit|usage limit reached|rate limit/i.test(`${outcome.stdout}\n${outcome.stderr}`);
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────
@@ -246,6 +256,8 @@ export function composeSemanticQaPrompt(input: SemanticQaPromptInput): string {
     'RULES',
     `Begin your reply with exactly: cwd: <absolute path you observed>`,
     'Use absolute paths for every file operation.',
+    'Never use shell globs or wildcard paths such as *, ?, **, docs/*, or /*; inspect literal absolute paths only.',
+    'If the runtime denies a file operation, report runtime denial instead of guessing that a path is missing.',
     'Evaluate ONLY the acceptance criteria listed above.',
     'Do not invent new requirements. Do not broaden scope. Do not improve the product beyond what was asked.',
     'Do not alter or reinterpret the acceptance criteria.',
@@ -542,7 +554,7 @@ export function evaluateSemanticQa(
     const runDir = qaSemanticRunDir(dataRoot, project, input.qaAttemptId);
     fs.mkdirSync(runDir, { recursive: true });
     fs.writeFileSync(path.join(runDir, 'prompt.md'), prompt, 'utf8');
-    fs.writeFileSync(path.join(runDir, 'run-meta.json'), JSON.stringify({ cwd: workspaceRoot, envKeys: Object.keys(process.env).sort() }, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(path.join(runDir, 'run-meta.json'), JSON.stringify({ cwd: workspaceRoot, envKeys: Object.keys(process.env).sort(), argvShape: ['--add-dir', '<cwd>', '--print', '<prompt>'] }, null, 2) + '\n', 'utf8');
 
     const sessionRef = `qa-semantic-runs/${input.qaAttemptId}`;
     const startedAt = new Date().toISOString();
@@ -563,6 +575,14 @@ export function evaluateSemanticQa(
       if (outcome.spawnError || outcome.timedOut || outcome.exitCode === null) {
         parsed = { kind: 'unparseable', reason: outcome.spawnError ? `실행 실패: ${outcome.spawnError}` : outcome.timedOut ? '시간 초과' : '종료 코드를 확인할 수 없습니다.' };
         continue; // try the bounded reattempt (attemptNo 2), or fall through to BLOCKED
+      }
+      if (hasQuotaDenial(outcome)) {
+        parsed = { kind: 'unparseable', reason: 'QA_RUNTIME_QUOTA: worker runtime quota denied the invocation.' };
+        continue; // quota denial is infrastructure evidence, never a semantic verdict
+      }
+      if (hasRuntimeDenial(outcome)) {
+        parsed = { kind: 'unparseable', reason: 'QA_RUNTIME_DENIED: worker runtime denied a file operation.' };
+        continue; // denial is infrastructure evidence, never a semantic verdict
       }
       parsed = parseSemanticQaOutput(outcome.stdout, requiredIds);
       if (parsed.kind !== 'unparseable') break; // success — no reattempt needed

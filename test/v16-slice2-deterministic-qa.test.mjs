@@ -30,6 +30,9 @@ const gt = await import('../dist/server/backend/goal-task.js');
 const qa = await import('../dist/server/backend/qa-attempt.js');
 const evalr = await import('../dist/server/backend/qa-deterministic-evaluator.js');
 
+const pwdProbe = await evalr.runProcess(process.execPath, ['-e', 'process.stdout.write(process.env.PWD || "")'], ROOT, 5000);
+check(pwdProbe.stdout === ROOT, 'runProcess gives child the authoritative cwd as PWD');
+
 const project = 'V16Slice2';
 let runCounter = 0;
 
