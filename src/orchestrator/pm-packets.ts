@@ -8,6 +8,7 @@ import { getTaskEvidenceSummary } from '../backend/evidence.js';
 import { getVerificationContextForDelivery, type VerificationContextPacket } from '../backend/pm-verification-context.js';
 import { listQaRemediationPreparations } from '../backend/qa-remediation-preparation.js';
 import { listRetryPreparations } from '../backend/retry-preparation.js';
+import { listPmJudgments } from '../backend/pm-judgment.js';
 import { buildTaskContract, canonicalizeForHash } from '../backend/task-contract.js';
 import { CHECK_KINDS } from '../backend/qa-contract.js';
 import type { RoleConfig } from '../roles/role-config.js';
@@ -62,11 +63,11 @@ export function renderOutputContract(kind: PmOutputContractKind): string {
     '## OUTPUT CONTRACT',
     'You have no tools. Reply with plain text containing exactly one fenced block.',
     'The first line inside the fence must be exactly `PM_JUDGMENT v1`, followed by one JSON object.',
-    'Fields: decision (ACCEPT|CHANGES|OWNER_REQUIRED|ACCEPT_AND_NEXT); retry (NONE|SAME_TASK; CHANGES requires SAME_TASK); reason (non-empty explanation); contract_hash (echo the packet hash); context_hash (echo the packet hash); retry_instruction (required only for CHANGES); next_task_contract (required only for ACCEPT_AND_NEXT).',
+    'Fields: decision (ACCEPT|CHANGES|OWNER_REQUIRED|ACCEPT_AND_NEXT); retry (NONE|SAME_TASK; CHANGES requires SAME_TASK); reason (non-empty explanation); contract_hash (echo the HASHES block contract_hash); context_hash (echo the HASHES block context_hash); retry_instruction (required only for CHANGES); next_task_contract (required only for ACCEPT_AND_NEXT).',
     'Minimal valid example:',
     '```json',
     'PM_JUDGMENT v1',
-    '{"decision":"OWNER_REQUIRED","retry":"NONE","reason":"Required information is unavailable.","contract_hash":"hash","context_hash":"hash"}',
+    '{"decision":"OWNER_REQUIRED","retry":"NONE","reason":"Required information is unavailable.","contract_hash":"<contract_hash from HASHES block>","context_hash":"<context_hash from HASHES block>"}',
     '```',
   ].join('\n');
 }
@@ -182,6 +183,8 @@ export function buildPmFinalGatePacket(dataRoot: string, project: string, delive
     context = { ...context, reviewActions: ['REQUEST_CHANGES'], warnings: [...context.warnings, 'Run FAILED before producing a Result; QA not run.'] };
   }
   const retryHistory = buildRetryHistory(dataRoot, project, task);
+  const maxChanges = task.contract?.retry_policy?.max_pm_changes ?? 0;
+  const usedChanges = listPmJudgments(dataRoot, project).filter((j) => j.taskId === task.taskId && j.decision === 'CHANGES').length;
   const canAct = context.reviewActions.includes('ACCEPT_RESULT');
   const allowedActions = failedNoResult ? ['CHANGES', 'OWNER_REQUIRED'] : canAct ? ['ACCEPT', 'CHANGES', 'OWNER_REQUIRED', 'ACCEPT_AND_NEXT'] : ['OWNER_REQUIRED'];
   const structured = {
@@ -228,6 +231,13 @@ export function buildPmFinalGatePacket(dataRoot: string, project: string, delive
   lines.push('');
   lines.push(`Allowed actions: ${allowedActions.join(', ')}`);
   lines.push('');
+  lines.push('## HASHES TO ECHO EXACTLY');
+  lines.push(`contract_hash: ${context.task.contract_hash ?? ''}`);
+  lines.push(`context_hash: ${contextHash(structured)}`);
+  if (failedNoResult) {
+    lines.push('');
+    lines.push(`This Run failed before producing a Result due to an infrastructure/runtime failure. Normally choose CHANGES with retry SAME_TASK while retries remain: retries remaining ${Math.max(0, maxChanges - usedChanges)} of ${maxChanges}. Choose OWNER_REQUIRED only when the budget is exhausted or the failure names credentials, public exposure, destructive work, or scope/product direction.`);
+  }
   lines.push(renderOutputContract('PM_JUDGMENT v1'));
 
   return { ...structured, contextHash: contextHash(structured), text: lines.join('\n') };

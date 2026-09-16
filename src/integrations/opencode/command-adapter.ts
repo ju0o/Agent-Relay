@@ -90,7 +90,7 @@ const DEFAULT_PASSWORD_FILE = path.join(os.homedir(), '.config', 'agent-relay', 
 /** OpenCode tool ids explicitly disabled for the tool-less PM role. */
 export const OPENCODE_TOOL_IDS_DISABLED = Object.freeze([
   'bash', 'edit', 'write', 'read', 'glob', 'grep', 'list', 'webfetch', 'websearch',
-  'todowrite', 'todoread', 'task', 'patch', 'multiedit', 'question', 'skill', 'lsp', 'codesearch',
+  'todowrite', 'todoread', 'task', 'patch', 'apply_patch', 'execute', 'multiedit', 'question', 'skill', 'lsp', 'codesearch',
 ]);
 
 function disabledTools(): Record<string, false> {

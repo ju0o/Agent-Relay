@@ -136,6 +136,7 @@ test('send then collect returns assistant text', async () => {
   assert.equal(tools.bash, false);
   assert.equal(tools.edit, false);
   assert.equal(tools.write, false);
+  assert.equal(tools.apply_patch, false);
   assert.ok(Object.values(tools).every((value) => value === false), 'every sent tool flag is false');
 });
 

@@ -201,6 +201,10 @@ test('every PM packet ends with a code-generated contract whose example parses s
   const delivery = await mintPendingDelivery(project);
   const final = pkg.buildPmFinalGatePacket(dataRoot, project, delivery.deliveryId);
   assert.match(final.text, /## OUTPUT CONTRACT[\s\S]*```$/);
+  assert.match(final.text, /## HASHES TO ECHO EXACTLY\ncontract_hash: [0-9a-f]{64}\ncontext_hash: [0-9a-f]{64}/);
+  assert.match(final.text, /<contract_hash from HASHES block>/);
+  assert.match(final.text, /<context_hash from HASHES block>/);
+  assert.notEqual(final.context.task.contract_hash, final.contextHash);
   const finalExample = final.text.match(/```json\n(PM_JUDGMENT v1\n[\s\S]*?)```$/)?.[1];
   assert.ok(finalExample);
   assert.equal(schemas.parsePmJudgment('```json\n' + finalExample + '```').decision, 'OWNER_REQUIRED');
@@ -446,12 +450,48 @@ test('a stale context_hash (canonical state moved since the packet was built) is
   const adapter = new FakePmAdapter('fake-pm', {
     scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'accepting a stale snapshot', contract_hash: d.contractHash, context_hash: '0'.repeat(64) })],
   });
+  const send = adapter.send.bind(adapter);
+  adapter.send = async (sessionId, envelope) => { const request = await send(sessionId, envelope); if (envelope.kind === 'PM_FINAL_GATE') await rt.requestChanges(dataRoot, project, d.taskId, d.runId, { goalId: d.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'canonical state moved for stale test' }); return request; };
   const { auditDir, stateFile } = mkTestDirs('stale-context');
   const cfg = { dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
   const result = await roleLoop.processFinalGate(cfg, d.deliveryId);
   assert.equal(result.outcome, 'REJECTED_STALE');
   const delivery = pmDel.getPmDelivery(dataRoot, project, d.deliveryId);
   assert.equal(delivery.status, 'PENDING', 'no canonical mutation on stale rejection');
+});
+
+test('context_hash copied from contract_hash is re-asked once and then applied', async () => {
+  const project = 'OrchHashEchoContext';
+  const d = await mintPendingDelivery(project);
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [
+    fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'echo mistake', contract_hash: packet.context.task.contract_hash, context_hash: packet.context.task.contract_hash }),
+    fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'corrected echo', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash }),
+  ] });
+  const { auditDir, stateFile } = mkTestDirs('hash-echo-context');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(adapter.sendLog.length, 2);
+  assert.match(adapter.sendLog[1].body, /HASH_ECHO_ERROR/);
+  assert.ok(auditLines(auditDir).some((line) => line.outcome === 'HASH_ECHO_REASK' && line.field === 'context_hash'));
+});
+
+test('contract_hash echo error is re-asked while canonical state is unchanged', async () => {
+  const project = 'OrchHashEchoContract';
+  const d = await mintPendingDelivery(project);
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [
+    fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'wrong contract echo', contract_hash: '0'.repeat(64), context_hash: packet.contextHash }),
+    fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'corrected contract echo', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash }),
+  ] });
+  const { auditDir, stateFile } = mkTestDirs('hash-echo-contract');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.ok(auditLines(auditDir).some((line) => line.outcome === 'HASH_ECHO_REASK' && line.field === 'contract_hash'));
 });
 
 test('(c) a mismatched contract_hash (context_hash otherwise fresh) is REJECTED_STALE', async () => {
@@ -463,6 +503,8 @@ test('(c) a mismatched contract_hash (context_hash otherwise fresh) is REJECTED_
   const adapter = new FakePmAdapter('fake-pm', {
     scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'wrong contract hash on purpose', contract_hash: '1'.repeat(64), context_hash: packet.contextHash })],
   });
+  const send = adapter.send.bind(adapter);
+  adapter.send = async (sessionId, envelope) => { const request = await send(sessionId, envelope); if (envelope.kind === 'PM_FINAL_GATE') await rt.requestChanges(dataRoot, project, d.taskId, d.runId, { goalId: d.goalId, expectedExecutionState: 'RESULT_RECEIVED', expectedPmState: 'VERIFYING', reason: 'canonical state moved for contract stale test' }); return request; };
   const { auditDir, stateFile } = mkTestDirs('stale-contract');
   const cfg = { dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
   const result = await roleLoop.processFinalGate(cfg, d.deliveryId);
@@ -713,6 +755,7 @@ test('dispatch-failed Run without Result enters the PM gate and prepares a same-
   assert.equal(beforePacket.contextHash, packet.contextHash, 'read/send/re-read keeps failed-run context hash stable');
   assert.match(packet.text, /Run FAILED before producing a Result — reason: pane unavailable/);
   assert.match(packet.text, /## QA\nnot run/);
+  assert.match(packet.text, /retries remaining 1 of 1/);
   assert.deepEqual(packet.allowedActions, ['CHANGES', 'OWNER_REQUIRED']);
 
   const judgment = await pmJud.submitPmJudgment(dataRoot, project, { deliveryId: deliveries[0].deliveryId, decision: 'CHANGES', reason: 'retry after dispatch failure', retryInstruction: 'retry the same task' });

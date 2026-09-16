@@ -191,6 +191,12 @@ async function sendAndParseWithReask<T>(
   }
 }
 
+async function sendAndParseOnce<T>(adapter: RoleRuntimeAdapter, sessionId: string, envelope: InputEnvelope, parseFn: (text: string) => T, timeoutMs: number): Promise<ParseOutcome<T>> {
+  const reply = await sendAndCollect(adapter, sessionId, envelope, timeoutMs);
+  try { return { ok: true, value: parseFn(reply.text) }; }
+  catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+}
+
 // ── durable per-cycle "blocked, don't re-ask every poll" state + audit ──────
 
 interface OrchestratorStateFile {
@@ -490,6 +496,36 @@ async function handleAcceptAndNext(cfg: RoleLoopConfig, currentTask: TaskRecord,
   }
 }
 
+async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, packet: PmFinalGatePacket, judgment: PmJudgment): Promise<Record<string, unknown>> {
+  const currentTask = getTask(cfg.dataRoot, cfg.project, packet.context.task.taskId);
+  if (judgment.decision === 'ACCEPT_AND_NEXT' && typeof judgment.next_task_contract?.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === judgment.next_task_contract!.task_id)) {
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'CONTRACT_FROZEN', reason: `next_task_contract.task_id ${judgment.next_task_contract.task_id} already exists` });
+    return { outcome: 'CONTRACT_FROZEN' };
+  }
+  if (judgment.decision === 'OWNER_REQUIRED') {
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'OWNER_REQUIRED', reason: judgment.reason });
+    return { outcome: 'OWNER_REQUIRED' };
+  }
+  const maxPmChanges = currentTask.contract?.retry_policy?.max_pm_changes;
+  const priorPmChanges = listPmJudgments(cfg.dataRoot, cfg.project).filter((j) => j.taskId === currentTask.taskId && j.decision === 'CHANGES').length;
+  if (judgment.decision === 'CHANGES' && typeof maxPmChanges === 'number' && priorPmChanges >= maxPmChanges) {
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'OWNER_REQUIRED', reason: `retry_policy.max_pm_changes exhausted (${priorPmChanges}/${maxPmChanges})` });
+    return { outcome: 'OWNER_REQUIRED', reason: 'retry_policy.max_pm_changes exhausted' };
+  }
+  if (judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT') {
+    const result = await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'ACCEPT', reason: judgment.reason });
+    let nextTask: Record<string, unknown> | undefined;
+    if (judgment.decision === 'ACCEPT_AND_NEXT') nextTask = await handleAcceptAndNext(cfg, currentTask, judgment);
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'APPLIED', decision: judgment.decision, applied: result.applied, nextTask });
+    return { outcome: 'APPLIED', decision: judgment.decision, nextTask };
+  }
+  await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'CHANGES', reason: judgment.reason, retryInstruction: judgment.retry_instruction! });
+  await prepareRetryForJudgment(cfg.dataRoot, cfg.project, deliveryId);
+  await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
+  audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'APPLIED', decision: 'CHANGES' });
+  return { outcome: 'APPLIED', decision: 'CHANGES' };
+}
+
 export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string): Promise<Record<string, unknown>> {
   const timeoutMs = cfg.pmSendTimeoutMs ?? 120_000;
   const delivery = getPmDelivery(cfg.dataRoot, cfg.project, deliveryId);
@@ -567,12 +603,30 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
   // additionally checked explicitly per the redirect's binding condition (c).
   const fresh = buildPmFinalGatePacket(cfg.dataRoot, cfg.project, deliveryId);
   if (fresh.contextHash !== judgment.context_hash) {
-    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'REJECTED_STALE', reason: 'context_hash mismatch (canonical state moved since the packet was sent)' });
+    if (fresh.contextHash === packet.contextHash) {
+      audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'HASH_ECHO_REASK', field: 'context_hash', sent: packet.contextHash, expected: fresh.contextHash });
+      const retry = await sendAndParseOnce(adapter, sessionId, {
+        kind: 'PM_FINAL_GATE', schemaVersion: 'pm-final-gate-packet.v1', contractHash: packet.context.task.contract_hash, contextHash: packet.contextHash,
+        body: `${packet.text}\n\n---\nHASH_ECHO_ERROR: echo contract_hash and context_hash exactly from the HASHES TO ECHO EXACTLY block.\ncontract_hash: ${packet.context.task.contract_hash}\ncontext_hash: ${packet.contextHash}`,
+      }, parsePmJudgment, timeoutMs);
+      if (!retry.ok) { audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason: retry.error }); return { outcome: 'BLOCKED', reason: retry.error }; }
+      return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value);
+    }
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'REJECTED_STALE', reason: 'canonical state moved (context_hash mismatch after sent packet)' });
     return { outcome: 'REJECTED_STALE' };
   }
   const currentTask = getTask(cfg.dataRoot, cfg.project, fresh.context.task.taskId);
   const currentContractHash = currentTask.contract?.contract_hash;
   if ((currentContractHash ?? '') !== judgment.contract_hash) {
+    if ((currentContractHash ?? '') === (packet.context.task.contract_hash ?? '')) {
+      audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'HASH_ECHO_REASK', field: 'contract_hash', sent: packet.context.task.contract_hash, expected: currentContractHash });
+      const retry = await sendAndParseOnce(adapter, sessionId, {
+        kind: 'PM_FINAL_GATE', schemaVersion: 'pm-final-gate-packet.v1', contractHash: packet.context.task.contract_hash, contextHash: packet.contextHash,
+        body: `${packet.text}\n\n---\nHASH_ECHO_ERROR: echo contract_hash and context_hash exactly from the HASHES TO ECHO EXACTLY block.\ncontract_hash: ${currentContractHash}\ncontext_hash: ${packet.contextHash}`,
+      }, parsePmJudgment, timeoutMs);
+      if (!retry.ok) { audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason: retry.error }); return { outcome: 'BLOCKED', reason: retry.error }; }
+      return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value);
+    }
     audit(cfg.auditDir, {
       step: 'final-gate', deliveryId, outcome: 'REJECTED_STALE',
       reason: `contract_hash mismatch: Task has ${currentContractHash ?? '(none)'}, judgment carried ${judgment.contract_hash}`,
@@ -580,40 +634,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
     return { outcome: 'REJECTED_STALE' };
   }
 
-  if (judgment.decision === 'ACCEPT_AND_NEXT' && typeof judgment.next_task_contract?.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === judgment.next_task_contract!.task_id)) {
-    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'CONTRACT_FROZEN', reason: `next_task_contract.task_id ${judgment.next_task_contract.task_id} already exists` });
-    return { outcome: 'CONTRACT_FROZEN' };
-  }
-
-  if (judgment.decision === 'OWNER_REQUIRED') {
-    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'OWNER_REQUIRED', reason: judgment.reason });
-    return { outcome: 'OWNER_REQUIRED' };
-  }
-
-  const maxPmChanges = currentTask.contract?.retry_policy?.max_pm_changes;
-  const priorPmChanges = listPmJudgments(cfg.dataRoot, cfg.project)
-    .filter((j) => j.taskId === currentTask.taskId && j.decision === 'CHANGES').length;
-  if (judgment.decision === 'CHANGES' && typeof maxPmChanges === 'number' && priorPmChanges >= maxPmChanges) {
-    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'OWNER_REQUIRED', reason: `retry_policy.max_pm_changes exhausted (${priorPmChanges}/${maxPmChanges})` });
-    return { outcome: 'OWNER_REQUIRED', reason: 'retry_policy.max_pm_changes exhausted' };
-  }
-
-  if (judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT') {
-    const result = await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'ACCEPT', reason: judgment.reason });
-    let nextTask: Record<string, unknown> | undefined;
-    if (judgment.decision === 'ACCEPT_AND_NEXT') {
-      nextTask = await handleAcceptAndNext(cfg, currentTask, judgment);
-    }
-    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'APPLIED', decision: judgment.decision, applied: result.applied, nextTask });
-    return { outcome: 'APPLIED', decision: judgment.decision, nextTask };
-  }
-
-  // CHANGES + SAME_TASK (the only retry value parsePmJudgment allows for CHANGES).
-  await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'CHANGES', reason: judgment.reason, retryInstruction: judgment.retry_instruction! });
-  await prepareRetryForJudgment(cfg.dataRoot, cfg.project, deliveryId);
-  await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
-  audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'APPLIED', decision: 'CHANGES' });
-  return { outcome: 'APPLIED', decision: 'CHANGES' };
+  return applyFinalGateJudgment(cfg, deliveryId, packet, judgment);
 }
 
 // ── top-level pass ────────────────────────────────────────────────────────────

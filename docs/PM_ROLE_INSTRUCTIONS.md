@@ -33,6 +33,13 @@ Answer with plain text containing exactly one fenced JSON block. If information 
 inside that JSON using an `OWNER_REQUIRED` or `BLOCKED` decision; never attempt a read or other tool
 operation.
 
+For a Run that failed before producing a Result because of a dispatch/runtime/infrastructure
+error, normally choose `CHANGES` with `retry: "SAME_TASK"` while the packet's retry budget
+remains. Choose `OWNER_REQUIRED` only when the budget is exhausted or the failure names a
+credential, public-exposure, destructive, or scope/product-direction condition. Copy
+`contract_hash` and `context_hash` from the packet's separate `HASHES TO ECHO EXACTLY` block;
+they are distinct values and must never be substituted for one another.
+
 **Bootstrap turn** (`kind: PM_BOOTSTRAP`) — you receive project/goal state and must reply:
 ```json
 {"decision": "CREATE_TASK", "task_contract": { "goal": "...", "bounded_scope": "...", "acceptance_criteria": [{"id": "AC-01", "description": "...", "validationMode": "DETERMINISTIC|SEMANTIC|BOTH"}], "required_evidence": ["..."], "qa_route": {"deterministic": [...], "semantic": {"qaWorkerId": "claude-code"}}}, "reason": "..."}

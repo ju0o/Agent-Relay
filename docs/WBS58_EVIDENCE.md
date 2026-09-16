@@ -231,3 +231,14 @@ WBS-10 passes 11–12:
 - G4A bisect: `node --test test/v1-g4a-pm-delivery.test.mjs` fails identically at `9af10aa`, `61df4c7`, and `6d411d4`; the failing `IGNORED`/`PENDING` transition is therefore pre-existing and not introduced by this pass. The first relevant finalized-delivery reconciliation commit is `be7c41c`; its intended stale-delivery reconciliation remains unchanged. No safe production correction was identified without changing the certification fixture's historical sequence, so this remains a routed blocker.
 
 Verification: `npx tsc -p tsconfig.server.json` passed; focused orchestrator — 30 passed, 0 failed. Full V1 — 66 tests, 65 passed, 1 pre-existing G4A failure. B15 + OpenCode adapter — 12 passed, 0 failed. Roles — 8 passed, 0 failed. Live dataRoot writes: 0.
+
+## CHANGES round 9
+
+WBS-10 passes 11–12 hash-echo and tool-list fixes:
+
+- `src/orchestrator/pm-packets.ts`: final-gate packets now include a separate `HASHES TO ECHO EXACTLY` block with distinct `contract_hash` and `context_hash` values. The generated PM judgment contract uses distinct hash placeholders. Failed-run packets state the bounded `CHANGES`/`SAME_TASK` retry guidance, remaining budget, and `QA: not run`.
+- `src/orchestrator/role-loop.ts`: after the fail-closed re-read, an incorrect echoed hash is classified as `HASH_ECHO_REASK` when the rebuilt packet still equals the sent packet; a real canonical change remains `REJECTED_STALE` with `canonical state moved`. The correction is sent once and then uses the existing judgment application APIs.
+- `src/integrations/opencode/command-adapter.ts`: disabled PM tools now include the offline-installed OpenCode ids `apply_patch` and `execute` in addition to the existing map.
+- Tests cover stable failed-run hashes, hash-block/placeholder rendering, context-hash echo re-ask, contract-hash echo re-ask, real canonical-move stale rejection, retry guidance, and `apply_patch: false`.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs test/opencode-command-adapter.test.mjs` — 42 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. The requested combined V1 + B15 + adapter command reported 81 top-level tests, 78 passed, 3 failed: the pre-existing G4A failure and the pre-existing G4C host-wake subtest (2 internal assertions). The new/affected tests are green. `LIVE_DATAROOT_WRITES: 0`.
