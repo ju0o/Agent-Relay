@@ -87,6 +87,12 @@ import { dispatchTask, validateWorkspaceRoot, DispatcherError } from './dispatch
 import { loadWorkerRegistryRecord } from './worker-registry.js';
 import { readRunMeta } from './fs.js';
 import {
+  closeActlManagedReservation,
+  readRuntimeBinding,
+  writeRuntimeBinding,
+  type ActlRuntimeBinding,
+} from './actl-bridge.js';
+import {
   composeQaRemediationPrompt,
   readPriorResultExcerpt,
 } from './qa-remediation-prompt.js';
@@ -129,6 +135,7 @@ export interface ReconcileQaGateResult {
   remediationRunId?: string;
   alreadyDispatched?: boolean;
   deliveryId?: string | null;
+  sourceSeatReleased?: { runId: string; reservationId: string };
 }
 
 export interface QaRemediationDispatchInput {
@@ -400,6 +407,7 @@ async function dispatchFromPreparation(
   options?: ReconcileQaGateOptions,
 ): Promise<ReconcileQaGateResult> {
   const preparationId = prep.preparationId;
+  let sourceSeatReleased: { runId: string; reservationId: string } | undefined;
 
   // Already-remediated failure is never redispatched (terminal-success
   // bookkeeping — plan §11 Q13, seam 8).
@@ -510,6 +518,21 @@ async function dispatchFromPreparation(
       'INVALID_STATE',
       'QA gate: source Run workspace differs from preparation binding; refusing (no silent workspace switch).',
     );
+  }
+  // QA remediation follows Result capture without a PM judgment. Release the
+  // source Run's FINAL_BOUND seat before reserving the same worker again;
+  // this is the same canonical closeout used by PM ACCEPT/CHANGES.
+  try {
+    const sourceBinding = readRuntimeBinding(sourceLink.folder);
+    const sourceWorker = loadWorkerRegistryRecord(dataRoot, prep.workerId);
+    if (sourceBinding?.collectStatus === 'FINAL_BOUND' && sourceBinding.closeoutStatus !== 'RELEASED' && sourceWorker.driverOptions?.actl) {
+      const reservationId = String(sourceBinding.reservationId ?? '');
+      const released = await closeActlManagedReservation(sourceWorker.launchCommand, sourceBinding as ActlRuntimeBinding, { accepted: false });
+      writeRuntimeBinding(sourceLink.folder, released);
+      if (reservationId) sourceSeatReleased = { runId: prep.sourceRunId, reservationId };
+    }
+  } catch (err) {
+    throw new QaGateError('BLOCKED', `QA gate: source Run seat closeout failed; remediation not dispatched: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
     loadWorkerRegistryRecord(dataRoot, prep.workerId);
@@ -630,8 +653,9 @@ async function dispatchFromPreparation(
     runId: attempt.runId,
     qaAttemptId: attempt.qaAttemptId,
     finalQaStatus: 'FAIL',
-    remediationRunId: newRunId,
-    alreadyDispatched: false,
+      remediationRunId: newRunId,
+      alreadyDispatched: false,
+      ...(sourceSeatReleased ? { sourceSeatReleased } : {}),
   };
 }
 

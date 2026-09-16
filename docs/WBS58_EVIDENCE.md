@@ -294,3 +294,12 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --t
 - `test/v1-qa-loop.test.mjs`: proves a READY QRP left by a simulated dispatch refusal is resumed once by `runOnce`, creates the same-Task remediation Run, and is not dispatched again on the next cycle. Existing tests cover FAIL→same-Task remediation→PASS→one Delivery and crash/budget escalation behavior.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-qa-loop.test.mjs` — 4 passed, 0 failed; focused QA + orchestrator + actl command — 45 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 16 (TASK-0069 source-seat closeout)
+
+- `src/backend/qa-gate.ts`: before a same-Task QA remediation dispatch, a source Run with `collectStatus: FINAL_BOUND` and an unreleased closeout is released through `closeActlManagedReservation`; the durable binding is written only after the canonical actl closeout succeeds. Already `RELEASED` is a no-op, and closeout failure blocks before creating the remediation Run.
+- `src/orchestrator/role-loop.ts`: records `SEAT_RELEASED` with the source `runId` and `reservationId`; closeout failures remain `BLOCKED_RUNTIME`.
+- `src/orchestrator/main.ts`: the default QA remediation hook continues to use the same permit-checked canonical dispatcher after source-seat release.
+- `test/v1-qa-loop.test.mjs`: retains the disposable FAIL→QRP→same-Task resume proof; the canonical closeout seam is covered by the existing actl/dispatcher closeout certification fixtures.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused QA + orchestrator + actl tests — 45 passed, 0 failed; requested V1 + B15 + V16 QA + adapter run — 97 total, 94 passed, 3 pre-existing failures (G4A and two G4C host-wake assertions). `LIVE_DATAROOT_WRITES: 0`.

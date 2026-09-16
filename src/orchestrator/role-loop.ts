@@ -709,6 +709,7 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
         ...(result.remediationRunId ? { runId: result.remediationRunId } : {}),
         remediationNumber: readyPreparations[0]!.qaRemediationNumber,
       });
+      if (result.sourceSeatReleased) audit(cfg.auditDir, { step: 'qa-remediation', outcome: 'SEAT_RELEASED', ...result.sourceSeatReleased });
       steps.push({ step: 'qa-remediation', taskId: task.taskId, outcome, ...(result.remediationRunId ? { runId: result.remediationRunId } : {}) });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
