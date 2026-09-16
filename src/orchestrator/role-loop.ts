@@ -8,6 +8,8 @@ import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
 import { reconcileReadyRetryDispatches } from '../backend/retry-dispatch.js';
 import { ensureV1ContainerGoal } from '../backend/v1-intake.js';
 import { buildTaskContract } from '../backend/task-contract.js';
+import { readRuntimeBinding } from '../backend/actl-bridge.js';
+import { listEvents } from '../backend/event.js';
 import type { RoleConfig, RoleAssignment } from '../roles/role-config.js';
 import type { RoleRuntimeAdapter, InputEnvelope } from '../integrations/core/role-runtime.js';
 import { readRoleSession, roleSessionPath, writeRoleSession } from '../integrations/core/role-runtime.js';
@@ -41,6 +43,17 @@ export class PmOwnerRequiredError extends Error {
 }
 export class PmTimeoutError extends Error {
   readonly code = 'BLOCKED_RUNTIME' as const;
+}
+
+function isTerminalFailedRun(dataRoot: string, project: string, link: TaskRecord['linkedRuns'][number]): boolean {
+  try {
+    const binding = readRuntimeBinding(link.folder);
+    if (binding && binding.collectStatus && binding.collectStatus !== 'FINAL_BOUND' && binding.closeoutStatus !== 'RELEASED') return false;
+  } catch {
+    return false;
+  }
+  const failedEvent = listEvents(dataRoot, project, { runId: link.runId }).events.some((event) => event.type === 'RUN_FAILED' || event.type === 'RUNTIME_ERROR');
+  return failedEvent;
 }
 class PmContractValidationError extends Error {}
 
@@ -657,7 +670,7 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
   for (const task of listTasks(cfg.dataRoot, cfg.project)) {
     if (task.executionState !== 'FAILED' || task.pmState !== 'PENDING') continue;
     const link = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
-    if (!link || listPmDeliveries(cfg.dataRoot, cfg.project).some((d) => d.taskId === task.taskId && d.runId === link.runId)) continue;
+    if (!link || !isTerminalFailedRun(cfg.dataRoot, cfg.project, link) || listPmDeliveries(cfg.dataRoot, cfg.project).some((d) => d.taskId === task.taskId && d.runId === link.runId)) continue;
     await ensurePmDeliveryForFailedRun(cfg.dataRoot, cfg.project, task.taskId, link.runId);
   }
 

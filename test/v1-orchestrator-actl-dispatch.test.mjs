@@ -43,6 +43,32 @@ async function fixture(mode) {
   return { root, dataRoot, project, workspaceRoot, taskId: task.taskId, roleConfig, main };
 }
 
+test('failed initial dispatch can prepare and send exactly one same-Task retry through actl', async () => {
+  const f = await fixture('reject-send-clean');
+  const gt = await import('../dist/server/backend/goal-task.js');
+  const pmDel = await import('../dist/server/backend/pm-delivery.js');
+  const pmJud = await import('../dist/server/backend/pm-judgment.js');
+  const retryPrep = await import('../dist/server/backend/retry-preparation.js');
+  const retryDispatch = await import('../dist/server/backend/retry-dispatch.js');
+  const hook = f.main.defaultDispatchHook(f.dataRoot, f.roleConfig);
+  await assert.rejects(() => hook(f.dataRoot, f.project, gt.getTask(f.dataRoot, f.project, f.taskId)), /rejected send cleanly/);
+  const failed = gt.getTask(f.dataRoot, f.project, f.taskId);
+  const sourceRun = failed.linkedRuns[0];
+  const delivery = await pmDel.ensurePmDeliveryForFailedRun(f.dataRoot, f.project, f.taskId, sourceRun.runId);
+  const judgment = await pmJud.submitPmJudgment(f.dataRoot, f.project, { deliveryId: delivery.deliveryId, decision: 'CHANGES', reason: 'retry after clean dispatch failure', retryInstruction: 'send the same task again' });
+  const prep = await retryPrep.prepareRetryForJudgment(f.dataRoot, f.project, delivery.deliveryId);
+  assert.equal(prep.preparation.status, 'READY');
+  process.env.FAKE_ACTL_MODE = 'final-same-poll';
+  const outcomes = await retryDispatch.reconcileReadyRetryDispatches(f.dataRoot, f.project);
+  assert.equal(outcomes.filter((o) => o.outcome === 'dispatched').length, 1);
+  const state = JSON.parse(fs.readFileSync(path.join(f.root, 'actl-state', 'state.json'), 'utf8'));
+  assert.equal(state.sendCount, 2, 'initial failed send plus exactly one retry send');
+  const retried = gt.getTask(f.dataRoot, f.project, f.taskId);
+  assert.equal(retried.linkedRuns.length, 2, 'retry remains linked to the same Task');
+  assert.equal(retried.taskId, f.taskId);
+  assert.equal(judgment.judgment.decision, 'CHANGES');
+});
+
 test('orchestrator default dispatch installs the owner permit and dispatches once through fake actl', async () => {
   const f = await fixture('final-same-poll');
   const hook = f.main.defaultDispatchHook(f.dataRoot, f.roleConfig);

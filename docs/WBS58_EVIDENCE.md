@@ -242,3 +242,13 @@ WBS-10 passes 11–12 hash-echo and tool-list fixes:
 - Tests cover stable failed-run hashes, hash-block/placeholder rendering, context-hash echo re-ask, contract-hash echo re-ask, real canonical-move stale rejection, retry guidance, and `apply_patch: false`.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs test/opencode-command-adapter.test.mjs` — 42 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. The requested combined V1 + B15 + adapter command reported 81 top-level tests, 78 passed, 3 failed: the pre-existing G4A failure and the pre-existing G4C host-wake subtest (2 internal assertions). The new/affected tests are green. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 10 (TASK-0063 retry-loop)
+
+- `src/orchestrator/role-loop.ts`: `ensurePmDeliveryForFailedRun` is now gated by a terminal `RUN_FAILED`/`RUNTIME_ERROR` event and an inactive/released runtime binding. `RESERVED`, `SENT`, and active collect bindings are treated as in-flight and cannot create another Delivery or PM turn.
+- `src/orchestrator/main.ts`: the default dispatch hook installs its actl permit factory at construction time, before `runOnce` performs retry reconciliation; retry dispatch therefore gets the same status, identity, READY, and snapshot checks as initial dispatch.
+- `src/backend/retry-dispatch.ts`: raw actl worker records are accepted for retry validation when the legacy strict validator rejects `driverOptions.actl`, with exact worker id, explicit implementation role, runtime id, and launch command checks.
+- `test/v1-orchestrator.test.mjs`: adds the in-flight RESERVED retry guard test.
+- `test/v1-orchestrator-actl-dispatch.test.mjs`: fake-actl test covers initial clean send failure, CHANGES preparation, same-Task retry creation, and exactly one retry send.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs test/v1-orchestrator-actl-dispatch.test.mjs` — 36 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. Requested combined V1 + B15 + adapter run — 82 top-level tests, 80 passed, 2 failed: pre-existing G4A and G4C failures. `LIVE_DATAROOT_WRITES: 0`.

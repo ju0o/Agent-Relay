@@ -162,11 +162,11 @@ function installActlPermitFactory(builder: ReturnType<typeof readRoleConfig>['as
 }
 
 export function defaultDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): DispatchHook {
+  const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
+  const worker = builder ? selectBuilderWorker(dataRoot, builder.runtimeAdapterId) : null;
+  const checkReady = builder && worker ? installActlPermitFactory(builder, worker) : null;
   return async (dr, project, task) => {
-    const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
-    const worker = builder ? selectBuilderWorker(dr, builder.runtimeAdapterId) : null;
     if (!builder || !worker) throw new Error('no builder RoleAssignment/worker-registry record (role: implementation) available for dispatch');
-    const checkReady = installActlPermitFactory(builder, worker);
     if (checkReady) await checkReady();
     return dispatchV1OwnerApproved(dr, project, {
       taskId: task.taskId,

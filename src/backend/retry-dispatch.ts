@@ -33,6 +33,8 @@
  */
 
 import { getTask } from './goal-task.js';
+import * as fs from 'node:fs';
+import { workerRegistryPath, loadWorkerRegistryRecord } from './worker-registry.js';
 import { getPmJudgment, getRetryInstructionForDelivery, pmJudgmentIdFor } from './pm-judgment.js';
 import {
   getRetryPreparation,
@@ -50,7 +52,6 @@ import {
   type RetryAuthorizationRecord,
 } from './retry-authorization.js';
 import { dispatchTask, validateWorkspaceRoot, DispatcherError } from './dispatcher.js';
-import { loadWorkerRegistryRecord } from './worker-registry.js';
 import { readRunMeta } from './fs.js';
 import { composeRetryPrompt, readPriorResultExcerpt } from './retry-prompt.js';
 import type { TaskExecutionState, TaskRecord } from '../shared/types.js';
@@ -188,6 +189,21 @@ function loadAuthorizationOrRepair(
   }
 }
 
+function assertRetryWorkerRecord(dataRoot: string, workerId: string): void {
+  try {
+    loadWorkerRegistryRecord(dataRoot, workerId);
+    return;
+  } catch (strictError) {
+    // actl-managed records are consumed raw by the certified dispatcher; the
+    // public registry validator predates driverOptions.actl and rejects them.
+    try {
+      const raw = JSON.parse(fs.readFileSync(workerRegistryPath(dataRoot, workerId), 'utf8')) as Record<string, any>;
+      if (raw.workerId === workerId && raw.role === 'implementation' && raw.driverOptions?.actl?.runtimeId && raw.launchCommand) return;
+    } catch { /* preserve the strict-loader error below */ }
+    throw strictError;
+  }
+}
+
 function mapDispatcherError(err: DispatcherError): RetryDispatchError {
   const msg = err.message;
   switch (err.code) {
@@ -297,7 +313,7 @@ export function dispatchV1Retry(
       throw new RetryDispatchError('INVALID_STATE', `Retry workspace revalidation failed: ${msg}`);
     }
     try {
-      loadWorkerRegistryRecord(dataRoot, auth.workerId);
+      assertRetryWorkerRecord(dataRoot, auth.workerId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new RetryDispatchError('INVALID_STATE', `Retry worker unavailable: ${msg}`);

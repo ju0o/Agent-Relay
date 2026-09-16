@@ -774,6 +774,27 @@ test('dispatch-failed Run without Result enters the PM gate and prepares a same-
   assert.notEqual(changedPacket.contextHash, packet.contextHash, 'a newly linked Run changes the stale-check hash');
 });
 
+test('in-flight RESERVED retry Run does not mint another failed-run Delivery or PM turn', async () => {
+  const project = 'OrchRetryInFlight';
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const task = await gt.createTask(dataRoot, project, { goalId: goal.goalId, title: 'retry in flight', goal: 'hold retry', reason: 'test', scope: 'fixture', completionCriteria: ['done'], executionState: 'READY', pmState: 'PENDING' });
+  const runId = 'retry-in-flight-run';
+  const folder = path.join(dataRoot, project, '_runs', 'retry-in-flight');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify({ tags: [], runId, goalId: goal.goalId, taskId: task.taskId }));
+  await gt.linkRunToTask(dataRoot, project, task.taskId, folder);
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'READY', to: 'DISPATCHED', reason: 'retry reserved' });
+  fs.writeFileSync(path.join(folder, 'runtime-binding.json'), JSON.stringify({ schemaVersion: 1, collectStatus: 'RESERVED', runtimeId: 'rt-fixture', updatedAt: new Date().toISOString() }));
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'DISPATCHED', to: 'FAILED', reason: 'reservation remains live' });
+  await events.recordRuntimeError(dataRoot, project, { summary: 'reservation remains live', goalId: goal.goalId, taskId: task.taskId, runId, source: { kind: 'test', subsystem: 'retry' }, details: { error: 'reservation remains live' } });
+  const adapter = new FakePmAdapter('fake-pm');
+  const { auditDir, stateFile } = mkTestDirs('retry-in-flight');
+  const result = await roleLoop.runOnce({ dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile });
+  assert.equal(result.steps.length, 0);
+  assert.equal(pmDel.listPmDeliveries(dataRoot, project).length, 0);
+  assert.equal(adapter.sendLog.length, 0);
+});
+
 test('failed-run PM changes honor max_pm_changes and stop at OWNER_REQUIRED', async () => {
   const project = 'OrchFailedRunBudget';
   const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
