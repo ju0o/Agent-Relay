@@ -1,0 +1,201 @@
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { getTask, listTasks } from '../backend/goal-task.js';
+import { listGoals } from '../backend/goal-task.js';
+import { getTaskEvidenceSummary } from '../backend/evidence.js';
+import { getVerificationContextForDelivery, type VerificationContextPacket } from '../backend/pm-verification-context.js';
+import { listQaRemediationPreparations } from '../backend/qa-remediation-preparation.js';
+import { listRetryPreparations } from '../backend/retry-preparation.js';
+import { canonicalizeForHash } from '../backend/task-contract.js';
+import type { RoleConfig } from '../roles/role-config.js';
+import type { TaskRecord } from '../shared/types.js';
+import { summarizeAttemptDeterministic, semanticReasonFromAttempt } from '../backend/qa-gate.js';
+import type { QaAttemptRecord } from '../backend/qa-attempt.js';
+
+/** Same recipe as task-contract.ts's contract_hash: canonical (sorted-key) JSON, sha256 hex. */
+export function contextHash(payload: unknown): string {
+  const canonical = canonicalizeForHash(payload);
+  return crypto.createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex');
+}
+
+function bound(text: string, max: number): string {
+  const t = text.trim();
+  return t.length > max ? t.slice(0, max) + '…' : t;
+}
+
+/** Owner locks: role-config.ts's RoleAssignment carries no `ownerGateConditions`
+ * field (WBS-1, as committed) — the spec line naming it predates that shape.
+ * Fall back to the most recent Task's own contract.owner_gate_conditions when
+ * one exists, else the V1_01_TASK_CONTRACT_SPEC.md default list. */
+const DEFAULT_OWNER_GATE_CONDITIONS = ['public exposure', 'credential', 'destructive op', 'scope change', 'product direction'];
+
+function readPmContextFile(dataRoot: string, project: string): string {
+  const file = path.join(dataRoot, '_relay', 'pm-context', `${project}.md`);
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+export interface PmBootstrapPacket {
+  text: string;
+  contextHash: string;
+}
+
+/**
+ * WBS-5 bounded bootstrap packet. Pure read: no canonical mutation.
+ * `contextHash` is over the STRUCTURED inputs (not the rendered text), so it
+ * is stable across whitespace-only rendering changes and only moves when the
+ * underlying durable state actually moves — this is what the
+ * "bootstrap blocked, don't re-ask every poll" state-file key relies on.
+ */
+export function buildPmBootstrapPacket(dataRoot: string, project: string, roleConfig: RoleConfig): PmBootstrapPacket {
+  const goals = listGoals(dataRoot, project);
+  const tasks = listTasks(dataRoot, project);
+  const accepted = tasks.filter((t) => t.pmState === 'ACCEPTED').sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  const lastAccepted = accepted[0];
+  const durableContext = readPmContextFile(dataRoot, project);
+  const ownerGateConditions = lastAccepted?.contract?.owner_gate_conditions ?? DEFAULT_OWNER_GATE_CONDITIONS;
+
+  const structured = {
+    schemaVersion: 'pm-bootstrap-packet.v1',
+    project,
+    goals: goals.map((g) => ({ goalId: g.goalId, title: g.title, goalStatement: g.goalStatement, status: g.status })),
+    lastAcceptedTask: lastAccepted
+      ? { taskId: lastAccepted.taskId, title: lastAccepted.title, goal: bound(lastAccepted.goal, 500), acceptedRunId: lastAccepted.acceptedRunId }
+      : null,
+    evidenceSummary: lastAccepted ? getTaskEvidenceSummary(dataRoot, project, lastAccepted.taskId) : null,
+    durableContext: bound(durableContext, 8000),
+    ownerGateConditions,
+    pmRole: roleConfig.assignments.find((a) => a.roleId === 'pm') ?? null,
+  };
+
+  const lines: string[] = [];
+  lines.push(`# PM bootstrap — ${project}`);
+  lines.push('');
+  lines.push('## Goals');
+  if (goals.length === 0) lines.push('(none yet)');
+  for (const g of structured.goals) lines.push(`- ${g.goalId} [${g.status}] ${g.title}: ${bound(g.goalStatement, 300)}`);
+  lines.push('');
+  lines.push('## Last accepted Task');
+  lines.push(structured.lastAcceptedTask ? `${structured.lastAcceptedTask.taskId}: ${structured.lastAcceptedTask.title}\ngoal: ${structured.lastAcceptedTask.goal}` : '(none yet — this is the first Task)');
+  lines.push('');
+  lines.push('## Durable PM context/decisions (_relay/pm-context/<project>.md)');
+  lines.push(structured.durableContext || '(none written yet)');
+  lines.push('');
+  lines.push('## Owner gate conditions');
+  lines.push(ownerGateConditions.map((c) => `- ${c}`).join('\n'));
+
+  return { text: lines.join('\n'), contextHash: contextHash(structured) };
+}
+
+export interface PmFinalGateRetryHistory {
+  linkedRuns: Array<{ runId: string; taskRunSequence: number }>;
+  qaRemediationPreparations: Array<{ preparationId: string; status: string; sourceQaAttemptId: string; dispatchedRunId?: string }>;
+  retryPreparations: Array<{ preparationId: string; status: string; judgmentId: string; dispatchedRunId?: string }>;
+}
+
+export interface PmFinalGatePacket {
+  schemaVersion: 'pm-final-gate-packet.v1';
+  project: string;
+  context: VerificationContextPacket;
+  retryHistory: PmFinalGateRetryHistory;
+  allowedActions: string[];
+  contextHash: string;
+  text: string;
+}
+
+function buildRetryHistory(dataRoot: string, project: string, task: TaskRecord): PmFinalGateRetryHistory {
+  return {
+    linkedRuns: task.linkedRuns.map((r) => ({ runId: r.runId, taskRunSequence: r.taskRunSequence })),
+    qaRemediationPreparations: listQaRemediationPreparations(dataRoot, project)
+      .filter((p) => p.taskId === task.taskId)
+      .map((p) => ({ preparationId: p.preparationId, status: p.status, sourceQaAttemptId: p.sourceQaAttemptId, ...(p.dispatchedRunId ? { dispatchedRunId: p.dispatchedRunId } : {}) })),
+    retryPreparations: listRetryPreparations(dataRoot, project)
+      .filter((p) => p.taskId === task.taskId)
+      .map((p) => ({ preparationId: p.preparationId, status: p.status, judgmentId: p.judgmentId, ...(p.dispatchedRunId ? { dispatchedRunId: p.dispatchedRunId } : {}) })),
+  };
+}
+
+/**
+ * WBS-8 bounded final-gate packet for one pending TASK_VERIFY delivery.
+ * Pure read. `getVerificationContextForDelivery` already enforces the
+ * QA-PASS-or-legacy invariant upstream (V1_PACKETS_DESIGN.md §2) — every
+ * delivery reachable here is already eligible for PM judgment.
+ */
+export function buildPmFinalGatePacket(dataRoot: string, project: string, deliveryId: string): PmFinalGatePacket {
+  const context = getVerificationContextForDelivery(dataRoot, project, deliveryId);
+  const task = getTask(dataRoot, project, context.task.taskId);
+  const retryHistory = buildRetryHistory(dataRoot, project, task);
+  const canAct = context.reviewActions.includes('ACCEPT_RESULT');
+  const allowedActions = canAct ? ['ACCEPT', 'CHANGES', 'OWNER_REQUIRED', 'ACCEPT_AND_NEXT'] : ['OWNER_REQUIRED'];
+  const structured = {
+    schemaVersion: 'pm-final-gate-packet.v1' as const,
+    project,
+    context,
+    retryHistory,
+    allowedActions,
+  };
+  const lines: string[] = [];
+  lines.push(`# PM final gate — ${context.task.taskId} / ${deliveryId}`);
+  lines.push('');
+  lines.push(`Task: ${context.task.title}`);
+  lines.push(`goal: ${context.task.goal}`);
+  lines.push(`scope: ${context.task.scope}`);
+  if (context.task.contract_hash) lines.push(`contract_hash: ${context.task.contract_hash}`);
+  lines.push('');
+  lines.push('## Completion criteria');
+  for (const c of context.task.completionCriteria) lines.push(`- ${c}`);
+  lines.push('');
+  lines.push('## Result');
+  lines.push(context.result.text || '(no result text)');
+  lines.push('');
+  lines.push('## Evidence (selected, exact-run)');
+  if (context.evidence.selected.length === 0) lines.push('(none — no independently observed evidence for this run)');
+  for (const e of context.evidence.selected) lines.push(`- ${e.evidenceId} [${e.type}/${e.trustLevel}/${e.status}]: ${e.summary}`);
+  if (context.qa) {
+    lines.push('');
+    lines.push('## QA');
+    lines.push(`status: ${context.qa.status} (attempt #${context.qa.attemptNumber}, escalation: ${context.qa.escalationReason})`);
+    lines.push(context.qa.summary);
+  }
+  if (context.warnings.length) {
+    lines.push('');
+    lines.push('## Warnings');
+    for (const w of context.warnings) lines.push(`- ${w}`);
+  }
+  lines.push('');
+  lines.push(`Allowed actions: ${allowedActions.join(', ')}`);
+
+  return { ...structured, contextHash: contextHash(structured), text: lines.join('\n') };
+}
+
+/** QA_PACKET v1 — projection of an existing QaAttemptRecord + its Task contract (Owner §5). */
+export function renderQaPacket(attempt: QaAttemptRecord, contract: TaskRecord['contract']): Record<string, unknown> {
+  return {
+    schema_version: 'qa-packet.v1',
+    task_id: attempt.taskId,
+    contract_hash: attempt.contractHash ?? contract?.contract_hash,
+    acceptance_criteria: contract?.acceptance_criteria ?? [],
+    required_evidence: contract?.required_evidence ?? [],
+    attempt: { qaAttemptId: attempt.qaAttemptId, qaAttemptNumber: attempt.qaAttemptNumber, runId: attempt.runId },
+    deterministic_summary: summarizeAttemptDeterministic(attempt),
+  };
+}
+
+/** QA_RESULT v1 — projection of an existing QaAttemptRecord's terminal verdict (Owner §5). FAIL is rendered as CHANGES. */
+export function renderQaResult(attempt: QaAttemptRecord): Record<string, unknown> {
+  const overall = attempt.finalQaStatus === 'FAIL' ? 'CHANGES' : attempt.finalQaStatus;
+  const criteria = [
+    ...(attempt.deterministic?.checks ?? []).map((c) => ({ id: c.criterionId ?? c.kind, status: c.status, evidence: c.detail })),
+    ...(attempt.semantic?.criteria ?? []).map((c) => ({ id: c.id, status: c.status, evidence: c.note })),
+  ];
+  return {
+    schema_version: 'qa-result.v1',
+    overall,
+    criteria,
+    ...(semanticReasonFromAttempt(attempt) ? { failure_reason: semanticReasonFromAttempt(attempt) } : {}),
+  };
+}
