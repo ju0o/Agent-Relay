@@ -369,8 +369,12 @@ console.log('\n== E. deterministic BLOCKED → escalate, no remediation ==');
   });
   const r2 = await linkRun(task2.taskId, { files: { 'out.txt': 'x' } });
   await receive(task2.taskId, r2.runId);
-  const res2 = await gate.reconcileQaGate(ROOT, project, task2.taskId);
-  check(res2.outcome === 'BLOCKED_ESCALATED', `E6 semantic-garbage → BLOCKED_ESCALATED (got ${res2.outcome})`);
+  let res2;
+  for (let i = 0; i < 3; i += 1) {
+    try { res2 = await gate.reconcileQaGate(ROOT, project, task2.taskId); }
+    catch (err) { if (i === 2) throw err; }
+  }
+  check(res2?.outcome === 'BLOCKED_ESCALATED', `E6 semantic-garbage → BLOCKED_ESCALATED after bounded retries (got ${res2?.outcome})`);
   const t2 = gt.getTask(ROOT, project, task2.taskId);
   check(t2.linkedRuns.length === 1 && t2.pmState === 'VERIFYING', 'E7 semantic BLOCKED: no remediation, escalated');
   check(deliveriesFor(task2.taskId).length === 1, 'E8 semantic BLOCKED: Delivery minted');

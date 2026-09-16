@@ -156,6 +156,10 @@ export interface QaAttemptRecord {
   contractHash?: string;
   deterministic?: QaDeterministicEvidence;
   semantic?: QaSemanticEvidence;
+  /** Number of bounded semantic invocations that ended operationally blocked. */
+  semanticBlockedAttempts?: number;
+  /** Bounded operational reason; never an empty BLOCKED verdict. */
+  reason?: string;
   finalQaStatus: QaFinalStatus;
   failedCriteria: string[];
   remediationInstruction?: string;   // only ever set when finalQaStatus === 'FAIL'
@@ -346,6 +350,12 @@ export function validateQaAttemptRecord(r: QaAttemptRecord): void {
   }
   if (r.deterministic !== undefined) validateDeterministicEvidence(r.deterministic);
   if (r.semantic !== undefined) validateSemanticEvidence(r.semantic);
+  if (r.semanticBlockedAttempts !== undefined && (!Number.isInteger(r.semanticBlockedAttempts) || r.semanticBlockedAttempts < 0)) {
+    throw new QaAttemptError('INVALID_STATE', 'semanticBlockedAttempts는 0 이상의 정수여야 합니다.');
+  }
+  if (r.reason !== undefined && (typeof r.reason !== 'string' || r.reason.length > 1000)) {
+    throw new QaAttemptError('INVALID_STATE', 'reason은 1000자 이하 문자열이어야 합니다.');
+  }
 
   // ── terminal/PENDING shape ────────────────────────────────────────────────
   if (r.finalQaStatus === 'PENDING') {
@@ -423,6 +433,8 @@ function renderQaAttemptMarkdown(r: QaAttemptRecord): string {
     `finalQaStatus: ${r.finalQaStatus}`,
     `deterministic: ${r.deterministic?.status ?? '(not yet run)'}`,
     `semantic: ${r.semantic?.status ?? '(not yet run)'}`,
+    r.semanticBlockedAttempts !== undefined ? `semanticBlockedAttempts: ${r.semanticBlockedAttempts}` : '',
+    r.reason ? `reason: ${r.reason}` : '',
     r.failedCriteria.length ? `failedCriteria: ${r.failedCriteria.join(', ')}` : '',
     '',
     `createdAt: ${r.createdAt}`,
@@ -690,6 +702,7 @@ export interface RecordSemanticEvidenceInput {
   startedAt?: string;
   completedAt?: string;
   evidenceId?: string;
+  reason?: string;
   /** Only meaningful (and only accepted) with status === 'FAIL'. */
   remediationInstruction?: string;
 }
@@ -744,6 +757,8 @@ export function recordSemanticEvidence(
       finalQaStatus,
       failedCriteria: input.status === 'FAIL' ? [...(input.failedCriteria ?? [])] : [],
       ...(input.remediationInstruction !== undefined ? { remediationInstruction: input.remediationInstruction } : {}),
+      ...(input.reason !== undefined ? { reason: input.reason.slice(0, 1000) } : {}),
+      ...(input.status !== 'BLOCKED' ? { reason: undefined, semanticBlockedAttempts: undefined } : {}),
       completedAt: ts,
       updatedAt: ts,
     };
@@ -760,6 +775,7 @@ export interface CompleteQaAttemptInput {
    * which must always go through recordDeterministicEvidence/
    * recordSemanticEvidence so a reason is always attached. */
   finalQaStatus: Extract<QaFinalStatus, 'PASS' | 'BLOCKED'>;
+  reason?: string;
 }
 
 /**
@@ -804,7 +820,35 @@ export function completeQaAttempt(
       ...current,
       finalQaStatus: input.finalQaStatus,
       failedCriteria: [],
+      ...(input.reason !== undefined ? { reason: input.reason.slice(0, 1000) } : {}),
       completedAt: ts,
+      updatedAt: ts,
+    };
+    persistQaAttemptRecord(qaAttemptFolder(dataRoot, project, qaAttemptId), next);
+    return next;
+  });
+}
+
+/** Keep a semantic infrastructure failure retryable. The semantic evaluator
+ * historically finalizes BLOCKED; this additive closeout reopens only that
+ * operational verdict, preserving the reason and bounded attempt count. */
+export function recordSemanticBlockedForRetry(
+  dataRoot: string,
+  project: string,
+  qaAttemptId: string,
+  reason: string,
+): Promise<QaAttemptRecord> {
+  return withQaAttemptLock(dataRoot, project, qaAttemptId, (): QaAttemptRecord => {
+    const current = getQaAttempt(dataRoot, project, qaAttemptId);
+    const count = (current.semanticBlockedAttempts ?? 0) + 1;
+    const ts = nowIso();
+    const next: QaAttemptRecord = {
+      ...current,
+      ...(current.finalQaStatus === 'BLOCKED' && current.semantic?.status === 'BLOCKED'
+        ? { semantic: undefined, finalQaStatus: 'PENDING' as const, completedAt: undefined, failedCriteria: [], remediationInstruction: undefined }
+        : {}),
+      semanticBlockedAttempts: count,
+      reason: reason.slice(0, 1000),
       updatedAt: ts,
     };
     persistQaAttemptRecord(qaAttemptFolder(dataRoot, project, qaAttemptId), next);

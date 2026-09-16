@@ -223,7 +223,10 @@ export function buildPmFinalGatePacket(dataRoot: string, project: string, delive
   const maxChanges = task.contract?.retry_policy?.max_pm_changes ?? 0;
   const usedChanges = listPmJudgments(dataRoot, project).filter((j) => j.taskId === task.taskId && j.decision === 'CHANGES').length;
   const canAct = context.reviewActions.includes('ACCEPT_RESULT');
-  const allowedActions = failedNoResult ? ['CHANGES', 'OWNER_REQUIRED'] : canAct ? ['ACCEPT', 'CHANGES', 'OWNER_REQUIRED', 'ACCEPT_AND_NEXT'] : ['OWNER_REQUIRED'];
+  const qaBlocksAcceptance = context.qa !== undefined && context.qa.status !== 'PASS';
+  const allowedActions = failedNoResult || qaBlocksAcceptance
+    ? ['CHANGES', 'OWNER_REQUIRED']
+    : canAct ? ['ACCEPT', 'CHANGES', 'OWNER_REQUIRED', 'ACCEPT_AND_NEXT'] : ['OWNER_REQUIRED'];
   const structured = {
     schemaVersion: 'pm-final-gate-packet.v1' as const,
     project,
@@ -258,6 +261,7 @@ export function buildPmFinalGatePacket(dataRoot: string, project: string, delive
     lines.push('');
     lines.push('## QA');
     lines.push(`status: ${context.qa.status} (attempt #${context.qa.attemptNumber}, escalation: ${context.qa.escalationReason})`);
+    if (context.qa.reason) lines.push(`reason: ${bound(context.qa.reason, 1000)}`);
     lines.push(context.qa.summary);
   } else if (failedNoResult) { lines.push(''); lines.push('## QA'); lines.push('not run'); }
   if (context.warnings.length) {

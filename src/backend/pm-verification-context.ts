@@ -140,6 +140,7 @@ export interface VerificationQaView {
   status: Extract<QaFinalStatus, 'PASS' | 'FAIL' | 'BLOCKED'>;
   attemptNumber: number;
   failedCriteria: string[];
+  reason?: string;
   semanticEvaluated: boolean;
   qaWorkerId?: string;
   escalationReason: VerificationQaEscalationReason;
@@ -280,11 +281,13 @@ function buildVerificationQaView(
     summary += ` (attempt #${current.qaAttemptNumber})`;
   }
   if (failedCriteria.length > 0) summary += `; failed: ${failedCriteria.join(', ')}`;
+  if (current.reason) summary += `; reason: ${boundString(current.reason).slice(0, 500)}`;
   if (prior.length > 0) summary += `; ${prior.length} prior attempt(s) recorded`;
   return {
     status,
     attemptNumber: current.qaAttemptNumber,
     failedCriteria,
+    ...(current.reason ? { reason: boundString(current.reason).slice(0, 1000) } : {}),
     semanticEvaluated,
     ...(current.qaWorkerId ? { qaWorkerId: current.qaWorkerId } : {}),
     escalationReason,

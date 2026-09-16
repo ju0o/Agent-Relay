@@ -65,6 +65,7 @@ import {
   createQaAttempt,
   getQaAttempt,
   linkRemediationPreparation,
+  recordSemanticBlockedForRetry,
   qaAttemptIdFor,
   type QaAttemptRecord,
   type QaFinalStatus,
@@ -387,9 +388,22 @@ async function evaluateAttemptToTerminal(
       criteriaText: derived.semanticCriteriaText,
     });
     current = res.record;
+    if (current.finalQaStatus === 'BLOCKED') {
+      const reason = current.reason ?? 'semantic QA returned BLOCKED without a reason';
+      const retried = await recordSemanticBlockedForRetry(dataRoot, project, current.qaAttemptId, reason);
+      if ((retried.semanticBlockedAttempts ?? 0) < 3) {
+        throw new QaGateError('BLOCKED', `${reason}; semantic retry ${retried.semanticBlockedAttempts}/3 remains available`);
+      }
+      current = await completeQaAttempt(dataRoot, project, current.qaAttemptId, { finalQaStatus: 'BLOCKED', reason });
+    }
   } catch (err) {
     if (err instanceof QaSemanticEvaluatorError && err.code === 'BLOCKED') {
-      throw new QaGateError('BLOCKED', `QA gate: semantic QA precondition failed, no state changed: ${err.message}`);
+      const reason = `QA gate: semantic QA precondition failed: ${err.message}`;
+      const retried = await recordSemanticBlockedForRetry(dataRoot, project, current.qaAttemptId, reason);
+      if ((retried.semanticBlockedAttempts ?? 0) < 3) {
+        throw new QaGateError('BLOCKED', `${reason}; semantic retry ${retried.semanticBlockedAttempts}/3 remains available`);
+      }
+      current = await completeQaAttempt(dataRoot, project, current.qaAttemptId, { finalQaStatus: 'BLOCKED', reason });
     }
     wrapGateError(err);
   }

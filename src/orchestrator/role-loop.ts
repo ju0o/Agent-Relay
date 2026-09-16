@@ -66,6 +66,15 @@ function isTerminalFailedRun(dataRoot: string, project: string, link: TaskRecord
 }
 class PmContractValidationError extends Error {}
 
+function parseFinalGateJudgment(packet: PmFinalGatePacket, text: string): PmJudgment {
+  const judgment = parsePmJudgment(text);
+  if ((judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT')
+    && packet.context.qa !== undefined && packet.context.qa.status !== 'PASS') {
+    throw new Error(`ACCEPT requires QA PASS; latest QA status is ${packet.context.qa.status}${packet.context.qa.reason ? `: ${packet.context.qa.reason}` : ''}`);
+  }
+  return judgment;
+}
+
 // ── (a) runtime billing guard ────────────────────────────────────────────────
 
 function isFreeTierModel(model: string | undefined): boolean {
@@ -578,6 +587,12 @@ async function handleAcceptAndNext(
 
 async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, packet: PmFinalGatePacket, judgment: PmJudgment, adapter: RoleRuntimeAdapter, sessionId: string): Promise<Record<string, unknown>> {
   const currentTask = getTask(cfg.dataRoot, cfg.project, packet.context.task.taskId);
+  if ((judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT')
+    && packet.context.qa !== undefined && packet.context.qa.status !== 'PASS') {
+    const reason = `ACCEPT requires QA PASS; latest QA status is ${packet.context.qa.status}${packet.context.qa.reason ? `: ${packet.context.qa.reason}` : ''}`;
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason });
+    return { outcome: 'BLOCKED', reason };
+  }
   if (judgment.decision === 'ACCEPT_AND_NEXT' && typeof judgment.next_task_contract?.task_id === 'string' && listTasks(cfg.dataRoot, cfg.project).some((task) => task.taskId === judgment.next_task_contract!.task_id)) {
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'CONTRACT_FROZEN', reason: `next_task_contract.task_id ${judgment.next_task_contract.task_id} already exists` });
     return { outcome: 'CONTRACT_FROZEN' };
@@ -600,7 +615,7 @@ async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, p
         const correction = await sendAndParseOnce(adapter, sessionId, {
           kind: 'PM_FINAL_GATE', schemaVersion: 'pm-final-gate-packet.v1', contractHash: packet.context.task.contract_hash, contextHash: packet.contextHash,
           body: `${packet.text}\n\n---\nCONTRACT_VALIDATION_ERROR: ${error}\nReturn the COMPLETE corrected PM_JUDGMENT v1 block; keep everything else unchanged.`,
-        }, parsePmJudgment, cfg.pmSendTimeoutMs ?? 120_000);
+        }, (text) => parseFinalGateJudgment(packet, text), cfg.pmSendTimeoutMs ?? 120_000);
         if (!correction.ok) throw new Error(correction.error);
         return correction.value;
       });
@@ -664,7 +679,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
       adapter,
       sessionId,
       envelope,
-      parsePmJudgment,
+      (text) => parseFinalGateJudgment(packet, text),
       (err, pmReply) => reaskEnvelope('PM_FINAL_GATE', 'pm-final-gate-packet.v1', packet.contextHash, packet.text, err, pmReply),
       timeoutMs,
     );
@@ -697,7 +712,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
       const retry = await sendAndParseOnce(adapter, sessionId, {
         kind: 'PM_FINAL_GATE', schemaVersion: 'pm-final-gate-packet.v1', contractHash: packet.context.task.contract_hash, contextHash: packet.contextHash,
         body: `${packet.text}\n\n---\nHASH_ECHO_ERROR: echo contract_hash and context_hash exactly from the HASHES TO ECHO EXACTLY block.\ncontract_hash: ${packet.context.task.contract_hash}\ncontext_hash: ${packet.contextHash}`,
-      }, parsePmJudgment, timeoutMs);
+      }, (text) => parseFinalGateJudgment(packet, text), timeoutMs);
       if (!retry.ok) { audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason: retry.error }); return { outcome: 'BLOCKED', reason: retry.error }; }
       return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value, adapter, sessionId);
     }
@@ -712,7 +727,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
       const retry = await sendAndParseOnce(adapter, sessionId, {
         kind: 'PM_FINAL_GATE', schemaVersion: 'pm-final-gate-packet.v1', contractHash: packet.context.task.contract_hash, contextHash: packet.contextHash,
         body: `${packet.text}\n\n---\nHASH_ECHO_ERROR: echo contract_hash and context_hash exactly from the HASHES TO ECHO EXACTLY block.\ncontract_hash: ${currentContractHash}\ncontext_hash: ${packet.contextHash}`,
-      }, parsePmJudgment, timeoutMs);
+      }, (text) => parseFinalGateJudgment(packet, text), timeoutMs);
       if (!retry.ok) { audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason: retry.error }); return { outcome: 'BLOCKED', reason: retry.error }; }
       return applyFinalGateJudgment(cfg, deliveryId, packet, retry.value, adapter, sessionId);
     }
@@ -754,6 +769,7 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
   // collects in-process, but later supervisor cycles must resume that same
   // durable collect path. Never collect a RESERVED (not-sent) reservation;
   // retry reconciliation owns that state.
+  const qaReconciled = new Set<string>();
   if (cfg.collectHook) {
     for (const task of listTasks(cfg.dataRoot, cfg.project)) {
       if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') continue;
@@ -770,6 +786,7 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
         if (outcome === 'COLLECTED') {
           // Result Bridge normally invokes this; the explicit idempotent
           // reconcile also covers a completion admitted during this cycle.
+          qaReconciled.add(task.taskId);
           await reconcileQaGate(cfg.dataRoot, cfg.project, task.taskId, { dispatchRemediation: cfg.qaRemediationDispatchHook }).catch(() => undefined);
         }
       } catch (err) {
@@ -777,6 +794,22 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
         audit(cfg.auditDir, { step: 'resume-collect', outcome: 'WAITING', taskId: task.taskId, runId: latest.runId, reason });
         steps.push({ step: 'resume-collect', outcome: 'WAITING', taskId: task.taskId, runId: latest.runId, reason });
       }
+    }
+  }
+
+  // A semantic QA precondition failure remains RESULT_RECEIVED+PENDING with
+  // a durable retry count. Resume it on a later supervisor cycle; do not
+  // manufacture a PM Delivery until the bounded semantic budget is exhausted.
+  for (const task of listTasks(cfg.dataRoot, cfg.project)) {
+    if (qaReconciled.has(task.taskId) || task.executionState !== 'RESULT_RECEIVED' || task.pmState !== 'PENDING' || !task.qaContract) continue;
+    try {
+      const result = await reconcileQaGate(cfg.dataRoot, cfg.project, task.taskId, { dispatchRemediation: cfg.qaRemediationDispatchHook });
+      audit(cfg.auditDir, { step: 'qa-semantic-retry', outcome: result.outcome, taskId: task.taskId, ...(result.deliveryId ? { deliveryId: result.deliveryId } : {}) });
+      steps.push({ step: 'qa-semantic-retry', taskId: task.taskId, outcome: result.outcome });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      audit(cfg.auditDir, { step: 'qa-semantic-retry', outcome: 'BLOCKED_RUNTIME', taskId: task.taskId, reason });
+      steps.push({ step: 'qa-semantic-retry', taskId: task.taskId, outcome: 'BLOCKED_RUNTIME' });
     }
   }
 

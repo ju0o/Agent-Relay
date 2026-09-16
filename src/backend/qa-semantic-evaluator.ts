@@ -513,6 +513,7 @@ export function evaluateSemanticQa(
       const record = await recordSemanticEvidence(dataRoot, project, input.qaAttemptId, {
         status: 'BLOCKED',
         criteria: [],
+        reason: parsed.reason,
         qaWorkerId: attempt.qaWorkerId,
         sessionRef,
         startedAt,

@@ -344,3 +344,14 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; orchestra
 - `test/v1-orchestrator.test.mjs`: verifies module-relative lookup from another cwd and fail-closed behavior for a missing instructions file.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs test/opencode-command-adapter.test.mjs` — **47 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 22 (TASK-0076 semantic QA BLOCKED)
+
+- Root cause found read-only in V1CERT: both `blocked-reason.txt` files contain `"status:" 라인을 찾을 수 없습니다.` after the `claude-code` semantic invocation, so the strict semantic-output parser treated the transient response as BLOCKED; the old path escalated immediately and persisted no reason.
+- `src/backend/qa-attempt.ts`: records a bounded `semanticBlockedAttempts` count and non-empty `reason`; the additive retry transition reopens only operational semantic BLOCKED records as PENDING. After three cycles, it finalizes BLOCKED with the reason.
+- `src/backend/qa-gate.ts`: semantic BLOCKED is retried on later reconciliations and only escalates after the bounded budget; deterministic BLOCKED behavior is unchanged.
+- `src/backend/pm-verification-context.ts` and `src/orchestrator/pm-packets.ts`: the PM packet includes the exact QA status/reason and excludes ACCEPT/ACCEPT_AND_NEXT unless the delivered attempt is PASS.
+- `src/orchestrator/role-loop.ts`: later cycles resume pending QA semantic evaluation before the PM gate; an ACCEPT against BLOCKED/FAIL QA is rejected and re-asked once without canonical judgment mutation.
+- `test/v1-qa-loop.test.mjs`: covers bounded crash escalation with persisted reason and BLOCKED→next-cycle PASS; the existing V16 gate expectations were updated to the new retry-before-Delivery contract.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused QA suites (`v1-qa-loop` 6, V16 slice 4 1, V16 slice 7 1) — **8 node tests, 8 passed, 0 failed**; `LIVE_DATAROOT_WRITES: 0`.

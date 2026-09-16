@@ -228,15 +228,19 @@ console.log('\n== F2. semantic QA errors twice ⇒ BLOCKED ⇒ escalate, zero re
   const r1 = await linkRun(task.taskId);
   fs.writeFileSync(path.join(r1.workspaceRoot, 'out.txt'), 'ok', 'utf8');
   await receive(task.taskId, r1.runId);
-  const res = await gate.reconcileQaGate(ROOT, project, task.taskId);
+  let res;
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    try { res = await gate.reconcileQaGate(ROOT, project, task.taskId); }
+    catch (err) { if (cycle === 2) throw err; }
+  }
   const marks = fs.readFileSync(marker, 'utf8').length;
-  check(res.outcome === 'BLOCKED_ESCALATED', 'F2 double-unparseable semantic ⇒ BLOCKED escalation');
-  check(marks === 2, `F2 exactly one bounded auto-reattempt (2 invocations, got ${marks})`);
+  check(res?.outcome === 'BLOCKED_ESCALATED', 'F2 semantic BLOCKED retries are bounded, then escalate');
+  check(marks === 6, `F2 three bounded semantic cycles, two invocations each (got ${marks})`);
   check(prepsFor(task.taskId).length === 0, 'F2 BLOCKED consumes no remediation budget');
   check(gt.getTask(ROOT, project, task.taskId).linkedRuns.length === 1, 'F2 no remediation Run on the BLOCKED path');
-  check(deliveriesFor(task.taskId).length === 1, 'F2 escalation Delivery minted');
+  check(deliveriesFor(task.taskId).length === 1, 'F2 escalation Delivery minted only after retry budget');
   const att = attemptsFor(task.taskId)[0];
-  check(att.deterministic.status === 'PASS' && att.semantic.status === 'BLOCKED', 'F2 deterministic PASS preserved alongside semantic BLOCKED');
+  check(att.deterministic.status === 'PASS' && att.semantic === undefined && att.reason, 'F2 deterministic PASS preserved with BLOCKED reason');
   const packet = vctx.getVerificationContextForDelivery(ROOT, project, pmDel.pmDeliveryIdFor(task.taskId, r1.runId));
   check(packet.qa?.status === 'BLOCKED' && packet.qa?.escalationReason === 'BLOCKED', 'F2 PM sees qa.status=BLOCKED escalation evidence');
 }
