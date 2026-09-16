@@ -68,6 +68,7 @@
     "test:v1-g5b-retry-preparation": "node test/v1-g5b-retry-preparation.test.mjs",
     "test:v1-g5c-auto-redispatch": "node test/v1-g5c-auto-redispatch.test.mjs",
     "test:g6-mcp-pm-wake": "node test/g6-mcp-pm-wake.test.mjs",
+    "test:ar01-local-auth": "node test/ar01-local-auth.test.mjs",
     "test:g6-worker-launch-diag": "node test/g6-worker-launch-diag.test.mjs",
     "test:g6-observation-profile-context": "node test/g6-observation-profile-context.test.mjs",
     "test:v15-plan-kernel": "node test/v15-plan-kernel.test.mjs",

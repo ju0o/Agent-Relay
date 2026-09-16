@@ -17,6 +17,7 @@
  */
 
 import * as http from 'node:http';
+import * as crypto from 'node:crypto';
 import type { PmServerContext } from './server.js';
 import { buildPmReadTools, buildPmWriteTools } from './pm-tools.js';
 import { buildPmWakeTools } from './app/pm-wake-tools.js';
@@ -72,8 +73,33 @@ export interface McpAppServerOptions {
   dataRoot: string;
   project: string;
   port: number;
+  /** Interface to bind. Defaults to loopback-only (127.0.0.1). */
+  host?: string;
+  /**
+   * When set, every POST /mcp must carry `Authorization: Bearer <authToken>`
+   * (constant-time compare) or the request is rejected with 401 before the
+   * MCP transport is constructed. When absent, POST /mcp is unauthenticated
+   * — callers embedding this server (tests, trusted local tooling) opt into
+   * that explicitly; the CLI entry point (app-server-main.ts) refuses to
+   * start unauthenticated unless told to.
+   */
+  authToken?: string;
   /** Display name shown to the MCP Apps host. */
   serverName?: string;
+}
+
+/** Constant-time token compare; never throws, never leaks length via timing beyond the length check itself. */
+function tokensMatch(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function extractBearerToken(header: string | undefined): string | null {
+  if (!header) return null;
+  const match = /^Bearer (.+)$/.exec(header);
+  return match ? match[1] : null;
 }
 
 export function buildAppTools(ctx: PmServerContext): AppTool[] {
@@ -189,6 +215,14 @@ export async function startMcpAppServer(opts: McpAppServerOptions): Promise<http
     if (req.method !== 'POST' || url.pathname !== '/mcp') {
       res.writeHead(404); res.end('not found'); return;
     }
+    if (opts.authToken !== undefined) {
+      const provided = extractBearerToken(req.headers.authorization);
+      if (!provided || !tokensMatch(provided, opts.authToken)) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Missing or invalid bearer token' } }));
+        return;
+      }
+    }
     const sdk = newAppServer(tools);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try {
@@ -208,6 +242,7 @@ export async function startMcpAppServer(opts: McpAppServerOptions): Promise<http
     }
   });
 
-  await new Promise<void>((resolve) => app.listen(opts.port, resolve));
+  const host = opts.host ?? '127.0.0.1';
+  await new Promise<void>((resolve) => app.listen(opts.port, host, resolve));
   return app;
 }
