@@ -10,6 +10,7 @@
     "test:github-pm-bridge": "node test/github-pm-bridge.test.mjs",
     "test:roles": "node --test test/roles-config.test.mjs test/role-runtime-registry.test.mjs",
     "test:v1-qa-loop": "node --test test/v1-qa-loop.test.mjs",
+    "test:v1-builder-dispatch-drills": "node --test test/v1-builder-dispatch-drills.test.mjs",
     "dev": "vite build && tsc -p tsconfig.server.json && electron dist/server/backend/main.js",
     "dev:client": "vite",
     "dev:server": "tsc -p tsconfig.server.json --watch",
