@@ -664,10 +664,21 @@ test('(a) primary PM adapter must be registered and zeroExtraBilling must be tru
 
 test('(P1-3) default worker selector matches actl-managed adapter identity and rejects missing/ambiguous records', async () => {
   const { selectBuilderWorker } = await import('../dist/server/orchestrator/main.js');
-  const record = (workerId) => ({ workerId, role: 'implementation' });
-  assert.equal(selectBuilderWorker([record('builder-1')], 'actl-managed:builder-1').workerId, 'builder-1');
-  assert.throws(() => selectBuilderWorker([], 'actl-managed:builder-1'), /missing/);
-  assert.throws(() => selectBuilderWorker([record('builder-1'), record('builder-1')], 'actl-managed:builder-1'), /ambiguous/);
+  const fixtureRoot = path.join(ROOT, 'raw-worker-fixture');
+  const workers = path.join(fixtureRoot, '_relay', 'workers');
+  fs.mkdirSync(workers, { recursive: true });
+  fs.writeFileSync(path.join(workers, 'builder-1.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'builder-1', role: 'implementation', launchCommand: '/home/skkse12/.local/bin/actl', driverOptions: { actl: { runtimeId: 'rt1_fixture' } } }));
+  fs.writeFileSync(path.join(workers, 'claude.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'claude', launchCommand: 'node' }));
+  fs.writeFileSync(path.join(workers, 'qa.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'qa', role: 'qa', launchCommand: 'node' }));
+  const selected = selectBuilderWorker(fixtureRoot, 'actl-managed:builder-1');
+  assert.equal(selected.workerId, 'builder-1');
+  assert.equal(selected.driverOptions.actl.runtimeId, 'rt1_fixture');
+  assert.throws(() => selectBuilderWorker(fixtureRoot, 'actl-managed:missing'), /missing/);
+  fs.writeFileSync(path.join(workers, 'builder-1.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'builder-1', role: 'qa', launchCommand: 'node' }));
+  assert.throws(() => selectBuilderWorker(fixtureRoot, 'actl-managed:builder-1'), /role mismatch/);
+  fs.writeFileSync(path.join(workers, 'builder-1.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'builder-1', role: 'implementation', launchCommand: 'node' }));
+  fs.writeFileSync(path.join(workers, 'duplicate.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'builder-1', role: 'implementation', launchCommand: 'node' }));
+  assert.throws(() => selectBuilderWorker(fixtureRoot, 'actl-managed:builder-1'), /ambiguous/);
 });
 
 // ── zero live-dataRoot writes ─────────────────────────────────────────────────

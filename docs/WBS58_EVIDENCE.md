@@ -188,3 +188,12 @@ WBS-10 pass 6 fixes:
 - `test/v1-orchestrator.test.mjs`: added convergence, exhaustion/no-write, and exact validator-message assertions; existing malformed-header coverage confirms the one-reask rule.
 
 Verification: `npx tsc -p tsconfig.server.json` passed; focused adapter/orchestrator/drill suites — 44 passed, 0 failed. Full V1 + adapter run — 72 tests, 70 passed, 2 pre-existing G4A/G4C failures. `LIVE_DATAROOT_WRITES: 0` for the focused disposable suites.
+
+## CHANGES round 5
+
+WBS-10 pass 7 dispatch fix:
+
+- `src/orchestrator/main.ts`: `selectBuilderWorker()` now reads raw `_relay/workers/<workerId>.json` records instead of the strict public registry loader, preserving actl-managed `driverOptions.actl.runtimeId`. It requires an exact worker-id match, explicit `role: implementation`, and either an actl runtime id or launch command; missing, unparsable, role-mismatched, and duplicate records fail closed.
+- `test/v1-orchestrator.test.mjs`: selector coverage uses a raw actl fixture plus untagged Claude and QA records, and asserts missing, role-mismatch, and ambiguous failures.
+
+Known P2 follow-up: `worker-registry.ts` still rejects trusted actl `driverOptions.actl` records while the dispatcher consumes those raw fields. This lane intentionally does not widen that validator; the strict-loader/raw-record drift remains owner work for the worker-registry lane.

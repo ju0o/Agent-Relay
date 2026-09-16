@@ -1,8 +1,9 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { readRoleConfig } from '../roles/role-config.js';
 import { getRoleRuntimeAdapter, registerRoleRuntimeAdapter } from '../integrations/core/role-runtime-registry.js';
 import type { RoleRuntimeAdapter } from '../integrations/core/role-runtime.js';
 import { OpenCodeCommandAdapter } from '../integrations/opencode/command-adapter.js';
-import { listWorkerRegistryRecords } from '../backend/worker-registry.js';
 import { dispatchV1OwnerApproved } from '../backend/v1-dispatch.js';
 import { clearBlockedState, runOnce, type DispatchHook, type RoleLoopConfig } from './role-loop.js';
 
@@ -78,17 +79,43 @@ function ensurePmAdaptersRegistered(dataRoot: string, roleConfig: ReturnType<typ
   }
 }
 
-export function selectBuilderWorker(records: ReturnType<typeof listWorkerRegistryRecords>, runtimeAdapterId: string) {
+export function selectBuilderWorker(dataRoot: string, runtimeAdapterId: string) {
   const workerId = runtimeAdapterId.startsWith('actl-managed:') ? runtimeAdapterId.slice('actl-managed:'.length) : runtimeAdapterId;
-  const matches = records.filter((record) => record.role === 'implementation' && record.workerId === workerId);
-  if (matches.length !== 1) throw new Error(`builder worker selection is ${matches.length === 0 ? 'missing' : 'ambiguous'} for ${runtimeAdapterId}`);
-  return matches[0]!;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(workerId)) throw new Error(`builder worker id is invalid for ${runtimeAdapterId}`);
+  const dir = path.join(path.resolve(dataRoot), '_relay', 'workers');
+  const exact = path.join(dir, `${workerId}.json`);
+  if (!fs.existsSync(exact)) throw new Error(`builder worker selection is missing for ${runtimeAdapterId}: ${exact}`);
+  const read = (file: string): Record<string, any> => {
+    try {
+      const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('record is not an object');
+      return value as Record<string, any>;
+    } catch (error) {
+      throw new Error(`builder worker record is unparsable: ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const exactRecord = read(exact);
+  const matches: Record<string, any>[] = [];
+  for (const name of fs.readdirSync(dir).filter((entry) => entry.endsWith('.json'))) {
+    const file = path.join(dir, name);
+    const record = file === exact ? exactRecord : read(file);
+    if (record.workerId === workerId) matches.push(record);
+  }
+  if (matches.length !== 1) throw new Error(`builder worker selection is ambiguous for ${runtimeAdapterId}: ${matches.length} matching records`);
+  const worker = matches[0]!;
+  if (worker.role !== 'implementation') throw new Error(`builder worker role mismatch for ${runtimeAdapterId}: expected implementation`);
+  const hasActlRuntime = typeof worker.driverOptions?.actl?.runtimeId === 'string' && !!worker.driverOptions.actl.runtimeId.trim();
+  const hasLaunchCommand = typeof worker.launchCommand === 'string' && !!worker.launchCommand.trim();
+  if (!hasActlRuntime && !hasLaunchCommand) {
+    throw new Error(`builder worker record is unusable for ${runtimeAdapterId}: expected driverOptions.actl.runtimeId or launchCommand`);
+  }
+  return worker;
 }
 
 function defaultDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): DispatchHook {
   return async (dr, project, task) => {
     const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
-    const worker = builder ? selectBuilderWorker(listWorkerRegistryRecords(dr), builder.runtimeAdapterId) : null;
+    const worker = builder ? selectBuilderWorker(dr, builder.runtimeAdapterId) : null;
     if (!builder || !worker) throw new Error('no builder RoleAssignment/worker-registry record (role: implementation) available for dispatch');
     return dispatchV1OwnerApproved(dr, project, {
       taskId: task.taskId,
