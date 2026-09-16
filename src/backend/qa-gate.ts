@@ -131,6 +131,25 @@ export interface ReconcileQaGateResult {
   deliveryId?: string | null;
 }
 
+export interface QaRemediationDispatchInput {
+  taskId: string;
+  workerId: string;
+  workspaceRoot: string;
+  preparationId: string;
+  sourceRunId: string;
+  prompt: string;
+}
+
+export type QaRemediationDispatchHook = (
+  dataRoot: string,
+  project: string,
+  input: QaRemediationDispatchInput,
+) => Promise<{ runId: string }>;
+
+export interface ReconcileQaGateOptions {
+  dispatchRemediation?: QaRemediationDispatchHook;
+}
+
 // ── locks (process-local supplement; durable state is the authority) ─────────
 
 const _qaGateLocks = new Map<string, Promise<void>>();
@@ -378,6 +397,7 @@ async function dispatchFromPreparation(
   prep: QaRemediationPreparationRecord,
   attempt: QaAttemptRecord,
   evaluatedDerived: DerivedQaEvaluationContract,
+  options?: ReconcileQaGateOptions,
 ): Promise<ReconcileQaGateResult> {
   const preparationId = prep.preparationId;
 
@@ -561,17 +581,26 @@ async function dispatchFromPreparation(
   // a real canonical implementation Run linked into Task.linkedRuns.
   let newRunId: string;
   try {
-    const dispatch = await dispatchTask(dataRoot, project, {
-      taskId: task.taskId,
-      workerId: prep.workerId,
-      workspaceRoot,
-      expectedExecutionState: 'READY',
-      qaRemediationContext: {
+    const dispatch = options?.dispatchRemediation
+      ? await options.dispatchRemediation(dataRoot, project, {
+        taskId: task.taskId,
+        workerId: prep.workerId,
+        workspaceRoot,
         preparationId,
         sourceRunId: prep.sourceRunId,
         prompt,
-      },
-    });
+      })
+      : await dispatchTask(dataRoot, project, {
+        taskId: task.taskId,
+        workerId: prep.workerId,
+        workspaceRoot,
+        expectedExecutionState: 'READY',
+        qaRemediationContext: {
+          preparationId,
+          sourceRunId: prep.sourceRunId,
+          prompt,
+        },
+      });
     newRunId = dispatch.runId;
   } catch (err) {
     // Post-commit failures (capture arm / spawn) preserve the correlated
@@ -614,6 +643,7 @@ async function handleTerminalFail(
   task: TaskRecord,
   attempt: QaAttemptRecord,
   derived: DerivedQaEvaluationContract,
+  options?: ReconcileQaGateOptions,
 ): Promise<ReconcileQaGateResult> {
   // QA remediation proceeds ONLY from PENDING — a Task already owned by a
   // PM judgment (VERIFYING after escalation, CHANGES_REQUESTED, ACCEPTED)
@@ -668,7 +698,7 @@ async function handleTerminalFail(
         `QA gate: preparation ${preparationId} failedCriteria diverged from attempt; refusing.`,
       );
     }
-    return dispatchFromPreparation(dataRoot, project, prep, attempt, derived);
+    return dispatchFromPreparation(dataRoot, project, prep, attempt, derived, options);
   }
 
   // No preparation yet (seam 3): enforce the frozen remediation budget
@@ -735,7 +765,7 @@ async function handleTerminalFail(
     wrapGateError(err, 'CONFLICT');
   }
   const freshAttempt = getQaAttempt(dataRoot, project, attempt.qaAttemptId);
-  return dispatchFromPreparation(dataRoot, project, created, freshAttempt, derived);
+  return dispatchFromPreparation(dataRoot, project, created, freshAttempt, derived, options);
 }
 
 // ── main reconciliation ──────────────────────────────────────────────────────
@@ -810,7 +840,7 @@ async function adoptMaterializedRemediationRuns(
   return adopted;
 }
 
-async function reconcileQaGateInner(dataRoot: string, project: string, taskId: string): Promise<ReconcileQaGateResult> {
+async function reconcileQaGateInner(dataRoot: string, project: string, taskId: string, options?: ReconcileQaGateOptions): Promise<ReconcileQaGateResult> {
   const task = requireTask(dataRoot, project, taskId);
 
   // Backward-compatibility seam: Tasks without a QA contract behave exactly
@@ -923,7 +953,7 @@ async function reconcileQaGateInner(dataRoot: string, project: string, taskId: s
     case 'PASS':
       return escalateWithDelivery(dataRoot, project, freshTask, 'PASS_DELIVERED', terminal);
     case 'FAIL':
-      return handleTerminalFail(dataRoot, project, freshTask, terminal, derived!);
+      return handleTerminalFail(dataRoot, project, freshTask, terminal, derived!, options);
     case 'BLOCKED':
       // QA BLOCKED is never automatic remediation (release-blocking rule).
       return escalateWithDelivery(dataRoot, project, freshTask, 'BLOCKED_ESCALATED', terminal);
@@ -940,12 +970,12 @@ async function reconcileQaGateInner(dataRoot: string, project: string, taskId: s
  * evidence at every seam; duplicate calls collapse to idempotent no-ops;
  * concurrent calls collapse to one remediation Run via CAS + adoption.
  */
-export function reconcileQaGate(dataRoot: string, project: string, taskId: string): Promise<ReconcileQaGateResult> {
+export function reconcileQaGate(dataRoot: string, project: string, taskId: string, options?: ReconcileQaGateOptions): Promise<ReconcileQaGateResult> {
   const tid = typeof taskId === 'string' ? taskId.trim() : '';
   if (!tid) return Promise.reject(new QaGateError('INVALID_ARGUMENT', 'QA gate: taskId가 필요합니다.'));
   return withQaGateLock(dataRoot, project, tid, async (): Promise<ReconcileQaGateResult> => {
     try {
-      return await reconcileQaGateInner(dataRoot, project, tid);
+      return await reconcileQaGateInner(dataRoot, project, tid, options);
     } catch (err) {
       if (err instanceof QaGateError) throw err;
       wrapGateError(err);
@@ -961,6 +991,7 @@ export function runOrResumeQaGate(
   dataRoot: string,
   project: string,
   taskId: string,
+  options?: ReconcileQaGateOptions,
 ): Promise<ReconcileQaGateResult> {
-  return reconcileQaGate(dataRoot, project, taskId);
+  return reconcileQaGate(dataRoot, project, taskId, options);
 }

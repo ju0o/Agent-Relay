@@ -285,3 +285,12 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --t
 - `test/v1-orchestrator-actl-dispatch.test.mjs`: the UNKNOWN idle-prompt and busy-marker tests exercise the trailing-row case; idle dispatch succeeds and busy dispatch remains refused.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator-actl-dispatch.test.mjs test/v1-orchestrator.test.mjs` — 41 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 15 (TASK-0068 QA remediation resume)
+
+- `src/backend/qa-gate.ts`: added an optional remediation-dispatch seam. Existing callers retain the canonical `dispatchTask` fallback; the orchestrator can supply its permit-checked dispatcher while the QA gate keeps preparation correlation, budget, and idempotency authoritative.
+- `src/orchestrator/role-loop.ts`: before bootstrap, `runOnce` scans READY undispatched QRP records and resumes each through `reconcileQaGate`, auditing `QA_REMEDIATION_DISPATCHED`/`QA_REMEDIATION_ADOPTED` or `BLOCKED_RUNTIME`.
+- `src/orchestrator/main.ts`: the default CLI supplies a QA remediation hook using the same actl permit checks and canonical dispatcher as Builder dispatch, with the QRP/source-run correlation preserved.
+- `test/v1-qa-loop.test.mjs`: proves a READY QRP left by a simulated dispatch refusal is resumed once by `runOnce`, creates the same-Task remediation Run, and is not dispatched again on the next cycle. Existing tests cover FAIL→same-Task remediation→PASS→one Delivery and crash/budget escalation behavior.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-qa-loop.test.mjs` — 4 passed, 0 failed; focused QA + orchestrator + actl command — 45 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.

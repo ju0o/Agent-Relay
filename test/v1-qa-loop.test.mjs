@@ -12,6 +12,7 @@ const gate = await import('../dist/server/backend/qa-gate.js'); const pm = await
 const wr = await import('../dist/server/backend/worker-registry.js'); const obs = await import('../dist/server/backend/observation-lock.js');
 const disp = await import('../dist/server/backend/dispatcher.js'); const capture = await import('../dist/server/backend/capture-service.js');
 const fsKernel = await import('../dist/server/backend/fs.js'); const fixture = await import('../dist/server/integrations/test-fixture/watch.js'); fixture.ensureTestFixtureAdapterRegistered();
+const roleLoop = await import('../dist/server/orchestrator/role-loop.js');
 const QA = path.resolve('scripts/fake-qa-worker.mjs'); const BUILDER = path.resolve('scripts/fake-builder-worker.mjs');
 let sequence = 0;
 function reset() { disp._resetDispatcherStateForTests(); capture._resetCaptureServiceForTests(); qa._resetQaAttemptLocksForTests(); qrp._resetQaRemediationPreparationLocksForTests(); gate._resetQaGateLocksForTests(); }
@@ -39,3 +40,15 @@ test('Result 1 → QA FAIL → same-Task remediation → Result 2 → QA PASS �
 });
 test('duplicate completion and restart reconciliation are idempotent', async () => { reset(); const { task, builderId } = await setup({ qaWorker: 'pass' }); const first = await linkResult(task.taskId, 3, builderId, 'correct result', undefined, true); const initial = await gate.runOrResumeQaGate(ROOT, PROJECT, task.taskId); assert.equal(initial.outcome, 'PASS_DELIVERED'); const before = qa.listQaAttemptsForTask(ROOT, PROJECT, task.taskId).length; await rt.markQaResultReceived(ROOT, PROJECT, task.taskId, first.runId); const replay = await gate.runOrResumeQaGate(ROOT, PROJECT, task.taskId); assert.equal(replay.outcome, 'PASS_DELIVERED'); reset(); assert.equal(qa.listQaAttemptsForTask(ROOT, PROJECT, task.taskId).length, before); assert.equal(pm.listPmDeliveries(ROOT, PROJECT).filter(d => d.taskId === task.taskId).length, 1); });
 test('QA worker crash is truthful and documents existing blocked escalation', async () => { reset(); const { task, builderId } = await setup({ qaWorker: 'crash' }); await linkResult(task.taskId, 4, builderId, 'wrong result'); const result = await gate.runOrResumeQaGate(ROOT, PROJECT, task.taskId); assert.equal(result.outcome, 'BLOCKED_ESCALATED'); const deliveries = pm.listPmDeliveries(ROOT, PROJECT).filter(d => d.taskId === task.taskId); assert.equal(deliveries.length, 1); assert.equal(deliveries[0].status, 'PENDING'); });
+
+test('runOnce resumes a READY QA remediation preparation through the orchestrator dispatch seam exactly once', async () => {
+  reset(); const { task, builderId } = await setup(); await linkResult(task.taskId, 5, builderId, 'wrong result');
+  await assert.rejects(() => gate.runOrResumeQaGate(ROOT, PROJECT, task.taskId, { dispatchRemediation: async () => { throw new Error('simulated permit refusal'); } }), /simulated permit refusal/);
+  const before = qrp.listQaRemediationPreparations(ROOT, PROJECT).find((p) => p.taskId === task.taskId); assert.equal(before?.status, 'READY'); assert.equal(before?.dispatchedRunId, undefined);
+  const stateFile = path.join(ROOT, 'role-loop-state.json'); const auditDir = path.join(ROOT, 'audit'); let dispatches = 0;
+  const result = await roleLoop.runOnce({ dataRoot: ROOT, project: PROJECT, roleConfig: { assignments: [] }, pmAdapter: {}, dispatchHook: async () => {}, qaRemediationDispatchHook: async (dr, project, input) => { dispatches += 1; return disp.dispatchTask(dr, project, { taskId: input.taskId, workerId: input.workerId, workspaceRoot: input.workspaceRoot, expectedExecutionState: 'READY', qaRemediationContext: { preparationId: input.preparationId, sourceRunId: input.sourceRunId, prompt: input.prompt } }); }, stateFile, auditDir });
+  assert.equal(dispatches, 1); assert.equal(result.steps.filter((s) => s.step === 'qa-remediation').length, 1);
+  const after = qrp.listQaRemediationPreparations(ROOT, PROJECT).find((p) => p.taskId === task.taskId); assert.ok(after?.dispatchedRunId); assert.equal(gt.getTask(ROOT, PROJECT, task.taskId).linkedRuns.length, 2);
+  await roleLoop.runOnce({ dataRoot: ROOT, project: PROJECT, roleConfig: { assignments: [] }, pmAdapter: {}, dispatchHook: async () => {}, qaRemediationDispatchHook: async () => { dispatches += 1; throw new Error('duplicate dispatch'); }, stateFile, auditDir });
+  assert.equal(dispatches, 1);
+});

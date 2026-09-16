@@ -7,6 +7,7 @@ import { getRoleRuntimeAdapter, registerRoleRuntimeAdapter } from '../integratio
 import type { RoleRuntimeAdapter } from '../integrations/core/role-runtime.js';
 import { OpenCodeCommandAdapter } from '../integrations/opencode/command-adapter.js';
 import { dispatchV1OwnerApproved } from '../backend/v1-dispatch.js';
+import { dispatchTask } from '../backend/dispatcher.js';
 import {
   ActlBridgeError,
   buildDefaultInputPermit,
@@ -17,6 +18,7 @@ import {
   setActlInputPermitFactory,
 } from '../backend/actl-bridge.js';
 import { clearBlockedState, runOnce, type DispatchHook, type RoleLoopConfig } from './role-loop.js';
+import type { QaRemediationDispatchHook } from '../backend/qa-gate.js';
 
 interface Args {
   dataRoot: string;
@@ -204,6 +206,27 @@ export function defaultDispatchHook(dataRoot: string, roleConfig: ReturnType<typ
   };
 }
 
+export function defaultQaRemediationDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): QaRemediationDispatchHook {
+  const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
+  const worker = builder ? selectBuilderWorker(dataRoot, builder.runtimeAdapterId) : null;
+  const checkReady = builder && worker ? installActlPermitFactory(builder, worker) : null;
+  return async (dr, project, input) => {
+    if (!builder || !worker) throw new Error('no builder RoleAssignment/worker-registry record (role: implementation) available for QA remediation');
+    if (checkReady) await checkReady();
+    return dispatchTask(dr, project, {
+      taskId: input.taskId,
+      workerId: input.workerId,
+      workspaceRoot: input.workspaceRoot,
+      expectedExecutionState: 'READY',
+      qaRemediationContext: {
+        preparationId: input.preparationId,
+        sourceRunId: input.sourceRunId,
+        prompt: input.prompt,
+      },
+    });
+  };
+}
+
 async function buildConfig(a: Args): Promise<RoleLoopConfig> {
   const roleConfig = readRoleConfig(a.dataRoot, a.project);
   ensurePmAdaptersRegistered(a.dataRoot, roleConfig);
@@ -222,6 +245,7 @@ async function buildConfig(a: Args): Promise<RoleLoopConfig> {
     roleConfig,
     pmAdapter,
     dispatchHook,
+    qaRemediationDispatchHook: a.dispatchHookModule ? undefined : defaultQaRemediationDispatchHook(a.dataRoot, roleConfig),
     auditDir: a.auditDir,
     stateFile: a.stateFile,
     pmSendTimeoutMs: a.pmSendTimeoutMs ? Number(a.pmSendTimeoutMs) : undefined,

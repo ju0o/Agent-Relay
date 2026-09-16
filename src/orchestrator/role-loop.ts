@@ -6,6 +6,8 @@ import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliv
 import { submitPmJudgment, listPmJudgments } from '../backend/pm-judgment.js';
 import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
 import { reconcileReadyRetryDispatches } from '../backend/retry-dispatch.js';
+import { reconcileQaGate, type QaRemediationDispatchHook } from '../backend/qa-gate.js';
+import { listQaRemediationPreparations } from '../backend/qa-remediation-preparation.js';
 import { ensureV1ContainerGoal } from '../backend/v1-intake.js';
 import { buildTaskContract } from '../backend/task-contract.js';
 import { readRuntimeBinding } from '../backend/actl-bridge.js';
@@ -33,6 +35,8 @@ export interface RoleLoopConfig {
   resolveAdapter?: (adapterId: string) => RoleRuntimeAdapter | null;
   /** Maximum re-asks for contract/QA validation failures; schema errors remain single-reask. */
   maxValidationReasks?: number;
+  /** Orchestrator-owned, permit-checked QA remediation dispatch seam. */
+  qaRemediationDispatchHook?: QaRemediationDispatchHook;
 }
 
 export class BillingGuardError extends Error {
@@ -683,6 +687,39 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
       outcome: retry.outcome === 'adopted' ? 'RETRY_ADOPTED' : retry.outcome === 'dispatched' ? 'RETRY_REDISPATCHED' : 'BLOCKED_RUNTIME',
       reason: retry.reason,
     });
+  }
+
+  // QA FAIL creates a durable READY QRP before its remediation Run is
+  // materialized. Resume that seam on every cycle, including after a crash;
+  // the QA gate owns correlation, budget, and idempotency.
+  for (const task of listTasks(cfg.dataRoot, cfg.project)) {
+    if (task.executionState !== 'READY' || task.pmState !== 'PENDING') continue;
+    const readyPreparations = listQaRemediationPreparations(cfg.dataRoot, cfg.project)
+      .filter((prep) => prep.taskId === task.taskId && prep.status === 'READY' && !prep.dispatchedRunId);
+    if (!readyPreparations.length) continue;
+    try {
+      const result = await reconcileQaGate(cfg.dataRoot, cfg.project, task.taskId, {
+        dispatchRemediation: cfg.qaRemediationDispatchHook,
+      });
+      const outcome = result.outcome === 'FAIL_ESCALATED_BUDGET_EXHAUSTED'
+        ? 'QA_BUDGET_EXHAUSTED'
+        : result.alreadyDispatched ? 'QA_REMEDIATION_ADOPTED' : 'QA_REMEDIATION_DISPATCHED';
+      audit(cfg.auditDir, {
+        step: 'qa-remediation', outcome, taskId: task.taskId,
+        ...(result.remediationRunId ? { runId: result.remediationRunId } : {}),
+        remediationNumber: readyPreparations[0]!.qaRemediationNumber,
+      });
+      steps.push({ step: 'qa-remediation', taskId: task.taskId, outcome, ...(result.remediationRunId ? { runId: result.remediationRunId } : {}) });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      audit(cfg.auditDir, {
+        step: 'qa-remediation',
+        outcome: /budget|exceeds/i.test(reason) ? 'QA_BUDGET_EXHAUSTED' : 'BLOCKED_RUNTIME',
+        taskId: task.taskId,
+        reason,
+      });
+      steps.push({ step: 'qa-remediation', taskId: task.taskId, outcome: /budget|exceeds/i.test(reason) ? 'QA_BUDGET_EXHAUSTED' : 'BLOCKED_RUNTIME' });
+    }
   }
 
   // A crash after createTask() but before dispatch leaves one canonical READY
