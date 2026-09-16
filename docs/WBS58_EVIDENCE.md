@@ -320,3 +320,12 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; serialize
 - Tests: orchestrator completion-cache invalidation and audit coverage; deterministic QA tests for one allowed untracked file versus an extra out-of-scope file in the same directory; G5-C test for a consumed expired retry audit with no extra Run.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused orchestrator + diffScope tests — **36 passed, 0 failed**; G5-C retry tests — **116 passed, 0 failed**; serialized V1 + V16 QA + B15 + adapter run — **97 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 19 (TASK-0072 PM instructions path)
+
+- `src/orchestrator/role-loop.ts`: PM instructions resolve from the compiled module directory (`dist/server/orchestrator/../../../docs/PM_ROLE_INSTRUCTIONS.md`), with a source-tree fallback and an explicit `RoleLoopConfig.pmInstructionsPath` override. The file is read before adapter/session creation; missing or unreadable instructions produce `BLOCKED_RUNTIME: pm instructions missing` without a PM send.
+- `src/orchestrator/main.ts`: the CLI accepts `--pm-instructions <path>` and passes the override to the role loop.
+- CWD audit: `rg -n "process\\.cwd\\(\\)" src/orchestrator src/integrations/opencode` returned no matches.
+- `test/v1-orchestrator.test.mjs`: verifies module-relative lookup from another cwd and fail-closed behavior for a missing instructions file.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs test/opencode-command-adapter.test.mjs` — **47 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.

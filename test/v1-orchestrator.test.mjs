@@ -359,6 +359,34 @@ test('a new PM session receives the role preamble once and reuse does not resend
   assert.equal(adapter.preambleBodies[0], fs.readFileSync(path.resolve('docs/PM_ROLE_INSTRUCTIONS.md'), 'utf8'));
 });
 
+test('PM instructions resolve from the module when launched from another cwd', async () => {
+  const project = 'OrchPreambleOtherCwd';
+  const roleConfig = makeRoleConfig(project);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_TASK_DECISION v1', { decision: 'PROJECT_COMPLETE', reason: 'complete' })] });
+  const { auditDir, stateFile } = mkTestDirs('preamble-other-cwd');
+  const previous = process.cwd();
+  const otherCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-other-cwd-'));
+  try {
+    process.chdir(otherCwd);
+    const result = await roleLoop.processBootstrap({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile });
+    assert.equal(result.outcome, 'PROJECT_COMPLETE');
+    assert.equal(adapter.preambleBodies.length, 1);
+  } finally {
+    process.chdir(previous);
+  }
+});
+
+test('missing PM instructions fail closed before any PM send', async () => {
+  const project = 'OrchMissingPreamble';
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_TASK_DECISION v1', { decision: 'PROJECT_COMPLETE', reason: 'must not send' })] });
+  const { auditDir, stateFile } = mkTestDirs('missing-preamble');
+  const result = await roleLoop.processBootstrap({ dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile, pmInstructionsPath: path.join(os.tmpdir(), 'does-not-exist-pm-instructions.md') });
+  assert.equal(result.outcome, 'BLOCKED_RUNTIME');
+  assert.equal(adapter.sendLog.length, 0);
+  assert.equal(adapter.preambleBodies.length, 0);
+  assert.match(fs.readFileSync(path.join(auditDir, 'role-loop.jsonl'), 'utf8'), /BLOCKED_RUNTIME: pm instructions missing/);
+});
+
 // ── final gate ACCEPT applies once (judgment + delivery reconciled) ─────────
 let acceptDelivery;
 test('final gate ACCEPT applies once: judgment APPLIED, Delivery ACKNOWLEDGED', async () => {

@@ -35,6 +35,8 @@ export interface RoleLoopConfig {
   resolveAdapter?: (adapterId: string) => RoleRuntimeAdapter | null;
   /** Maximum re-asks for contract/QA validation failures; schema errors remain single-reask. */
   maxValidationReasks?: number;
+  /** Optional operator-supplied PM role-instructions file. */
+  pmInstructionsPath?: string;
   /** Orchestrator-owned, permit-checked QA remediation dispatch seam. */
   qaRemediationDispatchHook?: QaRemediationDispatchHook;
 }
@@ -250,6 +252,16 @@ function audit(auditDir: string, item: Record<string, unknown>): void {
   fs.appendFileSync(path.join(auditDir, 'role-loop.jsonl'), JSON.stringify({ ts: new Date().toISOString(), ...item }) + '\n');
 }
 
+function resolvePmInstructionsPath(override?: string): string {
+  if (override) return path.resolve(override);
+  // The server build is CommonJS, so __dirname is the compiled-module
+  // equivalent of fileURLToPath(import.meta.url).
+  const moduleDir = __dirname;
+  const compiledPath = path.resolve(moduleDir, '../../../docs/PM_ROLE_INSTRUCTIONS.md');
+  if (fs.existsSync(compiledPath)) return compiledPath;
+  return path.resolve(moduleDir, '../../docs/PM_ROLE_INSTRUCTIONS.md');
+}
+
 function runtimeFailure(err: unknown): { reason: string; retryAfter?: number } {
   const e = err as { message?: string; retryAfter?: number; status?: number; code?: string };
   return { reason: e?.message ?? String(err), ...(typeof e?.retryAfter === 'number' ? { retryAfter: e.retryAfter } : {}) };
@@ -313,6 +325,12 @@ async function ensurePmAdapterAndSession(
   assignment: RoleAssignment,
   contextHash: string,
 ): Promise<{ adapter: RoleRuntimeAdapter; sessionId: string }> {
+  let preamble: string;
+  try {
+    preamble = fs.readFileSync(resolvePmInstructionsPath(cfg.pmInstructionsPath), 'utf8');
+  } catch (err) {
+    throw new Error(`BLOCKED_RUNTIME: pm instructions missing: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const adapter = resolvePmAdapterForTurn(cfg, assignment);
   const ensured = await adapter.ensureSession({
     roleId: 'pm',
@@ -324,7 +342,6 @@ async function ensurePmAdapterAndSession(
   const existing = readRoleSession(cfg.dataRoot, cfg.project, 'pm');
   const newSession = ensured.created && (!existing || existing.sessionId !== sessionId);
   if (newSession || !existing || existing.sessionId !== sessionId || existing.preambleSent !== true) {
-    const preamble = fs.readFileSync(path.resolve(process.cwd(), 'docs/PM_ROLE_INSTRUCTIONS.md'), 'utf8');
     const request = await adapter.send(sessionId, { kind: 'PM_PREAMBLE', schemaVersion: 'pm-role-instructions.v1', contextHash, body: preamble });
     await adapter.collect(sessionId, request.requestId, { timeoutMs: cfg.pmSendTimeoutMs ?? 120_000 });
     writeRoleSession(cfg.dataRoot, cfg.project, 'pm', {

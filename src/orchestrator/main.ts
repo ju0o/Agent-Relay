@@ -32,6 +32,7 @@ interface Args {
   dispatchHookModule?: string;
   pmSendTimeoutMs?: string;
   maxValidationReasks?: string;
+  pmInstructions?: string;
 }
 
 const execFileAsync = promisify(execFile);
@@ -250,6 +251,7 @@ async function buildConfig(a: Args): Promise<RoleLoopConfig> {
     stateFile: a.stateFile,
     pmSendTimeoutMs: a.pmSendTimeoutMs ? Number(a.pmSendTimeoutMs) : undefined,
     maxValidationReasks: a.maxValidationReasks ? Number(a.maxValidationReasks) : undefined,
+    pmInstructionsPath: a.pmInstructions,
     resolveAdapter: (id) => getRoleRuntimeAdapter(id),
   };
 }
