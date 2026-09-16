@@ -601,6 +601,7 @@ export function submitPmJudgment(
         updatedAt: ts,
       };
       persistJudgmentRecord(folder, record);
+      await reconcileJudgedDelivery(dataRoot, project, deliveryId);
       return { judgment: record, applied: false, task: resolved.task };
     }
 
@@ -686,17 +687,7 @@ async function applyAccept(
   }
   // Idempotent reconcile: already ACCEPTED for the same run → APPLIED.
   if (task.pmState === 'ACCEPTED' && task.acceptedRunId === record.runId) {
-    try {
-      const delivery = getPmDelivery(dataRoot, project, record.deliveryId);
-      if (delivery.status === 'PENDING') {
-        await markPmDeliveryDelivered(dataRoot, project, delivery.deliveryId, 'PENDING');
-      }
-      if (delivery.status === 'PENDING' || delivery.status === 'DELIVERED') {
-        await acknowledgePmDelivery(dataRoot, project, delivery.deliveryId, 'DELIVERED');
-      }
-    } catch (err) {
-      if (!(err instanceof Error) || (err as { code?: string }).code !== 'CONFLICT') throw err;
-    }
+    await reconcileJudgedDelivery(dataRoot, project, record.deliveryId);
     const done: PmJudgmentRecord = { ...record, status: 'APPLIED', updatedAt: nowIso(), appliedAt: nowIso() };
     persistJudgmentRecord(folder, done);
     return { judgment: done, applied: false, task };
@@ -718,9 +709,24 @@ async function applyAccept(
   } catch (err) {
     return failRecord(dataRoot, project, folder, record, err);
   }
+  await reconcileJudgedDelivery(dataRoot, project, record.deliveryId);
   const done: PmJudgmentRecord = { ...record, status: 'APPLIED', updatedAt: nowIso(), appliedAt: nowIso() };
   persistJudgmentRecord(folder, done);
   return { judgment: done, applied: true, task: after };
+}
+
+async function reconcileJudgedDelivery(
+  dataRoot: string,
+  project: string,
+  deliveryId: string,
+): Promise<void> {
+  let delivery = getPmDelivery(dataRoot, project, deliveryId);
+  if (delivery.status === 'PENDING') {
+    delivery = await markPmDeliveryDelivered(dataRoot, project, deliveryId, 'PENDING');
+  }
+  if (delivery.status === 'DELIVERED') {
+    await acknowledgePmDelivery(dataRoot, project, deliveryId, 'DELIVERED');
+  }
 }
 
 /**
