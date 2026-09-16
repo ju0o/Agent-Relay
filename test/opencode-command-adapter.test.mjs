@@ -10,6 +10,7 @@ execFileSync('npx', ['tsc', '-p', 'tsconfig.server.json'], { stdio: 'inherit' })
 const { OpenCodeCommandAdapter } = await import('../dist/server/integrations/opencode/command-adapter.js');
 
 const PASSWORD = 'test-pass-123';
+const sentMessageBodies = [];
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-oc-adapter-'));
 const passwordFile = path.join(root, 'server.pass');
 fs.writeFileSync(passwordFile, PASSWORD + '\n');
@@ -76,6 +77,7 @@ function startFakeServer() {
             res.end(JSON.stringify({ error: 'invalid json' }));
             return;
           }
+          sentMessageBodies.push(body);
           const userText = (body.parts || []).find((p) => p.type === 'text')?.text || '';
           const replyText = `ECHO:${userText}`;
           const userMsg = { info: { role: 'user', id: `msg_u_${session.messages.length}` }, parts: [{ type: 'text', text: userText }] };
@@ -127,6 +129,12 @@ test('send then collect returns assistant text', async () => {
   assert.equal(result.text, 'ECHO:do the thing');
   assert.equal(result.tokens, 42);
   assert.equal(result.cost, 0);
+  const tools = sentMessageBodies.at(-1).tools;
+  assert.equal(tools.read, false);
+  assert.equal(tools.bash, false);
+  assert.equal(tools.edit, false);
+  assert.equal(tools.write, false);
+  assert.ok(Object.values(tools).every((value) => value === false), 'every sent tool flag is false');
 });
 
 test('conversation continuity: second prompt sees first via session history', async () => {

@@ -86,6 +86,16 @@ interface HttpResult {
 const DEFAULT_BASE_URL = 'http://127.0.0.1:4111';
 const DEFAULT_PASSWORD_FILE = path.join(os.homedir(), '.config', 'agent-relay', 'opencode-server.pass');
 
+/** OpenCode tool ids explicitly disabled for the tool-less PM role. */
+export const OPENCODE_TOOL_IDS_DISABLED = Object.freeze([
+  'bash', 'edit', 'write', 'read', 'glob', 'grep', 'list', 'webfetch', 'websearch',
+  'todowrite', 'todoread', 'task', 'patch', 'multiedit', 'question', 'skill', 'lsp', 'codesearch',
+]);
+
+function disabledTools(): Record<string, false> {
+  return Object.fromEntries(OPENCODE_TOOL_IDS_DISABLED.map((id) => [id, false]));
+}
+
 function requestRaw(
   baseUrl: string,
   method: string,
@@ -293,7 +303,7 @@ export class OpenCodeCommandAdapter implements RoleRuntimeAdapter {
     const res = await this.request(
       'POST',
       `/session/${encodeURIComponent(sessionId)}/message`,
-      { model: this.defaultModel, tools: {}, parts: [{ type: 'text', text: envelope.body }] },
+      { model: this.defaultModel, tools: disabledTools(), parts: [{ type: 'text', text: envelope.body }] },
       120_000,
     );
     if (res.status >= 400) throw new Error(`opencode message failed: HTTP ${res.status}`);

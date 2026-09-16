@@ -51,7 +51,7 @@ class FakePmAdapter {
     return { sessionId: this.sessions.get(sessionKey), created: true };
   }
   async send(sessionId, envelope) {
-    this.sendLog.push({ sessionId, kind: envelope.kind });
+    this.sendLog.push({ sessionId, kind: envelope.kind, body: envelope.body });
     const requestId = `req-${this.sendLog.length}`;
     if (this.hang) {
       this._pending = new Promise(() => {}); // never resolves; role-loop's own timeout race handles it
@@ -225,6 +225,21 @@ test('invalid PM output is re-asked once, then BLOCKED with zero canonical mutat
   const result2 = await roleLoop.processBootstrap(cfg);
   assert.equal(result2.outcome, 'BLOCKED');
   assert.equal(adapter.sendLog.length, before, 'no additional PM sends while state is unchanged and still blocked');
+});
+
+test('PM tool-call markup receives a no-tools re-ask and valid second reply applies once', async () => {
+  const project = 'OrchNoToolsReask';
+  const d = await mintPendingDelivery(project);
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: ['<tool_call><function=read></function></tool_call>', fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'valid second response', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })] });
+  const { auditDir, stateFile } = mkTestDirs('no-tools-reask');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(adapter.sendLog.length, 2);
+  assert.match(adapter.sendLog[1].body, /you have no tools; answer with the JSON block only/);
+  assert.equal(pmJud.listPmJudgments(dataRoot, project).length, 1);
 });
 
 // ── final gate ACCEPT applies once (judgment + delivery reconciled) ─────────

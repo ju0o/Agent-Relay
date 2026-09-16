@@ -153,7 +153,7 @@ async function sendAndParseWithReask<T>(
   sessionId: string,
   envelope: InputEnvelope,
   parseFn: (text: string) => T,
-  buildReaskEnvelope: (err: string) => InputEnvelope,
+  buildReaskEnvelope: (err: string, pmReply: string) => InputEnvelope,
   timeoutMs: number,
 ): Promise<ParseOutcome<T>> {
   const first = await sendAndCollect(adapter, sessionId, envelope, timeoutMs);
@@ -161,7 +161,7 @@ async function sendAndParseWithReask<T>(
     return { ok: true, value: parseFn(first.text) };
   } catch (e1) {
     const err1 = e1 instanceof Error ? e1.message : String(e1);
-    const second = await sendAndCollect(adapter, sessionId, buildReaskEnvelope(err1), timeoutMs);
+    const second = await sendAndCollect(adapter, sessionId, buildReaskEnvelope(err1, first.text), timeoutMs);
     try {
       return { ok: true, value: parseFn(second.text) };
     } catch (e2) {
@@ -222,12 +222,16 @@ function deriveTitle(rawContract: Record<string, unknown>): string {
   return goal.length > 80 ? goal.slice(0, 80) + '…' : goal;
 }
 
-function reaskEnvelope(kind: InputEnvelope['kind'], schemaVersion: string, contextHash: string, originalBody: string, error: string): InputEnvelope {
+function reaskEnvelope(kind: InputEnvelope['kind'], schemaVersion: string, contextHash: string, originalBody: string, error: string, pmReply = ''): InputEnvelope {
+  const noTools = /<tool_call\b|<function\s*=/.test(pmReply) && !/```[a-zA-Z]*\r?\n/.test(pmReply);
+  const instruction = noTools
+    ? 'you have no tools; answer with the JSON block only'
+    : `Your previous reply did not match the required schema: ${error}`;
   return {
     kind,
     schemaVersion,
     contextHash,
-    body: `${originalBody}\n\n---\nYour previous reply did not match the required schema: ${error}\nReply again with exactly one fenced block as instructed, JSON only.`,
+    body: `${originalBody}\n\n---\n${instruction}\nReply again with exactly one fenced block as instructed, JSON only.`,
   };
 }
 
@@ -300,7 +304,7 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
       sessionId,
       envelope,
       parsePmTaskDecision,
-      (err) => reaskEnvelope('PM_BOOTSTRAP', 'pm-bootstrap-packet.v1', packet.contextHash, packet.text, err),
+      (err, pmReply) => reaskEnvelope('PM_BOOTSTRAP', 'pm-bootstrap-packet.v1', packet.contextHash, packet.text, err, pmReply),
       timeoutMs,
     );
   } catch (err) {
@@ -454,7 +458,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
       sessionId,
       envelope,
       parsePmJudgment,
-      (err) => reaskEnvelope('PM_FINAL_GATE', 'pm-final-gate-packet.v1', packet.contextHash, packet.text, err),
+      (err, pmReply) => reaskEnvelope('PM_FINAL_GATE', 'pm-final-gate-packet.v1', packet.contextHash, packet.text, err, pmReply),
       timeoutMs,
     );
   } catch (err) {
