@@ -24,6 +24,7 @@ const rtp = await import('../dist/server/backend/retry-preparation.js');
 const wr = await import('../dist/server/backend/worker-registry.js');
 const obs = await import('../dist/server/backend/observation-lock.js');
 const events = await import('../dist/server/backend/event.js');
+const actlBridge = await import('../dist/server/backend/actl-bridge.js');
 const roleLoop = await import('../dist/server/orchestrator/role-loop.js');
 const v1Intake = await import('../dist/server/backend/v1-intake.js');
 
@@ -865,6 +866,57 @@ test('idle cycle writes a durable cycle audit summary', async () => {
   const cycle = auditLines(auditDir).find((line) => line.step === 'cycle');
   assert.equal(cycle.outcome, 'IDLE');
   assert.deepEqual(cycle.openTasks, [task.taskId]);
+});
+
+async function mintInFlightRun(project) {
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const task = await gt.createTask(dataRoot, project, { goalId: goal.goalId, title: 'async run', goal: 'collect later', reason: 'test', scope: 'fixture', completionCriteria: ['done'] });
+  const runId = `${project}-run`;
+  const folder = path.join(dataRoot, project, '_runs', 'async-run');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify({ tags: [], runId, goalId: goal.goalId, taskId: task.taskId, workerId: 'builder-test' }));
+  await gt.linkRunToTask(dataRoot, project, task.taskId, folder);
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'PLANNED', to: 'READY' });
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'READY', to: 'DISPATCHED' });
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'DISPATCHED', to: 'RUNNING' });
+  actlBridge.writeRuntimeBinding(folder, { schemaVersion: 1, collectStatus: 'SENT', runtimeId: 'rt-test', updatedAt: new Date().toISOString() });
+  return { task, runId, folder };
+}
+
+test('runOnce resumes a finished asynchronous Run once and is idempotent after FINAL_BOUND', async () => {
+  const project = 'OrchResumeCollect';
+  const { task, runId, folder } = await mintInFlightRun(project);
+  const { auditDir, stateFile } = mkTestDirs('resume-collect');
+  let collectCalls = 0;
+  const result = await roleLoop.runOnce({
+    dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile,
+    collectHook: async () => {
+      collectCalls += 1;
+      const binding = actlBridge.readRuntimeBinding(folder);
+      actlBridge.writeRuntimeBinding(folder, { ...binding, collectStatus: 'FINAL_BOUND', updatedAt: new Date().toISOString() });
+      return { taskId: task.taskId, runId, collectStatus: 'FINAL_BOUND' };
+    },
+  });
+  assert.equal(collectCalls, 1);
+  assert.ok(result.steps.some((step) => step.step === 'resume-collect' && step.outcome === 'COLLECTED'));
+  assert.equal(actlBridge.readRuntimeBinding(folder).collectStatus, 'FINAL_BOUND');
+  await roleLoop.runOnce({ dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile, collectHook: async () => { collectCalls += 1; throw new Error('duplicate collect'); } });
+  assert.equal(collectCalls, 1, 'FINAL_BOUND Run is not collected again');
+  assert.equal(auditLines(auditDir).filter((line) => line.step === 'resume-collect' && line.outcome === 'COLLECTED').length, 1);
+});
+
+test('runOnce audits WAITING when an asynchronous worker is still busy', async () => {
+  const project = 'OrchResumeWaiting';
+  const { task, runId } = await mintInFlightRun(project);
+  const { auditDir, stateFile } = mkTestDirs('resume-waiting');
+  const result = await roleLoop.runOnce({
+    dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile,
+    collectHook: async () => { throw new Error('worker still busy'); },
+  });
+  assert.ok(result.steps.some((step) => step.step === 'resume-collect' && step.outcome === 'WAITING'));
+  const audit = auditLines(auditDir).find((line) => line.step === 'resume-collect' && line.runId === runId);
+  assert.equal(audit.outcome, 'WAITING');
+  assert.equal(audit.taskId, task.taskId);
 });
 
 test('exhausted FAILED Task is audited once and bootstrap creates one replacement', async () => {

@@ -20,6 +20,7 @@ import { buildPmBootstrapPacket, buildPmFinalGatePacket, listClosedTerminalTasks
 import { parsePmTaskDecision, parsePmJudgment, type PmTaskDecision, type PmJudgment } from './pm-schemas.js';
 
 export type DispatchHook = (dataRoot: string, project: string, task: TaskRecord) => Promise<{ runId: string } | void>;
+export type CollectHook = (dataRoot: string, project: string, runId: string) => Promise<{ collectStatus: string; runId: string }>;
 
 export interface RoleLoopConfig {
   dataRoot: string;
@@ -27,6 +28,8 @@ export interface RoleLoopConfig {
   roleConfig: RoleConfig;
   pmAdapter: RoleRuntimeAdapter;
   dispatchHook: DispatchHook;
+  /** Resume-only final collect for asynchronously dispatched Runs. */
+  collectHook?: CollectHook;
   auditDir: string;
   stateFile: string;
   /** Default 120_000ms per the WBS-5/8 redirect's binding condition (d). */
@@ -715,6 +718,36 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
       outcome: retry.outcome === 'adopted' ? 'RETRY_ADOPTED' : retry.outcome === 'dispatched' ? 'RETRY_REDISPATCHED' : 'BLOCKED_RUNTIME',
       reason: retry.reason,
     });
+  }
+
+  // A retry/adoption dispatch sends asynchronously; the first dispatch path
+  // collects in-process, but later supervisor cycles must resume that same
+  // durable collect path. Never collect a RESERVED (not-sent) reservation;
+  // retry reconciliation owns that state.
+  if (cfg.collectHook) {
+    for (const task of listTasks(cfg.dataRoot, cfg.project)) {
+      if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') continue;
+      const latest = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
+      if (!latest) continue;
+      let binding;
+      try { binding = readRuntimeBinding(latest.folder); } catch { continue; }
+      if (!binding || binding.collectStatus === 'FINAL_BOUND' || binding.collectStatus === 'RESERVED') continue;
+      try {
+        const collected = await cfg.collectHook(cfg.dataRoot, cfg.project, latest.runId);
+        const outcome = collected.collectStatus === 'FINAL_BOUND' ? 'COLLECTED' : 'WAITING';
+        audit(cfg.auditDir, { step: 'resume-collect', outcome, taskId: task.taskId, runId: latest.runId, ...(outcome === 'WAITING' ? { reason: 'worker has not produced a final result' } : {}) });
+        steps.push({ step: 'resume-collect', outcome, taskId: task.taskId, runId: latest.runId });
+        if (outcome === 'COLLECTED') {
+          // Result Bridge normally invokes this; the explicit idempotent
+          // reconcile also covers a completion admitted during this cycle.
+          await reconcileQaGate(cfg.dataRoot, cfg.project, task.taskId, { dispatchRemediation: cfg.qaRemediationDispatchHook }).catch(() => undefined);
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        audit(cfg.auditDir, { step: 'resume-collect', outcome: 'WAITING', taskId: task.taskId, runId: latest.runId, reason });
+        steps.push({ step: 'resume-collect', outcome: 'WAITING', taskId: task.taskId, runId: latest.runId, reason });
+      }
+    }
   }
 
   // QA FAIL creates a durable READY QRP before its remediation Run is

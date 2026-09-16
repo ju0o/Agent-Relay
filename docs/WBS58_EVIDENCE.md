@@ -321,6 +321,14 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; serialize
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused orchestrator + diffScope tests — **36 passed, 0 failed**; G5-C retry tests — **116 passed, 0 failed**; serialized V1 + V16 QA + B15 + adapter run — **97 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
 
+## CHANGES round 20 (TASK-0073 asynchronous WAIT to COLLECT)
+
+- `src/orchestrator/role-loop.ts`: added a pre-gate resume-collect pass for the latest `DISPATCHED`/`RUNNING` Run with a non-terminal binding. It skips `RESERVED` bindings owned by retry reconciliation, audits `COLLECTED` or `WAITING`, and leaves already `FINAL_BOUND` Runs untouched.
+- `src/orchestrator/main.ts`: wires the pass to the existing `dispatcher.resumeActlManagedCollect` API, which performs actl final collection and routes admission through CaptureManager → Result Bridge → QA gate.
+- `test/v1-orchestrator.test.mjs`: verifies a finished asynchronous Run is collected once and a busy worker produces a durable `WAITING` audit.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; orchestrator + actl + QA-loop + adapter tests — **59 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
+
 ## CHANGES round 19 (TASK-0072 PM instructions path)
 
 - `src/orchestrator/role-loop.ts`: PM instructions resolve from the compiled module directory (`dist/server/orchestrator/../../../docs/PM_ROLE_INSTRUCTIONS.md`), with a source-tree fallback and an explicit `RoleLoopConfig.pmInstructionsPath` override. The file is read before adapter/session creation; missing or unreadable instructions produce `BLOCKED_RUNTIME: pm instructions missing` without a PM send.

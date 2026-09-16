@@ -17,7 +17,7 @@ import {
   scopeFields,
   setActlInputPermitFactory,
 } from '../backend/actl-bridge.js';
-import { clearBlockedState, runOnce, type DispatchHook, type RoleLoopConfig } from './role-loop.js';
+import { clearBlockedState, runOnce, type CollectHook, type DispatchHook, type RoleLoopConfig } from './role-loop.js';
 import type { QaRemediationDispatchHook } from '../backend/qa-gate.js';
 
 interface Args {
@@ -239,6 +239,10 @@ async function buildConfig(a: Args): Promise<RoleLoopConfig> {
   const dispatchHook: DispatchHook = a.dispatchHookModule
     ? (await import(a.dispatchHookModule)).default
     : defaultDispatchHook(a.dataRoot, roleConfig);
+  const collectHook: CollectHook = async (dataRoot, project, runId) => {
+    const { resumeActlManagedCollect } = await import('../backend/dispatcher.js');
+    return resumeActlManagedCollect(dataRoot, project, runId);
+  };
 
   return {
     dataRoot: a.dataRoot,
@@ -246,6 +250,7 @@ async function buildConfig(a: Args): Promise<RoleLoopConfig> {
     roleConfig,
     pmAdapter,
     dispatchHook,
+    collectHook,
     qaRemediationDispatchHook: a.dispatchHookModule ? undefined : defaultQaRemediationDispatchHook(a.dataRoot, roleConfig),
     auditDir: a.auditDir,
     stateFile: a.stateFile,
