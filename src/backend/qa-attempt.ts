@@ -92,6 +92,7 @@ export type QaFinalStatus = (typeof QA_FINAL_STATUSES)[number];
  * here from Task storage (this kernel never reads Task/Run records). */
 export const QA_CRITERION_VALIDATION_MODES = ['DETERMINISTIC', 'SEMANTIC', 'BOTH'] as const;
 export type QaCriterionValidationMode = (typeof QA_CRITERION_VALIDATION_MODES)[number];
+export type QaProfileSource = 'run-bound' | 'inherited' | 'cwd';
 
 export interface QaDeterministicCheckResult {
   checkIndex: number;
@@ -147,6 +148,8 @@ export interface QaAttemptRecord {
   runId: string;                    // the IMPLEMENTATION Run being evaluated
   qaAttemptNumber: number;          // >= 1; caller-supplied (= that Run's taskRunSequence)
   qaWorkerId?: string;              // configured semantic QA worker for this attempt, if any
+  /** Profile source used by the semantic QA worker invocation. */
+  profileSource?: QaProfileSource;
   /** Snapshot of the AC ids relevant to this attempt and their frozen
    * validationMode, provided by the caller at creation time (never read from
    * Task storage by this kernel) — used only to enforce the BOTH-mode
@@ -355,6 +358,9 @@ export function validateQaAttemptRecord(r: QaAttemptRecord): void {
   }
   if (r.reason !== undefined && (typeof r.reason !== 'string' || r.reason.length > 1000)) {
     throw new QaAttemptError('INVALID_STATE', 'reason은 1000자 이하 문자열이어야 합니다.');
+  }
+  if (r.profileSource !== undefined && !['run-bound', 'inherited', 'cwd'].includes(r.profileSource)) {
+    throw new QaAttemptError('INVALID_STATE', `알 수 없는 profileSource: ${String(r.profileSource)}`);
   }
 
   // ── terminal/PENDING shape ────────────────────────────────────────────────
@@ -703,6 +709,7 @@ export interface RecordSemanticEvidenceInput {
   completedAt?: string;
   evidenceId?: string;
   reason?: string;
+  profileSource?: QaProfileSource;
   /** Only meaningful (and only accepted) with status === 'FAIL'. */
   remediationInstruction?: string;
 }
@@ -758,6 +765,7 @@ export function recordSemanticEvidence(
       failedCriteria: input.status === 'FAIL' ? [...(input.failedCriteria ?? [])] : [],
       ...(input.remediationInstruction !== undefined ? { remediationInstruction: input.remediationInstruction } : {}),
       ...(input.reason !== undefined ? { reason: input.reason.slice(0, 1000) } : {}),
+      ...(input.profileSource !== undefined ? { profileSource: input.profileSource } : {}),
       ...(input.status !== 'BLOCKED' ? { reason: undefined, semanticBlockedAttempts: undefined } : {}),
       completedAt: ts,
       updatedAt: ts,

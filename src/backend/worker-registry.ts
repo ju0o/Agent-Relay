@@ -33,6 +33,8 @@ export type ClaudePermissionMode = 'default' | 'acceptEdits';
 
 /** Strongly typed Claude driver options. Never allows arbitrary flags or shell fragments. */
 export interface ClaudeDriverOptions {
+  /** Explicit Claude profile directory for quota isolation. */
+  configDir?: string;
   /**
    * Claude CLI permission mode (optional).
    * If absent, preserves existing Claude default (least privilege).
@@ -91,6 +93,14 @@ function requireAbsolutePath(value: unknown, field: string): string {
     throw new WorkerRegistryError('INVALID_ARGUMENT', `${field} path is invalid.`);
   }
   return path.resolve(s);
+}
+
+function requireExistingAbsoluteDirectory(value: unknown, field: string): string {
+  const resolved = requireAbsolutePath(value, field);
+  try {
+    if (fs.statSync(resolved).isDirectory()) return resolved;
+  } catch { /* fail below */ }
+  throw new WorkerRegistryError('INVALID_ARGUMENT', `${field} must be an existing directory.`);
 }
 
 /** Validate narrowly typed driverOptions.actl (unknown keys rejected). */
@@ -351,13 +361,16 @@ export function validateWorkerRegistryRecord(
       }
       const claudeObj = doObj.claude as Record<string, unknown>;
 
-      // Only 'permissionMode' allowed under driverOptions.claude.
+      // Only trusted Claude profile and permission settings are allowed.
       for (const key of Object.keys(claudeObj)) {
-        if (key !== 'permissionMode') {
-          throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown driverOptions.claude key: '${key}'. Only 'permissionMode' is allowed.`);
+        if (key !== 'configDir' && key !== 'permissionMode') {
+          throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown driverOptions.claude key: '${key}'. Only 'configDir' and 'permissionMode' are allowed.`);
         }
       }
 
+      const configDir = claudeObj.configDir === undefined || claudeObj.configDir === null
+        ? undefined
+        : requireExistingAbsoluteDirectory(claudeObj.configDir, 'driverOptions.claude.configDir');
       if (claudeObj.permissionMode !== undefined && claudeObj.permissionMode !== null) {
         const pm = claudeObj.permissionMode;
         // Narrow enum check — explicit rejection of dangerous bypass.
@@ -375,9 +388,9 @@ export function validateWorkerRegistryRecord(
             "Allowed values: 'default', 'acceptEdits'.",
           );
         }
-        claudeDriverOpts = { permissionMode: pm as ClaudePermissionMode };
+        claudeDriverOpts = { ...(configDir ? { configDir } : {}), permissionMode: pm as ClaudePermissionMode };
       } else {
-        claudeDriverOpts = {};
+        claudeDriverOpts = configDir ? { configDir } : {};
       }
     }
 

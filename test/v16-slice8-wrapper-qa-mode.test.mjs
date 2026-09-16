@@ -30,6 +30,9 @@ const check = (c, m) => {
 };
 
 const CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-v16-s8-wrap-'));
+const ARGV = path.join(CWD, 'fake-claude-argv.mjs');
+fs.writeFileSync(ARGV, "#!/usr/bin/env node\nconsole.log(process.argv.slice(2).join('|') + '|CONFIG=' + (process.env.CLAUDE_CONFIG_DIR || ''));\n", 'utf8');
+fs.chmodSync(ARGV, 0o755);
 
 // 1. QA shape forwards prompt verbatim, stdout passes through, exit 0.
 {
@@ -40,6 +43,20 @@ const CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-v16-s8-wrap-'));
   check(r.status === 0, `QA passthrough exits 0 (got ${r.status}, stderr=${JSON.stringify((r.stderr || '').slice(0, 200))})`);
   check((r.stdout || '').includes('ECHO:CANARY-PROMPT-123'), 'QA passthrough forwards prompt verbatim to claude');
   check((r.stdout || '').includes('status: PASS'), 'QA passthrough relays claude stdout unaltered');
+}
+
+// 1b. Explicit passthrough options are consumed by the wrapper and applied to Claude argv.
+{
+  const profile = path.join(CWD, 'qa-profile');
+  fs.mkdirSync(profile, { recursive: true });
+  const r = spawnSync(process.execPath, [WRAPPER, '--claudeConfigDir', profile, '--permissionMode', 'acceptEdits', '--print', 'OPTIONS-PROMPT'], {
+    cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
+    env: { ...process.env, CLAUDE_EXE: ARGV },
+  });
+  check(r.status === 0, `QA passthrough options exit 0 (got ${r.status})`);
+  check((r.stdout || '').includes('--permission-mode|acceptEdits|OPTIONS-PROMPT'), 'QA passthrough applies permission mode and preserves prompt order');
+  check((r.stdout || '').includes(`CONFIG=${profile}`), 'QA passthrough applies explicit Claude config directory');
+  check(!(r.stdout || '').includes('--claudeConfigDir'), 'QA passthrough consumes config-dir relay flag');
 }
 
 // 2. Non-zero Claude exit propagates (evaluator treats as reattempt-eligible, not success).

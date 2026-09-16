@@ -80,6 +80,7 @@ import {
 } from './qa-deterministic-evaluator.js';
 import {
   type QaAttemptRecord,
+  type QaProfileSource,
   type QaSemanticCriterionResult,
   getQaAttempt,
   qaAttemptFolder,
@@ -386,8 +387,17 @@ async function invokeOnce(
   prompt: string,
   cwd: string,
   timeoutMs: number,
+  claude?: { configDir?: string; permissionMode?: string },
 ): Promise<ProcessOutcome> {
-  return runProcess(launchCommand, [...launchArgsPrefix, '--print', prompt], cwd, timeoutMs);
+  const options = [
+    ...(claude?.configDir ? ['--claudeConfigDir', claude.configDir] : []),
+    ...(claude?.permissionMode !== undefined ? ['--permissionMode', claude.permissionMode] : []),
+  ];
+  return runProcess(launchCommand, [...launchArgsPrefix, ...options, '--print', prompt], cwd, timeoutMs);
+}
+
+function semanticProfileSource(configDir?: string): QaProfileSource {
+  return configDir ? 'run-bound' : process.env.CLAUDE_CONFIG_DIR?.trim() ? 'inherited' : 'cwd';
 }
 
 // ── orchestration ────────────────────────────────────────────────────────────
@@ -498,6 +508,8 @@ export function evaluateSemanticQa(
 
     const sessionRef = `qa-semantic-runs/${input.qaAttemptId}`;
     const startedAt = new Date().toISOString();
+    const claude = worker.driverOptions?.claude;
+    const profileSource = semanticProfileSource(claude?.configDir);
 
     // One invocation, then — only on parse failure/timeout/error — exactly
     // one bounded auto-reattempt of the invocation itself (§10 Q9). Never a
@@ -505,7 +517,7 @@ export function evaluateSemanticQa(
     let parsed: ParsedSemanticOutput = { kind: 'unparseable', reason: '(invocation not attempted)' };
     let lastOutcome: ProcessOutcome | undefined;
     for (let attemptNo = 1; attemptNo <= 2; attemptNo += 1) {
-      const outcome = await invokeOnce(worker.launchCommand, worker.launchArgsPrefix, prompt, workspaceRoot, timeoutMs);
+      const outcome = await invokeOnce(worker.launchCommand, worker.launchArgsPrefix, prompt, workspaceRoot, timeoutMs, claude);
       lastOutcome = outcome;
       fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stdout.txt`), outcome.stdout, 'utf8');
       if (outcome.stderr) fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stderr.txt`), outcome.stderr, 'utf8');
@@ -531,6 +543,7 @@ export function evaluateSemanticQa(
         sessionRef,
         startedAt,
         completedAt,
+        profileSource,
       });
       return { outcome: 'EVALUATED', record };
     }
@@ -543,6 +556,7 @@ export function evaluateSemanticQa(
         sessionRef,
         startedAt,
         completedAt,
+        profileSource,
       });
       return { outcome: 'EVALUATED', record };
     }
@@ -556,6 +570,7 @@ export function evaluateSemanticQa(
       sessionRef,
       startedAt,
       completedAt,
+      profileSource,
       ...(parsed.remediationInstruction ? { remediationInstruction: parsed.remediationInstruction } : {}),
     });
     void lastOutcome;

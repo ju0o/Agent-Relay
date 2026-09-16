@@ -363,3 +363,12 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused Q
 - Tests cover unchanged OWNER_REQUIRED no-reask, cache audit, scrubbed QA reason tail, and raw attempt-folder persistence.
 
 Verification: server build passed; focused orchestrator + QA checks — **48 passed, 0 failed**; `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 24 (ar/v1-pm)
+
+- `src/backend/worker-registry.ts`: Claude QA workers may now declare an absolute, existing `driverOptions.claude.configDir`; existing permission-mode validation remains strict.
+- `src/backend/qa-semantic-evaluator.ts`: semantic QA passes trusted Claude `configDir` and optional `permissionMode` before `--print`, and records `profileSource` (`run-bound`, `inherited`, or `cwd`) on the QA attempt.
+- `scripts/relay-worker-claude.mjs`: QA passthrough consumes and applies `--claudeConfigDir` and `--permissionMode`, while unknown flags remain fatal.
+- Tests cover registry-to-worker argv/profile recording and wrapper passthrough option handling.
+
+Verification: server build/typecheck passed; requested serial QA, adapter, and orchestrator suites passed; `LIVE_DATAROOT_WRITES: 0`.

@@ -92,6 +92,10 @@ function timeoutWorkerScript(markerPath) {
   return `import * as fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(markerPath)}, 'x');\nsetTimeout(() => {}, 999999);\n`;
 }
 
+function argvPassWorkerScript(markerPath) {
+  return `import * as fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify(process.argv.slice(2)));\nconst p = process.argv.at(-1) || '';\nconst ids = [...new Set([...p.matchAll(/^- (AC[A-Za-z0-9_-]*): /gm)].map((m) => m[1]))];\nconsole.log('status: PASS');\nconsole.log('criteria:');\nfor (const id of ids) console.log('- ' + id + ': PASS');\n`;
+}
+
 // Fixture setup: an untagged implementation-role worker row (no `role`
 // field, exactly like every pre-Slice-3 registry entry) to prove the
 // additive field never disturbs existing rows.
@@ -191,8 +195,12 @@ console.log('-- 11) SEMANTIC PASS → finalQaStatus PASS --');
 {
   const { task, runId } = await makeTaskWithRun();
   const marker = path.join(ROOT, 'marker-11');
-  const workerId = registerFakeQaWorker(passWorkerScript(marker));
+  const workerId = registerFakeQaWorker(argvPassWorkerScript(marker));
+  const configDir = path.join(ROOT, 'claude-profile-11');
+  fs.mkdirSync(configDir, { recursive: true });
   const attempt = await qa.createQaAttempt(ROOT, project, { taskId: task.taskId, runId, qaAttemptNumber: 1, qaWorkerId: workerId, criteriaValidationModes: { 'AC-1': 'SEMANTIC' } });
+  const recPath = path.join(ROOT, '_relay', 'workers', `${workerId}.json`);
+  const rec = JSON.parse(fs.readFileSync(recPath, 'utf8')); rec.driverOptions = { claude: { configDir, permissionMode: 'acceptEdits' } }; fs.writeFileSync(recPath, JSON.stringify(rec));
   await qa.recordDeterministicEvidence(ROOT, project, attempt.qaAttemptId, { status: 'PASS', checks: [] });
   const out = await sem.evaluateSemanticQa(ROOT, project, {
     qaAttemptId: attempt.qaAttemptId,
@@ -202,7 +210,9 @@ console.log('-- 11) SEMANTIC PASS → finalQaStatus PASS --');
   check(out.outcome === 'EVALUATED', '11a outcome EVALUATED');
   check(out.record.finalQaStatus === 'PASS', `11b finalQaStatus PASS (got ${out.record.finalQaStatus})`);
   check(out.record.semantic.status === 'PASS', '11c semantic.status PASS');
-  check(fs.readFileSync(marker, 'utf8') === 'x', '11d exactly one invocation on first-try success');
+  const args = JSON.parse(fs.readFileSync(marker, 'utf8'));
+  check(args.includes('--claudeConfigDir') && args[args.indexOf('--claudeConfigDir') + 1] === configDir && args.includes('--permissionMode'), '11d configured Claude profile and permission mode reach worker argv');
+  check(out.record.profileSource === 'run-bound', `11e attempt records run-bound profile source (got ${out.record.profileSource})`);
 }
 
 console.log('-- 12) SEMANTIC FAIL → finalQaStatus FAIL, remediationInstruction persisted --');

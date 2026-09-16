@@ -669,22 +669,27 @@ function redactedArgvShape(exe, args) {
  *   - Parent signals are forwarded so evaluator timeouts cannot orphan Claude.
  *
  * @param {string} prompt  already-bounded QA prompt (composed by the evaluator)
+ * @param {{ claudeConfigDir?: string; permissionMode?: string }} options
  * @returns {Promise<never>} always exits the process with Claude's exit code
  */
-async function runQaPrintPassthrough(prompt) {
+async function runQaPrintPassthrough(prompt, options = {}) {
   const cwd = process.cwd();
   const claudeExe = resolveClaudeExecutable();
   let configDir;
   try {
-    const routed = resolveClaudeConfigDir(cwd);
+    const routed = resolveClaudeConfigDir(cwd, options.claudeConfigDir);
     configDir = routed.configDir;
-  } catch {
-    configDir = undefined;
+  } catch (err) {
+    process.stderr.write(`[relay-worker-claude:qa] ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
   }
+  const claudeArgs = ['--print'];
+  if (options.permissionMode === 'acceptEdits') claudeArgs.push('--permission-mode', 'acceptEdits');
+  claudeArgs.push(prompt);
   const exitCode = await new Promise((resolve) => {
     let child;
     try {
-      child = spawn(claudeExe, ['--print', prompt], {
+      child = spawn(claudeExe, claudeArgs, {
         cwd,
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -741,15 +746,29 @@ async function runQaPrintPassthrough(prompt) {
  * @param {string[]} argv  process.argv.slice(2)
  * @returns {string|null} the prompt, or null when this is not QA shape
  */
-function detectQaPassthroughPrompt(argv) {
+function detectQaPassthroughArgs(argv) {
   for (const tok of argv) {
-    if (RELAY_ARGS.has(tok)) return null; // relay path takes precedence, always
+    if (tok === '--dataRoot' || tok === '--project' || tok === '--taskId' || tok === '--runId' || tok === '--workspaceRoot') return null;
   }
-  const idx = argv.indexOf('--print');
-  if (idx === -1) return null;
-  const prompt = argv[idx + 1];
-  if (prompt === undefined || prompt.startsWith('--')) return null;
-  return prompt;
+  if (!argv.includes('--print')) return null;
+  const options = {};
+  let prompt;
+  for (let i = 0; i < argv.length; i += 1) {
+    const tok = argv[i];
+    if (tok === '--print') {
+      if (prompt !== undefined || argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new ArgError('Invalid QA passthrough --print argument.');
+      prompt = argv[++i];
+    } else if (tok === '--claudeConfigDir' || tok === '--permissionMode') {
+      const key = tok.slice(2);
+      if (options[key] !== undefined || argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new ArgError(`Invalid QA passthrough argument: ${tok}`);
+      options[key] = argv[++i];
+    } else {
+      throw new ArgError(`Unknown QA passthrough flag: ${tok}`);
+    }
+  }
+  if (options.permissionMode !== undefined && !VALID_PERMISSION_MODES.has(options.permissionMode)) throw new ArgError(`Invalid --permissionMode value: '${options.permissionMode}'. Allowed values: 'default', 'acceptEdits'.`);
+  if (prompt === undefined) throw new ArgError('Missing QA passthrough prompt.');
+  return { prompt, options };
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -766,9 +785,9 @@ async function main() {
     // Semantic QA evaluator invoking this wrapper's own registry row — serve
     // it as a direct passthrough (never Fatal, never a Task load attempt).
     const rawArgv = process.argv.slice(2);
-    const qaPrompt = detectQaPassthroughPrompt(rawArgv);
-    if (qaPrompt !== null) {
-      await runQaPrintPassthrough(qaPrompt);
+    const qaArgs = detectQaPassthroughArgs(rawArgv);
+    if (qaArgs !== null) {
+      await runQaPrintPassthrough(qaArgs.prompt, qaArgs.options);
       return; // unreachable — runQaPrintPassthrough always exits
     }
     const args = parseRelayArgs(rawArgv);
