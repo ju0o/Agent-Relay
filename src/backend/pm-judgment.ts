@@ -21,7 +21,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { relayDir, writeJsonAtomic, getTask } from './goal-task.js';
 import { resolveCurrentAttemptRunId } from './goal-task-runtime.js';
-import { acknowledgePmDelivery, getPmDelivery, markPmDeliveryDelivered } from './pm-delivery.js';
+import {
+  acknowledgePmDelivery,
+  getPmDelivery,
+  markPmDeliveryDelivered,
+  PmDeliveryError,
+} from './pm-delivery.js';
 import { acceptTaskResult } from './task-actions.js';
 import type { TaskRecord } from '../shared/types.js';
 
@@ -552,6 +557,7 @@ export function submitPmJudgment(
       }
       // Idempotent replay of the identical judgment.
       if (existing.status === 'APPLIED') {
+        await reconcileJudgedDelivery(dataRoot, project, existing.deliveryId);
         return { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) };
       }
       if (existing.status === 'REJECTED' || existing.status === 'FAILED') {
@@ -563,6 +569,7 @@ export function submitPmJudgment(
         return resumeAcceptApply(dataRoot, project, folder, existing);
       }
       // CHANGES RECEIVED: intent already durable; nothing further in G5-A.
+      await reconcileJudgedDelivery(dataRoot, project, existing.deliveryId);
       return { judgment: existing, applied: false, task: getTask(dataRoot, project, existing.taskId) };
     }
 
@@ -722,10 +729,21 @@ async function reconcileJudgedDelivery(
 ): Promise<void> {
   let delivery = getPmDelivery(dataRoot, project, deliveryId);
   if (delivery.status === 'PENDING') {
-    delivery = await markPmDeliveryDelivered(dataRoot, project, deliveryId, 'PENDING');
+    try {
+      delivery = await markPmDeliveryDelivered(dataRoot, project, deliveryId, 'PENDING');
+    } catch (err) {
+      if (!(err instanceof PmDeliveryError) || err.code !== 'CONFLICT') throw err;
+      delivery = getPmDelivery(dataRoot, project, deliveryId);
+      if (delivery.status !== 'DELIVERED' && delivery.status !== 'ACKNOWLEDGED') throw err;
+    }
   }
   if (delivery.status === 'DELIVERED') {
-    await acknowledgePmDelivery(dataRoot, project, deliveryId, 'DELIVERED');
+    try {
+      await acknowledgePmDelivery(dataRoot, project, deliveryId, 'DELIVERED');
+    } catch (err) {
+      if (!(err instanceof PmDeliveryError) || err.code !== 'CONFLICT') throw err;
+      if (getPmDelivery(dataRoot, project, deliveryId).status !== 'ACKNOWLEDGED') throw err;
+    }
   }
 }
 
