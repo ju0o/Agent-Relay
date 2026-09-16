@@ -1,0 +1,3 @@
+# pm-bridge transport lane (ChatGPT PM auto-wake)
+
+This branch (`pm-transport-wake`) is a TRANSPORT LANE, not product code. The local Agent Relay exporter commits one immutable bounded `PM_PACKET v1` JSON per pending PM decision under `pm-bridge/inbox/<packet_id>.json`; each packet is one commit pushed to the open draft PR. ChatGPT Work is triggered by PR commit updates, reads the packet and referenced bounded evidence, and posts exactly one `PM_JUDGMENT v1` PR comment. The local importer revalidates against CURRENT canonical Agent Relay state before invoking existing Relay APIs. Agent Relay remains the only SSOT; never merge this PR during normal operation.
