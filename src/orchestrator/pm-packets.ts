@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { listEvents } from '../backend/event.js';
 import { getTask, listTasks } from '../backend/goal-task.js';
 import { listGoals } from '../backend/goal-task.js';
 import { getTaskEvidenceSummary } from '../backend/evidence.js';
@@ -174,11 +175,15 @@ function buildRetryHistory(dataRoot: string, project: string, task: TaskRecord):
  * delivery reachable here is already eligible for PM judgment.
  */
 export function buildPmFinalGatePacket(dataRoot: string, project: string, deliveryId: string): PmFinalGatePacket {
-  const context = getVerificationContextForDelivery(dataRoot, project, deliveryId);
+  let context = getVerificationContextForDelivery(dataRoot, project, deliveryId);
   const task = getTask(dataRoot, project, context.task.taskId);
+  const failedNoResult = task.executionState === 'FAILED' && context.result.source === 'missing';
+  if (failedNoResult) {
+    context = { ...context, reviewActions: ['REQUEST_CHANGES'], warnings: [...context.warnings, 'Run FAILED before producing a Result; QA not run.'] };
+  }
   const retryHistory = buildRetryHistory(dataRoot, project, task);
   const canAct = context.reviewActions.includes('ACCEPT_RESULT');
-  const allowedActions = canAct ? ['ACCEPT', 'CHANGES', 'OWNER_REQUIRED', 'ACCEPT_AND_NEXT'] : ['OWNER_REQUIRED'];
+  const allowedActions = failedNoResult ? ['CHANGES', 'OWNER_REQUIRED'] : canAct ? ['ACCEPT', 'CHANGES', 'OWNER_REQUIRED', 'ACCEPT_AND_NEXT'] : ['OWNER_REQUIRED'];
   const structured = {
     schemaVersion: 'pm-final-gate-packet.v1' as const,
     project,
@@ -198,7 +203,13 @@ export function buildPmFinalGatePacket(dataRoot: string, project: string, delive
   for (const c of context.task.completionCriteria) lines.push(`- ${c}`);
   lines.push('');
   lines.push('## Result');
-  lines.push(context.result.text || '(no result text)');
+  if (failedNoResult) {
+    const runEvents = listEvents(dataRoot, project, { runId: context.attempt.runId }).events;
+    const failure = [...runEvents].reverse().find((e) => e.type === 'RUNTIME_ERROR' || e.type === 'RUN_FAILED')?.details;
+    const reason = failure && typeof failure === 'object' && typeof (failure as Record<string, unknown>).error === 'string'
+      ? (failure as Record<string, unknown>).error as string : task.lastTransitionReason || 'unknown dispatch/runtime failure';
+    lines.push(`Run FAILED before producing a Result — reason: ${bound(reason, 1000)}; attempt ${context.attempt.currentAttemptRunId ? task.linkedRuns.find((r) => r.runId === context.attempt.currentAttemptRunId)?.taskRunSequence ?? '?' : '?'} of the Task`);
+  } else lines.push(context.result.text || '(no result text)');
   lines.push('');
   lines.push('## Evidence (selected, exact-run)');
   if (context.evidence.selected.length === 0) lines.push('(none — no independently observed evidence for this run)');
@@ -208,7 +219,7 @@ export function buildPmFinalGatePacket(dataRoot: string, project: string, delive
     lines.push('## QA');
     lines.push(`status: ${context.qa.status} (attempt #${context.qa.attemptNumber}, escalation: ${context.qa.escalationReason})`);
     lines.push(context.qa.summary);
-  }
+  } else if (failedNoResult) { lines.push(''); lines.push('## QA'); lines.push('not run'); }
   if (context.warnings.length) {
     lines.push('');
     lines.push('## Warnings');

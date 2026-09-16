@@ -36,7 +36,7 @@ import {
   markJudgmentApplied,
   pmJudgmentIdFor,
 } from './pm-judgment.js';
-import { requestTaskChanges, requestTaskRetry } from './task-actions.js';
+import { requestTaskChanges, requestTaskRetry, requestFailedRunTaskRetry } from './task-actions.js';
 import type { TaskRecord } from '../shared/types.js';
 
 /** Retry Preparation record schema version. */
@@ -466,10 +466,10 @@ async function reconcileReadyPreparation(
     task.pmState === 'ACCEPTED'
     || task.executionState === 'CANCELLED'
     || task.executionState === 'BLOCKED'
-    || task.executionState === 'FAILED'
   ) {
     throw new RetryPreparationError('CONFLICT', `Preparation ${prep.preparationId} is READY but Task ${task.taskId} is terminal (${task.executionState}+${task.pmState}); refusing judgment repair.`);
   }
+
   // Source attempt must still be evidence-linked; otherwise disproved.
   if (!task.linkedRuns.some((r) => r.runId === prep.sourceRunId)) {
     throw new RetryPreparationError('CONFLICT', `Preparation ${prep.preparationId} is READY but source attempt ${prep.sourceRunId} is no longer linked.`);
@@ -508,7 +508,6 @@ async function reconcilePreparation(
     task.pmState === 'ACCEPTED'
     || task.executionState === 'CANCELLED'
     || task.executionState === 'BLOCKED'
-    || task.executionState === 'FAILED'
   ) {
     const failed = markPrep(folder, prep, 'FAILED', { failureCode: 'TASK_TERMINAL' });
     throw new RetryPreparationError('CONFLICT', `Task ${task.taskId} is terminal (${task.executionState}+${task.pmState}); retry refused.`);
@@ -520,6 +519,12 @@ async function reconcilePreparation(
     const failed = markPrep(folder, prep, 'FAILED', { failureCode: 'SOURCE_DISPLACED' });
     void failed;
     throw new RetryPreparationError('CONFLICT', `Source attempt ${prep.sourceRunId} displaced (current=${current ?? 'none'}).`);
+  }
+
+  if (task.executionState === 'FAILED' && task.pmState === 'PENDING') {
+    const applied = prep.status === 'RECEIVED' ? markPrep(folder, prep, 'CHANGES_APPLIED') : prep;
+    await requestFailedRunTaskRetry({ dataRoot, project, goalId: task.goalId, taskId: task.taskId, runId: prep.sourceRunId, reason: `pm-changes:${prep.judgmentId}`, callerSurface: 'PM_MCP' });
+    return finishReady(dataRoot, project, folder, applied);
   }
 
   // Task already READY+PENDING: adopt (case D) — never re-increment retryCount.

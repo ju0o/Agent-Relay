@@ -23,6 +23,7 @@ const pmJud = await import('../dist/server/backend/pm-judgment.js');
 const rtp = await import('../dist/server/backend/retry-preparation.js');
 const wr = await import('../dist/server/backend/worker-registry.js');
 const obs = await import('../dist/server/backend/observation-lock.js');
+const events = await import('../dist/server/backend/event.js');
 const roleLoop = await import('../dist/server/orchestrator/role-loop.js');
 const v1Intake = await import('../dist/server/backend/v1-intake.js');
 
@@ -679,6 +680,68 @@ test('(P1-3) default worker selector matches actl-managed adapter identity and r
   fs.writeFileSync(path.join(workers, 'builder-1.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'builder-1', role: 'implementation', launchCommand: 'node' }));
   fs.writeFileSync(path.join(workers, 'duplicate.json'), JSON.stringify({ schemaVersion: 'G.2', workerId: 'builder-1', role: 'implementation', launchCommand: 'node' }));
   assert.throws(() => selectBuilderWorker(fixtureRoot, 'actl-managed:builder-1'), /ambiguous/);
+});
+
+test('dispatch-failed Run without Result enters the PM gate and prepares a same-Task retry', async () => {
+  const project = 'OrchFailedRunRecovery';
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const task = await gt.createTask(dataRoot, project, {
+    goalId: goal.goalId, title: 'failed dispatch recovery', goal: 'recover failed dispatch', reason: 'resilience', scope: 'out.txt only',
+    completionCriteria: ['retry the same task'], executionState: 'READY', pmState: 'PENDING',
+    contract: { goal: 'recover failed dispatch', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'retry', validationMode: 'DETERMINISTIC' }], required_evidence: [], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }], semantic: { qaWorkerId: 'qa-test' } }, retry_policy: { max_pm_changes: 1 } },
+  });
+  const runId = 'failed-dispatch-run-1';
+  const folder = path.join(dataRoot, project, '_runs', 'failed-1');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify({ tags: [], runId, goalId: goal.goalId, taskId: task.taskId, workspaceRoot: ROOT, workerId: 'failed-builder', ownerApprovedScopeFingerprint: 'scope' }));
+  await gt.linkRunToTask(dataRoot, project, task.taskId, folder);
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'READY', to: 'DISPATCHED', reason: 'test dispatch' });
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'DISPATCHED', to: 'FAILED', reason: 'dispatch failed: pane unavailable' });
+  await events.recordRuntimeError(dataRoot, project, { summary: 'dispatch failed: pane unavailable', goalId: goal.goalId, taskId: task.taskId, runId, source: { kind: 'test', subsystem: 'dispatch' }, details: { error: 'pane unavailable' } });
+
+  const { auditDir, stateFile } = mkTestDirs('failed-run-recovery');
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_JUDGMENT v1', { decision: 'OWNER_REQUIRED', retry: 'NONE', reason: 'owner review required', contract_hash: task.contract.contract_hash, context_hash: 'unused' })] });
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  const first = await roleLoop.runOnce(cfg);
+  assert.equal(first.steps.length, 1);
+  const deliveries = pmDel.listPendingPmDeliveries(dataRoot, project);
+  assert.equal(deliveries.length, 1);
+  const packet = (await import('../dist/server/orchestrator/pm-packets.js')).buildPmFinalGatePacket(dataRoot, project, deliveries[0].deliveryId);
+  assert.match(packet.text, /Run FAILED before producing a Result — reason: pane unavailable/);
+  assert.match(packet.text, /## QA\nnot run/);
+  assert.deepEqual(packet.allowedActions, ['CHANGES', 'OWNER_REQUIRED']);
+
+  const judgment = await pmJud.submitPmJudgment(dataRoot, project, { deliveryId: deliveries[0].deliveryId, decision: 'CHANGES', reason: 'retry after dispatch failure', retryInstruction: 'retry the same task' });
+  assert.equal(judgment.judgment.decision, 'CHANGES');
+  const prepared = await rtp.prepareRetryForJudgment(dataRoot, project, deliveries[0].deliveryId);
+  assert.equal(prepared.preparation.status, 'READY');
+  assert.equal(prepared.task.taskId, task.taskId);
+  assert.equal(prepared.task.executionState, 'READY');
+  assert.equal(gt.listTasks(dataRoot, project).length, 1);
+  assert.equal(pmDel.listPmDeliveries(dataRoot, project).length, 1);
+});
+
+test('failed-run PM changes honor max_pm_changes and stop at OWNER_REQUIRED', async () => {
+  const project = 'OrchFailedRunBudget';
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const task = await gt.createTask(dataRoot, project, {
+    goalId: goal.goalId, title: 'failed dispatch budget', goal: 'bounded recovery', reason: 'resilience', scope: 'out.txt only', completionCriteria: ['retry'], executionState: 'READY', pmState: 'PENDING',
+    contract: { goal: 'bounded recovery', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'retry', validationMode: 'DETERMINISTIC' }], required_evidence: [], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }], semantic: { qaWorkerId: 'qa-test' } }, retry_policy: { max_pm_changes: 0 } },
+  });
+  const runId = 'failed-budget-run-1'; const folder = path.join(dataRoot, project, '_runs', 'failed-1'); fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify({ tags: [], runId, goalId: goal.goalId, taskId: task.taskId }));
+  await gt.linkRunToTask(dataRoot, project, task.taskId, folder);
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'READY', to: 'DISPATCHED' });
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'DISPATCHED', to: 'FAILED', reason: 'dispatch failed' });
+  await pmDel.ensurePmDeliveryForFailedRun(dataRoot, project, task.taskId, runId);
+  const { auditDir, stateFile } = mkTestDirs('failed-run-budget');
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, `PMD-${task.taskId}-${runId}`);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_JUDGMENT v1', { decision: 'CHANGES', retry: 'SAME_TASK', reason: 'retry requested', retry_instruction: 'retry same task', contract_hash: task.contract.contract_hash, context_hash: packet.contextHash })] });
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, `PMD-${task.taskId}-${runId}`);
+  assert.equal(result.outcome, 'OWNER_REQUIRED');
+  assert.equal(pmJud.listPmJudgments(dataRoot, project).length, 0);
+  assert.equal(gt.getTask(dataRoot, project, task.taskId).executionState, 'FAILED');
 });
 
 // ── zero live-dataRoot writes ─────────────────────────────────────────────────

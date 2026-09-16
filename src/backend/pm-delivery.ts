@@ -388,6 +388,41 @@ export function ensurePmDeliveryForTaskVerify(
   });
 }
 
+/**
+ * Canonical recovery delivery for a dispatch/runtime failure before Result.
+ * The delivery keeps TASK_VERIFY identity so the existing PM judgment and
+ * retry path can recover the same Task; it never fabricates a Result.
+ */
+export function ensurePmDeliveryForFailedRun(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  runId: string,
+): Promise<PmDeliveryRecord | null> {
+  const tid = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  const deliveryId = pmDeliveryIdFor(tid, rid);
+  return withDeliveryLock(dataRoot, project, deliveryId, (): PmDeliveryRecord | null => {
+    const folder = pmDeliveryFolder(dataRoot, project, deliveryId);
+    const file = deliveryJsonPath(folder);
+    if (fs.existsSync(file)) return readDeliveryRecord(dataRoot, project, deliveryId);
+    const task = getTask(dataRoot, project, tid);
+    const currentRunId = resolveCurrentAttemptRunId(task);
+    if (task.executionState !== 'FAILED' || task.pmState !== 'PENDING' || currentRunId !== rid) return null;
+    const linked = task.linkedRuns.find((r) => r.runId === rid);
+    if (!linked || fs.existsSync(path.join(linked.folder, 'result.md')) || fs.existsSync(path.join(linked.folder, 'agent-result.md'))) return null;
+    const ts = nowIso();
+    const record: PmDeliveryRecord = {
+      schemaVersion: PM_DELIVERY_SCHEMA_VERSION, deliveryId, project, kind: 'TASK_VERIFY',
+      taskId: tid, runId: rid, status: 'PENDING', createdAt: ts, updatedAt: ts,
+      source: { kind: 'pm-work', workKind: 'TASK_VERIFY' },
+    };
+    fs.mkdirSync(folder, { recursive: true });
+    persistDeliveryRecord(folder, record);
+    return record;
+  });
+}
+
 export interface ReconcileResult {
   ensured: string[];
   alreadyPresent: string[];

@@ -22,6 +22,7 @@ import {
   acceptResult as acceptResultRuntime,
   requestChanges as requestChangesRuntime,
   requestRetry as requestRetryRuntime,
+  requestFailedRunRetry as requestFailedRunRetryRuntime,
 } from './goal-task-runtime.js';
 import { authorizeEffect, type CallerSurface } from './permission-gate.js';
 import {
@@ -238,5 +239,23 @@ export async function requestTaskRetry(input: RequestTaskRetryInput): Promise<Ta
     // Best-effort — see file header.
   }
 
+  return after;
+}
+
+/** Canonical PM retry for a dispatch-failed Run with no Result. */
+export async function requestFailedRunTaskRetry(input: {
+  dataRoot: string; project: string; goalId: string; taskId: string; runId: string; reason?: string; callerSurface: CallerSurface;
+}): Promise<TaskRecord> {
+  const before = getTask(input.dataRoot, input.project, input.taskId);
+  authorizeEffect({ effect: 'REQUEST_RETRY', callerSurface: input.callerSurface, permissionPolicy: loadPolicy(input.dataRoot, input.project, before.goalId) });
+  const after = await requestFailedRunRetryRuntime(input.dataRoot, input.project, input.taskId, input.runId, { goalId: input.goalId, reason: input.reason });
+  try {
+    await recordTaskRetryRequested(input.dataRoot, input.project, {
+      summary: `Task ${input.taskId} failed-run retry requested`, goalId: after.goalId, taskId: input.taskId, runId: input.runId,
+      source: { kind: sourceKindFor(input.callerSurface), subsystem: 'task-actions/request-failed-run-retry' },
+      correlationId: input.taskId, causationId: input.runId, details: { before: beforeSnapshot(before), after: afterSnapshot(after), retryCount: after.retryCount, ...(input.reason ? { reason: input.reason } : {}) },
+      sourceEventId: `task-failed-run-retry-requested:${input.project}:${input.taskId}:${after.updatedAt}`,
+    });
+  } catch { /* canonical mutation is durable */ }
   return after;
 }

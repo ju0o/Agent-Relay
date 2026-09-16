@@ -486,10 +486,11 @@ function resolveJudicable(
       `Delivery refers to a displaced historical attempt (delivery runId=${delivery.runId}, current=${current ?? 'none'}).`,
     );
   }
-  if (task.executionState !== 'RESULT_RECEIVED' || task.pmState !== 'VERIFYING') {
+  const failedRunRecovery = task.executionState === 'FAILED' && task.pmState === 'PENDING';
+  if ((!failedRunRecovery && task.executionState !== 'RESULT_RECEIVED') || (!failedRunRecovery && task.pmState !== 'VERIFYING')) {
     throw new PmJudgmentError(
       'CONFLICT',
-      `Task ${task.taskId} is ${task.executionState}+${task.pmState}, not RESULT_RECEIVED+VERIFYING.`,
+      `Task ${task.taskId} is ${task.executionState}+${task.pmState}, not a current verification or failed-run recovery target.`,
     );
   }
   return { task, runId: delivery.runId };

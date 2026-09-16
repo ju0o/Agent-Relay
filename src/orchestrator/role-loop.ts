@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getTask, createTask, listTasks } from '../backend/goal-task.js';
 import { transitionTaskExecution } from '../backend/goal-task-runtime.js';
-import { listPendingPmDeliveries, getPmDelivery } from '../backend/pm-delivery.js';
-import { submitPmJudgment } from '../backend/pm-judgment.js';
+import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun } from '../backend/pm-delivery.js';
+import { submitPmJudgment, listPmJudgments } from '../backend/pm-judgment.js';
 import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
 import { reconcileReadyRetryDispatches } from '../backend/retry-dispatch.js';
 import { ensureV1ContainerGoal } from '../backend/v1-intake.js';
@@ -590,6 +590,14 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
     return { outcome: 'OWNER_REQUIRED' };
   }
 
+  const maxPmChanges = currentTask.contract?.retry_policy?.max_pm_changes;
+  const priorPmChanges = listPmJudgments(cfg.dataRoot, cfg.project)
+    .filter((j) => j.taskId === currentTask.taskId && j.decision === 'CHANGES').length;
+  if (judgment.decision === 'CHANGES' && typeof maxPmChanges === 'number' && priorPmChanges >= maxPmChanges) {
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'OWNER_REQUIRED', reason: `retry_policy.max_pm_changes exhausted (${priorPmChanges}/${maxPmChanges})` });
+    return { outcome: 'OWNER_REQUIRED', reason: 'retry_policy.max_pm_changes exhausted' };
+  }
+
   if (judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT') {
     const result = await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'ACCEPT', reason: judgment.reason });
     let nextTask: Record<string, unknown> | undefined;
@@ -621,6 +629,15 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
     const dispatch = await cfg.dispatchHook(cfg.dataRoot, cfg.project, task);
     audit(cfg.auditDir, { step: 'dispatch-existing-ready', outcome: 'DISPATCHED', taskId: task.taskId, runId: dispatch?.runId });
     steps.push({ step: 'dispatch-existing-ready', taskId: task.taskId, runId: dispatch?.runId });
+  }
+
+  // A dispatch failure preserves the linked Run but has no Result to trigger
+  // Result Bridge. Route that canonical failure into the same PM gate.
+  for (const task of listTasks(cfg.dataRoot, cfg.project)) {
+    if (task.executionState !== 'FAILED' || task.pmState !== 'PENDING') continue;
+    const link = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
+    if (!link || listPmDeliveries(cfg.dataRoot, cfg.project).some((d) => d.taskId === task.taskId && d.runId === link.runId)) continue;
+    await ensurePmDeliveryForFailedRun(cfg.dataRoot, cfg.project, task.taskId, link.runId);
   }
 
   for (const d of listPendingPmDeliveries(cfg.dataRoot, cfg.project)) {

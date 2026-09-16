@@ -712,6 +712,30 @@ export function requestRetry(
   });
 }
 
+/** PM recovery retry for a Run that failed before Result capture. */
+export function requestFailedRunRetry(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  runId: string,
+  opts: { goalId: string; reason?: string },
+): Promise<TaskRecord> {
+  const id = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  const goalId = requireNonEmptyString(opts?.goalId, 'goalId');
+  return withTaskLinkLock(project, id, () => {
+    const task = getTask(dataRoot, project, id);
+    if (task.goalId !== goalId) throw new Error(`잘못된 goalId: Task ${id}의 goalId는 ${task.goalId}입니다.`);
+    if (task.executionState !== 'FAILED' || task.pmState !== 'PENDING') throw new RuntimeConflictError(`FAILED recovery requires FAILED+PENDING (found ${task.executionState}+${task.pmState})`);
+    if (resolveCurrentAttemptRunId(task) !== rid) throw new RuntimeConflictError(`Run ${rid} is not the current failed attempt.`);
+    task.executionState = 'READY';
+    task.retryCount = (task.retryCount ?? 0) + 1;
+    task.lastTransitionReason = opts.reason?.trim() || `requestFailedRunRetry:${rid}`;
+    task.updatedAt = nowIso();
+    return persistTaskRecord(dataRoot, project, task);
+  });
+}
+
 /**
  * V1.6 Slice 4 — QA-gated Result receipt.
  *

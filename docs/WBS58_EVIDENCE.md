@@ -154,6 +154,8 @@ Implemented the review P1/P2 findings and WBS-9 D2/D3/D6/D8 fixes.
 
 Fallback entries remain documented as model-qualified `<provider>/<model>` keys (for example `opencode/big-pickle`); symbolic names such as `free-B` are intentionally not certified.
 
+`isFreeTierModel()` (`src/orchestrator/role-loop.ts`) is a deliberately narrow ALLOWLIST heuristic — it recognizes only a `*-free` suffix or the literal `big-pickle` model id, not a registry capability or provider-cost lookup — documented inline as a `ponytail:` comment at its definition; the runtime registry does not yet expose a cost/policy fact this guard could consult instead.
+
 ## CHANGES round 2
 
 WBS-10 pass 3 fixes:
@@ -207,3 +209,15 @@ WBS-10 pass 9 actl permit fix:
 - `test/fixtures/actl/fake-actl.mjs`: additive `status-busy` mode supports the refusal drill.
 
 The factory is deliberately installed at the orchestrator owner boundary; it never fabricates or bypasses the idle/identity/socket checks.
+
+## CHANGES round 7
+
+WBS-10 pass 10 failed-dispatch recovery:
+
+- `src/backend/pm-delivery.ts`: added the locked, idempotent `ensurePmDeliveryForFailedRun` canonical mint for the current FAILED Run when neither Result artifact exists.
+- `src/orchestrator/role-loop.ts`: scans the latest linked failed Run before PM work; failed-run final gates honor `max_pm_changes` and return `OWNER_REQUIRED` when exhausted.
+- `src/orchestrator/pm-packets.ts`: failed no-Result packets include the bounded dispatch failure reason, attempt number, and `QA: not run`, with CHANGES/OWNER_REQUIRED actions only.
+- `src/backend/pm-judgment.ts`, `src/backend/retry-preparation.ts`, `src/backend/task-actions.ts`, `src/backend/goal-task-runtime.ts`: the existing judgment/preparation route now has a narrow canonical FAILED+PENDING → READY same-Task recovery action; it preserves the failed Run and increments retryCount without creating a Task.
+- `test/v1-orchestrator.test.mjs`: disposable tests assert delivery mint/idempotency, truthful no-Result packet, same-Task preparation, and exhausted PM-change budget with no judgment write.
+
+Verification: `npx tsc -p tsconfig.server.json` passed; `node --test test/v1-orchestrator.test.mjs` — 30 passed, 0 failed.
