@@ -8,6 +8,7 @@ import { getVerificationContextForDelivery } from '../backend/pm-verification-co
 import { listPmJudgments, submitPmJudgment } from '../backend/pm-judgment.js';
 import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
 import { resolveCurrentAttemptRunId } from '../backend/goal-task-runtime.js';
+import { listEvidenceForRun } from '../backend/evidence.js';
 
 type Comment = { id: string; url: string; body: string };
 type State = { packets: Record<string, any>; seen: string; applied: Record<string, string>; pendingReplies?: Record<string, string> };
@@ -56,7 +57,8 @@ function packetFor(a: any, delivery: any) {
   const canonical = { context };
   const contextHash = hash(json(canonical)); const packetId = hash(`${delivery.project}|${delivery.deliveryId}|${contextHash}`).slice(0, 16);
   const retry = context.task.executionState === 'RESULT_RECEIVED' && context.task.pmState === 'VERIFYING' && context.attempt.isCurrentAttempt;
-  return { schema_version: 'pm-packet.v1', packet_id: packetId, project: delivery.project, task_id: context.task.taskId, run_id: delivery.runId, delivery_id: delivery.deliveryId, ...(context.result.source !== 'missing' ? { result_id: hash(`${delivery.runId}|${context.result.source}|${context.result.text}`).slice(0, 16) } : {}), created_at: new Date().toISOString(), bounded_context_hash: contextHash, allowed_actions: retry ? ['ACCEPT', 'CHANGES', 'RETRY_SAME_TASK'] : ['ACCEPT', 'CHANGES'], canonical_state_summary: { task: context.task, delivery: context.delivery, attempt: context.attempt }, verification_context: context, judgment_history: history, evidence_refs: context.evidence.selected.map(e => e.evidenceId), retry_lineage: { attempt: context.attempt.currentAttemptRunId === delivery.runId ? 1 : 0, source_run_id: delivery.runId } };
+  const task = getTask(a.dataRoot, delivery.project, delivery.taskId); const link = task.linkedRuns.find(r => r.runId === delivery.runId);
+  return { schema_version: 'pm-packet.v1', packet_id: packetId, project: delivery.project, task_id: context.task.taskId, run_id: delivery.runId, delivery_id: delivery.deliveryId, ...(context.result.source !== 'missing' ? { result_id: hash(`${delivery.runId}|${context.result.source}|${context.result.text}`).slice(0, 16) } : {}), created_at: new Date().toISOString(), bounded_context_hash: contextHash, allowed_actions: retry ? ['ACCEPT', 'CHANGES', 'RETRY_SAME_TASK'] : ['ACCEPT', 'CHANGES'], canonical_state_summary: { task: context.task, delivery: context.delivery, attempt: context.attempt }, verification_context: context, judgment_history: history, evidence_refs: listEvidenceForRun(a.dataRoot, delivery.project, delivery.runId).map(e => e.evidenceId), retry_lineage: { attempt: link?.taskRunSequence ?? 0, source_run_id: delivery.runId } };
 }
 function packetBody(p: any) { return `@ju0o Agent Relay: ChatGPT 검토 필요 — ${p.task_id}\nPM_PACKET v1\n${JSON.stringify(p, null, 2)}`; }
 function exportPackets(a: any, t: Transport, s: State) {
@@ -72,6 +74,12 @@ function parseJudgment(body: string): any | null {
   const out: any = {}; for (const line of lines.slice(start + 1)) { const m = /^(packet_id|context_hash|decision|retry|reason): (.*)$/.exec(line); if (!m) return null; if (out[m[1]] !== undefined) return null; out[m[1]] = m[2]; }
   if (!/^[0-9a-f]{16}$/.test(out.packet_id) || !/^[0-9a-f]{64}$/.test(out.context_hash) || !['ACCEPT', 'CHANGES', 'OWNER_REQUIRED'].includes(out.decision) || !['NONE', 'SAME_TASK'].includes(out.retry) || typeof out.reason !== 'string' || out.reason.length > 1000 || out.reason.includes('\n')) return null; return out;
 }
+function checkSchema(p: any): boolean { return !!p && p.schema_version === 'pm-packet.v1' && /^[0-9a-f]{16}$/.test(p.packet_id) && typeof p.project === 'string' && /^TASK-\d+$/.test(p.task_id) && typeof p.run_id === 'string' && typeof p.delivery_id === 'string' && /^[0-9a-f]{64}$/.test(p.bounded_context_hash) && Array.isArray(p.allowed_actions) && p.verification_context && p.canonical_state_summary && Array.isArray(p.evidence_refs) && p.retry_lineage; }
+function checkCurrentCanonical(a: any, p: any): any { return packetFor(a, getPmDelivery(a.dataRoot, p.project, p.delivery_id)); }
+function checkHash(current: any, judgment: any): boolean { return current.bounded_context_hash === judgment.context_hash; }
+function checkPendingDelivery(current: any): boolean { return current.verification_context.delivery.status === 'PENDING' || current.verification_context.delivery.status === 'DELIVERED'; }
+function checkIds(current: any, packet: any): boolean { return current.project === packet.project && current.task_id === packet.task_id && current.run_id === packet.run_id && current.delivery_id === packet.delivery_id; }
+function checkAllowed(current: any, judgment: any): boolean { return judgment.decision !== 'ACCEPT' || judgment.retry === 'NONE' ? current.allowed_actions.includes(judgment.decision) && (judgment.retry !== 'SAME_TASK' || current.allowed_actions.includes('RETRY_SAME_TASK')) : false; }
 function stateSummary(a: any, p: any) { try { const d = getPmDelivery(a.dataRoot, p.project, p.delivery_id); const task = getTask(a.dataRoot, p.project, d.taskId); return { delivery: d, judgment: listPmJudgments(a.dataRoot, p.project).find(j => j.deliveryId === p.delivery_id), task: { executionState: task.executionState, pmState: task.pmState } }; } catch { return {}; } }
 async function importJudgments(a: any, t: Transport, s: State) {
   for (const [packetId, body] of Object.entries(s.pendingReplies ?? {})) {
@@ -79,14 +87,16 @@ async function importJudgments(a: any, t: Transport, s: State) {
     delete s.pendingReplies![packetId]; writeJson(a.stateFile, s);
   }
   for (const c of t.listComments(s.seen)) { s.seen = c.id; const j = parseJudgment(c.body); if (!j) continue; const pEntry = Object.values(s.packets).find((x: any) => x.packet_id === j.packet_id) as any; let disposition = 'REJECTED_INVALID'; let p = pEntry?.packet; let result: any = {};
-    if (p && a.project.includes(p.project) && j.context_hash === p.bounded_context_hash) {
+    if (p && a.project.includes(p.project) && checkSchema(p) && checkHash(p, j)) {
       try {
-        const current = packetFor(a, getPmDelivery(a.dataRoot, p.project, p.delivery_id));
+        const current = checkCurrentCanonical(a, p);
         const allowed = current.allowed_actions; const replay = s.applied[j.packet_id];
         if (replay) disposition = replay === json(j) ? 'REPLAY_IGNORED' : 'REJECTED_INVALID';
-        else if (current.bounded_context_hash !== j.context_hash || current.task_id !== p.task_id || current.run_id !== p.run_id || current.delivery_id !== p.delivery_id) disposition = 'REJECTED_STALE';
+        else if (!checkHash(current, j)) disposition = 'REJECTED_STALE';
+        else if (!checkPendingDelivery(current)) disposition = 'REJECTED_STALE';
+        else if (!checkIds(current, p)) disposition = 'REJECTED_INVALID';
         else if (j.decision === 'OWNER_REQUIRED') disposition = 'OWNER_REQUIRED_RECORDED';
-        else if (!allowed.includes(j.decision) || (j.retry === 'SAME_TASK' && !allowed.includes('RETRY_SAME_TASK')) || (j.decision === 'ACCEPT' && j.retry !== 'NONE')) disposition = 'REJECTED_INVALID';
+        else if (!checkAllowed(current, j)) disposition = 'REJECTED_INVALID';
         else {
           const input: any = { deliveryId: p.delivery_id, decision: j.decision, reason: j.reason };
           if (j.decision === 'CHANGES') input.retryInstruction = j.reason;
