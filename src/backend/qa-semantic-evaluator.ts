@@ -82,6 +82,7 @@ import {
   type QaAttemptRecord,
   type QaSemanticCriterionResult,
   getQaAttempt,
+  qaAttemptFolder,
   recordSemanticEvidence,
 } from './qa-attempt.js';
 
@@ -109,6 +110,15 @@ export const MAX_SEMANTIC_QA_TIMEOUT_MS = 300_000;
 function boundText(value: unknown, maxChars: number): string {
   const s = typeof value === 'string' ? value : '';
   return s.length > maxChars ? s.slice(0, maxChars) : s;
+}
+
+function workerOutputTail(outcome: ProcessOutcome): string {
+  const raw = [outcome.stdout, outcome.stderr].filter(Boolean).join('\n[stderr]\n');
+  const scrubbed = raw
+    .replace(/sk-[^\s"']+/gi, '[REDACTED]')
+    .replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
+    .replace(/password\s*[:=]\s*[^\s,;"']+/gi, 'password=[REDACTED]');
+  return scrubbed.slice(-400) || '(no worker output)';
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────
@@ -499,6 +509,7 @@ export function evaluateSemanticQa(
       lastOutcome = outcome;
       fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stdout.txt`), outcome.stdout, 'utf8');
       if (outcome.stderr) fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stderr.txt`), outcome.stderr, 'utf8');
+      fs.writeFileSync(path.join(qaAttemptFolder(dataRoot, project, input.qaAttemptId), `semantic-output-attempt-${attemptNo}.txt`), `${outcome.stdout}${outcome.stderr ? `\n[stderr]\n${outcome.stderr}` : ''}`, 'utf8');
       if (outcome.spawnError || outcome.timedOut || outcome.exitCode === null) {
         parsed = { kind: 'unparseable', reason: outcome.spawnError ? `실행 실패: ${outcome.spawnError}` : outcome.timedOut ? '시간 초과' : '종료 코드를 확인할 수 없습니다.' };
         continue; // try the bounded reattempt (attemptNo 2), or fall through to BLOCKED
@@ -509,11 +520,13 @@ export function evaluateSemanticQa(
     const completedAt = new Date().toISOString();
 
     if (parsed.kind === 'unparseable') {
-      fs.writeFileSync(path.join(runDir, 'blocked-reason.txt'), parsed.reason, 'utf8');
+      const tail = workerOutputTail(lastOutcome ?? { stdout: '', stderr: '', exitCode: null, timedOut: false, stdoutTruncated: false, stderrTruncated: false, durationMs: 0 });
+      const reason = `${parsed.reason} worker output tail: ${tail}`;
+      fs.writeFileSync(path.join(runDir, 'blocked-reason.txt'), reason, 'utf8');
       const record = await recordSemanticEvidence(dataRoot, project, input.qaAttemptId, {
         status: 'BLOCKED',
         criteria: [],
-        reason: parsed.reason,
+        reason,
         qaWorkerId: attempt.qaWorkerId,
         sessionRef,
         startedAt,

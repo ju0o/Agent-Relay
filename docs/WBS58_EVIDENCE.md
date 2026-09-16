@@ -355,3 +355,11 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --t
 - `test/v1-qa-loop.test.mjs`: covers bounded crash escalation with persisted reason and BLOCKED→next-cycle PASS; the existing V16 gate expectations were updated to the new retry-before-Delivery contract.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused QA suites (`v1-qa-loop` 6, V16 slice 4 1, V16 slice 7 1) — **8 node tests, 8 passed, 0 failed**; `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 23 (ar/v1-pm)
+
+- `src/orchestrator/role-loop.ts`: final-gate `OWNER_REQUIRED` outcomes are cached by `deliveryId` and packet `contextHash`; unchanged pending Deliveries audit `FINAL_GATE_DECISION_CACHED` without another PM turn. Canonical context changes invalidate the cache, and `--retry-blocked` clears it.
+- `src/backend/qa-semantic-evaluator.ts`: unparseable semantic QA now records a bounded, secrets-scrubbed worker stdout/stderr tail in the semantic BLOCKED reason and persists each raw combined output as `semantic-output-attempt-N.txt` in the QA attempt folder.
+- Tests cover unchanged OWNER_REQUIRED no-reask, cache audit, scrubbed QA reason tail, and raw attempt-folder persistence.
+
+Verification: server build passed; focused orchestrator + QA checks — **48 passed, 0 failed**; `LIVE_DATAROOT_WRITES: 0`.

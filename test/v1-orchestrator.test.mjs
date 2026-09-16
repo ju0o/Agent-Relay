@@ -470,11 +470,16 @@ test('final gate OWNER_REQUIRED makes no canonical write, audit only', async () 
   const cfg = { dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
   const result = await roleLoop.processFinalGate(cfg, d.deliveryId);
   assert.equal(result.outcome, 'OWNER_REQUIRED');
+  const sendsAfterFirst = adapter.sendLog.length;
+  const cached = await roleLoop.processFinalGate(cfg, d.deliveryId);
+  assert.equal(cached.outcome, 'OWNER_REQUIRED');
+  assert.equal(adapter.sendLog.length, sendsAfterFirst, 'unchanged OWNER_REQUIRED decision is cached');
   const delivery = pmDel.getPmDelivery(dataRoot, project, d.deliveryId);
   assert.equal(delivery.status, 'PENDING', 'Delivery untouched');
   assert.throws(() => pmJud.getPmJudgment(dataRoot, project, `PMJ-${d.deliveryId}`), 'no judgment record created');
   const lines = auditLines(auditDir);
   assert.ok(lines.some((l) => l.outcome === 'OWNER_REQUIRED' && l.deliveryId === d.deliveryId));
+  assert.ok(lines.some((l) => l.outcome === 'FINAL_GATE_DECISION_CACHED' && l.deliveryId === d.deliveryId));
 });
 
 // ── stale contract_hash/context_hash → fail closed ───────────────────────────

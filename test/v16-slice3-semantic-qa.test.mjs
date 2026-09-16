@@ -85,7 +85,7 @@ function failWorkerScript(markerPath) {
 }
 
 function garbageWorkerScript(markerPath) {
-  return `import * as fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(markerPath)}, 'x');\nconsole.log('this is not a structured status block at all');\n`;
+  return `import * as fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(markerPath)}, 'x');\nconsole.log('this is not a structured status block sk-live-secret');\nconsole.error('Bearer bearer-secret password=hunter2');\n`;
 }
 
 function timeoutWorkerScript(markerPath) {
@@ -253,6 +253,9 @@ console.log('-- 14) unparseable output on both attempts → BLOCKED, exactly 2 i
   });
   check(out.record.finalQaStatus === 'BLOCKED', `14a finalQaStatus BLOCKED after unparseable output (got ${out.record.finalQaStatus})`);
   check(fs.readFileSync(marker, 'utf8') === 'xx', '14b exactly 2 invocations — one bounded auto-reattempt, never more');
+  check(out.record.reason.includes('worker output tail:') && out.record.reason.includes('[REDACTED]') && !/sk-live-secret|bearer-secret|hunter2/.test(out.record.reason), '14c BLOCKED reason carries a scrubbed worker-output tail');
+  const raw = fs.readFileSync(path.join(qa.qaAttemptFolder(ROOT, project, attempt.qaAttemptId), 'semantic-output-attempt-2.txt'), 'utf8');
+  check(raw.includes('sk-live-secret') && raw.includes('Bearer bearer-secret'), '14d raw stdout/stderr is persisted in the QA attempt folder');
 }
 
 console.log('-- 15) first attempt unparseable, second attempt succeeds → uses the second result --');

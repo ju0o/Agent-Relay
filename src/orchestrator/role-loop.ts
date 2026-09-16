@@ -233,6 +233,7 @@ async function sendAndParseOnce<T>(adapter: RoleRuntimeAdapter, sessionId: strin
 interface OrchestratorStateFile {
   schemaVersion: 1;
   blocked: Record<string, { contextHash: string; reason: string; updatedAt: string }>;
+  finalGateDecisions?: Record<string, { contextHash: string; outcome: string; reason?: string; updatedAt: string }>;
   pendingReask?: Record<string, { contextHash: string; reason: string; retryAfter?: number; updatedAt: string }>;
   exhausted?: Record<string, { taskId: string; updatedAt: string }>;
   projectComplete?: { contextHash: string; reason: string; updatedAt: string };
@@ -242,7 +243,7 @@ function readState(stateFile: string): OrchestratorStateFile {
   try {
     return JSON.parse(fs.readFileSync(stateFile, 'utf8')) as OrchestratorStateFile;
   } catch {
-    return { schemaVersion: 1, blocked: {}, pendingReask: {}, exhausted: {} };
+    return { schemaVersion: 1, blocked: {}, finalGateDecisions: {}, pendingReask: {}, exhausted: {} };
   }
 }
 
@@ -256,12 +257,25 @@ function writeState(stateFile: string, state: OrchestratorStateFile): void {
 export function clearBlockedState(stateFile: string): void {
   const state = readState(stateFile);
   state.blocked = {};
+  state.finalGateDecisions = {};
   writeState(stateFile, state);
 }
 
 function audit(auditDir: string, item: Record<string, unknown>): void {
   fs.mkdirSync(auditDir, { recursive: true });
   fs.appendFileSync(path.join(auditDir, 'role-loop.jsonl'), JSON.stringify({ ts: new Date().toISOString(), ...item }) + '\n');
+}
+
+function cacheFinalGateDecision(state: OrchestratorStateFile, stateFile: string, deliveryId: string, contextHash: string, result: Record<string, unknown>): void {
+  if (result.outcome !== 'OWNER_REQUIRED') return;
+  state.finalGateDecisions ??= {};
+  state.finalGateDecisions[deliveryId] = {
+    contextHash,
+    outcome: String(result.outcome),
+    ...(typeof result.reason === 'string' ? { reason: result.reason } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+  writeState(stateFile, state);
 }
 
 function resolvePmInstructionsPath(override?: string): string {
@@ -640,6 +654,11 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
 
   const packet = buildPmFinalGatePacket(cfg.dataRoot, cfg.project, deliveryId);
   const state = readState(cfg.stateFile);
+  const cached = state.finalGateDecisions?.[deliveryId];
+  if (cached && cached.contextHash === packet.contextHash) {
+    audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'FINAL_GATE_DECISION_CACHED', cachedOutcome: cached.outcome, ...(cached.reason ? { reason: cached.reason } : {}), contextHash: packet.contextHash });
+    return { outcome: cached.outcome, ...(cached.reason ? { reason: cached.reason } : {}) };
+  }
   const blockKey = `final-gate:${deliveryId}`;
   const prevBlock = state.blocked[blockKey];
   if (prevBlock && prevBlock.contextHash === packet.contextHash) {
@@ -649,8 +668,10 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
 
   const assignment = cfg.roleConfig.assignments.find((a) => a.roleId === 'pm');
   if (!assignment) {
+    const result = { outcome: 'OWNER_REQUIRED', reason: 'no pm RoleAssignment in role config' };
+    cacheFinalGateDecision(state, cfg.stateFile, deliveryId, packet.contextHash, result);
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'OWNER_REQUIRED', reason: 'no pm RoleAssignment in role config' });
-    return { outcome: 'OWNER_REQUIRED', reason: 'no pm RoleAssignment in role config' };
+    return result;
   }
 
   let adapter: RoleRuntimeAdapter;
@@ -660,8 +681,10 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
   } catch (err) {
     if (err instanceof BillingGuardError || err instanceof PmOwnerRequiredError) {
       const outcome = err instanceof BillingGuardError ? 'BLOCKED_BILLING' : 'OWNER_REQUIRED';
+      const result = { outcome, reason: err.message };
+      cacheFinalGateDecision(state, cfg.stateFile, deliveryId, packet.contextHash, result);
       audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome, reason: err.message });
-      return { outcome, reason: err.message };
+      return result;
     }
     return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
   }
@@ -738,7 +761,9 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
     return { outcome: 'REJECTED_STALE' };
   }
 
-  return applyFinalGateJudgment(cfg, deliveryId, packet, judgment, adapter, sessionId);
+  const result = await applyFinalGateJudgment(cfg, deliveryId, packet, judgment, adapter, sessionId);
+  cacheFinalGateDecision(state, cfg.stateFile, deliveryId, packet.contextHash, result);
+  return result;
 }
 
 // ── top-level pass ────────────────────────────────────────────────────────────
