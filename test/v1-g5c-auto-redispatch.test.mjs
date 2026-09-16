@@ -52,6 +52,8 @@ const fsKernel = await import('../dist/server/backend/fs.js');
 const evk = await import('../dist/server/backend/event.js');
 const captureSvc = await import('../dist/server/backend/capture-service.js');
 const bridgeMod = await import('../dist/server/backend/pm-host-bridge.js');
+const actlBridge = await import('../dist/server/backend/actl-bridge.js');
+const roleLoop = await import('../dist/server/orchestrator/role-loop.js');
 const pmTools = await import('../dist/server/mcp/pm-tools.js');
 const testFix = await import('../dist/server/integrations/test-fixture/watch.js');
 testFix.ensureTestFixtureAdapterRegistered();
@@ -701,6 +703,24 @@ console.log('\n-- correction: normal path unchanged-scope retry still works --')
   check(auth.scopeFingerprint === initialMeta.ownerApprovedScopeFingerprint, 'L normal auth fingerprint == initial RunMeta fingerprint');
   const res = await get('relay_pm_submit_judgment').handler({ deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
   check(res.redispatch?.ok === true, 'L unchanged-scope CHANGES retry still dispatches');
+  await resetProcessLocal();
+}
+
+console.log('\n-- correction: consumed expired retry is audited, never silent --');
+{
+  const t = await driveToResultReceived('V1 G5C expired retry', 'ses-g5c-expired', 'G5C expired retry text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  const res = await get('relay_pm_submit_judgment').handler({ deliveryId: D, decision: 'CHANGES', reason: REASON, retryInstruction: INSTR });
+  const retryRun = res.redispatch.retryRunId;
+  const retryLink = gt.getTask(TEST_ROOT, project, t.taskId).linkedRuns.find((r) => r.runId === retryRun);
+  const binding = actlBridge.readRuntimeBinding(retryLink.folder);
+  actlBridge.writeRuntimeBinding(retryLink.folder, { ...binding, collectStatus: 'RESERVED', closeoutStatus: 'RELEASED' });
+  await resetProcessLocal();
+  const auditDir = path.join(TEST_ROOT, 'expired-audit'); const stateFile = path.join(TEST_ROOT, 'expired-state.json');
+  await roleLoop.runOnce({ dataRoot: TEST_ROOT, project, roleConfig: { assignments: [] }, pmAdapter: {}, dispatchHook: async () => {}, auditDir, stateFile });
+  const audit = fs.readFileSync(path.join(auditDir, 'role-loop.jsonl'), 'utf8');
+  check(audit.includes('retry reservation expired before send') && audit.includes('BLOCKED_RUNTIME'), 'expired consumed retry is audited BLOCKED_RUNTIME');
+  check(gt.getTask(TEST_ROOT, project, t.taskId).linkedRuns.length === 2, 'expired retry audit does not create another Run');
   await resetProcessLocal();
 }
 

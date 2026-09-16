@@ -468,7 +468,20 @@ export async function reconcileReadyRetryDispatches(
     return out;
   }
   for (const prep of preps) {
-    if (prep.status !== 'READY' || prep.dispatchedRunId) continue;
+    if (prep.status !== 'READY') continue;
+    if (prep.dispatchedRunId) {
+      try {
+        const task = getTask(dataRoot, project, prep.taskId);
+        const linked = task.linkedRuns.find((r) => r.runId === prep.dispatchedRunId);
+        const binding = linked ? readRuntimeBinding(linked.folder) : null;
+        if (linked && binding?.collectStatus === 'RESERVED' && binding.closeoutStatus === 'RELEASED') {
+          out.push({ preparationId: prep.preparationId, outcome: 'skipped', runId: linked.runId, reason: 'retry reservation expired before send' });
+        }
+      } catch (err) {
+        out.push({ preparationId: prep.preparationId, outcome: 'skipped', runId: prep.dispatchedRunId, reason: err instanceof Error ? err.message : String(err) });
+      }
+      continue;
+    }
     let task: TaskRecord;
     try {
       task = getTask(dataRoot, project, prep.taskId);

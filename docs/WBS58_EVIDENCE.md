@@ -311,3 +311,12 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused Q
 - G4C was independently green at both `be7c41c` and `8f6fe91`; no commit-level first-bad was reproducible. The prior red result came from concurrent full-suite interference. The full suite was rerun serially to make the shared test-process boundary deterministic.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; serialized V1 + V16 QA + B15 + adapter run — **97 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 18 (TASK-0071 post-chain P2 bundle)
+
+- `src/orchestrator/role-loop.ts`: PROJECT_COMPLETE is cached by bootstrap `contextHash`, audited as `PROJECT_COMPLETE_CACHED`, and invalidated when canonical context changes. Consumed retry preparations with a linked RESERVED Run whose reservation was released now produce an explicit `retry reservation expired before send` reconciliation outcome, which is audited as `BLOCKED_RUNTIME` each cycle.
+- `src/backend/qa-deterministic-evaluator.ts`: diffScope now invokes `git status --porcelain=v1 --no-renames -uall`, so untracked directories are evaluated as individual files.
+- `src/backend/retry-dispatch.ts`: expired/released consumed retry reservations are no longer silently skipped; the canonical retry remains untouched and the loop records the bounded runtime block.
+- Tests: orchestrator completion-cache invalidation and audit coverage; deterministic QA tests for one allowed untracked file versus an extra out-of-scope file in the same directory; G5-C test for a consumed expired retry audit with no extra Run.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused orchestrator + diffScope tests — **36 passed, 0 failed**; G5-C retry tests — **116 passed, 0 failed**; serialized V1 + V16 QA + B15 + adapter run — **97 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.

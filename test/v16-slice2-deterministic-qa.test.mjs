@@ -222,6 +222,33 @@ console.log('-- 12) forbidden file changed → FAIL --');
   check(out.record.deterministic.checks[0].status === 'FAIL', '12a forbidden file changed → FAIL');
 }
 
+console.log('-- 12b) untracked directory is expanded to individual paths --');
+{
+  const { workspaceRoot, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'newdir'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'newdir', 'allowed.txt'), 'ok', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['newdir/allowed.txt'] }],
+  });
+  check(out.record.deterministic.checks[0].status === 'PASS', '12b one allowed file inside an untracked directory → PASS');
+}
+
+console.log('-- 12c) extra file inside an untracked directory is out of scope --');
+{
+  const { workspaceRoot, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'newdir'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'newdir', 'allowed.txt'), 'ok', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'newdir', 'extra.txt'), 'no', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['newdir/allowed.txt'] }],
+  });
+  check(out.record.deterministic.checks[0].status === 'FAIL', '12c extra file inside an untracked directory → FAIL');
+}
+
 console.log('-- 13) no authoritative diff evidence → BLOCKED --');
 {
   const { attempt } = await makeAttempt();

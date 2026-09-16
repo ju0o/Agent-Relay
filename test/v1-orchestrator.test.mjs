@@ -350,6 +350,12 @@ test('a new PM session receives the role preamble once and reuse does not resend
   await roleLoop.processBootstrap(cfg);
   await roleLoop.processBootstrap(cfg);
   assert.equal(adapter.preambleBodies.length, 1);
+  assert.equal(adapter.sendLog.length, 1, 'PROJECT_COMPLETE is cached while bootstrap context is unchanged');
+  const cachedAudit = fs.readFileSync(path.join(auditDir, 'role-loop.jsonl'), 'utf8');
+  assert.match(cachedAudit, /PROJECT_COMPLETE_CACHED/);
+  await gt.createGoal(dataRoot, project, { title: 'new canonical goal', goalStatement: 'invalidate bootstrap completion cache' });
+  await roleLoop.processBootstrap(cfg);
+  assert.equal(adapter.sendLog.length, 2, 'a new canonical goal invalidates the completion cache');
   assert.equal(adapter.preambleBodies[0], fs.readFileSync(path.resolve('docs/PM_ROLE_INSTRUCTIONS.md'), 'utf8'));
 });
 

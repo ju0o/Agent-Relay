@@ -437,7 +437,7 @@ function parsePorcelainPath(line: string): string | null {
 async function runGitStatusPorcelain(
   workspaceRoot: string,
 ): Promise<{ kind: 'ok'; paths: string[] } | { kind: 'blocked'; reason: string }> {
-  const outcome = await runProcess('git', ['status', '--porcelain=v1', '--no-renames'], workspaceRoot, GIT_STATUS_TIMEOUT_MS);
+  const outcome = await runProcess('git', ['status', '--porcelain=v1', '--no-renames', '-uall'], workspaceRoot, GIT_STATUS_TIMEOUT_MS);
   if (outcome.spawnError) return { kind: 'blocked', reason: `git status 실행 실패 (authoritative diff 확인 불가): ${outcome.spawnError}` };
   if (outcome.timedOut) return { kind: 'blocked', reason: 'git status 시간 초과 (authoritative diff 확인 불가)' };
   if (outcome.exitCode !== 0) {

@@ -221,6 +221,7 @@ interface OrchestratorStateFile {
   blocked: Record<string, { contextHash: string; reason: string; updatedAt: string }>;
   pendingReask?: Record<string, { contextHash: string; reason: string; retryAfter?: number; updatedAt: string }>;
   exhausted?: Record<string, { taskId: string; updatedAt: string }>;
+  projectComplete?: { contextHash: string; reason: string; updatedAt: string };
 }
 
 function readState(stateFile: string): OrchestratorStateFile {
@@ -377,6 +378,14 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
   const packet = buildPmBootstrapPacket(cfg.dataRoot, cfg.project, cfg.roleConfig);
   const state = readState(cfg.stateFile);
   const blockKey = 'bootstrap';
+  if (state.projectComplete?.contextHash === packet.contextHash) {
+    audit(cfg.auditDir, { step: 'bootstrap', outcome: 'PROJECT_COMPLETE_CACHED', contextHash: packet.contextHash });
+    return { outcome: 'PROJECT_COMPLETE_CACHED' };
+  }
+  if (state.projectComplete) {
+    delete state.projectComplete;
+    writeState(cfg.stateFile, state);
+  }
   const prevBlock = state.blocked[blockKey];
   if (prevBlock && prevBlock.contextHash === packet.contextHash) {
     audit(cfg.auditDir, { step: 'bootstrap', outcome: 'BLOCKED', reason: prevBlock.reason });
@@ -448,6 +457,8 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
 
   const decision = parsed.value;
   if (decision.decision === 'PROJECT_COMPLETE') {
+    state.projectComplete = { contextHash: packet.contextHash, reason: decision.reason, updatedAt: new Date().toISOString() };
+    writeState(cfg.stateFile, state);
     audit(cfg.auditDir, { step: 'bootstrap', outcome: 'PROJECT_COMPLETE', reason: decision.reason });
     return { outcome: 'PROJECT_COMPLETE' };
   }
