@@ -14,7 +14,7 @@ import type { RoleConfig, RoleAssignment } from '../roles/role-config.js';
 import type { RoleRuntimeAdapter, InputEnvelope } from '../integrations/core/role-runtime.js';
 import { readRoleSession, roleSessionPath, writeRoleSession } from '../integrations/core/role-runtime.js';
 import type { TaskRecord } from '../shared/types.js';
-import { buildPmBootstrapPacket, buildPmFinalGatePacket, type PmFinalGatePacket } from './pm-packets.js';
+import { buildPmBootstrapPacket, buildPmFinalGatePacket, listClosedTerminalTasks, type PmFinalGatePacket } from './pm-packets.js';
 import { parsePmTaskDecision, parsePmJudgment, type PmTaskDecision, type PmJudgment } from './pm-schemas.js';
 
 export type DispatchHook = (dataRoot: string, project: string, task: TaskRecord) => Promise<{ runId: string } | void>;
@@ -216,13 +216,14 @@ interface OrchestratorStateFile {
   schemaVersion: 1;
   blocked: Record<string, { contextHash: string; reason: string; updatedAt: string }>;
   pendingReask?: Record<string, { contextHash: string; reason: string; retryAfter?: number; updatedAt: string }>;
+  exhausted?: Record<string, { taskId: string; updatedAt: string }>;
 }
 
 function readState(stateFile: string): OrchestratorStateFile {
   try {
     return JSON.parse(fs.readFileSync(stateFile, 'utf8')) as OrchestratorStateFile;
   } catch {
-    return { schemaVersion: 1, blocked: {}, pendingReask: {} };
+    return { schemaVersion: 1, blocked: {}, pendingReask: {}, exhausted: {} };
   }
 }
 
@@ -269,7 +270,17 @@ async function rotateTimedOutPmSession(cfg: RoleLoopConfig, adapter: RoleRuntime
 }
 
 function hasOpenTask(dataRoot: string, project: string): boolean {
-  return listTasks(dataRoot, project).some((t) => t.pmState !== 'ACCEPTED' && t.executionState !== 'CANCELLED');
+  return listTasks(dataRoot, project).some((t) => t.pmState !== 'ACCEPTED' && t.executionState !== 'FAILED' && t.executionState !== 'CANCELLED');
+}
+
+function hasInFlightTerminalRun(dataRoot: string, project: string): boolean {
+  return listTasks(dataRoot, project).some((task) => {
+    if (task.executionState !== 'FAILED' && task.executionState !== 'CANCELLED') return false;
+    const latest = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
+    if (!latest) return false;
+    const binding = readRuntimeBinding(latest.folder);
+    return !!binding && binding.closeoutStatus !== 'RELEASED' && binding.collectStatus !== 'FINAL_BOUND';
+  });
 }
 
 function deriveTitle(rawContract: Record<string, unknown>): string {
@@ -654,6 +665,15 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
 
 export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Record<string, unknown>> }> {
   const steps: Array<Record<string, unknown>> = [];
+  const cycleState = readState(cfg.stateFile);
+  cycleState.exhausted ??= {};
+  for (const task of listClosedTerminalTasks(cfg.dataRoot, cfg.project)) {
+    if (cycleState.exhausted[task.taskId]) continue;
+    cycleState.exhausted[task.taskId] = { taskId: task.taskId, updatedAt: new Date().toISOString() };
+    audit(cfg.auditDir, { step: 'TASK_EXHAUSTED', taskId: task.taskId, attempts: task.attempts, judgments: task.judgments });
+    steps.push({ step: 'TASK_EXHAUSTED', taskId: task.taskId });
+  }
+  writeState(cfg.stateFile, cycleState);
   const retryOutcomes = await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
   for (const retry of retryOutcomes) {
     audit(cfg.auditDir, {
@@ -688,10 +708,17 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
     steps.push({ deliveryId: d.deliveryId, ...result });
   }
 
-  if (!hasOpenTask(cfg.dataRoot, cfg.project)) {
+  if (!hasOpenTask(cfg.dataRoot, cfg.project) && listPendingPmDeliveries(cfg.dataRoot, cfg.project).length === 0 && !hasInFlightTerminalRun(cfg.dataRoot, cfg.project)) {
     const result = await processBootstrap(cfg);
     steps.push({ step: 'bootstrap', ...result });
   }
+
+  const openTasks = listTasks(cfg.dataRoot, cfg.project)
+    .filter((task) => task.pmState !== 'ACCEPTED' && task.executionState !== 'FAILED' && task.executionState !== 'CANCELLED')
+    .map((task) => task.taskId);
+  const pendingDeliveries = listPendingPmDeliveries(cfg.dataRoot, cfg.project).length;
+  const blocked = Object.keys(readState(cfg.stateFile).blocked);
+  audit(cfg.auditDir, { step: 'cycle', outcome: steps.length ? 'ACTED' : 'IDLE', openTasks, pendingDeliveries, blocked, reason: steps.length ? 'cycle work processed' : 'no actionable work' });
 
   return { steps };
 }

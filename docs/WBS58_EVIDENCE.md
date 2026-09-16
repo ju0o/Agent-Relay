@@ -261,3 +261,11 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --t
 - Tests cover same-Task retry send and the RESERVED in-flight no-duplicate guard. Expired-lease re-dispatch and superseded-run closeout remain blocked on a reusable canonical dispatcher resume/closeout API; no direct binding edits were introduced.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; orchestrator + actl tests — 36 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 12 (TASK-0065 cycle closure)
+
+- `src/orchestrator/role-loop.ts`: every `runOnce` now appends one `step: cycle` audit summary with `IDLE`/`ACTED`, open Task ids, pending Delivery count, blocked keys, and reason. Terminal `FAILED`/`CANCELLED` Tasks are excluded from the open-task predicate; pending Deliveries and active terminal bindings still block bootstrap. Exhausted terminal Tasks are durably marked and audited once as `TASK_EXHAUSTED`.
+- `src/orchestrator/pm-packets.ts`: bootstrap packets now include `## Closed without acceptance (terminal)` with bounded Task id/title/failure reason, attempt count, and judgment count. These closed-task facts are part of the bootstrap context hash.
+- `test/v1-orchestrator.test.mjs`: adds idle-cycle audit and exhausted-terminal Task → bootstrap → replacement Task/dispatch coverage; existing pending failed-Run Delivery coverage confirms final gate remains authoritative.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs` — 35 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. Requested combined V1 + B15 + adapter run — 84 top-level tests, 82 passed, 2 failed: pre-existing G4A and G4C failures. `LIVE_DATAROOT_WRITES: 0`.

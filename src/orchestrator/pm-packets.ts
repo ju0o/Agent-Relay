@@ -3,12 +3,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { listEvents } from '../backend/event.js';
 import { getTask, listTasks } from '../backend/goal-task.js';
+import { listPmDeliveries } from '../backend/pm-delivery.js';
 import { listGoals } from '../backend/goal-task.js';
 import { getTaskEvidenceSummary } from '../backend/evidence.js';
 import { getVerificationContextForDelivery, type VerificationContextPacket } from '../backend/pm-verification-context.js';
 import { listQaRemediationPreparations } from '../backend/qa-remediation-preparation.js';
 import { listRetryPreparations } from '../backend/retry-preparation.js';
 import { listPmJudgments } from '../backend/pm-judgment.js';
+import { readRuntimeBinding } from '../backend/actl-bridge.js';
 import { buildTaskContract, canonicalizeForHash } from '../backend/task-contract.js';
 import { CHECK_KINDS } from '../backend/qa-contract.js';
 import type { RoleConfig } from '../roles/role-config.js';
@@ -92,6 +94,35 @@ export interface PmBootstrapPacket {
   contextHash: string;
 }
 
+export interface ClosedTerminalTask {
+  taskId: string;
+  title: string;
+  lastFailureReason: string;
+  attempts: number;
+  judgments: number;
+}
+
+export function listClosedTerminalTasks(dataRoot: string, project: string): ClosedTerminalTask[] {
+  const deliveries = listPmDeliveries(dataRoot, project);
+  const judgments = listPmJudgments(dataRoot, project);
+  return listTasks(dataRoot, project)
+    .filter((task) => task.executionState === 'FAILED' || task.executionState === 'CANCELLED')
+    .filter((task) => !deliveries.some((delivery) => delivery.taskId === task.taskId && delivery.status === 'PENDING'))
+    .filter((task) => {
+      const latest = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
+      if (!latest) return true;
+      const binding = readRuntimeBinding(latest.folder);
+      return !binding || binding.closeoutStatus === 'RELEASED' || binding.collectStatus === 'FINAL_BOUND';
+    })
+    .map((task) => ({
+      taskId: task.taskId,
+      title: task.title,
+      lastFailureReason: task.lastTransitionReason ?? `${task.executionState}`,
+      attempts: task.linkedRuns.length,
+      judgments: judgments.filter((judgment) => judgment.taskId === task.taskId).length,
+    }));
+}
+
 /**
  * WBS-5 bounded bootstrap packet. Pure read: no canonical mutation.
  * `contextHash` is over the STRUCTURED inputs (not the rendered text), so it
@@ -106,6 +137,7 @@ export function buildPmBootstrapPacket(dataRoot: string, project: string, roleCo
   const lastAccepted = accepted[0];
   const durableContext = readPmContextFile(dataRoot, project);
   const ownerGateConditions = lastAccepted?.contract?.owner_gate_conditions ?? DEFAULT_OWNER_GATE_CONDITIONS;
+  const closedWithoutAcceptance = listClosedTerminalTasks(dataRoot, project);
 
   const structured = {
     schemaVersion: 'pm-bootstrap-packet.v1',
@@ -117,6 +149,7 @@ export function buildPmBootstrapPacket(dataRoot: string, project: string, roleCo
     evidenceSummary: lastAccepted ? getTaskEvidenceSummary(dataRoot, project, lastAccepted.taskId) : null,
     durableContext: bound(durableContext, 8000),
     ownerGateConditions,
+    closedWithoutAcceptance,
     pmRole: roleConfig.assignments.find((a) => a.roleId === 'pm') ?? null,
   };
 
@@ -135,6 +168,10 @@ export function buildPmBootstrapPacket(dataRoot: string, project: string, roleCo
   lines.push('');
   lines.push('## Owner gate conditions');
   lines.push(ownerGateConditions.map((c) => `- ${c}`).join('\n'));
+  lines.push('');
+  lines.push('## Closed without acceptance (terminal)');
+  if (closedWithoutAcceptance.length === 0) lines.push('(none)');
+  for (const task of closedWithoutAcceptance) lines.push(`- ${task.taskId}: ${task.title}; last failure: ${bound(task.lastFailureReason, 300)}; attempts: ${task.attempts}; judgments: ${task.judgments}`);
   lines.push('');
   lines.push(renderOutputContract('PM_TASK_DECISION v1'));
 

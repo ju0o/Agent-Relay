@@ -818,6 +818,41 @@ test('failed-run PM changes honor max_pm_changes and stop at OWNER_REQUIRED', as
   assert.equal(gt.getTask(dataRoot, project, task.taskId).executionState, 'FAILED');
 });
 
+test('idle cycle writes a durable cycle audit summary', async () => {
+  const project = 'OrchCycleIdle';
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const task = await gt.createTask(dataRoot, project, { goalId: goal.goalId, title: 'in flight', goal: 'wait', reason: 'test', scope: 'fixture', completionCriteria: ['done'] });
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'PLANNED', to: 'READY' });
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'READY', to: 'DISPATCHED' });
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'DISPATCHED', to: 'RUNNING' });
+  const { auditDir, stateFile } = mkTestDirs('cycle-idle');
+  const result = await roleLoop.runOnce({ dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile });
+  assert.equal(result.steps.length, 0);
+  const cycle = auditLines(auditDir).find((line) => line.step === 'cycle');
+  assert.equal(cycle.outcome, 'IDLE');
+  assert.deepEqual(cycle.openTasks, [task.taskId]);
+});
+
+test('exhausted FAILED Task is audited once and bootstrap creates one replacement', async () => {
+  const project = 'OrchExhaustedBootstrap';
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const failed = await gt.createTask(dataRoot, project, { goalId: goal.goalId, title: 'dead task', goal: 'failed work', reason: 'test', scope: 'fixture', completionCriteria: ['done'], executionState: 'FAILED', pmState: 'PENDING', contract: { goal: 'failed work', bounded_scope: 'fixture', acceptance_criteria: [{ id: 'AC-01', description: 'done', validationMode: 'DETERMINISTIC' }], required_evidence: [], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }] }, retry_policy: { same_task_only: true, max_qa_remediations: 0, max_pm_changes: 0 } } });
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'replace exhausted task', task_contract: { goal: 'replacement', bounded_scope: 'fixture', acceptance_criteria: [{ id: 'AC-01', description: 'replacement done', validationMode: 'DETERMINISTIC' }], required_evidence: [], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }] }, retry_policy: { same_task_only: true, max_qa_remediations: 0, max_pm_changes: 1 } } })] });
+  const dispatchCalls = [];
+  const { auditDir, stateFile } = mkTestDirs('exhausted-bootstrap');
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook(dispatchCalls), auditDir, stateFile };
+  const first = await roleLoop.runOnce(cfg);
+  assert.equal(gt.listTasks(dataRoot, project).length, 2);
+  assert.equal(dispatchCalls.length, 1);
+  assert.match(adapter.sendLog[0].body, /## Closed without acceptance \(terminal\)/);
+  assert.match(adapter.sendLog[0].body, new RegExp(failed.taskId));
+  assert.equal(auditLines(auditDir).filter((line) => line.step === 'TASK_EXHAUSTED' && line.taskId === failed.taskId).length, 1);
+  assert.ok(auditLines(auditDir).some((line) => line.step === 'cycle' && line.outcome === 'ACTED'));
+  await roleLoop.runOnce(cfg);
+  assert.equal(auditLines(auditDir).filter((line) => line.step === 'TASK_EXHAUSTED' && line.taskId === failed.taskId).length, 1);
+  assert.equal(first.steps.some((step) => step.step === 'bootstrap'), true);
+});
+
 // ── zero live-dataRoot writes ─────────────────────────────────────────────────
 after(() => {
   if (fs.existsSync(LIVE_ROOT)) {
