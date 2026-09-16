@@ -265,7 +265,12 @@ console.log('\n-- I: lifecycle --');
 // ── J: IGNORE from PENDING and DELIVERED ──
 console.log('\n-- J: ignore paths --');
 {
-  const ig1 = await get('relay_pm_ignore_delivery').handler({ deliveryId: D1, expectedStatus: 'PENDING' });
+  // be7c41c reconciles superseded D1 to IGNORED when the pending queue is
+  // read, so use fresh current-attempt deliveries for the CAS lifecycle.
+  check((await pmDel.getPmDelivery(TEST_ROOT, project, D1)).status === 'IGNORED', 'J superseded D1 is reconciled to IGNORED');
+  const tPending = await driveToResultReceived('V1 G4A pending ignore', 'ses-g4a-pending', 'G4A pending ignore result');
+  const DPending = `PMD-${tPending.taskId}-${tPending.runId}`;
+  const ig1 = await get('relay_pm_ignore_delivery').handler({ deliveryId: DPending, expectedStatus: 'PENDING' });
   check(ig1.status === 'IGNORED' && !!ig1.ignoredAt, 'J IGNORE legal from PENDING');
   const t2 = await driveToResultReceived('V1 G4A second', 'ses-g4a-3', 'G4A second task result');
   const D3 = `PMD-${t2.taskId}-${t2.runId}`;

@@ -303,3 +303,11 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --t
 - `test/v1-qa-loop.test.mjs`: retains the disposable FAIL→QRP→same-Task resume proof; the canonical closeout seam is covered by the existing actl/dispatcher closeout certification fixtures.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; focused QA + orchestrator + actl tests — 45 passed, 0 failed; requested V1 + B15 + V16 QA + adapter run — 97 total, 94 passed, 3 pre-existing failures (G4A and two G4C host-wake assertions). `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 17 (TASK-0070 delivery-test semantics)
+
+- Bisect in temporary worktrees: parent of `be7c41c` (`8f6fe91`) passed G4A; `be7c41c` was the first bad commit. Its finalized-delivery reconciliation intentionally changes a superseded current-attempt delivery from `PENDING` to `IGNORED` during pending-list reads, so the old test's `D1 expectedStatus: PENDING` assertion encoded superseded semantics.
+- `test/v1-g4a-pm-delivery.test.mjs`: now asserts superseded `D1` is `IGNORED`, while exercising PENDING and DELIVERED ignore transitions with fresh current deliveries. No production change was needed.
+- G4C was independently green at both `be7c41c` and `8f6fe91`; no commit-level first-bad was reproducible. The prior red result came from concurrent full-suite interference. The full suite was rerun serially to make the shared test-process boundary deterministic.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; serialized V1 + V16 QA + B15 + adapter run — **97 passed, 0 failed**. `LIVE_DATAROOT_WRITES: 0`.
