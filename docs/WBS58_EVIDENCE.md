@@ -252,3 +252,12 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --t
 - `test/v1-orchestrator-actl-dispatch.test.mjs`: fake-actl test covers initial clean send failure, CHANGES preparation, same-Task retry creation, and exactly one retry send.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs test/v1-orchestrator-actl-dispatch.test.mjs` — 36 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. Requested combined V1 + B15 + adapter run — 82 top-level tests, 80 passed, 2 failed: pre-existing G4A and G4C failures. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 11 (TASK-0064 retry restart recovery)
+
+- `src/backend/retry-dispatch.ts`: a correlated retry Run with a durable `RESERVED` binding is now resumed through the existing actl send contract, using the binding's frozen pane/lease/fence and the installed owner permit factory; after send it is marked `SENT` and the preparation is consumed without creating another Run or Delivery.
+- `src/orchestrator/main.ts`: default dispatch construction installs the permit factory before retry reconciliation, so restart adoption has the same fail-closed identity and idle checks.
+- `src/orchestrator/role-loop.ts`: retry reconciliation outcomes are audited as `RETRY_ADOPTED`, `RETRY_REDISPATCHED`, or `BLOCKED_RUNTIME`; an in-flight RESERVED retry remains excluded from failed-run Delivery minting.
+- Tests cover same-Task retry send and the RESERVED in-flight no-duplicate guard. Expired-lease re-dispatch and superseded-run closeout remain blocked on a reusable canonical dispatcher resume/closeout API; no direct binding edits were introduced.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; orchestrator + actl tests — 36 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.

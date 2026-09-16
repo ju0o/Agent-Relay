@@ -35,6 +35,7 @@
 import { getTask } from './goal-task.js';
 import * as fs from 'node:fs';
 import { workerRegistryPath, loadWorkerRegistryRecord } from './worker-registry.js';
+import { requestFailedRunRetry, transitionTaskExecution } from './goal-task-runtime.js';
 import { getPmJudgment, getRetryInstructionForDelivery, pmJudgmentIdFor } from './pm-judgment.js';
 import {
   getRetryPreparation,
@@ -53,6 +54,16 @@ import {
 } from './retry-authorization.js';
 import { dispatchTask, validateWorkspaceRoot, DispatcherError } from './dispatcher.js';
 import { readRunMeta } from './fs.js';
+import {
+  correlationDigestForRun,
+  expectedContextFromBinding,
+  invokeActlRuntimeOrThrow,
+  newRequestId,
+  obtainInputPermit,
+  readRuntimeBinding,
+  scopeFields,
+  writeRuntimeBinding,
+} from './actl-bridge.js';
 import { composeRetryPrompt, readPriorResultExcerpt } from './retry-prompt.js';
 import type { TaskExecutionState, TaskRecord } from '../shared/types.js';
 
@@ -202,6 +213,37 @@ function assertRetryWorkerRecord(dataRoot: string, workerId: string): void {
     } catch { /* preserve the strict-loader error below */ }
     throw strictError;
   }
+}
+
+/** Resume the one narrow pre-send window left by a controller restart. */
+async function adoptReservedActlRetry(dataRoot: string, project: string, task: TaskRecord, runId: string, folder: string): Promise<void> {
+  const binding = readRuntimeBinding(folder);
+  if (!binding || binding.collectStatus !== 'RESERVED' || !binding.reservationId || !binding.leaseToken || !binding.fence || !binding.commandId) {
+    throw new RetryDispatchError('INVALID_STATE', `retry Run ${runId} has no resumable RESERVED actl binding`);
+  }
+  const meta = readRunMeta(folder);
+  if (!meta.workerId) throw new RetryDispatchError('INVALID_STATE', `retry Run ${runId} meta missing workerId`);
+  assertRetryWorkerRecord(dataRoot, meta.workerId);
+  const raw = JSON.parse(fs.readFileSync(workerRegistryPath(dataRoot, meta.workerId), 'utf8')) as Record<string, any>;
+  const actl = raw.driverOptions?.actl;
+  if (!actl?.runtimeId || !raw.launchCommand) throw new RetryDispatchError('INVALID_STATE', `retry Run ${runId} worker is not actl-managed`);
+  const wirePrompt = fs.readFileSync(`${folder}/wire-prompt.txt`, 'utf8');
+  if (task.executionState === 'FAILED') {
+    await requestFailedRunRetry(dataRoot, project, task.taskId, runId, { goalId: task.goalId, reason: `resume reserved retry ${runId}` });
+  }
+  if (getTask(dataRoot, project, task.taskId).executionState === 'READY') {
+    await transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'READY', to: 'DISPATCHED', reason: `retry-adopt:${runId}` });
+  }
+  const expectedContext = expectedContextFromBinding(binding);
+  const inputPermit = await obtainInputPermit({ commandId: binding.commandId, runtimeId: binding.runtimeId, fence: binding.fence, currentSnapshotHash: 'restart-check' });
+  const sent = await invokeActlRuntimeOrThrow(raw.launchCommand, 'send', {
+    contractVersion: 1, requestId: newRequestId(), operation: 'send', runtimeId: binding.runtimeId,
+    expectedContext, reservationId: binding.reservationId, leaseToken: binding.leaseToken, fence: binding.fence,
+    commandId: binding.commandId, correlationDigest: correlationDigestForRun({ relayInstanceId: binding.relayInstanceId, project, taskId: task.taskId, runId, commandId: binding.commandId }),
+    wirePrompt, promptSha256: binding.wirePromptSha256, observationCursor: binding.observationCursor,
+    inputPermit, currentSnapshotHash: inputPermit.snapshotHash, ...scopeFields(binding.socketPath),
+  });
+  writeRuntimeBinding(folder, { ...binding, transportReceipt: sent.data, commandAttached: true, collectStatus: 'SENT', updatedAt: new Date().toISOString() });
 }
 
 function mapDispatcherError(err: DispatcherError): RetryDispatchError {
@@ -444,9 +486,11 @@ export async function reconcileReadyRetryDispatches(
     if (correlated) {
       try {
         await withRetryPreparationLock(dataRoot, project, prep.preparationId, async () => {
+          const binding = readRuntimeBinding(correlated!.folder);
+          if (binding?.collectStatus === 'RESERVED') await adoptReservedActlRetry(dataRoot, project, task, correlated!.runId, correlated!.folder);
           markRetryPreparationConsumed(dataRoot, project, prep.preparationId, correlated.runId);
         });
-        out.push({ preparationId: prep.preparationId, outcome: 'adopted', runId: correlated.runId });
+        out.push({ preparationId: prep.preparationId, outcome: 'adopted', runId: correlated.runId, reason: 'RETRY_ADOPTED' });
       } catch (err) {
         out.push({ preparationId: prep.preparationId, outcome: 'skipped', reason: err instanceof Error ? err.message : String(err) });
       }

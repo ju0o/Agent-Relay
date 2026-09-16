@@ -654,7 +654,16 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
 
 export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Record<string, unknown>> }> {
   const steps: Array<Record<string, unknown>> = [];
-  await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
+  const retryOutcomes = await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
+  for (const retry of retryOutcomes) {
+    audit(cfg.auditDir, {
+      step: 'retry-reconcile',
+      preparationId: retry.preparationId,
+      runId: retry.runId,
+      outcome: retry.outcome === 'adopted' ? 'RETRY_ADOPTED' : retry.outcome === 'dispatched' ? 'RETRY_REDISPATCHED' : 'BLOCKED_RUNTIME',
+      reason: retry.reason,
+    });
+  }
 
   // A crash after createTask() but before dispatch leaves one canonical READY
   // Task with no linked Run. Adopt it before consulting PM again.
