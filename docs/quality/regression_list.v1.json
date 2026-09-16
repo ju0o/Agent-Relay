@@ -1,0 +1,932 @@
+{
+  "schema_version": "quality.regression_list.v1",
+  "repo": "Agent-Relay-ghpm",
+  "list_version": 1,
+  "commands": [
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/actl-managed-bridge.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/adapter-agent-map.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/adapter.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/binding.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/capture-result-refresh.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/opencode-command-adapter.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/parallel-capture.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/session-ownership.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/ar01-local-auth.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/b1-corrections.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/b2-runtime.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/capture-ux.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/claude.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/completed-run-recovery.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/draft-idempotency.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/draft-materialization.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/event-contract.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/event-kernel.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/evidence-kernel.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/fs.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/g6-mcp-pm-wake.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/g6-observation-profile-context.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/g6-worker-launch-diag.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/github-pm-bridge.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/goal-task-kernel.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/mcp-phase-e.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/mcp-phase-f-bounds.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/mcp-phase-f-correction.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/mcp-phase-f.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-g-dispatcher.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-g-hardening.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-h-closed-loop.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i-dogfood.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3-cli.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3-connect.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3-goal.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3-init.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3-stab.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3-tui.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3-watch.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3e-relay-tui.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3f1-task-memo.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3f1-tui-subviews.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3f2-task-actions.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3f2h-pm-transition-hardening.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3f3-tui-mutation-bridge.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/phase-i3f4-safe-task-edit.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/quality-regression-runner.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/role-runtime-registry.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/roles-config.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v03.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-builder-dispatch-drills.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g1-pm-intake.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g2-owner-dispatch.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g3-result-return.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g4a-pm-delivery.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g4b-verification-context.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g4c-pm-host-wake.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g5a-judgment-durability.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g5a-pm-judgment.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g5b-retry-preparation.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-g5c-auto-redispatch.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-task-contract.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v15-plan-accept-advancement.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v15-plan-first-dispatch.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v15-plan-kernel.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v15-plan-mcp-surface.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v15-plan-reconciliation.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v15-slice6-dogfood-ready.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v2-h1-history.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v2-r1-resume-scan.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v2-r2-actions.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v2-r3-restart.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v2-r4-history-panel.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/vnext.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/b15-fix-01-a.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/b15-fix-03-a.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/stable-hardening-01-worker-release.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-orchestrator-actl-dispatch.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-orchestrator-drills.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-orchestrator.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v1-qa-loop.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice1-qa-kernel.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice2-deterministic-qa.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice3-semantic-qa.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice4-qa-remediation.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice5-pm-delivery.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice6-restart-reconcile.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice7-full-qa.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice8-wrapper-qa-mode.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "test/v16-slice8-wrapper-qa-remediation.test.mjs"
+      ],
+      "timeoutMs": 300000,
+      "expectExitCode": 0
+    }
+  ],
+  "updated_at": "2026-09-16T00:00:00.000Z",
+  "areas": {
+    "adapter": [
+      "actl-managed-bridge.test.mjs",
+      "adapter-agent-map.test.mjs",
+      "adapter.test.mjs",
+      "binding.test.mjs",
+      "capture-result-refresh.test.mjs",
+      "opencode-command-adapter.test.mjs",
+      "parallel-capture.test.mjs",
+      "session-ownership.test.mjs"
+    ],
+    "legacy": [
+      "ar01-local-auth.test.mjs",
+      "b1-corrections.test.mjs",
+      "b2-runtime.test.mjs",
+      "capture-ux.test.mjs",
+      "claude.test.mjs",
+      "completed-run-recovery.test.mjs",
+      "draft-idempotency.test.mjs",
+      "draft-materialization.test.mjs",
+      "event-contract.test.mjs",
+      "event-kernel.test.mjs",
+      "evidence-kernel.test.mjs",
+      "fs.test.mjs",
+      "g6-mcp-pm-wake.test.mjs",
+      "g6-observation-profile-context.test.mjs",
+      "g6-worker-launch-diag.test.mjs",
+      "github-pm-bridge.test.mjs",
+      "goal-task-kernel.test.mjs",
+      "mcp-phase-e.test.mjs",
+      "mcp-phase-f-bounds.test.mjs",
+      "mcp-phase-f-correction.test.mjs",
+      "mcp-phase-f.test.mjs",
+      "phase-g-dispatcher.test.mjs",
+      "phase-g-hardening.test.mjs",
+      "phase-h-closed-loop.test.mjs",
+      "phase-i-dogfood.test.mjs",
+      "phase-i3-cli.test.mjs",
+      "phase-i3-connect.test.mjs",
+      "phase-i3-goal.test.mjs",
+      "phase-i3-init.test.mjs",
+      "phase-i3-stab.test.mjs",
+      "phase-i3-tui.test.mjs",
+      "phase-i3-watch.test.mjs",
+      "phase-i3e-relay-tui.test.mjs",
+      "phase-i3f1-task-memo.test.mjs",
+      "phase-i3f1-tui-subviews.test.mjs",
+      "phase-i3f2-task-actions.test.mjs",
+      "phase-i3f2h-pm-transition-hardening.test.mjs",
+      "phase-i3f3-tui-mutation-bridge.test.mjs",
+      "phase-i3f4-safe-task-edit.test.mjs",
+      "quality-regression-runner.test.mjs",
+      "role-runtime-registry.test.mjs",
+      "roles-config.test.mjs",
+      "v03.test.mjs",
+      "v1-builder-dispatch-drills.test.mjs",
+      "v1-g1-pm-intake.test.mjs",
+      "v1-g2-owner-dispatch.test.mjs",
+      "v1-g3-result-return.test.mjs",
+      "v1-g4a-pm-delivery.test.mjs",
+      "v1-g4b-verification-context.test.mjs",
+      "v1-g4c-pm-host-wake.test.mjs",
+      "v1-g5a-judgment-durability.test.mjs",
+      "v1-g5a-pm-judgment.test.mjs",
+      "v1-g5b-retry-preparation.test.mjs",
+      "v1-g5c-auto-redispatch.test.mjs",
+      "v1-task-contract.test.mjs",
+      "v15-plan-accept-advancement.test.mjs",
+      "v15-plan-first-dispatch.test.mjs",
+      "v15-plan-kernel.test.mjs",
+      "v15-plan-mcp-surface.test.mjs",
+      "v15-plan-reconciliation.test.mjs",
+      "v15-slice6-dogfood-ready.test.mjs",
+      "v2-h1-history.test.mjs",
+      "v2-r1-resume-scan.test.mjs",
+      "v2-r2-actions.test.mjs",
+      "v2-r3-restart.test.mjs",
+      "v2-r4-history-panel.test.mjs",
+      "vnext.test.mjs"
+    ],
+    "b15": [
+      "b15-fix-01-a.test.mjs",
+      "b15-fix-03-a.test.mjs",
+      "stable-hardening-01-worker-release.test.mjs"
+    ],
+    "v1-orchestrator": [
+      "v1-orchestrator-actl-dispatch.test.mjs",
+      "v1-orchestrator-drills.test.mjs",
+      "v1-orchestrator.test.mjs"
+    ],
+    "qa-gate": [
+      "v1-qa-loop.test.mjs",
+      "v16-slice1-qa-kernel.test.mjs",
+      "v16-slice2-deterministic-qa.test.mjs",
+      "v16-slice3-semantic-qa.test.mjs",
+      "v16-slice4-qa-remediation.test.mjs",
+      "v16-slice5-pm-delivery.test.mjs",
+      "v16-slice6-restart-reconcile.test.mjs",
+      "v16-slice7-full-qa.test.mjs",
+      "v16-slice8-wrapper-qa-mode.test.mjs",
+      "v16-slice8-wrapper-qa-remediation.test.mjs"
+    ]
+  },
+  "list_hash": "b4dd24037cb2915c39452f092819dd86496f3b0e6bd57bc160a32e2a117a0d3f"
+}
+
