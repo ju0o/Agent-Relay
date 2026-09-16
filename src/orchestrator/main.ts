@@ -5,6 +5,15 @@ import { getRoleRuntimeAdapter, registerRoleRuntimeAdapter } from '../integratio
 import type { RoleRuntimeAdapter } from '../integrations/core/role-runtime.js';
 import { OpenCodeCommandAdapter } from '../integrations/opencode/command-adapter.js';
 import { dispatchV1OwnerApproved } from '../backend/v1-dispatch.js';
+import {
+  ActlBridgeError,
+  buildDefaultInputPermit,
+  expectedContextFromActl,
+  invokeActlRuntimeOrThrow,
+  newRequestId,
+  scopeFields,
+  setActlInputPermitFactory,
+} from '../backend/actl-bridge.js';
 import { clearBlockedState, runOnce, type DispatchHook, type RoleLoopConfig } from './role-loop.js';
 
 interface Args {
@@ -112,11 +121,53 @@ export function selectBuilderWorker(dataRoot: string, runtimeAdapterId: string) 
   return worker;
 }
 
-function defaultDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): DispatchHook {
+function installActlPermitFactory(builder: ReturnType<typeof readRoleConfig>['assignments'][number], worker: Record<string, any>): (() => Promise<string>) | null {
+  const actl = worker.driverOptions?.actl;
+  if (!actl) {
+    setActlInputPermitFactory(null);
+    return null;
+  }
+  const expectedContext = expectedContextFromActl(actl, builder.workspace.workspaceRoot);
+  const scope = scopeFields(actl.socketPath);
+  const checkReady = async (): Promise<string> => {
+    const status = await invokeActlRuntimeOrThrow(worker.launchCommand, 'status', {
+      contractVersion: 1,
+      requestId: newRequestId(),
+      operation: 'status',
+      runtimeId: actl.runtimeId,
+      expectedContext,
+      ...scope,
+    });
+    const data = status.data;
+    if (data.runtimeId !== actl.runtimeId) throw new ActlBridgeError('MISMATCH', 'actl status runtimeId does not match the configured worker', { sideEffect: 'NONE' });
+    if (data.inputState !== 'READY') throw new ActlBridgeError('INPUT_STATE_UNKNOWN', 'actl target pane is not idle at its prompt', { sideEffect: 'NONE' });
+    const context = data.context && typeof data.context === 'object' ? data.context as Record<string, unknown> : {};
+    for (const [key, value] of Object.entries(expectedContext)) {
+      if (context[key] !== value) throw new ActlBridgeError('MISMATCH', `actl status context mismatch for ${key}`, { sideEffect: 'NONE' });
+    }
+    if (typeof context.paneId !== 'string' || !context.paneId.trim()) throw new ActlBridgeError('INPUT_STATE_UNKNOWN', 'actl status omitted the target pane identity', { sideEffect: 'NONE' });
+    const snapshotHash = typeof data.currentSnapshotHash === 'string' ? data.currentSnapshotHash.trim() : '';
+    if (!snapshotHash) throw new ActlBridgeError('INPUT_STATE_UNKNOWN', 'actl status omitted currentSnapshotHash', { sideEffect: 'NONE' });
+    return snapshotHash;
+  };
+  // The orchestrator is the owner-approved dispatcher within this authorized project scope.
+  setActlInputPermitFactory(async (args) => {
+    if (args.runtimeId !== actl.runtimeId) {
+      throw new ActlBridgeError('MISMATCH', `inputPermit runtimeId mismatch: expected ${actl.runtimeId}, got ${args.runtimeId}`, { sideEffect: 'NONE' });
+    }
+    const snapshotHash = await checkReady();
+    return buildDefaultInputPermit({ ...args, snapshotHash, confirmedAt: new Date().toISOString() });
+  });
+  return checkReady;
+}
+
+export function defaultDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): DispatchHook {
   return async (dr, project, task) => {
     const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
     const worker = builder ? selectBuilderWorker(dr, builder.runtimeAdapterId) : null;
     if (!builder || !worker) throw new Error('no builder RoleAssignment/worker-registry record (role: implementation) available for dispatch');
+    const checkReady = installActlPermitFactory(builder, worker);
+    if (checkReady) await checkReady();
     return dispatchV1OwnerApproved(dr, project, {
       taskId: task.taskId,
       workerId: worker.workerId,

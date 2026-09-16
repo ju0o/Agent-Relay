@@ -94,6 +94,16 @@ if (mode === 'status-down' && cliOp === 'status') {
 if (cliOp === 'status') {
   const fixturePane = process.env.FAKE_ACTL_PANE_ID || '%fixture';
   const ctx = { ...(request.expectedContext ?? { agentKind: 'codex' }), paneId: fixturePane };
+  if (mode === 'status-busy') {
+    emit(envelope(requestId, true, {
+      runtimeId: request.runtimeId,
+      processState: 'UP',
+      inputState: 'BUSY',
+      context: ctx,
+      identityEvidence: { paneId: fixturePane },
+      currentSnapshotHash: process.env.FAKE_ACTL_SNAPSHOT || 'fixture-snapshot',
+    }), 0);
+  }
   emit(envelope(requestId, true, {
     runtimeId: request.runtimeId,
     processState: 'UP',

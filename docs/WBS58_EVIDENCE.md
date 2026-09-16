@@ -197,3 +197,13 @@ WBS-10 pass 7 dispatch fix:
 - `test/v1-orchestrator.test.mjs`: selector coverage uses a raw actl fixture plus untagged Claude and QA records, and asserts missing, role-mismatch, and ambiguous failures.
 
 Known P2 follow-up: `worker-registry.ts` still rejects trusted actl `driverOptions.actl` records while the dispatcher consumes those raw fields. This lane intentionally does not widen that validator; the strict-loader/raw-record drift remains owner work for the worker-registry lane.
+
+## CHANGES round 6
+
+WBS-10 pass 9 actl permit fix:
+
+- `src/orchestrator/main.ts`: the default owner-approved dispatch path installs a global actl input-permit factory from the selected Builder record. It performs a fresh actl `status` check for `runtimeId`, expected agent/profile/workspace context, pane identity, `inputState: READY`, socket scope, and `currentSnapshotHash`, then builds the permit from the fresh snapshot. The same check runs before `dispatchV1OwnerApproved`, so a busy pane leaves no Run behind.
+- `test/v1-orchestrator-actl-dispatch.test.mjs`: disposable fake-actl tests prove one successful dispatch and pre-materialization refusal for a busy pane.
+- `test/fixtures/actl/fake-actl.mjs`: additive `status-busy` mode supports the refusal drill.
+
+The factory is deliberately installed at the orchestrator owner boundary; it never fabricates or bypasses the idle/identity/socket checks.
