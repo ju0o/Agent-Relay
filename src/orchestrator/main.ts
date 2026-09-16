@@ -1,5 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readRoleConfig } from '../roles/role-config.js';
 import { getRoleRuntimeAdapter, registerRoleRuntimeAdapter } from '../integrations/core/role-runtime-registry.js';
 import type { RoleRuntimeAdapter } from '../integrations/core/role-runtime.js';
@@ -28,6 +30,24 @@ interface Args {
   dispatchHookModule?: string;
   pmSendTimeoutMs?: string;
   maxValidationReasks?: string;
+}
+
+const execFileAsync = promisify(execFile);
+
+function idlePromptMatches(agentKind: string, snapshot: string): boolean {
+  const lines = snapshot.split(/\r?\n/).slice(-12);
+  const text = lines.join('\n');
+  if (/Working \(|esc to interrupt|Press enter to continue|Do you trust/.test(text)) return false;
+  return agentKind === 'claude' ? lines.some((line) => /^❯/.test(line.trim())) : lines.some((line) => /› Ask Codex to do anything/.test(line));
+}
+
+async function captureIdleSnapshot(socketPath: string, paneId: string): Promise<string> {
+  try {
+    const result = await execFileAsync('tmux', ['-S', path.resolve(socketPath), 'capture-pane', '-p', '-t', paneId, '-S', '-12'], { maxBuffer: 64 * 1024 });
+    return result.stdout;
+  } catch {
+    throw new ActlBridgeError('INPUT_STATE_UNKNOWN', `unable to capture idle prompt from actl pane ${paneId}`, { sideEffect: 'NONE' });
+  }
 }
 
 function parseArgs(argv: string[]): Args {
@@ -140,7 +160,6 @@ function installActlPermitFactory(builder: ReturnType<typeof readRoleConfig>['as
     });
     const data = status.data;
     if (data.runtimeId !== actl.runtimeId) throw new ActlBridgeError('MISMATCH', 'actl status runtimeId does not match the configured worker', { sideEffect: 'NONE' });
-    if (data.inputState !== 'READY') throw new ActlBridgeError('INPUT_STATE_UNKNOWN', 'actl target pane is not idle at its prompt', { sideEffect: 'NONE' });
     const context = data.context && typeof data.context === 'object' ? data.context as Record<string, unknown> : {};
     for (const [key, value] of Object.entries(expectedContext)) {
       if (context[key] !== value) throw new ActlBridgeError('MISMATCH', `actl status context mismatch for ${key}`, { sideEffect: 'NONE' });
@@ -148,6 +167,12 @@ function installActlPermitFactory(builder: ReturnType<typeof readRoleConfig>['as
     if (typeof context.paneId !== 'string' || !context.paneId.trim()) throw new ActlBridgeError('INPUT_STATE_UNKNOWN', 'actl status omitted the target pane identity', { sideEffect: 'NONE' });
     const snapshotHash = typeof data.currentSnapshotHash === 'string' ? data.currentSnapshotHash.trim() : '';
     if (!snapshotHash) throw new ActlBridgeError('INPUT_STATE_UNKNOWN', 'actl status omitted currentSnapshotHash', { sideEffect: 'NONE' });
+    if (data.inputState !== 'READY') {
+      const inlineSnapshot = [data.snapshotText, data.snapshot, (data.identityEvidence as Record<string, unknown> | undefined)?.snapshotText]
+        .find((value): value is string => typeof value === 'string');
+      const snapshot = inlineSnapshot ?? await captureIdleSnapshot(actl.socketPath, context.paneId);
+      if (!idlePromptMatches(actl.agentKind, snapshot)) throw new ActlBridgeError('INPUT_STATE_UNKNOWN', 'actl target pane is not idle at its prompt', { sideEffect: 'NONE' });
+    }
     return snapshotHash;
   };
   // The orchestrator is the owner-approved dispatcher within this authorized project scope.

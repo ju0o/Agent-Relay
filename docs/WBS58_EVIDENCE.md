@@ -269,3 +269,11 @@ Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; orchestra
 - `test/v1-orchestrator.test.mjs`: adds idle-cycle audit and exhausted-terminal Task → bootstrap → replacement Task/dispatch coverage; existing pending failed-Run Delivery coverage confirms final gate remains authoritative.
 
 Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator.test.mjs` — 35 passed, 0 failed; `npm run test:roles` — 8 passed, 0 failed. Requested combined V1 + B15 + adapter run — 84 top-level tests, 82 passed, 2 failed: pre-existing G4A and G4C failures. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 13 (TASK-0066 actl idle semantics)
+
+- `src/orchestrator/main.ts`: `INPUT_STATE_UNKNOWN` no longer automatically denies an actl dispatch. The permit factory accepts only a Codex snapshot whose last 12 lines contain `› Ask Codex to do anything`, or a Claude snapshot with an idle `❯` prompt, and rejects busy markers (`Working (`, `esc to interrupt`, `Press enter to continue`, `Do you trust`). `READY` remains accepted. Snapshot text is taken from actl status when present; otherwise the exact actl identity `paneId` is used for read-only `tmux capture-pane` on the configured socket. Runtime/context/pane/snapshot-hash checks remain unchanged.
+- `test/fixtures/actl/fake-actl.mjs`: added additive UNKNOWN idle, UNKNOWN busy, and UNKNOWN missing-snapshot modes.
+- `test/v1-orchestrator-actl-dispatch.test.mjs`: covers UNKNOWN+idle dispatch, UNKNOWN+busy refusal, UNKNOWN+missing snapshot refusal, and existing READY dispatch.
+
+Verification: `npx tsc -p tsconfig.server.json --pretty false` passed; `node --test test/v1-orchestrator-actl-dispatch.test.mjs` — 6 passed, 0 failed; requested full V1 + B15 + adapter command — 87 top-level tests, 85 passed, 2 failed (pre-existing G4A/G4C). `LIVE_DATAROOT_WRITES: 0`.

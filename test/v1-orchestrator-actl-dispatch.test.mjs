@@ -82,11 +82,36 @@ test('orchestrator default dispatch installs the owner permit and dispatches onc
   assert.equal(fakeState.sent, true);
 });
 
+test('INPUT_STATE_UNKNOWN with the Codex idle prompt grants a permit and dispatches once', async () => {
+  const f = await fixture('status-unknown-idle');
+  const hook = f.main.defaultDispatchHook(f.dataRoot, f.roleConfig);
+  const result = await hook(f.dataRoot, f.project, (await import('../dist/server/backend/goal-task.js')).getTask(f.dataRoot, f.project, f.taskId));
+  const state = JSON.parse(fs.readFileSync(path.join(f.root, 'actl-state', 'state.json'), 'utf8'));
+  assert.ok(result.runId);
+  assert.equal(state.sendCount, 1);
+});
+
+test('INPUT_STATE_UNKNOWN with a busy marker refuses dispatch', async () => {
+  const f = await fixture('status-unknown-busy');
+  const hook = f.main.defaultDispatchHook(f.dataRoot, f.roleConfig);
+  const gt = await import('../dist/server/backend/goal-task.js');
+  await assert.rejects(() => hook(f.dataRoot, f.project, gt.getTask(f.dataRoot, f.project, f.taskId)), /not idle at its prompt|unable to capture idle prompt/);
+  assert.equal(gt.getTask(f.dataRoot, f.project, f.taskId).linkedRuns.length, 0);
+});
+
+test('INPUT_STATE_UNKNOWN without a snapshot refuses dispatch fail-closed', async () => {
+  const f = await fixture('status-unknown-missing');
+  const hook = f.main.defaultDispatchHook(f.dataRoot, f.roleConfig);
+  const gt = await import('../dist/server/backend/goal-task.js');
+  await assert.rejects(() => hook(f.dataRoot, f.project, gt.getTask(f.dataRoot, f.project, f.taskId)), /unable to capture idle prompt/);
+  assert.equal(gt.getTask(f.dataRoot, f.project, f.taskId).linkedRuns.length, 0);
+});
+
 test('orchestrator refuses a busy fake actl pane before leaving a Run behind', async () => {
   const f = await fixture('status-busy');
   const hook = f.main.defaultDispatchHook(f.dataRoot, f.roleConfig);
   const gt = await import('../dist/server/backend/goal-task.js');
-  await assert.rejects(() => hook(f.dataRoot, f.project, gt.getTask(f.dataRoot, f.project, f.taskId)), /not idle at its prompt/);
+  await assert.rejects(() => hook(f.dataRoot, f.project, gt.getTask(f.dataRoot, f.project, f.taskId)), /not idle at its prompt|unable to capture idle prompt/);
   assert.equal(gt.getTask(f.dataRoot, f.project, f.taskId).linkedRuns.length, 0);
   assert.equal(fs.existsSync(path.join(f.root, 'actl-state', 'state.json')), false, 'busy preflight refuses before actl reserve/send');
 });

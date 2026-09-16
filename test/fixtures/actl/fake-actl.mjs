@@ -104,13 +104,16 @@ if (cliOp === 'status') {
       currentSnapshotHash: process.env.FAKE_ACTL_SNAPSHOT || 'fixture-snapshot',
     }), 0);
   }
+  const unknown = mode === 'status-unknown-idle' || mode === 'status-unknown-busy' || mode === 'status-unknown-missing';
   emit(envelope(requestId, true, {
     runtimeId: request.runtimeId,
     processState: 'UP',
-    inputState: 'READY',
+    inputState: unknown ? 'INPUT_STATE_UNKNOWN' : 'READY',
     context: ctx,
     identityEvidence: { paneId: fixturePane },
     currentSnapshotHash: process.env.FAKE_ACTL_SNAPSHOT || 'fixture-snapshot',
+    ...(mode === 'status-unknown-idle' ? { snapshotText: '› Ask Codex to do anything\n' } : {}),
+    ...(mode === 'status-unknown-busy' ? { snapshotText: 'Working (1s)\nesc to interrupt\n' } : {}),
     capabilities: { 'managed.collect.final': true },
   }), 0);
 }
