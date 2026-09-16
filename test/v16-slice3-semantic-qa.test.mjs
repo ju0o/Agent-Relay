@@ -175,6 +175,23 @@ console.log('-- 8b) diagnostic tail scrubs credential-shaped output --');
   check(tail.length <= 400 && !/\u001b\[|(?:sk-live-secret|abc123|hunter2|AKIAIOS|ghp_|xoxb-|0123456789abcdef|ABCDEFGHIJKLMNOPQRSTUVWXYZ|BEGIN PRIVATE KEY)/i.test(tail), '8b diagnostic tail masks listed secret shapes, strips ANSI, and stays bounded');
 }
 
+console.log('-- 8c) diagnostic tail scrubs URL credentials and AWS-style assignments; plain URLs untouched --');
+{
+  const tail = sem.workerOutputTail({
+    stdout: [
+      'fetch https://admin:shortsecret@example.com/secrets/config.json',
+      'export AWS_SECRET_ACCESS_KEY=shortsecret',
+      'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
+      'https://example.com/docs/guide.md',
+    ].join('\n'),
+    stderr: '', exitCode: 1, timedOut: false, stdoutTruncated: false, stderrTruncated: false, durationMs: 1,
+  });
+  check(tail.includes('https://[REDACTED]@example.com') && !/admin|shortsecret/.test(tail), '8c URL user:pass credentials redacted inside the URL; host and path preserved');
+  check(tail.includes('AWS_SECRET_ACCESS_KEY=[REDACTED]') && !/shortsecret/.test(tail), '8c AWS_SECRET_ACCESS_KEY= value redacted, key name kept');
+  check(tail.includes('AWS_ACCESS_KEY_ID=[REDACTED]') && !/AKIAIOS/.test(tail), '8c AWS key-id value redacted ahead of the token-prefix rule');
+  check(tail.includes('https://example.com/docs/guide.md'), '8c credential-free plain URL passes through untouched');
+}
+
 console.log('\n== PROMPT COMPOSITION (direct unit tests) ==');
 
 console.log('-- 9) composed prompt stays under the 16 KiB cap for a normal input --');
@@ -243,6 +260,20 @@ console.log('-- 12b) semantic FAIL contradicting deterministic fileExists PASS �
   const out = await sem.evaluateSemanticQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, task: { title: 't', goal: 'g', reason: 'r', scope: 's' }, criteriaText: { 'AC-1': 'docs/TROUBLESHOOTING.md must exist' } });
   check(out.record.finalQaStatus === 'BLOCKED' && out.record.reason.includes('QA_INCONSISTENT'), '12b QA_INCONSISTENT is treated as semantic BLOCKED');
   check(out.record.workerObservedCwd === path.resolve(out.record.workerObservedCwd), '12c worker cwd echo is persisted as an absolute path');
+}
+console.log('-- 12d) semantic FAIL naming a DIFFERENT file than the AC path stays FAIL, never QA_INCONSISTENT --');
+{
+  const { task, runId, workspaceRoot } = await makeTaskWithRun();
+  const docsDir = path.join(workspaceRoot, 'docs');
+  fs.mkdirSync(docsDir, { recursive: true });
+  fs.writeFileSync(path.join(docsDir, 'A.md'), 'ac-covered path present', 'utf8');
+  const workerId = registerFakeQaWorker("console.log('cwd: ' + process.cwd());\nconsole.log('status: FAIL');\nconsole.log('failedCriteria:');\nconsole.log('- AC-1');\nconsole.log('reason: docs/B.md does not exist');\n");
+  const attempt = await qa.createQaAttempt(ROOT, project, { taskId: task.taskId, runId, qaAttemptNumber: 1, qaWorkerId: workerId, criteriaValidationModes: { 'AC-1': 'SEMANTIC' } });
+  await qa.recordDeterministicEvidence(ROOT, project, attempt.qaAttemptId, { status: 'PASS', checks: [{ checkIndex: 0, kind: 'fileExists', status: 'PASS', detail: '파일이 존재합니다: docs/A.md', criterionId: 'AC-1' }] });
+  const out = await sem.evaluateSemanticQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, task: { title: 't', goal: 'g', reason: 'r', scope: 's' }, criteriaText: { 'AC-1': 'docs/A.md must exist' } });
+  check(out.record.finalQaStatus === 'FAIL', '12d different-file semantic FAIL remains FAIL — never QA_INCONSISTENT/BLOCKED');
+  check(out.record.semantic.status === 'FAIL' && out.record.semantic.criteria.some((c) => c.status === 'FAIL' && c.note.includes('docs/B.md does not exist')), '12d unrelated-path reason preserved as a genuine semantic FAIL, not reclassified');
+  check(out.record.failedCriteria.length === 1 && out.record.failedCriteria[0] === 'AC-1', '12d FAIL criteria preserved for the Builder to remediate');
 }
 
 console.log('-- 10) oversized composition throws INVALID_ARGUMENT rather than silently truncating --');

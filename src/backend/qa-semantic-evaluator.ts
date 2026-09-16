@@ -120,6 +120,8 @@ export function workerOutputTail(outcome: ProcessOutcome): string {
     .replace(/-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----/gi, '[REDACTED_PEM]')
     .replace(/sk-[^\s"']+/gi, '[REDACTED]')
     .replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
+    .replace(/(\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1[REDACTED]@')
+    .replace(/\b(AWS_[A-Z0-9_]+)\s*[:=]\s*["']?[^\s,;"']+/gi, '$1=[REDACTED]')
     .replace(/\b(?:password|passwd|pwd|secret|token|api[_-]?key|authorization)\s*[:=]\s*["']?[^\s,;"']+/gi, '[REDACTED_KEY]')
     .replace(/\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]')
     .replace(/\b(?:AKIA|ghp_|gho_|github_pat_|xox[baprs]-?)[A-Za-z0-9_-]+\b/gi, '[REDACTED_TOKEN]')
