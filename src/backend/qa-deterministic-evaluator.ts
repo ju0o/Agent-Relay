@@ -28,6 +28,10 @@
  * diffScope: `spawn('git', ['status','--porcelain=v1','--no-renames'], {cwd:
  *   workspaceRoot, shell:false})`, parsed and compared against `allowedPaths`
  *   with boundary-aware prefix matching (`src` never matches `srcx/...`).
+ *   Round 32: paths snapshotted dirty in the Run's workspace-baseline.json at
+ *   dispatch time are subtracted first — only paths dirty NOW and NOT in that
+ *   baseline count as changed by THIS run (reported as
+ *   `pre-existing (excluded): …`). No baseline file = legacy behavior.
  * command: `spawn(command, args, {cwd, shell:false})` — argv only, never a
  *   shell string; bounded timeout, bounded/truncated stdout+stderr, no env
  *   dump. A completed run with the wrong exit code is FAIL; a spawn error,
@@ -467,8 +471,50 @@ function toPosixRelative(root: string, absPath: string): string {
   return rel === '' ? '.' : rel.split(path.sep).join('/');
 }
 
+/** Bounded path listing for detail strings (never unbounded output). */
+function formatPathSample(paths: string[]): string {
+  const sample = paths.slice(0, 10);
+  return sample.join(', ') + (paths.length > sample.length ? ` 외 ${paths.length - sample.length}개` : '');
+}
+
+/** Round 32: the dispatch-time dirty-path snapshot written by the dispatcher
+ * (workspace-baseline.json = sorted array of normalized porcelain paths).
+ * Absent (older runs / capture unavailable) → legacy behavior. A PRESENT but
+ * malformed baseline fails closed (BLOCKED) — a corrupt snapshot is never
+ * silently trusted to hide out-of-scope changes. */
+async function loadWorkspaceBaseline(
+  runFolder: string,
+): Promise<{ kind: 'ok'; paths: Set<string> } | { kind: 'absent' } | { kind: 'blocked'; reason: string }> {
+  const baselinePath = path.join(runFolder, 'workspace-baseline.json');
+  let raw: string;
+  try {
+    raw = await fsp.readFile(baselinePath, 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
+    return { kind: 'blocked', reason: `workspace-baseline.json을 읽을 수 없습니다: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { kind: 'blocked', reason: `workspace-baseline.json 파싱 실패: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!Array.isArray(parsed) || parsed.some((p) => typeof p !== 'string')) {
+    return { kind: 'blocked', reason: 'workspace-baseline.json은 문자열 경로 배열이어야 합니다 (형식 오류 → fail closed).' };
+  }
+  const paths = new Set<string>();
+  for (const p of parsed) {
+    if (typeof p !== 'string' || !p) continue;
+    const norm = normalizeChangedPath(p);
+    if (norm !== null) paths.add(norm);
+  }
+  return { kind: 'ok', paths };
+}
+
 async function runDiffScopeCheck(
   workspaceRoot: string,
+  runFolder: string,
   checkIndex: number,
   def: DiffScopeCheckDef,
 ): Promise<QaDeterministicCheckResult> {
@@ -487,30 +533,64 @@ async function runDiffScopeCheck(
   const status = await runGitStatusPorcelain(workspaceRoot);
   if (status.kind === 'blocked') return makeResult(base, 'BLOCKED', status.reason);
 
+  const baseline = await loadWorkspaceBaseline(runFolder);
+  if (baseline.kind === 'blocked') return makeResult(base, 'BLOCKED', baseline.reason);
+  const baselinePaths = baseline.kind === 'ok' ? baseline.paths : null;
+
   const outOfScope: string[] = [];
+  const preExisting: string[] = [];
   for (const raw of status.paths) {
     const norm = normalizeChangedPath(raw);
+    // A path dirty NOW that was ALSO dirty at dispatch time is pre-existing:
+    // judging it as changed-by-this-run would make every Task after the first
+    // fail when an accepted deliverable was left uncommitted (live defect,
+    // Phase B run 3 / TASK-0010). Excluded regardless of allowedPaths.
+    if (baselinePaths !== null && norm !== null && baselinePaths.has(norm)) {
+      preExisting.push(norm);
+      continue;
+    }
     // An unparseable/escaping raw path is never silently dropped — treat it
     // conservatively as an out-of-scope change (fail closed, never PASS).
     if (norm === null || !normalizedAllowed.some((a) => isPathWithinAllowed(norm, a))) {
       outOfScope.push(norm ?? raw);
     }
   }
+  const preExistingNote =
+    preExisting.length > 0 ? ` pre-existing (excluded): ${formatPathSample(preExisting)}` : '';
+  const baselineEvidence =
+    baselinePaths !== null
+      ? {
+          baselineApplied: true,
+          preExistingCount: preExisting.length,
+          preExistingSample: preExisting.slice(0, 10),
+        }
+      : {};
   if (outOfScope.length > 0) {
     const sample = outOfScope.slice(0, 10);
     return makeResult(
       base,
       'FAIL',
-      `허용되지 않은 경로가 변경되었습니다: ${sample.join(', ')}${outOfScope.length > sample.length ? ` 외 ${outOfScope.length - sample.length}개` : ''}`,
-      { evidence: { outOfScopeCount: outOfScope.length, outOfScopeSample: sample, changedCount: status.paths.length } },
+      `허용되지 않은 경로가 변경되었습니다: ${formatPathSample(outOfScope)}${preExistingNote}`,
+      {
+        evidence: {
+          outOfScopeCount: outOfScope.length,
+          outOfScopeSample: sample,
+          changedCount: status.paths.length,
+          ...baselineEvidence,
+        },
+      },
     );
   }
-  return makeResult(
-    base,
-    'PASS',
-    status.paths.length === 0 ? 'workspace에 변경 사항이 없습니다 (clean).' : '변경된 모든 경로가 허용된 scope 내에 있습니다.',
-    { evidence: { changedCount: status.paths.length } },
-  );
+  const allPreExisting = preExisting.length > 0 && preExisting.length === status.paths.length;
+  const passDetail =
+    status.paths.length === 0
+      ? 'workspace에 변경 사항이 없습니다 (clean).'
+      : allPreExisting
+        ? '이 Run이 변경한 경로가 없습니다 (변경 사항은 모두 dispatch 시점 baseline에 이미 존재).'
+        : '변경된 모든 경로가 허용된 scope 내에 있습니다.';
+  return makeResult(base, 'PASS', `${passDetail}${preExistingNote}`, {
+    evidence: { changedCount: status.paths.length, ...baselineEvidence },
+  });
 }
 
 // ── CHECK 4: command ─────────────────────────────────────────────────────────
@@ -605,14 +685,14 @@ function validateCheckKindsOrThrow(checks: unknown): asserts checks is QaDetermi
   }
 }
 
-async function runOneCheck(workspaceRoot: string, checkIndex: number, def: QaDeterministicCheckDef): Promise<QaDeterministicCheckResult> {
+async function runOneCheck(workspaceRoot: string, runFolder: string, checkIndex: number, def: QaDeterministicCheckDef): Promise<QaDeterministicCheckResult> {
   switch (def.kind) {
     case 'fileExists':
       return runFileExistsCheck(workspaceRoot, checkIndex, def);
     case 'fileExactContent':
       return runFileExactContentCheck(workspaceRoot, checkIndex, def);
     case 'diffScope':
-      return runDiffScopeCheck(workspaceRoot, checkIndex, def);
+      return runDiffScopeCheck(workspaceRoot, runFolder, checkIndex, def);
     case 'command':
       return runCommandCheck(workspaceRoot, checkIndex, def);
   }
@@ -766,7 +846,7 @@ export function evaluateDeterministicQa(
     }
 
     validateCheckKindsOrThrow(input.checks);
-    const { workspaceRoot } = resolveAuthoritativeRunBinding(dataRoot, project, attempt);
+    const { workspaceRoot, runFolder } = resolveAuthoritativeRunBinding(dataRoot, project, attempt);
 
     const results: QaDeterministicCheckResult[] = [];
     for (let i = 0; i < input.checks.length; i += 1) {
@@ -775,7 +855,7 @@ export function evaluateDeterministicQa(
       // trivially bounded/predictable — no concurrency surprises to reason
       // about beyond the top-level per-attempt lock.
       // eslint-disable-next-line no-await-in-loop
-      results.push(await runOneCheck(workspaceRoot, i, input.checks[i]));
+      results.push(await runOneCheck(workspaceRoot, runFolder, i, input.checks[i]));
     }
 
     const status = aggregateDeterministicStatus(results);

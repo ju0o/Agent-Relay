@@ -59,12 +59,12 @@ async function makeTaskWithRun() {
 }
 
 async function makeAttempt(criteriaValidationModes) {
-  const { task, runId, workspaceRoot } = await makeTaskWithRun();
+  const { task, runId, folder, workspaceRoot } = await makeTaskWithRun();
   const attempt = await qa.createQaAttempt(ROOT, project, {
     taskId: task.taskId, runId, qaAttemptNumber: 1,
     ...(criteriaValidationModes ? { criteriaValidationModes } : {}),
   });
-  return { task, runId, workspaceRoot, attempt };
+  return { task, runId, folder, workspaceRoot, attempt };
 }
 
 function initGitRepo(dir) {
@@ -275,6 +275,68 @@ console.log('-- 14) path normalization cannot bypass allowed scope --');
     checks: [{ kind: 'diffScope', allowedPaths: ['src'] }],
   });
   check(out.record.deterministic.checks[0].status === 'FAIL', '14a "src-evil" is never matched by allowed "src" (boundary-aware prefix match)');
+}
+
+console.log('-- 14b) dispatch-time baseline: pre-existing dirty path is subtracted → PASS with note --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  // docs/OPERATIONS.md is dirty BEFORE this run was even dispatched: it is in
+  // the run's workspace-baseline.json, so this run did not change it.
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify(['docs/OPERATIONS.md']), 'utf8');
+  // The run only changes docs/RELEASE_NOTES.md (allowed).
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'PASS', `14b PASS when only the allowed path is changed and the rest of the dirt is pre-existing (got ${c.status})`);
+  check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), `14b detail cites the subtracted path (got: ${c.detail})`);
+  check(c.evidence.baselineApplied === true && c.evidence.preExistingCount === 1, '14b evidence records baselineApplied + preExistingCount');
+}
+
+console.log('-- 14c) same baseline, NEW out-of-scope dirty path (not in baseline) → FAIL naming only it --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify(['docs/OPERATIONS.md']), 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  fs.mkdirSync(path.join(workspaceRoot, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'scripts', 'x.mjs'), 'x', 'utf8'); // changed by THIS run, out of scope
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'FAIL', `14c FAIL for a path this run actually changed (got ${c.status})`);
+  check(c.detail.includes('허용되지 않은 경로가 변경되었습니다: scripts/x.mjs'), `14c FAIL detail names only scripts/x.mjs (got: ${c.detail})`);
+  check(!c.detail.includes('허용되지 않은 경로가 변경되었습니다: docs/OPERATIONS.md'), '14c pre-existing docs/OPERATIONS.md is NOT named as an out-of-scope change');
+  check(JSON.stringify(c.evidence.outOfScopeSample) === JSON.stringify(['scripts/x.mjs']), '14c outOfScopeSample is exactly [scripts/x.mjs]');
+  check(c.evidence.outOfScopeCount === 1 && c.evidence.preExistingCount === 1, '14c outOfScopeCount=1, preExistingCount=1');
+  check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), '14c detail still cites the subtracted pre-existing path');
+}
+
+console.log('-- 14d) NO baseline file → legacy behavior: pre-existing out-of-scope dirt still FAILs --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  check(!fs.existsSync(path.join(folder, 'workspace-baseline.json')), '14d fixture has no baseline file');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'FAIL', `14d legacy behavior: any out-of-scope dirty path is FAIL without a baseline (got ${c.status})`);
+  check(c.detail.includes('docs/OPERATIONS.md') && !c.detail.includes('pre-existing (excluded)'), '14d legacy FAIL names the out-of-scope path, with no pre-existing note');
+  check(c.evidence.baselineApplied === undefined, '14d no baseline-evidence keys on the legacy path (behaviour byte-unchanged)');
 }
 
 console.log('\n== COMMAND ==');

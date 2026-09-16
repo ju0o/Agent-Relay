@@ -673,6 +673,90 @@ function writeFileAtomicText(folder: string, name: string, content: string): voi
   }
 }
 
+// ── Dispatch-time workspace baseline (round 32) ───────────────────────────────
+//
+// diffScope judgment must attribute only THIS run's changes. At dispatch time
+// (before the Worker spawns) we snapshot the workspace's dirty paths into
+// workspace-baseline.json inside the Run folder; the deterministic evaluator
+// then subtracts those pre-existing paths, so a Builder that leaves its
+// accepted deliverable uncommitted can never poison the next Task's scope gate.
+
+/** Porcelain line → normalized workspace-relative posix path (mirrors the
+ * evaluator's normalizeChangedPath — both sides must compare the SAME shape). */
+function normalizeBaselinePath(raw: string): string | null {
+  if (raw.length < 4) return null;
+  let p = raw.slice(3);
+  if (p.length >= 2 && p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+  p = p.trim();
+  if (!p) return null;
+  const norm = path.posix.normalize(p.replace(/\\/g, '/'));
+  if (norm.startsWith('..') || path.posix.isAbsolute(norm)) return null;
+  return norm;
+}
+
+/** Runs the same authoritative `git status --porcelain=v1 --no-renames -uall`
+ * the evaluator uses, and returns the sorted unique normalized path list, or
+ * null when the workspace cannot be authoritatively inspected (not a git repo,
+ * git missing, timeout, non-zero exit). A null result simply writes NO baseline
+ * file — legacy whole-workspace diffScope behavior stays intact for lost
+ * captures (and the evaluator would BLOCK such a scope anyway). */
+function captureWorkspaceBaselinePaths(workspaceRoot: string): Promise<string[] | null> {
+  return new Promise((resolve) => {
+    let child: ChildProcess | undefined;
+    try {
+      child = spawn('git', ['status', '--porcelain=v1', '--no-renames', '-uall'], {
+        cwd: workspaceRoot,
+        shell: false,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let stdout = '';
+    let settled = false;
+    const finish = (paths: string[] | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(paths);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child?.kill('SIGKILL'); // never leave a stray git running
+      } catch { /* already exited */ }
+      finish(null);
+    }, 30_000);
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (stdout.length < 100_000) stdout += chunk.toString('utf8');
+    });
+    child.stderr?.resume(); // drain — never interpreted
+    child.once('error', () => finish(null));
+    child.once('close', (code) => {
+      if (code !== 0) {
+        finish(null);
+        return;
+      }
+      const seen = new Set<string>();
+      for (const line of stdout.split('\n')) {
+        const norm = normalizeBaselinePath(line.replace(/\r$/, ''));
+        if (norm !== null) seen.add(norm);
+      }
+      finish([...seen].sort());
+    });
+  });
+}
+
+/** Snapshots the workspace dirtiness into workspace-baseline.json right where
+ * the Run meta is written. Never throws (a capture failure only means "no
+ * baseline" — legacy behavior), so the pre-commit CAS discipline is untouched. */
+async function writeWorkspaceBaseline(runFolder: string, workspaceRoot: string): Promise<void> {
+  const paths = await captureWorkspaceBaselinePaths(workspaceRoot);
+  if (paths === null) return; // no authoritative diff available → legacy behavior
+  writeFileAtomicText(runFolder, 'workspace-baseline.json', JSON.stringify(paths, null, 2) + '\n');
+}
+
 async function rollbackPreCommitRun(
   dataRoot: string,
   project: string,
@@ -948,6 +1032,10 @@ export async function dispatchTask(
         ? { ownerApprovedScopeFingerprint: ownerApprovalContext.scopeFingerprint }
         : {}),
     });
+
+    // 6b. Snapshot the workspace's pre-existing dirty paths at dispatch time so
+    // the QA diffScope gate can judge only THIS run's changes (round 32).
+    await writeWorkspaceBaseline(createdFolder, workspaceRoot);
 
     // 7. Link Run to Task
     await linkRunToTask(root, proj, taskId, materialized.folder);
@@ -1537,6 +1625,9 @@ async function runActlManagedDispatch(args: {
         ? { ownerApprovedScopeFingerprint: ownerApprovalContext.scopeFingerprint }
         : {}),
     });
+
+    // Same dispatch-time baseline for actl-managed Runs (round 32).
+    await writeWorkspaceBaseline(createdFolder, workspaceRoot);
 
     let task = getTask(root, proj, taskId);
     await linkRunToTask(root, proj, taskId, materialized.folder);

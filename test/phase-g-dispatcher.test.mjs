@@ -4,6 +4,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const TEST_ROOT = path.join(os.tmpdir(), `arl-phase-g-${process.pid}-${Date.now()}`);
@@ -213,6 +214,46 @@ registerWorker('w-alive', FIX_ALIVE, { displayName: 'Alive' });
     !names.some((n) => n.includes('transition_execution') || n.includes('mark_result_received') || n.includes('cancel_task')),
     'G-14 Worker surface cannot mutate execution state (no transition tools)',
   );
+}
+
+// ── G-14a: dispatch-time workspace baseline (round 32) ─────────────────────
+console.log('\n── G-14a dispatch-time workspace baseline ──');
+
+{
+  // Generic (non-actl) worker dispatch must snapshot the workspace's
+  // pre-existing dirty paths into workspace-baseline.json in the Run folder.
+  const baseWS = path.join(TEST_ROOT, '_baseline-ws');
+  fs.rmSync(baseWS, { recursive: true, force: true });
+  fs.mkdirSync(baseWS, { recursive: true });
+  execSync('git init -q', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.email g@example.com', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.name "G Fixture"', { cwd: baseWS, stdio: 'ignore' });
+  const dirtyPath = path.join('docs', 'OPERATIONS.md');
+  fs.mkdirSync(path.join(baseWS, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(baseWS, dirtyPath), 'uncommitted-from-before', 'utf8');
+
+  const task = await makeReadyTask(goal.goalId, 'Baseline dispatch');
+  const result = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: task.taskId,
+    workerId: 'w-zero',
+    expectedExecutionState: 'READY',
+    workspaceRoot: baseWS,
+  });
+  check(result.executionState === 'RUNNING' && result.runId, 'G-14a dispatch succeeds for a git workspace');
+  const linked = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.find((r) => r.runId === result.runId);
+  check(!!linked, 'G-14a baseline dispatch run linked');
+  const baselinePath = path.join(linked.folder, 'workspace-baseline.json');
+  check(fs.existsSync(baselinePath), 'G-14a workspace-baseline.json written at dispatch');
+  let baseline = null;
+  try {
+    baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+  } catch {
+    baseline = null;
+  }
+  check(Array.isArray(baseline) && baseline.includes(dirtyPath), `G-14a baseline contains the pre-existing dirty path (got ${JSON.stringify(baseline)})`);
+  check(Array.isArray(baseline) && baseline.join(',') === [...baseline].sort().join(','), 'G-14a baseline list is sorted');
+  check(baseline.length === 1, 'G-14a only the pre-existing dirty path is snapshotted (clean repo has nothing else)');
+  disp._resetDispatcherStateForTests();
 }
 
 // ── G-15..G-20 rollback + spawn failure ─────────────────────────────────────
