@@ -16,9 +16,10 @@ const QA = path.resolve('scripts/fake-qa-worker.mjs'); const BUILDER = path.reso
 let sequence = 0;
 function reset() { disp._resetDispatcherStateForTests(); capture._resetCaptureServiceForTests(); qa._resetQaAttemptLocksForTests(); qrp._resetQaRemediationPreparationLocksForTests(); gate._resetQaGateLocksForTests(); }
 async function setup({ qaWorker = null } = {}) {
+  fs.mkdirSync(path.join(ROOT, 'workspace'), { recursive: true });
   const counter = path.join(ROOT, `qa-${++sequence}.count`); fs.writeFileSync(counter, qaWorker === 'pass' ? '1' : '0');
   const qaWorkerId = qaWorker === 'crash' ? 'qa-crash' : `qa-${sequence}`; wr.writeWorkerRegistryRecord(ROOT, { schemaVersion: 'G.2', workerId: qaWorkerId, launchCommand: NODE, launchArgsPrefix: qaWorker === 'crash' ? ['-e', 'process.exit(9)'] : [QA, counter], role: 'qa' });
-  wr.writeWorkerRegistryRecord(ROOT, { schemaVersion: 'G.2', workerId: `builder-${sequence}`, launchCommand: NODE, launchArgsPrefix: [BUILDER], role: 'implementation', observationAdapterId: 'test-fixture' });
+  wr.writeWorkerRegistryRecord(ROOT, { schemaVersion: 'G.2', workerId: `builder-${sequence}`, launchCommand: NODE, launchArgsPrefix: [BUILDER], workingDirectory: 'workspace', role: 'implementation', observationAdapterId: 'test-fixture' });
   const g = await gt.createGoal(ROOT, PROJECT, { title: 'WBS67', goalStatement: 'QA loop' });
   const t = await gt.createTask(ROOT, PROJECT, { goalId: g.goalId, title: 'same task', goal: 'make output correct', reason: 'proof', scope: 'out.txt only', completionCriteria: ['done'], executionState: 'RUNNING', pmState: 'PENDING', acceptanceCriteria: [{ id: 'AC-SEMANTIC', description: 'output is correct', validationMode: 'SEMANTIC' }], qaContract: { deterministic: [{ kind: 'fileExists', path: 'out.txt' }], semantic: { qaWorkerId }, maxQaRemediationAttempts: 1 } });
   return { task: t, builderId: `builder-${sequence}` };
@@ -27,7 +28,7 @@ async function linkResult(taskId, n, builderId, text = 'result', existingWorkspa
   const workspaceRoot = existingWorkspace ?? path.join(ROOT, 'workspace', String(n)); const folder = path.join(ROOT, PROJECT, '_runs', String(n)); fs.mkdirSync(workspaceRoot, { recursive: true }); fs.mkdirSync(folder, { recursive: true });
   const runId = `wbs67-run-${n}`; fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify({ tags: [], runId, workspaceRoot, workerId: builderId })); await gt.linkRunToTask(ROOT, PROJECT, taskId, folder);
   fs.mkdirSync(path.join(folder, 'evidence'), { recursive: true }); fs.writeFileSync(path.join(folder, 'evidence', 'adapter.json'), '{}'); fs.writeFileSync(path.join(folder, 'result.md'), text);
-  spawnSync(NODE, [BUILDER], { cwd: workspaceRoot, env: { ...process.env } }); if (correctOutput) fs.writeFileSync(path.join(workspaceRoot, 'out.txt'), 'correct'); obs.releaseObservationLockByBinding({ observationAdapterId: 'test-fixture', workspaceRoot, taskId, runId }); await rt.markQaResultReceived(ROOT, PROJECT, taskId, runId); return { runId, folder, workspaceRoot };
+  spawnSync(NODE, [BUILDER], { cwd: workspaceRoot, env: { ...process.env, FAKE_BUILDER_OUTPUT: path.join(workspaceRoot, 'out.txt'), FAKE_BUILDER_COUNTER: path.join(workspaceRoot, '.builder-attempt') } }); if (correctOutput) fs.writeFileSync(path.join(workspaceRoot, 'out.txt'), 'correct'); obs.releaseObservationLockByBinding({ observationAdapterId: 'test-fixture', workspaceRoot, taskId, runId }); await rt.markQaResultReceived(ROOT, PROJECT, taskId, runId); return { runId, folder, workspaceRoot };
 }
 async function finishCurrent(taskId, builderId, n, text) { const r = await linkResult(taskId, n, builderId, text); const out = await gate.runOrResumeQaGate(ROOT, PROJECT, taskId); return { r, out }; }
 
