@@ -29,6 +29,8 @@ export interface RoleLoopConfig {
   pmSendTimeoutMs?: number;
   /** Resolves a fallbackChain adapter id to a registered RoleRuntimeAdapter, or null if unregistered. */
   resolveAdapter?: (adapterId: string) => RoleRuntimeAdapter | null;
+  /** Maximum re-asks for contract/QA validation failures; schema errors remain single-reask. */
+  maxValidationReasks?: number;
 }
 
 export class BillingGuardError extends Error {
@@ -40,6 +42,7 @@ export class PmOwnerRequiredError extends Error {
 export class PmTimeoutError extends Error {
   readonly code = 'BLOCKED_RUNTIME' as const;
 }
+class PmContractValidationError extends Error {}
 
 // ── (a) runtime billing guard ────────────────────────────────────────────────
 
@@ -154,20 +157,36 @@ async function sendAndParseWithReask<T>(
   sessionId: string,
   envelope: InputEnvelope,
   parseFn: (text: string) => T,
-  buildReaskEnvelope: (err: string, pmReply: string) => InputEnvelope,
+  buildReaskEnvelope: (err: string, pmReply: string, validation: boolean) => InputEnvelope,
   timeoutMs: number,
+  options: { maxValidationReasks?: number; onValidationReask?: (round: number, error: string) => void } = {},
 ): Promise<ParseOutcome<T>> {
   const first = await sendAndCollect(adapter, sessionId, envelope, timeoutMs);
-  try {
-    return { ok: true, value: parseFn(first.text) };
-  } catch (e1) {
-    const err1 = e1 instanceof Error ? e1.message : String(e1);
-    const second = await sendAndCollect(adapter, sessionId, buildReaskEnvelope(err1, first.text), timeoutMs);
+  let reply = first.text;
+  let lastError = '';
+  let schemaReasked = false;
+  let validationReasks = 0;
+  while (true) {
     try {
-      return { ok: true, value: parseFn(second.text) };
-    } catch (e2) {
-      const err2 = e2 instanceof Error ? e2.message : String(e2);
-      return { ok: false, error: `first attempt: ${err1}; re-ask attempt: ${err2}` };
+      return { ok: true, value: parseFn(reply) };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      const validation = err instanceof PmContractValidationError;
+      const maxValidationReasks = options.maxValidationReasks ?? 3;
+      if (validation && !schemaReasked && validationReasks < maxValidationReasks) {
+        validationReasks += 1;
+        options.onValidationReask?.(validationReasks, lastError);
+        const next = await sendAndCollect(adapter, sessionId, buildReaskEnvelope(lastError, reply, true), timeoutMs);
+        reply = next.text;
+        continue;
+      }
+      if (!validation && !schemaReasked) {
+        schemaReasked = true;
+        const next = await sendAndCollect(adapter, sessionId, buildReaskEnvelope(lastError, reply, false), timeoutMs);
+        reply = next.text;
+        continue;
+      }
+      return { ok: false, error: lastError };
     }
   }
 }
@@ -239,9 +258,11 @@ function deriveTitle(rawContract: Record<string, unknown>): string {
   return goal.length > 80 ? goal.slice(0, 80) + '…' : goal;
 }
 
-function reaskEnvelope(kind: InputEnvelope['kind'], schemaVersion: string, contextHash: string, originalBody: string, error: string, pmReply = ''): InputEnvelope {
+function reaskEnvelope(kind: InputEnvelope['kind'], schemaVersion: string, contextHash: string, originalBody: string, error: string, pmReply = '', validation = false): InputEnvelope {
   const noTools = /<tool_call\b|<function\s*=/.test(pmReply) && !/```[a-zA-Z]*\r?\n/.test(pmReply);
-  const instruction = noTools
+  const instruction = validation
+    ? `${error}\nReturn the COMPLETE corrected PM_TASK_DECISION v1 block; keep everything else unchanged.`
+    : noTools
     ? 'you have no tools; answer with the JSON block only'
     : `Your previous reply did not match the required schema: ${error}`;
   return {
@@ -360,11 +381,19 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
         if (decision.decision !== 'CREATE_TASK') return decision;
         const normalized = normalizePmTaskContract(cfg.roleConfig, decision.task_contract!);
         qaWorkerOverridden ||= normalized.overridden;
-        dryRunValidateContract(cfg.project, normalized.contract);
+        try {
+          dryRunValidateContract(cfg.project, normalized.contract);
+        } catch (error) {
+          throw new PmContractValidationError(error instanceof Error ? error.message : String(error));
+        }
         return { ...decision, task_contract: normalized.contract };
       },
-      (err, pmReply) => reaskEnvelope('PM_BOOTSTRAP', 'pm-bootstrap-packet.v1', packet.contextHash, packet.text, err, pmReply),
+      (err, pmReply, validation) => reaskEnvelope('PM_BOOTSTRAP', 'pm-bootstrap-packet.v1', packet.contextHash, packet.text, err, pmReply, validation),
       timeoutMs,
+      {
+        maxValidationReasks: cfg.maxValidationReasks ?? 3,
+        onValidationReask: (round, error) => audit(cfg.auditDir, { step: 'bootstrap', outcome: `VALIDATION_REASK ${round}/${cfg.maxValidationReasks ?? 3}`, reason: error }),
+      },
     );
   } catch (err) {
     if (err instanceof PmTimeoutError) {

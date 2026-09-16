@@ -177,3 +177,14 @@ WBS-10 pass 5 fixes:
 - `test/v1-orchestrator.test.mjs`: verifies the generated example with both task and QA validators, worker injection/override auditing, validation-error re-ask, and blocked-state reset.
 
 Verification: `npx tsc -p tsconfig.server.json` passed; orchestrator tests — 26 passed, 0 failed.
+
+## CHANGES round 4
+
+WBS-10 pass 6 fixes:
+
+- `src/orchestrator/role-loop.ts`: contract/QA validation failures are marked separately from structured-output failures. They receive up to `maxValidationReasks` (default 3) with the exact validator message and the complete-correction instruction; schema/header failures retain the single re-ask. Each validation round is audited as `VALIDATION_REASK n/3`, and exhaustion blocks without canonical Task creation.
+- `src/orchestrator/pm-packets.ts`: the PM contract now states verbatim that `cwd` is omitted or workspace-relative, every DETERMINISTIC/BOTH criterion must have a matching `criterionId` check, and command/args are separated.
+- `src/orchestrator/main.ts`: added `--max-validation-reasks` and passes the bounded value into the role loop.
+- `test/v1-orchestrator.test.mjs`: added convergence, exhaustion/no-write, and exact validator-message assertions; existing malformed-header coverage confirms the one-reask rule.
+
+Verification: `npx tsc -p tsconfig.server.json` passed; focused adapter/orchestrator/drill suites — 44 passed, 0 failed. Full V1 + adapter run — 72 tests, 70 passed, 2 pre-existing G4A/G4C failures. `LIVE_DATAROOT_WRITES: 0` for the focused disposable suites.

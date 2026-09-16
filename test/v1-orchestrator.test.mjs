@@ -228,6 +228,39 @@ test('invalid QA contract validation is re-asked once with the exact validation 
   assert.match(adapter.sendLog[1].body, /deterministic\[0\] 항목이 잘못되었습니다/);
 });
 
+test('contract validation gets three bounded rounds and converges after cwd and criterion fixes', async () => {
+  const project = 'OrchValidationRounds';
+  const roleConfig = makeRoleConfig(project);
+  const contract = (check) => ({ goal: 'produce output', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }], qa_route: { deterministic: [check] } });
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [
+    fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'first correction', task_contract: contract({ kind: 'command', criterionId: 'AC-01', command: 'node', args: [], cwd: '/tmp/work' }) }),
+    fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'second correction', task_contract: contract({ kind: 'command', command: 'node', args: [] }) }),
+    fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'complete correction', task_contract: contract({ kind: 'command', criterionId: 'AC-01', command: 'node', args: [], cwd: 'workspace' }) }),
+  ] });
+  const { auditDir, stateFile } = mkTestDirs('validation-rounds');
+  const result = await roleLoop.processBootstrap({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile });
+  assert.equal(result.outcome, 'CREATE_TASK');
+  assert.equal(adapter.sendLog.length, 3);
+  assert.equal(gt.listTasks(dataRoot, project).length, 1);
+  assert.deepEqual(auditLines(auditDir).filter((line) => line.outcome?.startsWith('VALIDATION_REASK')).map((line) => line.outcome), ['VALIDATION_REASK 1/3', 'VALIDATION_REASK 2/3']);
+  assert.match(adapter.sendLog[1].body, /cwd는 workspace 상대 경로여야 합니다/);
+  assert.match(adapter.sendLog[2].body, /귀속된 deterministic check/);
+  assert.match(adapter.sendLog[2].body, /Return the COMPLETE corrected PM_TASK_DECISION v1 block; keep everything else unchanged\./);
+});
+
+test('four invalid contract responses exhaust validation re-asks and create no Task', async () => {
+  const project = 'OrchValidationBlocked';
+  const roleConfig = makeRoleConfig(project);
+  const bad = fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'still invalid', task_contract: { goal: 'produce output', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }], qa_route: { deterministic: [{ kind: 'command', criterionId: 'AC-01', command: 'node --bad', args: [] }] } } });
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [bad, bad, bad, bad] });
+  const { auditDir, stateFile } = mkTestDirs('validation-blocked');
+  const result = await roleLoop.processBootstrap({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile });
+  assert.equal(result.outcome, 'BLOCKED');
+  assert.equal(adapter.sendLog.length, 4, 'initial response plus three validation re-asks');
+  assert.equal(gt.listTasks(dataRoot, project).length, 0);
+  assert.equal(auditLines(auditDir).filter((line) => line.outcome?.startsWith('VALIDATION_REASK')).length, 3);
+});
+
 test('--retry-blocked parses as an operator flag and clears only the durable blocked map', async () => {
   const main = await import('../dist/server/orchestrator/main.js');
   const stateFile = path.join(ROOT, 'retry-blocked-state.json');
