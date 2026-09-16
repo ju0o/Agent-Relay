@@ -24,6 +24,36 @@ function bound(text: string, max: number): string {
   return t.length > max ? t.slice(0, max) + '…' : t;
 }
 
+export type PmOutputContractKind = 'PM_TASK_DECISION v1' | 'PM_JUDGMENT v1';
+
+/** Single source of truth for the plain-text PM response contract appended to every packet. */
+export function renderOutputContract(kind: PmOutputContractKind): string {
+  if (kind === 'PM_TASK_DECISION v1') {
+    return [
+      '## OUTPUT CONTRACT',
+      'You have no tools. Reply with plain text containing exactly one fenced block.',
+      'The first line inside the fence must be exactly `PM_TASK_DECISION v1`, followed by one JSON object.',
+      'Fields: decision (CREATE_TASK|CHANGES|OWNER_REQUIRED|PROJECT_COMPLETE); task_contract (required only for CREATE_TASK; bounded contract object); reason (non-empty explanation).',
+      'Minimal valid example:',
+      '```json',
+      'PM_TASK_DECISION v1',
+      '{"decision":"PROJECT_COMPLETE","reason":"No task is required."}',
+      '```',
+    ].join('\n');
+  }
+  return [
+    '## OUTPUT CONTRACT',
+    'You have no tools. Reply with plain text containing exactly one fenced block.',
+    'The first line inside the fence must be exactly `PM_JUDGMENT v1`, followed by one JSON object.',
+    'Fields: decision (ACCEPT|CHANGES|OWNER_REQUIRED|ACCEPT_AND_NEXT); retry (NONE|SAME_TASK; CHANGES requires SAME_TASK); reason (non-empty explanation); contract_hash (echo the packet hash); context_hash (echo the packet hash); retry_instruction (required only for CHANGES); next_task_contract (required only for ACCEPT_AND_NEXT).',
+    'Minimal valid example:',
+    '```json',
+    'PM_JUDGMENT v1',
+    '{"decision":"OWNER_REQUIRED","retry":"NONE","reason":"Required information is unavailable.","contract_hash":"hash","context_hash":"hash"}',
+    '```',
+  ].join('\n');
+}
+
 /** Owner locks: role-config.ts's RoleAssignment carries no `ownerGateConditions`
  * field (WBS-1, as committed) — the spec line naming it predates that shape.
  * Fall back to the most recent Task's own contract.owner_gate_conditions when
@@ -87,6 +117,8 @@ export function buildPmBootstrapPacket(dataRoot: string, project: string, roleCo
   lines.push('');
   lines.push('## Owner gate conditions');
   lines.push(ownerGateConditions.map((c) => `- ${c}`).join('\n'));
+  lines.push('');
+  lines.push(renderOutputContract('PM_TASK_DECISION v1'));
 
   return { text: lines.join('\n'), contextHash: contextHash(structured) };
 }
@@ -168,6 +200,8 @@ export function buildPmFinalGatePacket(dataRoot: string, project: string, delive
   }
   lines.push('');
   lines.push(`Allowed actions: ${allowedActions.join(', ')}`);
+  lines.push('');
+  lines.push(renderOutputContract('PM_JUDGMENT v1'));
 
   return { ...structured, contextHash: contextHash(structured), text: lines.join('\n') };
 }

@@ -11,6 +11,7 @@ const { OpenCodeCommandAdapter } = await import('../dist/server/integrations/ope
 
 const PASSWORD = 'test-pass-123';
 const sentMessageBodies = [];
+const abortSessions = [];
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-oc-adapter-'));
 const passwordFile = path.join(root, 'server.pass');
 fs.writeFileSync(passwordFile, PASSWORD + '\n');
@@ -93,6 +94,7 @@ function startFakeServer() {
       }
       const abortMatch = /^\/session\/([^/]+)\/abort$/.exec(url);
       if (abortMatch && req.method === 'POST') {
+        abortSessions.push(decodeURIComponent(abortMatch[1]));
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
         return;
@@ -135,6 +137,13 @@ test('send then collect returns assistant text', async () => {
   assert.equal(tools.edit, false);
   assert.equal(tools.write, false);
   assert.ok(Object.values(tools).every((value) => value === false), 'every sent tool flag is false');
+});
+
+test('abortSession sends the OpenCode abort POST', async () => {
+  const adapter = new OpenCodeCommandAdapter({ baseUrl, passwordFile, defaultModel });
+  const { sessionId } = await adapter.ensureSession({ roleId: 'pm', project: 'AbortProject', sessionPolicy: 'per-task', sessionKey: 'abort' });
+  await adapter.abortSession(sessionId);
+  assert.equal(abortSessions.at(-1), sessionId);
 });
 
 test('conversation continuity: second prompt sees first via session history', async () => {

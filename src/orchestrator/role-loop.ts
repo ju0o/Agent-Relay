@@ -10,6 +10,7 @@ import { ensureV1ContainerGoal } from '../backend/v1-intake.js';
 import { buildTaskContract } from '../backend/task-contract.js';
 import type { RoleConfig, RoleAssignment } from '../roles/role-config.js';
 import type { RoleRuntimeAdapter, InputEnvelope } from '../integrations/core/role-runtime.js';
+import { readRoleSession, roleSessionPath, writeRoleSession } from '../integrations/core/role-runtime.js';
 import type { TaskRecord } from '../shared/types.js';
 import { buildPmBootstrapPacket, buildPmFinalGatePacket, type PmFinalGatePacket } from './pm-packets.js';
 import { parsePmTaskDecision, parsePmJudgment, type PmTaskDecision, type PmJudgment } from './pm-schemas.js';
@@ -213,6 +214,16 @@ function recordRuntimeBlock(cfg: RoleLoopConfig, state: OrchestratorStateFile, k
   return { outcome: 'BLOCKED_RUNTIME', reason: failure.reason, ...(failure.retryAfter === undefined ? {} : { retryAfter: failure.retryAfter }) };
 }
 
+async function rotateTimedOutPmSession(cfg: RoleLoopConfig, adapter: RoleRuntimeAdapter, sessionId: string): Promise<void> {
+  try {
+    if (adapter.abortSession) await adapter.abortSession(sessionId);
+    else await adapter.interrupt(sessionId);
+  } catch {
+    // Best effort: the durable record must still be rotated.
+  }
+  fs.rmSync(roleSessionPath(cfg.dataRoot, cfg.project, 'pm'), { force: true });
+}
+
 function hasOpenTask(dataRoot: string, project: string): boolean {
   return listTasks(dataRoot, project).some((t) => t.pmState !== 'ACCEPTED' && t.executionState !== 'CANCELLED');
 }
@@ -238,14 +249,30 @@ function reaskEnvelope(kind: InputEnvelope['kind'], schemaVersion: string, conte
 async function ensurePmAdapterAndSession(
   cfg: RoleLoopConfig,
   assignment: RoleAssignment,
+  contextHash: string,
 ): Promise<{ adapter: RoleRuntimeAdapter; sessionId: string }> {
   const adapter = resolvePmAdapterForTurn(cfg, assignment);
-  const { sessionId } = await adapter.ensureSession({
+  const ensured = await adapter.ensureSession({
     roleId: 'pm',
     project: cfg.project,
     sessionPolicy: assignment.sessionPolicy,
     sessionKey: `${cfg.project}:pm`,
   });
+  const sessionId = ensured.sessionId;
+  const existing = readRoleSession(cfg.dataRoot, cfg.project, 'pm');
+  const newSession = ensured.created && (!existing || existing.sessionId !== sessionId);
+  if (newSession || !existing || existing.sessionId !== sessionId || existing.preambleSent !== true) {
+    const preamble = fs.readFileSync(path.resolve(process.cwd(), 'docs/PM_ROLE_INSTRUCTIONS.md'), 'utf8');
+    const request = await adapter.send(sessionId, { kind: 'PM_PREAMBLE', schemaVersion: 'pm-role-instructions.v1', contextHash, body: preamble });
+    await adapter.collect(sessionId, request.requestId, { timeoutMs: cfg.pmSendTimeoutMs ?? 120_000 });
+    writeRoleSession(cfg.dataRoot, cfg.project, 'pm', {
+      adapterId: adapter.id,
+      sessionId,
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      preambleSent: true,
+    });
+  }
   return { adapter, sessionId };
 }
 
@@ -286,7 +313,7 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
   let adapter: RoleRuntimeAdapter;
   let sessionId: string;
   try {
-    ({ adapter, sessionId } = await ensurePmAdapterAndSession(cfg, assignment));
+    ({ adapter, sessionId } = await ensurePmAdapterAndSession(cfg, assignment, packet.contextHash));
   } catch (err) {
     if (err instanceof BillingGuardError || err instanceof PmOwnerRequiredError) {
       const outcome = err instanceof BillingGuardError ? 'BLOCKED_BILLING' : 'OWNER_REQUIRED';
@@ -309,6 +336,7 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
     );
   } catch (err) {
     if (err instanceof PmTimeoutError) {
+      await rotateTimedOutPmSession(cfg, adapter, sessionId);
       return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
     }
     return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
@@ -434,7 +462,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
   let adapter: RoleRuntimeAdapter;
   let sessionId: string;
   try {
-    ({ adapter, sessionId } = await ensurePmAdapterAndSession(cfg, assignment));
+    ({ adapter, sessionId } = await ensurePmAdapterAndSession(cfg, assignment, packet.contextHash));
   } catch (err) {
     if (err instanceof BillingGuardError || err instanceof PmOwnerRequiredError) {
       const outcome = err instanceof BillingGuardError ? 'BLOCKED_BILLING' : 'OWNER_REQUIRED';
@@ -463,6 +491,7 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
     );
   } catch (err) {
     if (err instanceof PmTimeoutError) {
+      await rotateTimedOutPmSession(cfg, adapter, sessionId);
       return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);
     }
     return recordRuntimeBlock(cfg, state, blockKey, packet.contextHash, err);

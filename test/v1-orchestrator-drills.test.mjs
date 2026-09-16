@@ -32,7 +32,7 @@ class FakePmAdapter {
   capabilities() { return { persistentSession: true, structuredInput: true, structuredOutput: true, readWorkspace: true, writeWorkspace: false, shell: false, subscriptionAuth: false, freeTier: true }; }
   async authMode() { return { mode: 'free' }; }
   async ensureSession({ sessionKey }) { if (this.ensureError) throw this.ensureError; if (!this.sessions.has(sessionKey)) this.sessions.set(sessionKey, `session-${this.id}`); return { sessionId: this.sessions.get(sessionKey), created: true }; }
-  async send(sessionId, envelope) { if (this.sendError) throw this.sendError; const requestId = `request-${this.sendLog.length + 1}`; this.sendLog.push({ sessionId, kind: envelope.kind }); this.pending = Promise.resolve({ text: this.scripted.shift() ?? '' }); return { requestId }; }
+  async send(sessionId, envelope) { if (this.sendError) throw this.sendError; const requestId = `request-${this.sendLog.length + 1}`; if (envelope.kind !== 'PM_PREAMBLE') { this.sendLog.push({ sessionId, kind: envelope.kind }); this.pending = Promise.resolve({ text: this.scripted.shift() ?? '' }); } else this.pending = Promise.resolve({ text: '' }); return { requestId }; }
   async collect() { return this.pending; }
   async interrupt() {}
   async resume() { return { ok: true }; }

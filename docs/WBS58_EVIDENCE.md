@@ -153,3 +153,15 @@ Implemented the review P1/P2 findings and WBS-9 D2/D3/D6/D8 fixes.
 - `test/v1-orchestrator-drills.test.mjs`: drills 2/3/6/8 now assert fixed behavior.
 
 Fallback entries remain documented as model-qualified `<provider>/<model>` keys (for example `opencode/big-pickle`); symbolic names such as `free-B` are intentionally not certified.
+
+## CHANGES round 2
+
+WBS-10 pass 3 fixes:
+
+- `src/orchestrator/pm-packets.ts`: `renderOutputContract()` is the single code-generated contract source. Bootstrap and final-gate envelopes end with their schema-specific no-tools instructions and a strict-parser-compatible minimal example.
+- `src/orchestrator/role-loop.ts`: a newly created PM session receives `docs/PM_ROLE_INSTRUCTIONS.md` as one preamble before the packet; `preambleSent` is durable and prevents repeat delivery. Tool-call replies receive the explicit no-tools re-ask. Timeout recovery aborts best-effort, rotates the role-session record, and leaves the pending re-ask eligible for the next fresh session.
+- `src/integrations/opencode/command-adapter.ts`: added `abortSession()` using the OpenCode abort endpoint; session writes preserve `preambleSent`.
+- `src/integrations/core/role-runtime.ts`: added the PM preamble envelope kind, optional abort operation, and preamble bookkeeping field.
+- `test/v1-orchestrator.test.mjs`: verifies packet contracts/examples, tool-call re-ask, preamble-once behavior, and session rotation; `test/opencode-command-adapter.test.mjs` verifies the abort POST and all-false tool map.
+
+Targeted verification: `node --test test/v1-orchestrator.test.mjs test/opencode-command-adapter.test.mjs` — 33 passed, 0 failed; `node --test test/v1-orchestrator-drills.test.mjs` — 8 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.

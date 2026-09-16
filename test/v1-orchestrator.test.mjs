@@ -40,6 +40,7 @@ class FakePmAdapter {
     this.lateMs = opts.lateMs ?? 0;
     this.sessions = new Map();
     this.sendLog = [];
+    this.preambleBodies = [];
   }
   async health() { return { ok: true }; }
   capabilities() {
@@ -51,6 +52,7 @@ class FakePmAdapter {
     return { sessionId: this.sessions.get(sessionKey), created: true };
   }
   async send(sessionId, envelope) {
+    if (envelope.kind === 'PM_PREAMBLE') { this.preambleBodies.push(envelope.body); const requestId = `preamble-${sessionId}`; this._pendingByRequest ??= new Map(); this._pendingByRequest.set(requestId, Promise.resolve({ text: '' })); return { requestId }; }
     this.sendLog.push({ sessionId, kind: envelope.kind, body: envelope.body });
     const requestId = `req-${this.sendLog.length}`;
     if (this.hang) {
@@ -179,6 +181,24 @@ test('bootstrap packet is bounded and its contextHash is stable across re-reads 
   assert.match(p1.contextHash, /^[0-9a-f]{64}$/);
 });
 
+test('every PM packet ends with a code-generated contract whose example parses strictly', async () => {
+  const project = 'OrchOutputContract';
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const schemas = await import('../dist/server/orchestrator/pm-schemas.js');
+  const roleConfig = makeRoleConfig(project);
+  const bootstrap = pkg.buildPmBootstrapPacket(dataRoot, project, roleConfig);
+  assert.match(bootstrap.text, /## OUTPUT CONTRACT[\s\S]*```$/);
+  const bootstrapExample = bootstrap.text.match(/```json\n(PM_TASK_DECISION v1\n[\s\S]*?)```$/)?.[1];
+  assert.ok(bootstrapExample);
+  assert.equal(schemas.parsePmTaskDecision('```json\n' + bootstrapExample + '```').decision, 'PROJECT_COMPLETE');
+  const delivery = await mintPendingDelivery(project);
+  const final = pkg.buildPmFinalGatePacket(dataRoot, project, delivery.deliveryId);
+  assert.match(final.text, /## OUTPUT CONTRACT[\s\S]*```$/);
+  const finalExample = final.text.match(/```json\n(PM_JUDGMENT v1\n[\s\S]*?)```$/)?.[1];
+  assert.ok(finalExample);
+  assert.equal(schemas.parsePmJudgment('```json\n' + finalExample + '```').decision, 'OWNER_REQUIRED');
+});
+
 // ── CREATE_TASK creates a task WITH contract and calls the dispatch hook once ──
 test('CREATE_TASK creates a Task with a TASK_CONTRACT v1 contract and calls the dispatch hook exactly once', async () => {
   const project = 'OrchCreateTask';
@@ -240,6 +260,18 @@ test('PM tool-call markup receives a no-tools re-ask and valid second reply appl
   assert.equal(adapter.sendLog.length, 2);
   assert.match(adapter.sendLog[1].body, /you have no tools; answer with the JSON block only/);
   assert.equal(pmJud.listPmJudgments(dataRoot, project).length, 1);
+});
+
+test('a new PM session receives the role preamble once and reuse does not resend it', async () => {
+  const project = 'OrchPreamble';
+  const roleConfig = makeRoleConfig(project);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_TASK_DECISION v1', { decision: 'PROJECT_COMPLETE', reason: 'complete' }), fence('PM_TASK_DECISION v1', { decision: 'PROJECT_COMPLETE', reason: 'complete' })] });
+  const { auditDir, stateFile } = mkTestDirs('preamble');
+  const cfg = { dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  await roleLoop.processBootstrap(cfg);
+  await roleLoop.processBootstrap(cfg);
+  assert.equal(adapter.preambleBodies.length, 1);
+  assert.equal(adapter.preambleBodies[0], fs.readFileSync(path.resolve('docs/PM_ROLE_INSTRUCTIONS.md'), 'utf8'));
 });
 
 // ── final gate ACCEPT applies once (judgment + delivery reconciled) ─────────
@@ -522,6 +554,7 @@ test('(d) PM send timeout: a hanging adapter is not resent, then BLOCKED_RUNTIME
   assert.equal(adapter.sendLog.length, 1, 'the timed-out envelope is never blindly resent');
   const delivery = pmDel.getPmDelivery(dataRoot, project, d.deliveryId);
   assert.equal(delivery.status, 'PENDING', 'canonical state untouched by the timeout');
+  assert.equal(fs.existsSync(path.join(dataRoot, '_relay', 'role-sessions', project, 'pm.json')), false, 'timed-out PM session record is rotated');
   const lines = auditLines(auditDir);
   assert.ok(lines.some((l) => l.outcome === 'BLOCKED_RUNTIME'));
 });

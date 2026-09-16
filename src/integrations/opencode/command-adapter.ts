@@ -25,7 +25,7 @@ export interface RoleCapabilityFlags {
 }
 
 export interface InputEnvelope {
-  kind: 'PM_BOOTSTRAP' | 'PM_FINAL_GATE' | 'QA_PACKET' | 'TASK_CONTRACT' | 'CHANGES';
+  kind: 'PM_BOOTSTRAP' | 'PM_FINAL_GATE' | 'PM_PREAMBLE' | 'QA_PACKET' | 'TASK_CONTRACT' | 'CHANGES';
   schemaVersion: string;
   contractHash?: string;
   contextHash: string;
@@ -75,6 +75,7 @@ interface RoleSessionRecord {
   sessionId: string;
   createdAt: number;
   lastUsedAt: number;
+  preambleSent?: boolean;
 }
 
 interface HttpResult {
@@ -253,7 +254,7 @@ export class OpenCodeCommandAdapter implements RoleRuntimeAdapter {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const now = Date.now();
     const existing = this.readSessionRecord(project, roleId);
-    const record: RoleSessionRecord = { adapterId: this.id, sessionId, createdAt: existing?.createdAt ?? now, lastUsedAt: now };
+    const record: RoleSessionRecord = { adapterId: this.id, sessionId, createdAt: existing?.createdAt ?? now, lastUsedAt: now, ...(existing?.preambleSent ? { preambleSent: true } : {}) };
     const tmp = `${p}.tmp-${process.pid}-${now}`;
     fs.writeFileSync(tmp, JSON.stringify(record));
     fs.renameSync(tmp, p);
@@ -333,6 +334,10 @@ export class OpenCodeCommandAdapter implements RoleRuntimeAdapter {
   }
 
   async interrupt(sessionId: string): Promise<void> {
+    await this.abortSession(sessionId);
+  }
+
+  async abortSession(sessionId: string): Promise<void> {
     await this.request('POST', `/session/${encodeURIComponent(sessionId)}/abort`, undefined, 5_000).catch(() => undefined);
   }
 
