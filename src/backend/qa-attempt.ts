@@ -150,6 +150,8 @@ export interface QaAttemptRecord {
   qaWorkerId?: string;              // configured semantic QA worker for this attempt, if any
   /** Profile source used by the semantic QA worker invocation. */
   profileSource?: QaProfileSource;
+  /** Optional absolute cwd echoed by the QA worker. */
+  workerObservedCwd?: string;
   /** Snapshot of the AC ids relevant to this attempt and their frozen
    * validationMode, provided by the caller at creation time (never read from
    * Task storage by this kernel) — used only to enforce the BOTH-mode
@@ -361,6 +363,9 @@ export function validateQaAttemptRecord(r: QaAttemptRecord): void {
   }
   if (r.profileSource !== undefined && !['run-bound', 'inherited', 'cwd'].includes(r.profileSource)) {
     throw new QaAttemptError('INVALID_STATE', `알 수 없는 profileSource: ${String(r.profileSource)}`);
+  }
+  if (r.workerObservedCwd !== undefined && (typeof r.workerObservedCwd !== 'string' || !path.isAbsolute(r.workerObservedCwd))) {
+    throw new QaAttemptError('INVALID_STATE', 'workerObservedCwd는 absolute path여야 합니다.');
   }
 
   // ── terminal/PENDING shape ────────────────────────────────────────────────
@@ -710,6 +715,7 @@ export interface RecordSemanticEvidenceInput {
   evidenceId?: string;
   reason?: string;
   profileSource?: QaProfileSource;
+  workerObservedCwd?: string;
   /** Only meaningful (and only accepted) with status === 'FAIL'. */
   remediationInstruction?: string;
 }
@@ -766,6 +772,7 @@ export function recordSemanticEvidence(
       ...(input.remediationInstruction !== undefined ? { remediationInstruction: input.remediationInstruction } : {}),
       ...(input.reason !== undefined ? { reason: input.reason.slice(0, 1000) } : {}),
       ...(input.profileSource !== undefined ? { profileSource: input.profileSource } : {}),
+      ...(input.workerObservedCwd !== undefined ? { workerObservedCwd: input.workerObservedCwd } : {}),
       ...(input.status !== 'BLOCKED' ? { reason: undefined, semanticBlockedAttempts: undefined } : {}),
       completedAt: ts,
       updatedAt: ts,

@@ -84,6 +84,10 @@ function failWorkerScript(markerPath) {
   return `import * as fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(markerPath)}, 'x');\nconst p = process.argv[3] || '';\nconst ids = [...new Set([...p.matchAll(/^- (AC[A-Za-z0-9_-]*): /gm)].map((m) => m[1]))];\nconsole.log('status: FAIL');\nconsole.log('failedCriteria:');\nconsole.log('- ' + ids[0]);\nconsole.log('reason: fake failure reason');\nconsole.log('remediationInstruction: fake remediation instruction');\n`;
 }
 
+function inconsistentWorkerScript() {
+  return `console.log('cwd: ' + process.cwd());\nconsole.log('status: FAIL');\nconsole.log('failedCriteria:');\nconsole.log('- AC-1');\nconsole.log('reason: docs/TROUBLESHOOTING.md does not exist');\n`;
+}
+
 function garbageWorkerScript(markerPath) {
   return `import * as fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(markerPath)}, 'x');\nconsole.log('this is not a structured status block sk-live-secret');\nconsole.error('Bearer bearer-secret password=hunter2');\n`;
 }
@@ -93,7 +97,7 @@ function timeoutWorkerScript(markerPath) {
 }
 
 function argvPassWorkerScript(markerPath) {
-  return `import * as fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify(process.argv.slice(2)));\nconst p = process.argv.at(-1) || '';\nconst ids = [...new Set([...p.matchAll(/^- (AC[A-Za-z0-9_-]*): /gm)].map((m) => m[1]))];\nconsole.log('status: PASS');\nconsole.log('criteria:');\nfor (const id of ids) console.log('- ' + id + ': PASS');\n`;
+  return `import * as fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify(process.argv.slice(2)));\nconst p = process.argv.at(-1) || '';\nconst ids = [...new Set([...p.matchAll(/^- (AC[A-Za-z0-9_-]*): /gm)].map((m) => m[1]))];\nconsole.log('cwd: ' + process.cwd());\nconsole.log('status: PASS');\nconsole.log('criteria:');\nfor (const id of ids) console.log('- ' + id + ': PASS');\n`;
 }
 
 // Fixture setup: an untagged implementation-role worker row (no `role`
@@ -167,10 +171,22 @@ console.log('-- 9) composed prompt stays under the 16 KiB cap for a normal input
     criteria: [{ id: 'AC-1', text: 'must do the thing' }],
     workerResult: { text: 'did the thing', truncated: false, source: 'result.md' },
     deterministicSummary: '- [PASS] fileExists: ok',
+    workspaceRoot: '/absolute/workspace',
   });
   check(Buffer.byteLength(prompt, 'utf8') <= sem.SEMANTIC_QA_PROMPT_SIZE_LIMIT_BYTES, '9a prompt within 16 KiB cap');
-  check(prompt.includes('AC-1') && prompt.includes('must do the thing'), '9b prompt carries the criterion text');
+  check(prompt.includes('AC-1') && prompt.includes('must do the thing') && prompt.includes('/absolute/workspace') && prompt.includes('absolute paths'), '9b prompt carries criterion, absolute root, and path rules');
   check(!prompt.includes('chain-of-thought') , '9c sanity: no accidental placeholder text leaked');
+}
+
+console.log('-- 12b) semantic FAIL contradicting deterministic fileExists PASS → BLOCKED --');
+{
+  const { task, runId } = await makeTaskWithRun();
+  const workerId = registerFakeQaWorker(inconsistentWorkerScript());
+  const attempt = await qa.createQaAttempt(ROOT, project, { taskId: task.taskId, runId, qaAttemptNumber: 1, qaWorkerId: workerId, criteriaValidationModes: { 'AC-1': 'SEMANTIC' } });
+  await qa.recordDeterministicEvidence(ROOT, project, attempt.qaAttemptId, { status: 'PASS', checks: [{ checkIndex: 0, kind: 'fileExists', status: 'PASS', detail: '파일이 존재합니다: docs/TROUBLESHOOTING.md', criterionId: 'AC-1' }] });
+  const out = await sem.evaluateSemanticQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, task: { title: 't', goal: 'g', reason: 'r', scope: 's' }, criteriaText: { 'AC-1': 'docs/TROUBLESHOOTING.md must exist' } });
+  check(out.record.finalQaStatus === 'BLOCKED' && out.record.reason.includes('QA_INCONSISTENT'), '12b QA_INCONSISTENT is treated as semantic BLOCKED');
+  check(out.record.workerObservedCwd === path.resolve(out.record.workerObservedCwd), '12c worker cwd echo is persisted as an absolute path');
 }
 
 console.log('-- 10) oversized composition throws INVALID_ARGUMENT rather than silently truncating --');
@@ -183,6 +199,7 @@ console.log('-- 10) oversized composition throws INVALID_ARGUMENT rather than si
       criteria: bigCriteria,
       workerResult: { text: 'x', truncated: false, source: 'result.md' },
       deterministicSummary: 'x',
+      workspaceRoot: '/absolute/workspace',
     }),
     'INVALID_ARGUMENT',
     '10a oversized prompt fails safe, never silently truncated',
@@ -266,6 +283,8 @@ console.log('-- 14) unparseable output on both attempts → BLOCKED, exactly 2 i
   check(out.record.reason.includes('worker output tail:') && out.record.reason.includes('[REDACTED]') && !/sk-live-secret|bearer-secret|hunter2/.test(out.record.reason), '14c BLOCKED reason carries a scrubbed worker-output tail');
   const raw = fs.readFileSync(path.join(qa.qaAttemptFolder(ROOT, project, attempt.qaAttemptId), 'semantic-output-attempt-2.txt'), 'utf8');
   check(raw.includes('sk-live-secret') && raw.includes('Bearer bearer-secret'), '14d raw stdout/stderr is persisted in the QA attempt folder');
+  const runMeta = JSON.parse(fs.readFileSync(path.join(ROOT, project, '_relay', 'qa-semantic-runs', attempt.qaAttemptId, 'run-meta.json'), 'utf8'));
+  check(runMeta.cwd && Array.isArray(runMeta.envKeys) && !Object.values(runMeta).some((v) => typeof v === 'string' && /secret|password|bearer/i.test(v)), '14e run-meta persists cwd and env keys without env values');
 }
 
 console.log('-- 15) first attempt unparseable, second attempt succeeds → uses the second result --');

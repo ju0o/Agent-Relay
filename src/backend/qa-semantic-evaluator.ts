@@ -197,6 +197,7 @@ export interface SemanticQaPromptInput {
   criteria: { id: string; text: string }[];
   workerResult: { text: string; truncated: boolean; source: string };
   deterministicSummary: string;
+  workspaceRoot: string;
 }
 
 /** Pure, deterministic prompt composition — no I/O. Throws if the composed
@@ -225,6 +226,9 @@ export function composeSemanticQaPrompt(input: SemanticQaPromptInput): string {
     'Scope:',
     boundText(input.task.scope, MAX_TASK_FIELD_CHARS) || '(none)',
     '',
+    'ABSOLUTE WORKSPACE ROOT:',
+    input.workspaceRoot,
+    '',
     'ACCEPTANCE CRITERIA REQUIRING YOUR JUDGMENT (SEMANTIC/BOTH only)',
     criteriaBlock,
     '',
@@ -236,6 +240,8 @@ export function composeSemanticQaPrompt(input: SemanticQaPromptInput): string {
     input.workerResult.text || '(no result text available)',
     '',
     'RULES',
+    `Begin your reply with exactly: cwd: <absolute path you observed>`,
+    'Use absolute paths for every file operation.',
     'Evaluate ONLY the acceptance criteria listed above.',
     'Do not invent new requirements. Do not broaden scope. Do not improve the product beyond what was asked.',
     'Do not alter or reinterpret the acceptance criteria.',
@@ -269,8 +275,8 @@ export function composeSemanticQaPrompt(input: SemanticQaPromptInput): string {
 // ── output parsing (tolerant-but-never-guessing, mirrors extract.ts's style) ───
 
 export type ParsedSemanticOutput =
-  | { kind: 'pass'; criteria: QaSemanticCriterionResult[] }
-  | { kind: 'fail'; failedCriteria: string[]; reason?: string; remediationInstruction?: string; criteria: QaSemanticCriterionResult[] }
+  | { kind: 'pass'; criteria: QaSemanticCriterionResult[]; workerObservedCwd?: string }
+  | { kind: 'fail'; failedCriteria: string[]; reason?: string; remediationInstruction?: string; criteria: QaSemanticCriterionResult[]; workerObservedCwd?: string }
   | { kind: 'unparseable'; reason: string };
 
 /** Extract the value after "key:" on a line, or undefined if the line
@@ -296,6 +302,7 @@ function bulletValue(line: string): string | undefined {
  */
 export function parseSemanticQaOutput(raw: string, requiredIds: readonly string[]): ParsedSemanticOutput {
   const lines = raw.split('\n');
+  const cwdLine = lines.map((line) => lineValue(line, 'cwd')).find((value): value is string => !!value && path.isAbsolute(value));
   const required = new Set(requiredIds);
   let statusLine: string | undefined;
   let statusIndex = -1;
@@ -332,7 +339,7 @@ export function parseSemanticQaOutput(raw: string, requiredIds: readonly string[
       }
     }
     const criteria: QaSemanticCriterionResult[] = [...seen.entries()].map(([id, status]) => ({ id, status, note: 'semantic PASS' }));
-    return { kind: 'pass', criteria };
+    return { kind: 'pass', criteria, ...(cwdLine ? { workerObservedCwd: cwdLine } : {}) };
   }
 
   if (statusLine === 'FAIL') {
@@ -369,7 +376,7 @@ export function parseSemanticQaOutput(raw: string, requiredIds: readonly string[
       status: failedCriteria.includes(id) ? 'FAIL' : 'PASS',
       note: failedCriteria.includes(id) ? (reason ?? 'semantic FAIL') : 'semantic PASS',
     }));
-    return { kind: 'fail', failedCriteria, ...(reason ? { reason: boundText(reason, 1000) } : {}), ...(remediationInstruction ? { remediationInstruction: boundText(remediationInstruction, 4000) } : {}), criteria };
+    return { kind: 'fail', failedCriteria, ...(reason ? { reason: boundText(reason, 1000) } : {}), ...(remediationInstruction ? { remediationInstruction: boundText(remediationInstruction, 4000) } : {}), criteria, ...(cwdLine ? { workerObservedCwd: cwdLine } : {}) };
   }
 
   return { kind: 'unparseable', reason: `알 수 없는 status 값: "${statusLine}" (PASS 또는 FAIL만 허용)` };
@@ -398,6 +405,24 @@ async function invokeOnce(
 
 function semanticProfileSource(configDir?: string): QaProfileSource {
   return configDir ? 'run-bound' : process.env.CLAUDE_CONFIG_DIR?.trim() ? 'inherited' : 'cwd';
+}
+
+function inconsistentSemanticFail(
+  parsed: Extract<ParsedSemanticOutput, { kind: 'fail' }>,
+  attempt: QaAttemptRecord,
+  criteriaText: Record<string, string>,
+): { path: string } | null {
+  if (!parsed.reason || !/(does not exist|doesn't exist|not exist|不存在|찾을 수 없)/i.test(parsed.reason)) return null;
+  for (const criterionId of parsed.failedCriteria) {
+    const checks = (attempt.deterministic?.checks ?? []).filter((check) => check.criterionId === criterionId);
+    if (!checks.length || checks.some((check) => check.status !== 'PASS')) continue;
+    const covered = checks.filter((check) => check.kind === 'fileExists' || check.kind === 'diffScope');
+    const text = `${covered.map((check) => check.detail).join('\n')}\n${criteriaText[criterionId] ?? ''}`;
+    const candidates = parsed.reason.match(/(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+/g) ?? [];
+    const hit = candidates.find((candidate) => text.includes(candidate));
+    if (hit) return { path: hit };
+  }
+  return null;
 }
 
 // ── orchestration ────────────────────────────────────────────────────────────
@@ -500,11 +525,13 @@ export function evaluateSemanticQa(
       criteria,
       workerResult,
       deterministicSummary,
+      workspaceRoot,
     });
 
     const runDir = qaSemanticRunDir(dataRoot, project, input.qaAttemptId);
     fs.mkdirSync(runDir, { recursive: true });
     fs.writeFileSync(path.join(runDir, 'prompt.md'), prompt, 'utf8');
+    fs.writeFileSync(path.join(runDir, 'run-meta.json'), JSON.stringify({ cwd: workspaceRoot, envKeys: Object.keys(process.env).sort() }, null, 2) + '\n', 'utf8');
 
     const sessionRef = `qa-semantic-runs/${input.qaAttemptId}`;
     const startedAt = new Date().toISOString();
@@ -520,7 +547,7 @@ export function evaluateSemanticQa(
       const outcome = await invokeOnce(worker.launchCommand, worker.launchArgsPrefix, prompt, workspaceRoot, timeoutMs, claude);
       lastOutcome = outcome;
       fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stdout.txt`), outcome.stdout, 'utf8');
-      if (outcome.stderr) fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stderr.txt`), outcome.stderr, 'utf8');
+      fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stderr.txt`), outcome.stderr, 'utf8');
       fs.writeFileSync(path.join(qaAttemptFolder(dataRoot, project, input.qaAttemptId), `semantic-output-attempt-${attemptNo}.txt`), `${outcome.stdout}${outcome.stderr ? `\n[stderr]\n${outcome.stderr}` : ''}`, 'utf8');
       if (outcome.spawnError || outcome.timedOut || outcome.exitCode === null) {
         parsed = { kind: 'unparseable', reason: outcome.spawnError ? `실행 실패: ${outcome.spawnError}` : outcome.timedOut ? '시간 초과' : '종료 코드를 확인할 수 없습니다.' };
@@ -530,6 +557,8 @@ export function evaluateSemanticQa(
       if (parsed.kind !== 'unparseable') break; // success — no reattempt needed
     }
     const completedAt = new Date().toISOString();
+    const workerObservedCwd = parsed.kind === 'unparseable' ? undefined : parsed.workerObservedCwd;
+    const inconsistent = parsed.kind === 'fail' ? inconsistentSemanticFail(parsed, attempt, input.criteriaText) : null;
 
     if (parsed.kind === 'unparseable') {
       const tail = workerOutputTail(lastOutcome ?? { stdout: '', stderr: '', exitCode: null, timedOut: false, stdoutTruncated: false, stderrTruncated: false, durationMs: 0 });
@@ -544,6 +573,23 @@ export function evaluateSemanticQa(
         startedAt,
         completedAt,
         profileSource,
+        ...(workerObservedCwd ? { workerObservedCwd } : {}),
+      });
+      return { outcome: 'EVALUATED', record };
+    }
+
+    if (inconsistent) {
+      const reason = `QA_INCONSISTENT path=${inconsistent.path}: semantic FAIL contradicts deterministic PASS.`;
+      const record = await recordSemanticEvidence(dataRoot, project, input.qaAttemptId, {
+        status: 'BLOCKED',
+        criteria: [],
+        reason,
+        qaWorkerId: attempt.qaWorkerId,
+        sessionRef,
+        startedAt,
+        completedAt,
+        profileSource,
+        ...(workerObservedCwd ? { workerObservedCwd } : {}),
       });
       return { outcome: 'EVALUATED', record };
     }
@@ -557,6 +603,7 @@ export function evaluateSemanticQa(
         startedAt,
         completedAt,
         profileSource,
+        ...(workerObservedCwd ? { workerObservedCwd } : {}),
       });
       return { outcome: 'EVALUATED', record };
     }
@@ -571,6 +618,7 @@ export function evaluateSemanticQa(
       startedAt,
       completedAt,
       profileSource,
+      ...(workerObservedCwd ? { workerObservedCwd } : {}),
       ...(parsed.remediationInstruction ? { remediationInstruction: parsed.remediationInstruction } : {}),
     });
     void lastOutcome;

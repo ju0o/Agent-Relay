@@ -98,6 +98,7 @@ import {
   readPriorResultExcerpt,
 } from './qa-remediation-prompt.js';
 import type { TaskRecord } from '../shared/types.js';
+import { recordRuntimeWarning } from './event.js';
 
 // ── errors ───────────────────────────────────────────────────────────────────
 
@@ -390,6 +391,16 @@ async function evaluateAttemptToTerminal(
     current = res.record;
     if (current.finalQaStatus === 'BLOCKED') {
       const reason = current.reason ?? 'semantic QA returned BLOCKED without a reason';
+      const inconsistent = /^QA_INCONSISTENT path=([^:]+):/.exec(reason);
+      if (inconsistent) {
+        await recordRuntimeWarning(dataRoot, project, {
+          summary: `QA_INCONSISTENT ${inconsistent[1]}`,
+          taskId: current.taskId,
+          runId: current.runId,
+          details: { attempt: current.qaAttemptId, path: inconsistent[1] },
+          source: { kind: 'qa-gate', subsystem: 'semantic-evaluator' },
+        });
+      }
       const retried = await recordSemanticBlockedForRetry(dataRoot, project, current.qaAttemptId, reason);
       if ((retried.semanticBlockedAttempts ?? 0) < 3) {
         throw new QaGateError('BLOCKED', `${reason}; semantic retry ${retried.semanticBlockedAttempts}/3 remains available`);

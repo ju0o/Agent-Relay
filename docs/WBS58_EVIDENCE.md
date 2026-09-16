@@ -372,3 +372,12 @@ Verification: server build passed; focused orchestrator + QA checks — **48 pas
 - Tests cover registry-to-worker argv/profile recording and wrapper passthrough option handling.
 
 Verification: server build/typecheck passed; requested serial QA, adapter, and orchestrator suites passed; `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 25 (ar/v1-pm)
+
+- `src/backend/qa-semantic-evaluator.ts`: semantic prompts now include the absolute workspace root and require an initial observed `cwd:` line. A semantic FAIL claiming a covered path is missing while deterministic `fileExists`/`diffScope` checks passed is converted to `QA_INCONSISTENT`/BLOCKED, preserving the bounded retry path. QA stderr and `run-meta.json` (spawn cwd plus env-key names only) are persisted per semantic run.
+- `src/backend/qa-gate.ts`: `QA_INCONSISTENT {attempt, path}` is recorded as a runtime audit event before the normal semantic BLOCKED retry/escalation handling.
+- `src/backend/qa-attempt.ts`: additive `workerObservedCwd` field validates and persists the worker's absolute cwd echo.
+- Tests cover the absolute-root/cwd prompt contract, inconsistency classification, stderr/run metadata persistence, and unchanged normal FAIL behavior.
+
+Verification: server build passed; requested QA + orchestrator checks passed; `LIVE_DATAROOT_WRITES: 0`.
