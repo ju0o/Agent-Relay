@@ -127,9 +127,24 @@ export function workerOutputTail(outcome: ProcessOutcome): string {
   return scrubbed.slice(-400) || '(no worker output)';
 }
 
-function hasRuntimeDenial(outcome: ProcessOutcome): boolean {
-  return /external[_ -]?directory|permission denied|access denied|operation not permitted|approval required|permission.{0,24}(?:denied|rejected|required)|(?:denied|rejected).{0,24}permission/i
-    .test(`${outcome.stdout}\n${outcome.stderr}`);
+/** Claude Code's own permission-challenge signature — printed when a file or
+ * command approval is auto-rejected by the runtime. Trustworthy wherever it
+ * appears (stdout or stderr). */
+const RUNTIME_DENIAL_SIGNATURE = /permission requested: .*auto-rejecting|auto-rejecting/i;
+
+/** Broad denial-shaped phrasing. Only trustworthy on stderr, or on a stdout
+ * that never produced a parseable `status:` verdict at all. Never trusted
+ * inside a parseable stdout verdict: a semantic `status: FAIL` whose reason
+ * happens to mention "permission denied" is a real criterion failure (a
+ * permissions bug in the implementation), not a runtime denial. */
+const BROAD_DENIAL_PHRASES =
+  /external[_ -]?directory|permission denied|access denied|operation not permitted|approval required|permission.{0,24}(?:denied|rejected|required)|(?:denied|rejected).{0,24}permission/i;
+
+function hasRuntimeDenial(outcome: ProcessOutcome, stdoutHasParseableStatus: boolean): boolean {
+  const combined = `${outcome.stdout}\n${outcome.stderr}`;
+  if (RUNTIME_DENIAL_SIGNATURE.test(combined)) return true;
+  if (stdoutHasParseableStatus) return BROAD_DENIAL_PHRASES.test(outcome.stderr);
+  return BROAD_DENIAL_PHRASES.test(combined);
 }
 
 function hasQuotaDenial(outcome: ProcessOutcome): boolean {
@@ -580,11 +595,15 @@ export function evaluateSemanticQa(
         parsed = { kind: 'unparseable', reason: 'QA_RUNTIME_QUOTA: worker runtime quota denied the invocation.' };
         continue; // quota denial is infrastructure evidence, never a semantic verdict
       }
-      if (hasRuntimeDenial(outcome)) {
+      // Parse first so the denial guard knows whether stdout produced a real
+      // verdict: broad denial phrases are only trusted on stderr (or on a
+      // stdout with no parseable status at all) — a parseable FAIL whose stdout
+      // reason mentions a permissions bug is a FAIL, not a runtime BLOCKED.
+      parsed = parseSemanticQaOutput(outcome.stdout, requiredIds);
+      if (hasRuntimeDenial(outcome, parsed.kind !== 'unparseable')) {
         parsed = { kind: 'unparseable', reason: 'QA_RUNTIME_DENIED: worker runtime denied a file operation.' };
         continue; // denial is infrastructure evidence, never a semantic verdict
       }
-      parsed = parseSemanticQaOutput(outcome.stdout, requiredIds);
       if (parsed.kind !== 'unparseable') break; // success — no reattempt needed
     }
     const completedAt = new Date().toISOString();

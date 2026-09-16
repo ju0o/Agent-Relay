@@ -212,6 +212,28 @@ console.log('-- 9e) quota denial is BLOCKED with an explicit quota reason --');
   check(out.record.finalQaStatus === 'BLOCKED' && out.record.reason.includes('QA_RUNTIME_QUOTA:'), '9e quota denial is BLOCKED with QA_RUNTIME_QUOTA reason');
 }
 
+console.log('-- 9f) status: FAIL with "permission denied" only in the stdout reason → FAIL, never BLOCKED --');
+{
+  const { task, runId } = await makeTaskWithRun();
+  const workerId = registerFakeQaWorker("const p = process.argv[3] || ''; const ids = [...new Set([...p.matchAll(/^- (AC[A-Za-z0-9_-]*): /gm)].map((m) => m[1]))]; console.log('status: FAIL'); console.log('failedCriteria:'); console.log('- ' + ids[0]); console.log('reason: config file cannot be opened: permission denied by the host filesystem');");
+  const attempt = await qa.createQaAttempt(ROOT, project, { taskId: task.taskId, runId, qaAttemptNumber: 1, qaWorkerId: workerId, criteriaValidationModes: { 'AC-1': 'SEMANTIC' } });
+  await qa.recordDeterministicEvidence(ROOT, project, attempt.qaAttemptId, { status: 'PASS', checks: [] });
+  const out = await sem.evaluateSemanticQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, task: { title: 't', goal: 'g', reason: 'r', scope: 's' }, criteriaText: { 'AC-1': 'x' } });
+  check(out.record.finalQaStatus === 'FAIL', '9f denial words only in a parseable stdout FAIL reason stay a FAIL (never BLOCKED)');
+  check(out.record.failedCriteria.length === 1 && out.record.failedCriteria[0] === 'AC-1', '9f FAIL criteria preserved');
+  check(out.record.semantic.status === 'FAIL' && out.record.semantic.criteria.some((c) => c.status === 'FAIL' && c.note.includes('permission denied')), '9f stdout denial reason preserved in the FAIL verdict note, not swallowed as a runtime BLOCKED');
+}
+
+console.log('-- 9g) stdout FAIL + stderr runtime auto-reject signature → BLOCKED_RUNTIME --');
+{
+  const { task, runId } = await makeTaskWithRun();
+  const workerId = registerFakeQaWorker("process.stderr.write('! permission requested: external_directory (/x/docs/*); auto-rejecting\\n'); console.log('status: FAIL'); console.log('failedCriteria:'); console.log('- AC-1'); console.log('reason: /x/docs/README.md does not exist');");
+  const attempt = await qa.createQaAttempt(ROOT, project, { taskId: task.taskId, runId, qaAttemptNumber: 1, qaWorkerId: workerId, criteriaValidationModes: { 'AC-1': 'SEMANTIC' } });
+  await qa.recordDeterministicEvidence(ROOT, project, attempt.qaAttemptId, { status: 'PASS', checks: [] });
+  const out = await sem.evaluateSemanticQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, task: { title: 't', goal: 'g', reason: 'r', scope: 's' }, criteriaText: { 'AC-1': 'x' } });
+  check(out.record.finalQaStatus === 'BLOCKED' && out.record.reason.includes('QA_RUNTIME_DENIED'), '9g stderr runtime auto-reject signature is BLOCKED_RUNTIME even with a parseable stdout FAIL');
+}
+
 console.log('-- 12b) semantic FAIL contradicting deterministic fileExists PASS → BLOCKED --');
 {
   const { task, runId } = await makeTaskWithRun();

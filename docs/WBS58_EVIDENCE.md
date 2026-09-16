@@ -405,3 +405,16 @@ Verification: server build/typecheck and the requested wrapper, semantic QA, det
 - `src/backend/qa-semantic-evaluator.ts`: semantic prompts forbid shell globs/wildcard paths and require runtime-denial reporting; denial-shaped worker output is forced to bounded `BLOCKED`, never accepted as a semantic verdict.
 - Verified mechanism: wildcard Bash calls are auto-rejected as `external_directory` in `--print` (round 28). Whether `--add-dir` alone prevents that rejection remains UNVERIFIED pending a live QA run.
 - Tests cover the no-wildcard prompt contract and a parseable `PASS` accompanied by `external_directory`/permission denial.
+## CHANGES round 29 (ar/v1-pm)
+
+- `src/backend/qa-semantic-evaluator.ts`: added a quota runtime guard (`hasQuotaDenial`) that matches explicit Claude Code session/usage-limit signals (`hit your session limit`, `usage limit reached`, `rate limit`) on combined stdout+stderr and forces bounded `BLOCKED` with reason `QA_RUNTIME_QUOTA:` — infrastructure evidence, never accepted as a semantic verdict (shipped in dab7d84).
+- Tests cover a fake worker that emits a session-limit banner: `finalQaStatus` is `BLOCKED` with the `QA_RUNTIME_QUOTA:` reason.
+
+Verification: server build/typecheck and the requested wrapper, semantic QA, deterministic QA, QA-loop, and orchestrator suites passed serially (commit dab7d84); `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 30 (ar/v1-pm)
+
+- `src/backend/qa-semantic-evaluator.ts`: narrowed runtime-denial detection. The Claude Code permission-challenge signature (`permission requested: … auto-rejecting`, including bare `auto-rejecting`) still matches anywhere (stdout or stderr); the broad denial phrases (`permission denied`, `access denied`, `operation not permitted`, `external[_ -]?directory`, `approval required`, …) now only match on stderr, or on a stdout that produced no parseable `status:` verdict at all. A semantic `status: FAIL` whose stdout reason mentions a real permissions bug in the implementation remains `FAIL` instead of being swallowed into `BLOCKED`.
+- Tests add a fake-worker `status: FAIL` + `failedCriteria` + reason containing `permission denied` with empty stderr → `FAIL` (never BLOCKED); a fake-worker `status: FAIL … does not exist` with stderr `! permission requested: external_directory (/x/docs/*); auto-rejecting` → `BLOCKED` with `QA_RUNTIME_DENIED` (BLOCKED_RUNTIME); and keep the existing PASS-under-denial case (denial on stderr + parseable `PASS` → BLOCKED).
+- `--add-dir` efficacy against `external_directory` auto-rejects remains **UNVERIFIED** until a live QA run — this round only proves the verdict/guard classification; it does not exercise a real Claude Code runtime.
+
