@@ -113,12 +113,16 @@ function boundText(value: unknown, maxChars: number): string {
   return s.length > maxChars ? s.slice(0, maxChars) : s;
 }
 
-function workerOutputTail(outcome: ProcessOutcome): string {
+export function workerOutputTail(outcome: ProcessOutcome): string {
   const raw = [outcome.stdout, outcome.stderr].filter(Boolean).join('\n[stderr]\n');
   const scrubbed = raw
+    .replace(/-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----/gi, '[REDACTED_PEM]')
     .replace(/sk-[^\s"']+/gi, '[REDACTED]')
     .replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
-    .replace(/password\s*[:=]\s*[^\s,;"']+/gi, 'password=[REDACTED]');
+    .replace(/\b(?:password|passwd|pwd|secret|token|api[_-]?key|authorization)\s*[:=]\s*["']?[^\s,;"']+/gi, '[REDACTED_KEY]')
+    .replace(/\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]')
+    .replace(/\b(?:AKIA|ghp_|gho_|github_pat_|xox[baprs]-?)[A-Za-z0-9_-]+\b/gi, '[REDACTED_TOKEN]')
+    .replace(/\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9+/]{24,}={0,2})\b/g, '[REDACTED_BLOB]');
   return scrubbed.slice(-400) || '(no worker output)';
 }
 
@@ -394,12 +398,9 @@ async function invokeOnce(
   prompt: string,
   cwd: string,
   timeoutMs: number,
-  claude?: { configDir?: string; permissionMode?: string },
+  claude?: { configDir?: string },
 ): Promise<ProcessOutcome> {
-  const options = [
-    ...(claude?.configDir ? ['--claudeConfigDir', claude.configDir] : []),
-    ...(claude?.permissionMode !== undefined ? ['--permissionMode', claude.permissionMode] : []),
-  ];
+  const options = claude?.configDir ? ['--claudeConfigDir', claude.configDir] : [];
   return runProcess(launchCommand, [...launchArgsPrefix, ...options, '--print', prompt], cwd, timeoutMs);
 }
 
@@ -412,15 +413,25 @@ function inconsistentSemanticFail(
   attempt: QaAttemptRecord,
   criteriaText: Record<string, string>,
 ): { path: string } | null {
-  if (!parsed.reason || !/(does not exist|doesn't exist|not exist|不存在|찾을 수 없)/i.test(parsed.reason)) return null;
+  if (!parsed.reason) return null;
   for (const criterionId of parsed.failedCriteria) {
     const checks = (attempt.deterministic?.checks ?? []).filter((check) => check.criterionId === criterionId);
     if (!checks.length || checks.some((check) => check.status !== 'PASS')) continue;
     const covered = checks.filter((check) => check.kind === 'fileExists' || check.kind === 'diffScope');
-    const text = `${covered.map((check) => check.detail).join('\n')}\n${criteriaText[criterionId] ?? ''}`;
-    const candidates = parsed.reason.match(/(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+/g) ?? [];
-    const hit = candidates.find((candidate) => text.includes(candidate));
-    if (hit) return { path: hit };
+    const coveredPaths = new Set<string>();
+    for (const check of covered) {
+      if (check.kind === 'fileExists') {
+        const match = /:\s*(.+)$/.exec(check.detail);
+        if (match) coveredPaths.add(match[1]!.trim());
+      }
+    }
+    for (const match of (criteriaText[criterionId] ?? '').matchAll(/(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+/g)) coveredPaths.add(match[0]);
+    for (const candidate of parsed.reason.match(/(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+/g) ?? []) {
+      if (!coveredPaths.has(candidate)) continue;
+      const index = parsed.reason.indexOf(candidate);
+      const window = parsed.reason.slice(Math.max(0, index - 80), index + candidate.length + 80);
+      if (/(does not exist|doesn't exist|not exist|不存在|찾을 수 없)/i.test(window)) return { path: candidate };
+    }
   }
   return null;
 }

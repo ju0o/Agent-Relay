@@ -659,8 +659,9 @@ function redactedArgvShape(exe, args) {
  *   - spawn cwd is the wrapper's own cwd — the evaluator sets it to the
  *     implementation Run's authoritative workspaceRoot. Never derived from
  *     prompt text or any Task narrative available here.
- *   - No --permission-mode flag (least privilege); QA only judges, never edits.
- *   - Profile routing identical to the relay path (inherited
+ *   - No --permission-mode flag (least privilege); explicit --permissionMode
+ *     is forbidden in QA passthrough.
+ *   - Profile routing identical to the relay path (explicit config, inherited
  *     CLAUDE_CONFIG_DIR, else Owner Team/Pro routing by cwd); credentials
  *     stay in Claude's own storage, never read here.
  *   - stdout carries Claude's output verbatim (no wrapper chatter — the
@@ -669,7 +670,7 @@ function redactedArgvShape(exe, args) {
  *   - Parent signals are forwarded so evaluator timeouts cannot orphan Claude.
  *
  * @param {string} prompt  already-bounded QA prompt (composed by the evaluator)
- * @param {{ claudeConfigDir?: string; permissionMode?: string }} options
+ * @param {{ claudeConfigDir?: string }} options
  * @returns {Promise<never>} always exits the process with Claude's exit code
  */
 async function runQaPrintPassthrough(prompt, options = {}) {
@@ -684,7 +685,6 @@ async function runQaPrintPassthrough(prompt, options = {}) {
     process.exit(1);
   }
   const claudeArgs = ['--print'];
-  if (options.permissionMode === 'acceptEdits') claudeArgs.push('--permission-mode', 'acceptEdits');
   claudeArgs.push(prompt);
   const exitCode = await new Promise((resolve) => {
     let child;
@@ -758,7 +758,9 @@ function detectQaPassthroughArgs(argv) {
     if (tok === '--print') {
       if (prompt !== undefined || argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new ArgError('Invalid QA passthrough --print argument.');
       prompt = argv[++i];
-    } else if (tok === '--claudeConfigDir' || tok === '--permissionMode') {
+    } else if (tok === '--permissionMode') {
+      throw new ArgError('--permissionMode is forbidden in QA passthrough.');
+    } else if (tok === '--claudeConfigDir') {
       const key = tok.slice(2);
       if (options[key] !== undefined || argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new ArgError(`Invalid QA passthrough argument: ${tok}`);
       options[key] = argv[++i];
@@ -766,7 +768,6 @@ function detectQaPassthroughArgs(argv) {
       throw new ArgError(`Unknown QA passthrough flag: ${tok}`);
     }
   }
-  if (options.permissionMode !== undefined && !VALID_PERMISSION_MODES.has(options.permissionMode)) throw new ArgError(`Invalid --permissionMode value: '${options.permissionMode}'. Allowed values: 'default', 'acceptEdits'.`);
   if (prompt === undefined) throw new ArgError('Missing QA passthrough prompt.');
   return { prompt, options };
 }

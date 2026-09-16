@@ -381,3 +381,12 @@ Verification: server build/typecheck passed; requested serial QA, adapter, and o
 - Tests cover the absolute-root/cwd prompt contract, inconsistency classification, stderr/run metadata persistence, and unchanged normal FAIL behavior.
 
 Verification: server build passed; requested QA + orchestrator checks passed; `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 26 (ar/v1-pm)
+
+- QA passthrough now retains only the explicitly configured Claude `configDir`; `--permissionMode` is forbidden on the QA path and cannot grant Builder permissions to a QA worker. The stale passthrough comment now matches this least-privilege behavior.
+- `workerOutputTail` now bounds output to 400 characters after scrubbing provider keys, bearer/key-value secrets, JWTs, token prefixes, and long base64/hex-looking runs.
+- Semantic inconsistency detection requires an anchored non-existence claim and an exact match to a deterministic `fileExists` or `diffScope` path, preventing unrelated-file false positives.
+- Documented the unconditional per-attempt `attempt-N-stderr.txt` persistence alongside `run-meta.json`; raw diagnostic output remains outside logs.
+
+Verification: server build/typecheck and the requested semantic QA, wrapper, QA-loop, orchestrator, and adapter suites passed serially; `LIVE_DATAROOT_WRITES: 0`.

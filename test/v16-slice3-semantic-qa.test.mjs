@@ -161,6 +161,20 @@ console.log('-- 8) unknown status value → unparseable --');
   check(out.kind === 'unparseable', '8a unknown status value → unparseable, never guessed');
 }
 
+console.log('-- 8b) diagnostic tail scrubs credential-shaped output --');
+{
+  const secretText = [
+    'sk-live-secret', 'Bearer abc123', 'password=hunter2', 'passwd: x', 'pwd= y',
+    'secret=s', 'token=t', 'api_key=k', 'authorization: Basic xyz',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signaturevalue',
+    'AKIAIOSFODNN7EXAMPLE', 'ghp_abcdefghijklmnopqrstuvwxyz123456', 'xoxb-1234567890',
+    '0123456789abcdef0123456789abcdef', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv',
+    '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----',
+  ].join('\n');
+  const tail = sem.workerOutputTail({ stdout: secretText, stderr: '', exitCode: 1, timedOut: false, stdoutTruncated: false, stderrTruncated: false, durationMs: 1 });
+  check(tail.length <= 400 && !/(sk-live-secret|abc123|hunter2|AKIAIOS|ghp_|xoxb-|0123456789abcdef|ABCDEFGHIJKLMNOPQRSTUVWXYZ|BEGIN PRIVATE KEY)/i.test(tail), '8b diagnostic tail masks listed secret shapes and stays bounded');
+}
+
 console.log('\n== PROMPT COMPOSITION (direct unit tests) ==');
 
 console.log('-- 9) composed prompt stays under the 16 KiB cap for a normal input --');
@@ -228,7 +242,7 @@ console.log('-- 11) SEMANTIC PASS → finalQaStatus PASS --');
   check(out.record.finalQaStatus === 'PASS', `11b finalQaStatus PASS (got ${out.record.finalQaStatus})`);
   check(out.record.semantic.status === 'PASS', '11c semantic.status PASS');
   const args = JSON.parse(fs.readFileSync(marker, 'utf8'));
-  check(args.includes('--claudeConfigDir') && args[args.indexOf('--claudeConfigDir') + 1] === configDir && args.includes('--permissionMode'), '11d configured Claude profile and permission mode reach worker argv');
+  check(args.includes('--claudeConfigDir') && args[args.indexOf('--claudeConfigDir') + 1] === configDir && !args.includes('--permissionMode'), '11d configured Claude profile reaches QA argv without permission mode');
   check(out.record.profileSource === 'run-bound', `11e attempt records run-bound profile source (got ${out.record.profileSource})`);
 }
 

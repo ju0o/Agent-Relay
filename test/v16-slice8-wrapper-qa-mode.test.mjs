@@ -45,7 +45,7 @@ fs.chmodSync(ARGV, 0o755);
   check((r.stdout || '').includes('status: PASS'), 'QA passthrough relays claude stdout unaltered');
 }
 
-// 1b. Explicit passthrough options are consumed by the wrapper and applied to Claude argv.
+// 1b. Explicit profile is allowed, but permission mode is forbidden for QA.
 {
   const profile = path.join(CWD, 'qa-profile');
   fs.mkdirSync(profile, { recursive: true });
@@ -53,10 +53,19 @@ fs.chmodSync(ARGV, 0o755);
     cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
     env: { ...process.env, CLAUDE_EXE: ARGV },
   });
-  check(r.status === 0, `QA passthrough options exit 0 (got ${r.status})`);
-  check((r.stdout || '').includes('--permission-mode|acceptEdits|OPTIONS-PROMPT'), 'QA passthrough applies permission mode and preserves prompt order');
-  check((r.stdout || '').includes(`CONFIG=${profile}`), 'QA passthrough applies explicit Claude config directory');
-  check(!(r.stdout || '').includes('--claudeConfigDir'), 'QA passthrough consumes config-dir relay flag');
+  check(r.status === 1, `QA passthrough rejects permission mode (got ${r.status})`);
+  check((r.stderr || '').includes('forbidden') && !(r.stdout || '').includes('OPTIONS-PROMPT'), 'QA passthrough fails closed before Claude when permission mode is supplied');
+}
+
+// 1c. Explicit profile alone is applied to Claude and prompt order is preserved.
+{
+  const profile = path.join(CWD, 'qa-profile-only');
+  fs.mkdirSync(profile, { recursive: true });
+  const r = spawnSync(process.execPath, [WRAPPER, '--claudeConfigDir', profile, '--print', 'OPTIONS-PROMPT'], {
+    cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
+    env: { ...process.env, CLAUDE_EXE: ARGV },
+  });
+  check(r.status === 0 && (r.stdout || '').includes('OPTIONS-PROMPT') && (r.stdout || '').includes(`CONFIG=${profile}`), 'QA passthrough applies explicit config without permission mode');
 }
 
 // 2. Non-zero Claude exit propagates (evaluator treats as reattempt-eligible, not success).
