@@ -221,3 +221,13 @@ WBS-10 pass 10 failed-dispatch recovery:
 - `test/v1-orchestrator.test.mjs`: disposable tests assert delivery mint/idempotency, truthful no-Result packet, same-Task preparation, and exhausted PM-change budget with no judgment write.
 
 Verification: `npx tsc -p tsconfig.server.json` passed; `node --test test/v1-orchestrator.test.mjs` — 30 passed, 0 failed.
+
+## CHANGES round 8
+
+WBS-10 passes 11–12:
+
+- `test/v1-orchestrator.test.mjs`: failed-run Delivery packets are rebuilt twice before and after the PM turn; unchanged canonical state keeps an identical `contextHash`, while a newly linked Run changes it.
+- `src/orchestrator/pm-packets.ts`: failed-run packet hashing is limited to the canonical verification context/retry lineage and bounded failure text from canonical Run Events; audit/state files and wall-clock values are not inputs. Live read-only check of `V1CERT` Delivery `PMD-TASK-0001-3989ec39-80c5-4009-9403-d015ba0a0339` produced the same hash twice (`6080cf2513f2709c943e50061c5fa3b1265acc05fe44c86ab4a614094c1a2bbd`).
+- G4A bisect: `node --test test/v1-g4a-pm-delivery.test.mjs` fails identically at `9af10aa`, `61df4c7`, and `6d411d4`; the failing `IGNORED`/`PENDING` transition is therefore pre-existing and not introduced by this pass. The first relevant finalized-delivery reconciliation commit is `be7c41c`; its intended stale-delivery reconciliation remains unchanged. No safe production correction was identified without changing the certification fixture's historical sequence, so this remains a routed blocker.
+
+Verification: `npx tsc -p tsconfig.server.json` passed; focused orchestrator — 30 passed, 0 failed. Full V1 — 66 tests, 65 passed, 1 pre-existing G4A failure. B15 + OpenCode adapter — 12 passed, 0 failed. Roles — 8 passed, 0 failed. Live dataRoot writes: 0.

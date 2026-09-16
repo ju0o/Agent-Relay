@@ -702,11 +702,15 @@ test('dispatch-failed Run without Result enters the PM gate and prepares a same-
   const { auditDir, stateFile } = mkTestDirs('failed-run-recovery');
   const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_JUDGMENT v1', { decision: 'OWNER_REQUIRED', retry: 'NONE', reason: 'owner review required', contract_hash: task.contract.contract_hash, context_hash: 'unused' })] });
   const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  await pmDel.ensurePmDeliveryForFailedRun(dataRoot, project, task.taskId, runId);
+  const beforePacket = pkg.buildPmFinalGatePacket(dataRoot, project, `PMD-${task.taskId}-${runId}`);
   const first = await roleLoop.runOnce(cfg);
   assert.equal(first.steps.length, 1);
   const deliveries = pmDel.listPendingPmDeliveries(dataRoot, project);
   assert.equal(deliveries.length, 1);
-  const packet = (await import('../dist/server/orchestrator/pm-packets.js')).buildPmFinalGatePacket(dataRoot, project, deliveries[0].deliveryId);
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, deliveries[0].deliveryId);
+  assert.equal(beforePacket.contextHash, packet.contextHash, 'read/send/re-read keeps failed-run context hash stable');
   assert.match(packet.text, /Run FAILED before producing a Result — reason: pane unavailable/);
   assert.match(packet.text, /## QA\nnot run/);
   assert.deepEqual(packet.allowedActions, ['CHANGES', 'OWNER_REQUIRED']);
@@ -719,6 +723,12 @@ test('dispatch-failed Run without Result enters the PM gate and prepares a same-
   assert.equal(prepared.task.executionState, 'READY');
   assert.equal(gt.listTasks(dataRoot, project).length, 1);
   assert.equal(pmDel.listPmDeliveries(dataRoot, project).length, 1);
+  const newerFolder = path.join(dataRoot, project, '_runs', 'failed-2');
+  fs.mkdirSync(newerFolder, { recursive: true });
+  fs.writeFileSync(path.join(newerFolder, 'meta.json'), JSON.stringify({ tags: [], runId: 'failed-dispatch-run-2', goalId: goal.goalId, taskId: task.taskId }));
+  await gt.linkRunToTask(dataRoot, project, task.taskId, newerFolder);
+  const changedPacket = pkg.buildPmFinalGatePacket(dataRoot, project, deliveries[0].deliveryId);
+  assert.notEqual(changedPacket.contextHash, packet.contextHash, 'a newly linked Run changes the stale-check hash');
 });
 
 test('failed-run PM changes honor max_pm_changes and stop at OWNER_REQUIRED', async () => {
