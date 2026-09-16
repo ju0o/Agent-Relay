@@ -34,12 +34,17 @@
  *   Z. restart re-reads durable judgment + retry instruction
  */
 import * as fs from 'node:fs';
+import fsDefault from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const TEST_ROOT = path.join(os.tmpdir(), `arl-v1-g5a-${process.pid}-${Date.now()}`);
 fs.mkdirSync(TEST_ROOT, { recursive: true });
+const LIVE_ROOT = path.join(os.homedir(), '.local', 'share', 'AgentRelay', 'data');
+const LIVE_MARKER = path.join(os.tmpdir(), `arl-v1-g5a-live-marker-${process.pid}-${Date.now()}`);
+fs.writeFileSync(LIVE_MARKER, 'marker\n');
 
 let passed = 0, failed = 0;
 const PASS = (m) => { console.log('  PASS  ' + m); passed++; };
@@ -171,12 +176,81 @@ const DA = `PMD-${ta.taskId}-${ta.runId}`;
   const res = await submit({ deliveryId: DA, decision: 'ACCEPT', reason: 'looks good, accept it' });
   check(res.judgment.status === 'APPLIED' && res.applied === true, 'A valid ACCEPT applied by deliveryId only');
   check(res.judgment.decision === 'ACCEPT', 'A decision recorded');
+  const acceptedDelivery = pmDel.getPmDelivery(TEST_ROOT, project, DA);
+  check(acceptedDelivery.status === 'ACKNOWLEDGED', 'A Delivery PENDING → DELIVERED → ACKNOWLEDGED');
+  check(acceptedDelivery.deliveredAt && acceptedDelivery.acknowledgedAt, 'A Delivery timestamps recorded');
   const t = gt.getTask(TEST_ROOT, project, ta.taskId);
   check(t.pmState === 'ACCEPTED', 'L pmState ACCEPTED');
   check(t.acceptedRunId === ta.runId, 'L acceptedRunId = delivery.runId');
   const events = evk.listEvents(TEST_ROOT, project).events;
   const acc = events.filter((e) => e.type === 'TASK_RESULT_ACCEPTED' && e.taskId === ta.taskId);
   check(acc.length === 1 && acc[0].runId === ta.runId, 'M TASK_RESULT_ACCEPTED via canonical path');
+}
+
+// ── AR-04: pre-acked transport, replay, and wake isolation ──
+console.log('\n-- AR-04: judgment Delivery reconciliation --');
+{
+  const t = await driveToResultReceived('V1 G5A pre-acked', 'ses-g5a-ar04', 'G5A AR-04 pre-acked text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  await pmDel.markPmDeliveryDelivered(TEST_ROOT, project, D, 'PENDING');
+  const before = pmDel.getPmDelivery(TEST_ROOT, project, D);
+  const res = await submitBackend({ deliveryId: D, decision: 'ACCEPT', reason: 'pre-acked transport is safe' });
+  const after = pmDel.getPmDelivery(TEST_ROOT, project, D);
+  check(res.judgment.status === 'APPLIED' && after.status === 'ACKNOWLEDGED', 'AR-04 pre-acked Delivery reaches ACKNOWLEDGED without error');
+  check(after.deliveredAt === before.deliveredAt, 'AR-04 pre-acked path does not double-deliver');
+  const replay = await submitBackend({ deliveryId: D, decision: 'ACCEPT', reason: 'pre-acked transport is safe' });
+  check(replay.applied === false && pmDel.getPmDelivery(TEST_ROOT, project, D).status === 'ACKNOWLEDGED', 'AR-04 identical replay is a no-op');
+  check(!fs.existsSync(path.join(TEST_ROOT, project, '_relay', 'pm-wakes', D)), 'AR-04 creates no wake record');
+}
+
+// ── AR-04 review regressions: race and replay repair ──
+console.log('\n-- AR-04: race and replay repair --');
+{
+  const t = await driveToResultReceived('V1 G5A race', 'ses-g5a-ar04-race', 'G5A AR-04 race text');
+  const D = `PMD-${t.taskId}-${t.runId}`;
+  const originalRead = fsDefault.readFileSync;
+  let raced = false;
+  fsDefault.readFileSync = function (file, ...args) {
+    const value = originalRead.call(this, file, ...args);
+    if (!raced && String(file).endsWith(`/pm-deliveries/${D}/delivery.json`) && String(value).includes('"status": "PENDING"')) {
+      raced = true;
+      const record = JSON.parse(String(value));
+      record.status = 'ACKNOWLEDGED';
+      record.deliveredAt = record.acknowledgedAt = new Date().toISOString();
+      fsDefault.writeFileSync(file, JSON.stringify(record, null, 2) + '\n');
+    }
+    return value;
+  };
+  try {
+    const res = await submitBackend({ deliveryId: D, decision: 'ACCEPT', reason: 'concurrent pre-ack race is safe' });
+    check(raced && res.judgment.status === 'APPLIED' && pmDel.getPmDelivery(TEST_ROOT, project, D).status === 'ACKNOWLEDGED', 'AR-04 concurrent pre-ack race is benign');
+  } finally {
+    fsDefault.readFileSync = originalRead;
+  }
+
+  const tc = await driveToResultReceived('V1 G5A replay repair', 'ses-g5a-ar04-replay', 'G5A AR-04 replay text');
+  const DC = `PMD-${tc.taskId}-${tc.runId}`;
+  const args = {
+    deliveryId: DC, decision: 'CHANGES',
+    reason: 'replay repairs the transport state', retryInstruction: 're-run the disposable verification',
+  };
+  const originalRename = fsDefault.renameSync;
+  let forced = false;
+  fsDefault.renameSync = function (from, to) {
+    if (!forced && String(to).endsWith('/delivery.json') && String(to).includes('/pm-deliveries/')) {
+      forced = true;
+      throw new Error('forced disposable delivery reconcile failure');
+    }
+    return originalRename.call(this, from, to);
+  };
+  try {
+    await shouldThrow(() => submitBackend(args), 'AR-04 forced reconcile failure surfaces', 'forced disposable delivery reconcile failure');
+  } finally {
+    fsDefault.renameSync = originalRename;
+  }
+  check(pmJud.getPmJudgment(TEST_ROOT, project, `PMJ-${DC}`).status === 'RECEIVED', 'AR-04 failed reconcile leaves durable CHANGES judgment');
+  const replay = await submitBackend(args);
+  check(replay.judgment.status === 'RECEIVED' && pmDel.getPmDelivery(TEST_ROOT, project, DC).status === 'ACKNOWLEDGED', 'AR-04 CHANGES replay repairs Delivery');
 }
 
 // ── N: duplicate ACCEPT idempotent ──
@@ -229,6 +303,9 @@ const DC = `PMD-${tc.taskId}-${tc.runId}`;
     retryInstruction: 'fix the nits and re-verify typecheck',
   });
   check(res.judgment.status === 'RECEIVED' && res.applied === false, 'B CHANGES intent recorded, not applied');
+  const changesDelivery = pmDel.getPmDelivery(TEST_ROOT, project, DC);
+  check(changesDelivery.status === 'ACKNOWLEDGED', 'AR-04 CHANGES Delivery PENDING → DELIVERED → ACKNOWLEDGED');
+  check(changesDelivery.deliveredAt && changesDelivery.acknowledgedAt, 'AR-04 CHANGES Delivery timestamps recorded');
   check(res.judgment.retryInstructionPresent === true, 'Q retry instruction flagged');
   const folder = pmJud.pmJudgmentFolder(TEST_ROOT, project, `PMJ-${DC}`);
   const intent = JSON.parse(fs.readFileSync(path.join(folder, 'intent.json'), 'utf8'));
@@ -473,7 +550,15 @@ console.log('\n-- Z: durability --');
 
 await resetProcessLocal();
 delete process.env.WORKER_STAY_MS;
+if (fs.existsSync(LIVE_ROOT)) {
+  const writes = execFileSync('find', [LIVE_ROOT, '-path', path.join(LIVE_ROOT, 'V02CControlTower'), '-prune', '-o', '-newer', LIVE_MARKER, '-print'], { encoding: 'utf8' }).trim();
+  if (writes) console.log(`  INFO  live-root paths newer than marker:\n${writes}`);
+  check(!writes, 'AR-04 no writes outside disposable dataRoot');
+} else {
+  check(true, 'AR-04 no writes outside disposable dataRoot (live root absent)');
+}
 fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+fs.rmSync(LIVE_MARKER, { force: true });
 
 console.log(`\nV1-G5-A Tests complete. Passed: ${passed}, Failed: ${failed}`);
 if (failed > 0) process.exitCode = 1;
