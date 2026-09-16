@@ -195,6 +195,12 @@ function writeState(stateFile: string, state: OrchestratorStateFile): void {
   fs.renameSync(tmp, stateFile);
 }
 
+export function clearBlockedState(stateFile: string): void {
+  const state = readState(stateFile);
+  state.blocked = {};
+  writeState(stateFile, state);
+}
+
 function audit(auditDir: string, item: Record<string, unknown>): void {
   fs.mkdirSync(auditDir, { recursive: true });
   fs.appendFileSync(path.join(auditDir, 'role-loop.jsonl'), JSON.stringify({ ts: new Date().toISOString(), ...item }) + '\n');
@@ -291,6 +297,24 @@ function dryRunValidateContract(project: string, raw: Record<string, unknown>): 
   });
 }
 
+function normalizePmTaskContract(roleConfig: RoleConfig, raw: Record<string, unknown>): { contract: Record<string, unknown>; overridden: boolean } {
+  const qa = roleConfig.assignments.find((assignment) => assignment.roleId === 'qa');
+  const configuredWorkerId = qa?.runtimeAdapterId.startsWith('qa-worker:') ? qa.runtimeAdapterId.slice('qa-worker:'.length) : qa?.runtimeAdapterId;
+  const route = raw.qa_route && typeof raw.qa_route === 'object' && !Array.isArray(raw.qa_route) ? { ...(raw.qa_route as Record<string, unknown>) } : raw.qa_route;
+  if (!route || typeof route !== 'object' || !configuredWorkerId) return { contract: raw, overridden: false };
+  const semantic = (route as Record<string, unknown>).semantic;
+  let overridden = false;
+  if (semantic === true) {
+    (route as Record<string, unknown>).semantic = { qaWorkerId: configuredWorkerId };
+  } else if (semantic === false) {
+    delete (route as Record<string, unknown>).semantic;
+  } else if (semantic && typeof semantic === 'object' && !Array.isArray(semantic)) {
+    if (typeof (semantic as Record<string, unknown>).qaWorkerId === 'string' && (semantic as Record<string, unknown>).qaWorkerId !== configuredWorkerId) overridden = true;
+    (route as Record<string, unknown>).semantic = { ...(semantic as Record<string, unknown>), qaWorkerId: configuredWorkerId };
+  }
+  return { contract: { ...raw, qa_route: route }, overridden };
+}
+
 // ── WBS-5: PM bootstrap / planning loop ──────────────────────────────────────
 
 export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<string, unknown>> {
@@ -325,12 +349,20 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
 
   const envelope: InputEnvelope = { kind: 'PM_BOOTSTRAP', schemaVersion: 'pm-bootstrap-packet.v1', contextHash: packet.contextHash, body: packet.text };
   let parsed: ParseOutcome<PmTaskDecision>;
+  let qaWorkerOverridden = false;
   try {
     parsed = await sendAndParseWithReask(
       adapter,
       sessionId,
       envelope,
-      parsePmTaskDecision,
+      (text) => {
+        const decision = parsePmTaskDecision(text);
+        if (decision.decision !== 'CREATE_TASK') return decision;
+        const normalized = normalizePmTaskContract(cfg.roleConfig, decision.task_contract!);
+        qaWorkerOverridden ||= normalized.overridden;
+        dryRunValidateContract(cfg.project, normalized.contract);
+        return { ...decision, task_contract: normalized.contract };
+      },
       (err, pmReply) => reaskEnvelope('PM_BOOTSTRAP', 'pm-bootstrap-packet.v1', packet.contextHash, packet.text, err, pmReply),
       timeoutMs,
     );
@@ -365,16 +397,9 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
     return { outcome: 'CHANGES' };
   }
 
+  if (qaWorkerOverridden) audit(cfg.auditDir, { step: 'bootstrap', outcome: 'QA_WORKER_OVERRIDDEN', reason: 'qa_route.semantic.qaWorkerId is controlled by role config' });
+
   // CREATE_TASK
-  try {
-    dryRunValidateContract(cfg.project, decision.task_contract!);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    state.blocked[blockKey] = { contextHash: packet.contextHash, reason: msg, updatedAt: new Date().toISOString() };
-    writeState(cfg.stateFile, state);
-    audit(cfg.auditDir, { step: 'bootstrap', outcome: 'BLOCKED', reason: msg });
-    return { outcome: 'BLOCKED', reason: msg };
-  }
 
   const { goal } = await ensureV1ContainerGoal(cfg.dataRoot, cfg.project);
   const created = await createTask(cfg.dataRoot, cfg.project, {

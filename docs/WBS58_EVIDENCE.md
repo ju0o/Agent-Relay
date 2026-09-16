@@ -165,3 +165,15 @@ WBS-10 pass 3 fixes:
 - `test/v1-orchestrator.test.mjs`: verifies packet contracts/examples, tool-call re-ask, preamble-once behavior, and session rotation; `test/opencode-command-adapter.test.mjs` verifies the abort POST and all-false tool map.
 
 Targeted verification: `node --test test/v1-orchestrator.test.mjs test/opencode-command-adapter.test.mjs` — 33 passed, 0 failed; `node --test test/v1-orchestrator-drills.test.mjs` — 8 passed, 0 failed. `LIVE_DATAROOT_WRITES: 0`.
+
+## CHANGES round 3
+
+WBS-10 pass 5 fixes:
+
+- `src/orchestrator/pm-packets.ts`: the PM task contract section now renders every persisted `TASK_CONTRACT v1` field, the real acceptance-criterion shape, all `CHECK_KINDS` deterministic check shapes, and a complete example generated through `buildTaskContract`.
+- `src/orchestrator/role-loop.ts`: CREATE_TASK contract/QA validation runs inside the existing single re-ask budget, so the exact validator error is returned to the PM. `qaWorkerId` is injected from the configured `qa-worker:<workerId>` assignment; a conflicting PM value is overridden and audited as `QA_WORKER_OVERRIDDEN`.
+- `src/orchestrator/main.ts`: `--retry-blocked` clears only the durable `blocked` map before the operator-triggered run; pending re-ask records remain intact.
+- `src/backend/qa-contract.ts`: exported the existing check-kind set for contract rendering; validation semantics are unchanged.
+- `test/v1-orchestrator.test.mjs`: verifies the generated example with both task and QA validators, worker injection/override auditing, validation-error re-ask, and blocked-state reset.
+
+Verification: `npx tsc -p tsconfig.server.json` passed; orchestrator tests — 26 passed, 0 failed.

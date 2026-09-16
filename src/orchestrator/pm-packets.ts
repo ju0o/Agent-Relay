@@ -7,7 +7,8 @@ import { getTaskEvidenceSummary } from '../backend/evidence.js';
 import { getVerificationContextForDelivery, type VerificationContextPacket } from '../backend/pm-verification-context.js';
 import { listQaRemediationPreparations } from '../backend/qa-remediation-preparation.js';
 import { listRetryPreparations } from '../backend/retry-preparation.js';
-import { canonicalizeForHash } from '../backend/task-contract.js';
+import { buildTaskContract, canonicalizeForHash } from '../backend/task-contract.js';
+import { CHECK_KINDS } from '../backend/qa-contract.js';
 import type { RoleConfig } from '../roles/role-config.js';
 import type { TaskRecord } from '../shared/types.js';
 import { summarizeAttemptDeterministic, semanticReasonFromAttempt } from '../backend/qa-gate.js';
@@ -29,15 +30,27 @@ export type PmOutputContractKind = 'PM_TASK_DECISION v1' | 'PM_JUDGMENT v1';
 /** Single source of truth for the plain-text PM response contract appended to every packet. */
 export function renderOutputContract(kind: PmOutputContractKind): string {
   if (kind === 'PM_TASK_DECISION v1') {
+    const example = buildTaskContract({
+      project: 'example', task_id: 'TASK-0001', goal: 'implement the requested change', bounded_scope: 'out.txt only',
+      acceptance_criteria: [{ id: 'AC-01', description: 'the output file exists', validationMode: 'DETERMINISTIC' }],
+      required_evidence: ['test output'],
+      qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }] },
+      retry_policy: { same_task_only: true, max_qa_remediations: 2, max_pm_changes: 2 },
+      owner_gate_conditions: ['public exposure'],
+    });
     return [
       '## OUTPUT CONTRACT',
       'You have no tools. Reply with plain text containing exactly one fenced block.',
       'The first line inside the fence must be exactly `PM_TASK_DECISION v1`, followed by one JSON object.',
-      'Fields: decision (CREATE_TASK|CHANGES|OWNER_REQUIRED|PROJECT_COMPLETE); task_contract (required only for CREATE_TASK; bounded contract object); reason (non-empty explanation).',
+      'Fields: decision (CREATE_TASK|CHANGES|OWNER_REQUIRED|PROJECT_COMPLETE); task_contract (required only for CREATE_TASK); reason (non-empty explanation).',
+      'task_contract input: goal, bounded_scope, acceptance_criteria[{id,description,validationMode: DETERMINISTIC|SEMANTIC|BOTH}], required_evidence[], qa_route, retry_policy{same_task_only,max_qa_remediations,max_pm_changes}, owner_gate_conditions[].',
+      'TASK_CONTRACT v1 persisted fields also include schema_version, project, task_id, contract_revision, contract_hash; project/task_id/contract_hash are server-assigned or computed.',
+      `qa_route.deterministic checks use only ${[...CHECK_KINDS].join('|')}: fileExists{kind,criterionId?,path}; fileExactContent{kind,criterionId?,path,content}; diffScope{kind,criterionId?,allowedPaths[]}; command{kind,criterionId?,command,args[],cwd?,timeoutMs?,expectExitCode?}. criterionId is required for every DETERMINISTIC/BOTH criterion.`,
+      'qa_route.semantic is true|false or an object without qaWorkerId; the orchestrator supplies qaWorkerId from role config and overrides any supplied value.',
       'Minimal valid example:',
       '```json',
       'PM_TASK_DECISION v1',
-      '{"decision":"PROJECT_COMPLETE","reason":"No task is required."}',
+      JSON.stringify({ decision: 'CREATE_TASK', task_contract: example, reason: 'Implement the bounded change.' }, null, 2),
       '```',
     ].join('\n');
   }

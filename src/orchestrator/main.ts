@@ -4,13 +4,14 @@ import type { RoleRuntimeAdapter } from '../integrations/core/role-runtime.js';
 import { OpenCodeCommandAdapter } from '../integrations/opencode/command-adapter.js';
 import { listWorkerRegistryRecords } from '../backend/worker-registry.js';
 import { dispatchV1OwnerApproved } from '../backend/v1-dispatch.js';
-import { runOnce, type DispatchHook, type RoleLoopConfig } from './role-loop.js';
+import { clearBlockedState, runOnce, type DispatchHook, type RoleLoopConfig } from './role-loop.js';
 
 interface Args {
   dataRoot: string;
   project: string;
   roleConfig: string;
   once?: boolean;
+  retryBlocked?: boolean;
   pollMs?: string;
   auditDir: string;
   stateFile: string;
@@ -23,6 +24,7 @@ function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i]!;
     if (k === '--once') a.once = true;
+    else if (k === '--retry-blocked') a.retryBlocked = true;
     else if (k.startsWith('--')) {
       const name = k.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       a[name] = argv[++i];
@@ -123,6 +125,10 @@ async function buildConfig(a: Args): Promise<RoleLoopConfig> {
 
 async function run(a: Args): Promise<void> {
   const cfg = await buildConfig(a);
+  if (a.retryBlocked) {
+    clearBlockedState(a.stateFile);
+    a.retryBlocked = false;
+  }
   await runOnce(cfg);
 }
 
@@ -145,4 +151,4 @@ if (require.main === module) {
   }
 }
 
-export { parseArgs, buildConfig, run };
+export { parseArgs, buildConfig, run, clearBlockedState };

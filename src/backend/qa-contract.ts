@@ -52,7 +52,7 @@ export class QaContractError extends Error {
 }
 
 const VALIDATION_MODES: ReadonlySet<string> = new Set(['DETERMINISTIC', 'SEMANTIC', 'BOTH']);
-const CHECK_KINDS: ReadonlySet<string> = new Set(['fileExists', 'fileExactContent', 'diffScope', 'command']);
+export const CHECK_KINDS: ReadonlySet<string> = new Set(['fileExists', 'fileExactContent', 'diffScope', 'command']);
 const TASK_ID_RE = /^TASK-\d+$/;
 
 function isNonEmptyString(v: unknown): v is string {

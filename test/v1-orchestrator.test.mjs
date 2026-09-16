@@ -185,18 +185,59 @@ test('every PM packet ends with a code-generated contract whose example parses s
   const project = 'OrchOutputContract';
   const pkg = await import('../dist/server/orchestrator/pm-packets.js');
   const schemas = await import('../dist/server/orchestrator/pm-schemas.js');
+  const contracts = await import('../dist/server/backend/task-contract.js');
+  const qaContracts = await import('../dist/server/backend/qa-contract.js');
   const roleConfig = makeRoleConfig(project);
   const bootstrap = pkg.buildPmBootstrapPacket(dataRoot, project, roleConfig);
   assert.match(bootstrap.text, /## OUTPUT CONTRACT[\s\S]*```$/);
   const bootstrapExample = bootstrap.text.match(/```json\n(PM_TASK_DECISION v1\n[\s\S]*?)```$/)?.[1];
   assert.ok(bootstrapExample);
-  assert.equal(schemas.parsePmTaskDecision('```json\n' + bootstrapExample + '```').decision, 'PROJECT_COMPLETE');
+  const parsedBootstrap = schemas.parsePmTaskDecision('```json\n' + bootstrapExample + '```');
+  assert.equal(parsedBootstrap.decision, 'CREATE_TASK');
+  const built = contracts.buildTaskContract({ project: 'example', task_id: 'TASK-0001', ...parsedBootstrap.task_contract });
+  assert.equal(contracts.validateTaskContract(built).contract_hash, built.contract_hash);
+  assert.ok(qaContracts.validateTaskQaContractFields({ scope: built.bounded_scope, acceptanceCriteria: built.acceptance_criteria, qaContract: built.qa_route }));
   const delivery = await mintPendingDelivery(project);
   const final = pkg.buildPmFinalGatePacket(dataRoot, project, delivery.deliveryId);
   assert.match(final.text, /## OUTPUT CONTRACT[\s\S]*```$/);
   const finalExample = final.text.match(/```json\n(PM_JUDGMENT v1\n[\s\S]*?)```$/)?.[1];
   assert.ok(finalExample);
   assert.equal(schemas.parsePmJudgment('```json\n' + finalExample + '```').decision, 'OWNER_REQUIRED');
+});
+
+test('CREATE_TASK injects the configured QA worker and audits a PM-supplied worker override', async () => {
+  const project = 'OrchQaWorkerInjection';
+  const roleConfig = makeRoleConfig(project);
+  roleConfig.assignments.push({ roleId: 'qa', runtimeAdapterId: 'qa-worker:configured-qa', workspace: { project, workspaceRoot: ROOT }, sessionPolicy: 'per-task', permissionProfile: 'read-only', capabilityRequirements: {}, zeroExtraBilling: true, fallbackChain: [], enabled: true });
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'bounded task', task_contract: { goal: 'produce output', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'SEMANTIC' }], required_evidence: ['test output'], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }], semantic: { qaWorkerId: 'invented-pm-worker' } } } })] });
+  const { auditDir, stateFile } = mkTestDirs('qa-worker-injection');
+  const result = await roleLoop.processBootstrap({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile });
+  assert.equal(result.outcome, 'CREATE_TASK');
+  assert.equal(gt.getTask(dataRoot, project, result.taskId).contract.qa_route.semantic.qaWorkerId, 'configured-qa');
+  assert.ok(auditLines(auditDir).some((line) => line.outcome === 'QA_WORKER_OVERRIDDEN'));
+});
+
+test('invalid QA contract validation is re-asked once with the exact validation error', async () => {
+  const project = 'OrchQaValidationReask';
+  const roleConfig = makeRoleConfig(project);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'bad first shape', task_contract: { goal: 'produce output', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }], qa_route: { deterministic: ['node scripts/check.mjs'] } } }), fence('PM_TASK_DECISION v1', { decision: 'CREATE_TASK', reason: 'corrected shape', task_contract: { goal: 'produce output', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }] } } })] });
+  const { auditDir, stateFile } = mkTestDirs('qa-validation-reask');
+  const result = await roleLoop.processBootstrap({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile });
+  assert.equal(result.outcome, 'CREATE_TASK');
+  assert.equal(adapter.sendLog.length, 2);
+  assert.match(adapter.sendLog[1].body, /deterministic\[0\] 항목이 잘못되었습니다/);
+});
+
+test('--retry-blocked parses as an operator flag and clears only the durable blocked map', async () => {
+  const main = await import('../dist/server/orchestrator/main.js');
+  const stateFile = path.join(ROOT, 'retry-blocked-state.json');
+  fs.writeFileSync(stateFile, JSON.stringify({ schemaVersion: 1, blocked: { bootstrap: { contextHash: 'h', reason: 'old', updatedAt: 'now' } }, pendingReask: { bootstrap: { contextHash: 'h', reason: 'retry', updatedAt: 'now' } } }));
+  const args = main.parseArgs(['--dataRoot', dataRoot, '--project', 'RetryBlocked', '--role-config', 'role.json', '--audit-dir', path.join(ROOT, 'audit'), '--state-file', stateFile, '--once', '--retry-blocked']);
+  assert.equal(args.retryBlocked, true);
+  main.clearBlockedState(stateFile);
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.deepEqual(state.blocked, {});
+  assert.ok(state.pendingReask.bootstrap);
 });
 
 // ── CREATE_TASK creates a task WITH contract and calls the dispatch hook once ──
