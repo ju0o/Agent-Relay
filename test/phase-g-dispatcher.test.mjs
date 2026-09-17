@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const TEST_ROOT = path.join(os.tmpdir(), `arl-phase-g-${process.pid}-${Date.now()}`);
@@ -216,21 +217,31 @@ registerWorker('w-alive', FIX_ALIVE, { displayName: 'Alive' });
   );
 }
 
-// ── G-14a: dispatch-time workspace baseline (round 32) ─────────────────────
+// ── G-14a: dispatch-time workspace baseline (round 33, content-aware) ───────
 console.log('\n── G-14a dispatch-time workspace baseline ──');
 
 {
   // Generic (non-actl) worker dispatch must snapshot the workspace's
-  // pre-existing dirty paths into workspace-baseline.json in the Run folder.
+  // pre-existing dirty paths AND their content digests into
+  // workspace-baseline.json ({ paths, entries, capturedAt }) in the Run folder.
+  const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
   const baseWS = path.join(TEST_ROOT, '_baseline-ws');
   fs.rmSync(baseWS, { recursive: true, force: true });
   fs.mkdirSync(baseWS, { recursive: true });
   execSync('git init -q', { cwd: baseWS, stdio: 'ignore' });
   execSync('git config user.email g@example.com', { cwd: baseWS, stdio: 'ignore' });
   execSync('git config user.name "G Fixture"', { cwd: baseWS, stdio: 'ignore' });
-  const dirtyPath = path.join('docs', 'OPERATIONS.md');
+  // ` M` (tracked then modified): commit tracked.txt, then dirty it.
+  fs.writeFileSync(path.join(baseWS, 'tracked.txt'), 'committed-v1', 'utf8');
+  execSync('git add tracked.txt && git commit -qm add-tracked', { cwd: baseWS, stdio: 'ignore' });
+  const modifiedPath = 'tracked.txt';
+  const modifiedBytes = 'modified-after-commit';
+  fs.writeFileSync(path.join(baseWS, modifiedPath), modifiedBytes, 'utf8');
+  // `??` (untracked file): docs/OPERATIONS.md exists before dispatch.
+  const untrackedPath = path.join('docs', 'OPERATIONS.md');
+  const untrackedBytes = 'uncommitted-from-before';
   fs.mkdirSync(path.join(baseWS, 'docs'), { recursive: true });
-  fs.writeFileSync(path.join(baseWS, dirtyPath), 'uncommitted-from-before', 'utf8');
+  fs.writeFileSync(path.join(baseWS, untrackedPath), untrackedBytes, 'utf8');
 
   const task = await makeReadyTask(goal.goalId, 'Baseline dispatch');
   const result = await disp.dispatchTask(TEST_ROOT, project, {
@@ -250,9 +261,31 @@ console.log('\n── G-14a dispatch-time workspace baseline ──');
   } catch {
     baseline = null;
   }
-  check(Array.isArray(baseline) && baseline.includes(dirtyPath), `G-14a baseline contains the pre-existing dirty path (got ${JSON.stringify(baseline)})`);
-  check(Array.isArray(baseline) && baseline.join(',') === [...baseline].sort().join(','), 'G-14a baseline list is sorted');
-  check(baseline.length === 1, 'G-14a only the pre-existing dirty path is snapshotted (clean repo has nothing else)');
+  check(
+    baseline !== null && typeof baseline === 'object' && Array.isArray(baseline.paths) && !Array.isArray(baseline),
+    `G-14a baseline is the { paths, entries, capturedAt } object shape (got ${JSON.stringify(baseline)?.slice(0, 200)})`,
+  );
+  check(
+    Array.isArray(baseline?.paths) && baseline.paths.includes(untrackedPath) && baseline.paths.includes(modifiedPath),
+    `G-14a baseline paths contain both the ?-untracked and the M-modified path (got ${JSON.stringify(baseline?.paths)})`,
+  );
+  check(
+    Array.isArray(baseline?.paths) && baseline.paths.join(',') === [...baseline.paths].sort().join(','),
+    'G-14a baseline paths list is sorted',
+  );
+  check(baseline.paths.length === 2, 'G-14a exactly the two dirty paths are snapshotted (clean standalone commit otherwise)');
+  check(
+    baseline?.entries?.[untrackedPath] === sha256(Buffer.from(untrackedBytes, 'utf8')),
+    `G-14a content digest recorded for the ?? entry (got ${baseline?.entries?.[untrackedPath]})`,
+  );
+  check(
+    baseline?.entries?.[modifiedPath] === sha256(Buffer.from(modifiedBytes, 'utf8')),
+    `G-14a content digest recorded for the M entry (got ${baseline?.entries?.[modifiedPath]})`,
+  );
+  check(
+    typeof baseline?.capturedAt === 'string' && !Number.isNaN(Date.parse(baseline.capturedAt)),
+    'G-14a capturedAt is an ISO timestamp',
+  );
   disp._resetDispatcherStateForTests();
 }
 

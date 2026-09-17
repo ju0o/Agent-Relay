@@ -18,6 +18,11 @@ import {
   writeRunMeta,
 } from './fs.js';
 import {
+  computeWorkspacePathDigest,
+  normalizeWorkspacePath,
+  parsePorcelainPath,
+} from './workspace-diff-common.js';
+import {
   getTask,
   linkRunToTask,
   listTasks,
@@ -673,34 +678,31 @@ function writeFileAtomicText(folder: string, name: string, content: string): voi
   }
 }
 
-// ── Dispatch-time workspace baseline (round 32) ───────────────────────────────
+// ── Dispatch-time workspace baseline (round 33) ───────────────────────────────
 //
 // diffScope judgment must attribute only THIS run's changes. At dispatch time
-// (before the Worker spawns) we snapshot the workspace's dirty paths into
-// workspace-baseline.json inside the Run folder; the deterministic evaluator
-// then subtracts those pre-existing paths, so a Builder that leaves its
-// accepted deliverable uncommitted can never poison the next Task's scope gate.
-
-/** Porcelain line → normalized workspace-relative posix path (mirrors the
- * evaluator's normalizeChangedPath — both sides must compare the SAME shape). */
-function normalizeBaselinePath(raw: string): string | null {
-  if (raw.length < 4) return null;
-  let p = raw.slice(3);
-  if (p.length >= 2 && p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-  p = p.trim();
-  if (!p) return null;
-  const norm = path.posix.normalize(p.replace(/\\/g, '/'));
-  if (norm.startsWith('..') || path.posix.isAbsolute(norm)) return null;
-  return norm;
-}
+// (before the Worker spawns) we snapshot the workspace's dirty paths AND their
+// working-tree content digests into workspace-baseline.json inside the Run
+// folder; the deterministic evaluator re-reads that baseline at judgment time
+// and excludes a still-dirty path ONLY when its content is provably unchanged
+// since dispatch — so a Builder that leaves its accepted deliverable
+// uncommitted can never poison the next Task's scope gate, yet can never hide
+// an out-of-scope edit behind a file that merely happened to be dirty already.
 
 /** Runs the same authoritative `git status --porcelain=v1 --no-renames -uall`
- * the evaluator uses, and returns the sorted unique normalized path list, or
- * null when the workspace cannot be authoritatively inspected (not a git repo,
- * git missing, timeout, non-zero exit). A null result simply writes NO baseline
- * file — legacy whole-workspace diffScope behavior stays intact for lost
- * captures (and the evaluator would BLOCK such a scope anyway). */
-function captureWorkspaceBaselinePaths(workspaceRoot: string): Promise<string[] | null> {
+ * the evaluator uses, and returns the sorted unique normalized path list plus a
+ * per-path content digest of the working-tree file at dispatch time (sha256 of
+ * the file bytes; the literal "deleted" for an already-missing file). A path
+ * that is NOT a plain file (gitlink/submodule, unreadable, or a path that
+ * `-uall` never expands into files) gets NO entries record — content cannot be
+ * proven, so the evaluator fails closed and never excludes it. Returns null
+ * when the workspace cannot be authoritatively inspected (not a git repo, git
+ * missing, timeout, non-zero exit) — no baseline file is written and legacy
+ * whole-workspace diffScope behavior stays intact for lost captures (and the
+ * evaluator would BLOCK such a scope anyway). */
+function captureWorkspaceBaselineSnapshot(
+  workspaceRoot: string,
+): Promise<{ paths: string[]; entries: Record<string, string> } | null> {
   return new Promise((resolve) => {
     let child: ChildProcess | undefined;
     try {
@@ -716,11 +718,11 @@ function captureWorkspaceBaselinePaths(workspaceRoot: string): Promise<string[] 
     }
     let stdout = '';
     let settled = false;
-    const finish = (paths: string[] | null) => {
+    const finish = (snapshot: { paths: string[]; entries: Record<string, string> } | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(paths);
+      resolve(snapshot);
     };
     const timer = setTimeout(() => {
       try {
@@ -733,28 +735,58 @@ function captureWorkspaceBaselinePaths(workspaceRoot: string): Promise<string[] 
     });
     child.stderr?.resume(); // drain — never interpreted
     child.once('error', () => finish(null));
-    child.once('close', (code) => {
+    child.once('close', async (code) => {
       if (code !== 0) {
         finish(null);
         return;
       }
+      clearTimeout(timer);
       const seen = new Set<string>();
+      const paths: string[] = [];
       for (const line of stdout.split('\n')) {
-        const norm = normalizeBaselinePath(line.replace(/\r$/, ''));
-        if (norm !== null) seen.add(norm);
+        const rawPath = parsePorcelainPath(line.replace(/\r$/, ''));
+        if (rawPath === null) continue;
+        const norm = normalizeWorkspacePath(rawPath);
+        if (norm !== null && !seen.has(norm)) {
+          seen.add(norm);
+          paths.push(norm);
+        }
       }
-      finish([...seen].sort());
+      paths.sort();
+      // Content digests recorded for every dirty plain file. A null digest
+      // (directory, gitlink/submodule, unreadable special) stays in `paths`
+      // for backward compatible reporting but gets NO entries record — the
+      // evaluator can then never prove it unchanged (fail closed).
+      const entries: Record<string, string> = {};
+      for (const p of paths) {
+        const digest = await computeWorkspacePathDigest(workspaceRoot, p);
+        if (digest !== null) entries[p] = digest;
+      }
+      finish({ paths, entries });
     });
   });
 }
 
-/** Snapshots the workspace dirtiness into workspace-baseline.json right where
- * the Run meta is written. Never throws (a capture failure only means "no
- * baseline" — legacy behavior), so the pre-commit CAS discipline is untouched. */
+/** Snapshots the workspace dirtiness + content digests into
+ * workspace-baseline.json right where the Run meta is written. Shape
+ * `{ paths, entries, capturedAt }`: `paths` keeps the sorted round-32 path
+ * list (backward compatible — an evaluator reading only `paths` still gets the
+ * round-32 semantics), `entries` maps each path to its dispatch-time content
+ * digest ("deleted" when the file was already gone). Never throws (a capture
+ * failure only means "no baseline" — legacy behavior), so the pre-commit CAS
+ * discipline is untouched. */
 async function writeWorkspaceBaseline(runFolder: string, workspaceRoot: string): Promise<void> {
-  const paths = await captureWorkspaceBaselinePaths(workspaceRoot);
-  if (paths === null) return; // no authoritative diff available → legacy behavior
-  writeFileAtomicText(runFolder, 'workspace-baseline.json', JSON.stringify(paths, null, 2) + '\n');
+  const snapshot = await captureWorkspaceBaselineSnapshot(workspaceRoot);
+  if (snapshot === null) return; // no authoritative diff available → legacy behavior
+  writeFileAtomicText(
+    runFolder,
+    'workspace-baseline.json',
+    JSON.stringify(
+      { paths: snapshot.paths, entries: snapshot.entries, capturedAt: new Date().toISOString() },
+      null,
+      2,
+    ) + '\n',
+  );
 }
 
 async function rollbackPreCommitRun(

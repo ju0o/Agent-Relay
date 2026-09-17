@@ -7,6 +7,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
 
 const ROOT = path.join(os.tmpdir(), `arl-v16-s2-${process.pid}-${Date.now()}`);
@@ -25,6 +26,10 @@ async function throwsWithCode(fn, code, message) {
     check(err && err.code === code, `${message} (got code=${err && err.code}: ${err && err.message})`);
   }
 }
+
+/** sha256 hex of a utf8 string — matches workspace-diff-common's digest of the
+ * working-tree file BYTES (the fixture files are written as exact utf8 bytes). */
+const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 
 const gt = await import('../dist/server/backend/goal-task.js');
 const qa = await import('../dist/server/backend/qa-attempt.js');
@@ -295,6 +300,7 @@ console.log('-- 14b) dispatch-time baseline: pre-existing dirty path is subtract
   const c = out.record.deterministic.checks[0];
   check(c.status === 'PASS', `14b PASS when only the allowed path is changed and the rest of the dirt is pre-existing (got ${c.status})`);
   check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), `14b detail cites the subtracted path (got: ${c.detail})`);
+  check(c.detail.includes('baseline: path-only (legacy)'), `14b round-32 array baseline carried the legacy note (got: ${c.detail})`);
   check(c.evidence.baselineApplied === true && c.evidence.preExistingCount === 1, '14b evidence records baselineApplied + preExistingCount');
 }
 
@@ -319,6 +325,7 @@ console.log('-- 14c) same baseline, NEW out-of-scope dirty path (not in baseline
   check(JSON.stringify(c.evidence.outOfScopeSample) === JSON.stringify(['scripts/x.mjs']), '14c outOfScopeSample is exactly [scripts/x.mjs]');
   check(c.evidence.outOfScopeCount === 1 && c.evidence.preExistingCount === 1, '14c outOfScopeCount=1, preExistingCount=1');
   check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), '14c detail still cites the subtracted pre-existing path');
+  check(c.detail.includes('baseline: path-only (legacy)'), `14c round-32 array baseline carried the legacy note (got: ${c.detail})`);
 }
 
 console.log('-- 14d) NO baseline file → legacy behavior: pre-existing out-of-scope dirt still FAILs --');
@@ -337,6 +344,96 @@ console.log('-- 14d) NO baseline file → legacy behavior: pre-existing out-of-s
   check(c.status === 'FAIL', `14d legacy behavior: any out-of-scope dirty path is FAIL without a baseline (got ${c.status})`);
   check(c.detail.includes('docs/OPERATIONS.md') && !c.detail.includes('pre-existing (excluded)'), '14d legacy FAIL names the out-of-scope path, with no pre-existing note');
   check(c.evidence.baselineApplied === undefined, '14d no baseline-evidence keys on the legacy path (behaviour byte-unchanged)');
+}
+
+console.log('-- 14e) content-aware baseline: dirty path UNCHANGED since dispatch → excluded → PASS --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+    paths: ['docs/OPERATIONS.md'],
+    entries: { 'docs/OPERATIONS.md': sha256('v1') },
+    capturedAt: new Date().toISOString(),
+  }), 'utf8');
+  // The run only changes docs/RELEASE_NOTES.md (allowed); docs/OPERATIONS.md
+  // still has exactly the dispatch-time bytes → excluded as pre-existing.
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'PASS', `14e unchanged pre-existing path excluded by matching digest → PASS (got ${c.status})`);
+  check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), `14e detail cites the unchanged pre-existing path (got: ${c.detail})`);
+  check(!c.detail.includes('baseline: path-only (legacy)'), '14e content-aware baseline is NOT labeled path-only legacy');
+  check(c.evidence.baselineMode === 'content' && c.evidence.preExistingCount === 1, '14e evidence records content mode + preExistingCount=1');
+}
+
+console.log('-- 14f) content-aware baseline: pre-existing dirty file MODIFIED by this run, NOT in allowed paths → FAIL naming it --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+    paths: ['docs/OPERATIONS.md'],
+    entries: { 'docs/OPERATIONS.md': sha256('v1') },
+    capturedAt: new Date().toISOString(),
+  }), 'utf8');
+  // Same path, DIFFERENT bytes now → this run changed it; out of scope.
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1 << modified by this run', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'FAIL', `14f modified pre-existing path (out of scope) → FAIL (got ${c.status})`);
+  check(c.detail.includes('pre-existing but modified by this run: docs/OPERATIONS.md'), `14f FAIL names it with the modified-by-this-run wording (got: ${c.detail})`);
+  check(c.evidence.modifiedPreExistingCount === 1 && c.evidence.outOfScopeCount === 1 && c.evidence.preExistingCount === 0, '14f evidence: modifiedPreExisting=1, outOfScope=1, excluded=0');
+}
+
+console.log('-- 14g) content-aware baseline: pre-existing dirty file MODIFIED but IN allowed paths → PASS --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+    paths: ['docs/RELEASE_NOTES.md'],
+    entries: { 'docs/RELEASE_NOTES.md': sha256('v1') },
+    capturedAt: new Date().toISOString(),
+  }), 'utf8');
+  // Same path, changed bytes — but it IS the allowed path, so it passes.
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v2 changed by this run (allowed)', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'PASS', `14g modified pre-existing path inside allowed scope → PASS (got ${c.status})`);
+  check(c.detail.includes('pre-existing but modified by this run: docs/RELEASE_NOTES.md'), `14g PASS detail keeps the modified-by-this-run note (got: ${c.detail})`);
+}
+
+console.log('-- 14h) legacy { paths } baseline WITHOUT entries → round-32 path-only behavior + legacy note --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1', 'utf8');
+  // Object form WITHOUT entries (the round-32 dispatch wrote a bare array; a
+  // paths-only object is the same contract) → path-only subtraction.
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({ paths: ['docs/OPERATIONS.md'] }), 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'PASS', `14h legacy path-only baseline subtracts the pre-existing path → PASS (round-32 behavior, got ${c.status})`);
+  check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), `14h legacy subtraction still reported as pre-existing (excluded) (got: ${c.detail})`);
+  check(c.detail.includes('baseline: path-only (legacy)'), `14h detail carries the path-only legacy note (got: ${c.detail})`);
+  check(c.evidence.baselineMode === 'path-only-legacy' && c.evidence.preExistingCount === 1, '14h evidence records path-only-legacy mode + preExistingCount=1');
 }
 
 console.log('\n== COMMAND ==');

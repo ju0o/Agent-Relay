@@ -25,13 +25,18 @@
  *   relative paths only, symlink-escape-safe (realpath must resolve under
  *   `workspaceRoot`). fileExactContent is byte-exact — a trailing-newline
  *   difference IS a mismatch (FAIL), never normalized away.
- * diffScope: `spawn('git', ['status','--porcelain=v1','--no-renames'], {cwd:
- *   workspaceRoot, shell:false})`, parsed and compared against `allowedPaths`
- *   with boundary-aware prefix matching (`src` never matches `srcx/...`).
- *   Round 32: paths snapshotted dirty in the Run's workspace-baseline.json at
- *   dispatch time are subtracted first — only paths dirty NOW and NOT in that
- *   baseline count as changed by THIS run (reported as
- *   `pre-existing (excluded): …`). No baseline file = legacy behavior.
+ * diffScope: `spawn('git', ['status','--porcelain=v1','--no-renames','-uall'],
+ *   {cwd: workspaceRoot, shell:false})`, parsed and compared against
+ *   `allowedPaths` with boundary-aware prefix matching (`src` never matches
+ *   `srcx/...`). Round 33: the dispatch-time workspace baseline is
+ *   content-aware — a path dirty NOW is subtracted as pre-existing ONLY when
+ *   its working-tree content digest still equals the digest recorded at
+ *   dispatch (`pre-existing (excluded): …`). If the content differs (or a
+ *   baseline digest was never recorded for it), the path counts as changed by
+ *   THIS run and is reported as `pre-existing but modified by this run: …`.
+ *   A baseline WITHOUT content digests (round-32 array or `{ paths }` object)
+ *   falls back to the round-32 path-only subtraction and is noted
+ *   `baseline: path-only (legacy)`. No baseline file = legacy behavior.
  * command: `spawn(command, args, {cwd, shell:false})` — argv only, never a
  *   shell string; bounded timeout, bounded/truncated stdout+stderr, no env
  *   dump. A completed run with the wrong exit code is FAIL; a spawn error,
@@ -77,6 +82,11 @@ import {
   getQaAttempt,
   recordDeterministicEvidence,
 } from './qa-attempt.js';
+import {
+  computeWorkspacePathDigest,
+  normalizeWorkspacePath,
+  parsePorcelainPath,
+} from './workspace-diff-common.js';
 
 // ── bounds ───────────────────────────────────────────────────────────────────
 
@@ -422,21 +432,9 @@ export function runProcess(cmd: string, args: string[], cwd: string, timeoutMs: 
 
 // ── CHECK 3: diffScope ───────────────────────────────────────────────────────
 
-function normalizeChangedPath(raw: string): string | null {
-  const norm = path.posix.normalize(raw.replace(/\\/g, '/'));
-  if (norm.startsWith('..') || path.posix.isAbsolute(norm)) return null;
-  return norm;
-}
-
-function parsePorcelainPath(line: string): string | null {
-  // porcelain=v1 format: "XY<space>path" (rename arrow form excluded via
-  // --no-renames, so every line is a plain path, optionally C-quoted).
-  if (line.length < 4) return null;
-  let p = line.slice(3);
-  if (p.length >= 2 && p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-  p = p.trim();
-  return p || null;
-}
+// Path normalization + porcelain parsing are shared with the dispatcher
+// (workspace-diff-common.ts) so BOTH sides of the dispatch-time baseline
+// protocol compare the SAME normalized shape — one copy, not two.
 
 async function runGitStatusPorcelain(
   workspaceRoot: string,
@@ -477,14 +475,24 @@ function formatPathSample(paths: string[]): string {
   return sample.join(', ') + (paths.length > sample.length ? ` 외 ${paths.length - sample.length}개` : '');
 }
 
-/** Round 32: the dispatch-time dirty-path snapshot written by the dispatcher
- * (workspace-baseline.json = sorted array of normalized porcelain paths).
- * Absent (older runs / capture unavailable) → legacy behavior. A PRESENT but
- * malformed baseline fails closed (BLOCKED) — a corrupt snapshot is never
- * silently trusted to hide out-of-scope changes. */
-async function loadWorkspaceBaseline(
-  runFolder: string,
-): Promise<{ kind: 'ok'; paths: Set<string> } | { kind: 'absent' } | { kind: 'blocked'; reason: string }> {
+/** Dispatch-time dirty-path snapshot written by the dispatcher
+ * (workspace-baseline.json). Round 33 shape `{ paths, entries, capturedAt }`:
+ * `entries` maps each path to the sha256 content digest of the working-tree
+ * file at dispatch ("deleted" when it was already gone). A baseline WITHOUT
+ * content digests (round-32 array form, or `{ paths }` object) falls back to
+ * the round-32 path-only behavior — the diffScope detail notes
+ * `baseline: path-only (legacy)`. Absent (older runs / capture unavailable) →
+ * legacy behavior. A PRESENT but malformed baseline fails closed (BLOCKED) —
+ * a corrupt snapshot is never silently trusted to hide out-of-scope changes. */
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+type LoadedBaseline =
+  | { kind: 'ok'; mode: 'content'; paths: Set<string>; entries: Readonly<Record<string, string>> }
+  | { kind: 'ok'; mode: 'path-only-legacy'; paths: Set<string> }
+  | { kind: 'absent' }
+  | { kind: 'blocked'; reason: string };
+
+async function loadWorkspaceBaseline(runFolder: string): Promise<LoadedBaseline> {
   const baselinePath = path.join(runFolder, 'workspace-baseline.json');
   let raw: string;
   try {
@@ -500,16 +508,47 @@ async function loadWorkspaceBaseline(
   } catch (err) {
     return { kind: 'blocked', reason: `workspace-baseline.json 파싱 실패: ${err instanceof Error ? err.message : String(err)}` };
   }
-  if (!Array.isArray(parsed) || parsed.some((p) => typeof p !== 'string')) {
-    return { kind: 'blocked', reason: 'workspace-baseline.json은 문자열 경로 배열이어야 합니다 (형식 오류 → fail closed).' };
-  }
   const paths = new Set<string>();
-  for (const p of parsed) {
-    if (typeof p !== 'string' || !p) continue;
-    const norm = normalizeChangedPath(p);
+  // Adds a normalized path to the set. Returns false only for a HARD shape
+  // violation (non-string) that must fail closed; empty/un-normalizable
+  // entries are skipped the same way round-32 skipped them silently.
+  const addNormalizedPath = (p: unknown): boolean => {
+    if (typeof p !== 'string') return false;
+    if (!p) return true;
+    const norm = normalizeWorkspacePath(p);
     if (norm !== null) paths.add(norm);
+    return true;
+  };
+  if (Array.isArray(parsed)) {
+    // Round-32 array form → path-only legacy fallback.
+    if (parsed.some((p) => !addNormalizedPath(p))) {
+      return { kind: 'blocked', reason: 'workspace-baseline.json은 문자열 경로 배열이어야 합니다 (형식 오류 → fail closed).' };
+    }
+    return { kind: 'ok', mode: 'path-only-legacy', paths };
   }
-  return { kind: 'ok', paths };
+  if (typeof parsed !== 'object' || parsed === null) {
+    return { kind: 'blocked', reason: 'workspace-baseline.json은 문자열 경로 배열 또는 { paths, entries?, capturedAt? } 객체여야 합니다 (형식 오류 → fail closed).' };
+  }
+  const obj = parsed as { paths?: unknown; entries?: unknown };
+  if (!Array.isArray(obj.paths) || obj.paths.some((p) => !addNormalizedPath(p))) {
+    return { kind: 'blocked', reason: 'workspace-baseline.json 의 paths 는 문자열 경로 배열이어야 합니다 (형식 오류 → fail closed).' };
+  }
+  if (obj.entries === undefined) {
+    // `{ paths }` object WITHOUT entries → round-32 path-only legacy fallback.
+    return { kind: 'ok', mode: 'path-only-legacy', paths };
+  }
+  if (typeof obj.entries !== 'object' || obj.entries === null || Array.isArray(obj.entries)) {
+    return { kind: 'blocked', reason: 'workspace-baseline.json 의 entries 는 { path: sha256 | "deleted" } 객체여야 합니다 (형식 오류 → fail closed).' };
+  }
+  const entries: Record<string, string> = {};
+  for (const [key, value] of Object.entries(obj.entries)) {
+    const norm = normalizeWorkspacePath(key);
+    if (norm === null || typeof value !== 'string' || !(value === 'deleted' || SHA256_HEX_RE.test(value))) {
+      return { kind: 'blocked', reason: 'workspace-baseline.json entries 는 { path: sha256 | "deleted" } 여야 합니다 (형식 오류 → fail closed).' };
+    }
+    entries[norm] = value;
+  }
+  return { kind: 'ok', mode: 'content', paths, entries };
 }
 
 async function runDiffScopeCheck(
@@ -535,19 +574,39 @@ async function runDiffScopeCheck(
 
   const baseline = await loadWorkspaceBaseline(runFolder);
   if (baseline.kind === 'blocked') return makeResult(base, 'BLOCKED', baseline.reason);
-  const baselinePaths = baseline.kind === 'ok' ? baseline.paths : null;
+  const legacy = baseline.kind === 'ok' && baseline.mode === 'path-only-legacy';
+  const legacyNote = legacy ? ' baseline: path-only (legacy)' : '';
 
   const outOfScope: string[] = [];
   const preExisting: string[] = [];
+  const modifiedPreExisting: string[] = [];
   for (const raw of status.paths) {
-    const norm = normalizeChangedPath(raw);
-    // A path dirty NOW that was ALSO dirty at dispatch time is pre-existing:
-    // judging it as changed-by-this-run would make every Task after the first
-    // fail when an accepted deliverable was left uncommitted (live defect,
-    // Phase B run 3 / TASK-0010). Excluded regardless of allowedPaths.
-    if (baselinePaths !== null && norm !== null && baselinePaths.has(norm)) {
-      preExisting.push(norm);
-      continue;
+    const norm = normalizeWorkspacePath(raw);
+    if (baseline.kind === 'ok' && norm !== null && baseline.paths.has(norm)) {
+      if (baseline.mode === 'content') {
+        const baselineDigest = baseline.entries[norm];
+        // Round 33 content-aware: a path dirty NOW that was ALSO dirty at
+        // dispatch is excluded ONLY when its working-tree content is provably
+        // unchanged (same sha256, or both deleted). A digest that differs now,
+        // or a path that never got a recorded digest (not a plain file), is
+        // treated as changed by THIS run — a Builder must not be able to hide
+        // an out-of-scope edit behind a file that merely was dirty already.
+        if (baselineDigest !== undefined) {
+          const currentDigest = await computeWorkspacePathDigest(workspaceRoot, norm);
+          if (currentDigest !== null && currentDigest === baselineDigest) {
+            preExisting.push(norm);
+            continue;
+          }
+          modifiedPreExisting.push(norm);
+        } else {
+          modifiedPreExisting.push(norm);
+        }
+      } else {
+        // path-only (legacy) baseline → round-32 behavior: subtracted
+        // regardless of content (live defect, Phase B run 3 / TASK-0010).
+        preExisting.push(norm);
+        continue;
+      }
     }
     // An unparseable/escaping raw path is never silently dropped — treat it
     // conservatively as an out-of-scope change (fail closed, never PASS).
@@ -557,12 +616,19 @@ async function runDiffScopeCheck(
   }
   const preExistingNote =
     preExisting.length > 0 ? ` pre-existing (excluded): ${formatPathSample(preExisting)}` : '';
+  const modifiedNote =
+    modifiedPreExisting.length > 0
+      ? ` pre-existing but modified by this run: ${formatPathSample(modifiedPreExisting)}`
+      : '';
   const baselineEvidence =
-    baselinePaths !== null
+    baseline.kind === 'ok'
       ? {
           baselineApplied: true,
+          baselineMode: baseline.mode,
           preExistingCount: preExisting.length,
           preExistingSample: preExisting.slice(0, 10),
+          modifiedPreExistingCount: modifiedPreExisting.length,
+          modifiedPreExistingSample: modifiedPreExisting.slice(0, 10),
         }
       : {};
   if (outOfScope.length > 0) {
@@ -570,7 +636,7 @@ async function runDiffScopeCheck(
     return makeResult(
       base,
       'FAIL',
-      `허용되지 않은 경로가 변경되었습니다: ${formatPathSample(outOfScope)}${preExistingNote}`,
+      `허용되지 않은 경로가 변경되었습니다: ${formatPathSample(outOfScope)}${preExistingNote}${modifiedNote}${legacyNote}`,
       {
         evidence: {
           outOfScopeCount: outOfScope.length,
@@ -588,7 +654,7 @@ async function runDiffScopeCheck(
       : allPreExisting
         ? '이 Run이 변경한 경로가 없습니다 (변경 사항은 모두 dispatch 시점 baseline에 이미 존재).'
         : '변경된 모든 경로가 허용된 scope 내에 있습니다.';
-  return makeResult(base, 'PASS', `${passDetail}${preExistingNote}`, {
+  return makeResult(base, 'PASS', `${passDetail}${preExistingNote}${modifiedNote}${legacyNote}`, {
     evidence: { changedCount: status.paths.length, ...baselineEvidence },
   });
 }
