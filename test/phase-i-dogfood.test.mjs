@@ -870,23 +870,45 @@ const wrFull = await import(pathToFileURL(path.join(DIST_BACKEND, 'worker-regist
 }
 
 {
-  // I-29: wrapper Claude argv is --print [--permission-mode acceptEdits] <prompt> (correct ordering).
-  // Verify via wrapper source: permissionMode === 'acceptEdits' injects '--permission-mode', 'acceptEdits' before prompt.
+  // I-29: wrapper Claude argv order is --print <prompt> [--permission-mode acceptEdits] [--allowedTools <join>].
+  // Round 37 moved the positional prompt BEFORE the flags on purpose: --allowedTools is VARIADIC and
+  // swallowed the prompt when it appeared after it, so the live Builder failed with "Input must be
+  // provided either through stdin or as a prompt argument when using --print". --permission-mode stays
+  // fixed-arity; --allowedTools is emitted LAST as a single comma-joined value.
   const src = fs.readFileSync(WRAPPER, 'utf8');
+  const activeCode = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  // --permission-mode and acceptEdits remain discrete array-literal elements (never concatenated).
   check(
-    src.includes("claudeArgs.push('--permission-mode', 'acceptEdits')") ||
-    src.includes(`claudeArgs.push('--permission-mode', 'acceptEdits')`),
-    "I-29 wrapper pushes '--permission-mode', 'acceptEdits' as discrete argv elements",
+    activeCode.includes("['--permission-mode', 'acceptEdits']"),
+    "I-29 --permission-mode, acceptEdits stay discrete argv elements (never concatenated)",
   );
-  // Verify prompt is pushed AFTER the permission-mode flag in the relay-run
-  // dispatch construction. (The earlier '--print' QA passthrough path pushes
-  // its prompt with no permission-mode flag at all — restrict the ordering
-  // check to the first prompt push that FOLLOWS the flag.)
-  const permIdx = src.indexOf("'--permission-mode'");
-  const promptPushIdx = src.indexOf("claudeArgs.push(prompt)", permIdx);
+  // Strict ordering in the Builder relay argv construction: the positional prompt appears AFTER
+  // '--print' and BEFORE both '--permission-mode' and '--allowedTools'. Assert all three orderings
+  // so a regression in either direction (flag-before-prompt, or allowedTools-before-prompt) fails.
+  // lastIndexOf picks the Builder relay array (line ~1019), not the QA `--print` passthrough path.
+  const claudeArgsIdx = activeCode.lastIndexOf('const claudeArgs');
+  const region = activeCode.slice(claudeArgsIdx, claudeArgsIdx + 500);
+  const printIdx = region.indexOf("'--print'");
+  const promptIdx = region.indexOf('prompt');
+  const permIdx = region.indexOf("'--permission-mode'");
+  const allowedIdx = region.indexOf("'--allowedTools'");
   check(
-    permIdx > 0 && promptPushIdx > permIdx,
-    'I-29 prompt is pushed after --permission-mode flag in claudeArgs construction',
+    printIdx >= 0 && promptIdx > printIdx,
+    'I-29 positional prompt appears AFTER --print in claudeArgs construction',
+  );
+  check(
+    promptIdx >= 0 && permIdx > promptIdx,
+    'I-29 positional prompt appears BEFORE --permission-mode in claudeArgs construction',
+  );
+  check(
+    promptIdx >= 0 && allowedIdx > promptIdx,
+    'I-29 positional prompt appears BEFORE --allowedTools in claudeArgs construction',
+  );
+  // --allowedTools is emitted as ONE comma-joined value (args.allowedTools.join(',')), never as
+  // separate variadic elements that would swallow the following argv.
+  check(
+    activeCode.includes("['--allowedTools', args.allowedTools.join(',')]"),
+    "I-29 --allowedTools emitted as a single comma-joined value (args.allowedTools.join(','))",
   );
 }
 
