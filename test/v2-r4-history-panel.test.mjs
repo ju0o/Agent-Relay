@@ -13,6 +13,7 @@
  *   R4-08  corrupt task.json → throws, nothing repaired (fail-closed)
  *   R4-09  repeated reads byte-identical (read-only proof incl. delivery/judgment)
  *   R4-10  IPC wiring: built main.js dispatches history:get via getTaskHistory
+ *   R4-11  Managed Relay Founder-facing status contract stays present
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -256,6 +257,27 @@ console.log('\n-- R4-10: IPC wiring --');
 {
   const mainJs = fs.readFileSync(path.join(process.cwd(), 'dist/server/backend/main.js'), 'utf8');
   check(mainJs.includes("'history:get'") || mainJs.includes('"history:get"'), 'built main dispatches history:get');
+}
+
+// R4-11: Managed Relay UI contract --------------------------------------------------
+console.log('\n-- R4-11: Managed Relay UI contract --');
+{
+  const panelSource = fs.readFileSync(path.join(process.cwd(), 'src/frontend/taskhistory.tsx'), 'utf8');
+  const appSource = fs.readFileSync(path.join(process.cwd(), 'src/frontend/App.tsx'), 'utf8');
+  const requiredLabels = [
+    'Goal:',
+    'Current Task:',
+    'Current Run:',
+    'Assigned Agent:',
+    'Status:',
+    'Result:',
+    'Review / Judgment:',
+    'Next:',
+  ];
+  check(requiredLabels.every((label) => panelSource.includes(label)), 'Founder-facing canonical relay fields stay visible');
+  check(panelSource.includes('SAME TASK → NEW RUN'), 'CHANGES keeps same-Task retry lineage visible');
+  check(panelSource.includes('NEXT / GOAL COMPLETE CHECK'), 'PASS makes NEXT/complete transition visible');
+  check(appSource.includes('⚡ Managed Relay'), 'desktop app exposes Managed Relay entry');
 }
 
 console.log(`\n결과: ${passed} passed, ${failed} failed`);
