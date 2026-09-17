@@ -1,5 +1,10 @@
 /**
- * V2 R4 — Electron Task History panel (read-only).
+ * Managed Relay — Founder-facing canonical status panel.
+ *
+ * Reuses the V2 R4 Task History read model. This surface is deliberately
+ * read-only: it projects Goal → Task → Run → Result → Review truth without
+ * creating another workflow/state model.
+ *
  *
  * Reuses the H1 read model via IPC `history:get` — no second model, no
  * writes. Goal/task pickers reuse the existing `goal:list` / `task:list`
@@ -23,6 +28,28 @@ function lastKey(project: string): string {
 
 function pr(hasPrompt: boolean, hasResult: boolean): string {
   return `${hasPrompt ? 'P' : '–'}/${hasResult ? 'R' : '–'}`;
+}
+
+type ManagedRelayStatus = 'READY' | 'WORKING' | 'REVIEWING' | 'CHANGES' | 'PASS' | 'BLOCKED' | 'COMPLETE';
+
+function managedRelayStatus(task: TaskRecord, goalStatus?: GoalRecord['status']): ManagedRelayStatus {
+  if (goalStatus === 'COMPLETED') return 'COMPLETE';
+  if (task.pmState === 'ACCEPTED') return 'PASS';
+  if (task.pmState === 'CHANGES_REQUESTED') return 'CHANGES';
+  if (task.executionState === 'BLOCKED' || task.executionState === 'FAILED' || task.executionState === 'CANCELLED') return 'BLOCKED';
+  if (task.pmState === 'VERIFYING' || task.executionState === 'RESULT_RECEIVED') return 'REVIEWING';
+  if (task.executionState === 'DISPATCHED' || task.executionState === 'RUNNING') return 'WORKING';
+  return 'READY';
+}
+
+function managedRelayNext(task: TaskRecord, goalStatus?: GoalRecord['status']): string {
+  if (goalStatus === 'COMPLETED') return 'GOAL COMPLETE';
+  if (task.pmState === 'CHANGES_REQUESTED') return 'SAME TASK → NEW RUN';
+  if (task.pmState === 'ACCEPTED') return 'NEXT / GOAL COMPLETE CHECK';
+  if (task.executionState === 'BLOCKED' || task.executionState === 'FAILED' || task.executionState === 'CANCELLED') return 'OWNER_REQUIRED / RECOVERY';
+  if (task.pmState === 'VERIFYING' || task.executionState === 'RESULT_RECEIVED') return 'REVIEW';
+  if (task.executionState === 'DISPATCHED' || task.executionState === 'RUNNING') return 'WAIT FOR RESULT';
+  return 'AUTO DISPATCH';
 }
 
 export function TaskHistoryPanel(props: TaskHistoryPanelProps): React.ReactElement {
@@ -99,14 +126,32 @@ export function TaskHistoryPanel(props: TaskHistoryPanelProps): React.ReactEleme
   }, []);
 
   const t = history?.task ?? null;
+  const selectedGoal = t ? goals.find(g => g.goalId === t.goalId) : undefined;
+  const currentAttempt = history && history.attempts.length > 0
+    ? history.attempts[history.attempts.length - 1]!
+    : null;
+  const managedStatus = t ? managedRelayStatus(t, selectedGoal?.status) : null;
+  const managedResult = currentAttempt
+    ? (currentAttempt.hasResult ? 'CAPTURED' : 'WAITING')
+    : 'NOT STARTED';
+  const managedReview = !t
+    ? 'NOT ISSUED'
+    : currentAttempt?.judgment
+      ? `${currentAttempt.judgment.decision} · ${currentAttempt.judgment.status}`
+      : t.pmState === 'ACCEPTED'
+        ? 'ACCEPTED · canonical Task truth'
+        : currentAttempt?.delivery
+          ? `PENDING · ${currentAttempt.delivery.status}`
+          : 'NOT ISSUED';
+  const managedNext = t ? managedRelayNext(t, selectedGoal?.status) : '—';
   const qaEvidence = (history?.evidence ?? []).filter(e => e.type === 'QA');
 
   return (
     <div className="df-wrap">
       <div className="df-head">
         <div className="df-titlewrap">
-          <span className="df-title">📜 Task History — {project}</span>
-          <span className="muted df-subtitle">읽기 전용 타임라인 (H1 모델 · 상태 변경 없음)</span>
+          <span className="df-title">⚡ Managed Relay — {project}</span>
+          <span className="muted df-subtitle">Goal → Task → Run → Result → Review canonical 상태판 · 읽기 전용</span>
         </div>
         <div style={{ flex: 1 }} />
         <button className="btn subtle" onClick={props.onClose} title="작업 화면으로 돌아가기">닫기</button>
@@ -175,6 +220,26 @@ export function TaskHistoryPanel(props: TaskHistoryPanelProps): React.ReactEleme
             <span className="df-detail">
               <div className="df-detail-block"><b>{t.title}</b><pre>{`goal: ${t.goalId}`}</pre></div>
               {t.acceptedRunId && <div className="df-detail-block"><b>acceptedRun</b><pre>{t.acceptedRunId}</pre></div>}
+            </span>
+          </div>
+
+          <div className="df-row expanded">
+            <span className="mono df-id">{managedStatus}</span>
+            <span className="df-type">MANAGED</span>
+            <span className="df-detail">
+              <div className="df-detail-block">
+                <b>Current Relay State</b>
+                <pre>{[
+                  `Goal: ${t.goalId}${selectedGoal ? ` — ${selectedGoal.title}` : ''}`,
+                  `Current Task: ${t.taskId} — ${t.title}`,
+                  `Current Run: ${currentAttempt ? `#${currentAttempt.taskRunSequence} · ${currentAttempt.runId.slice(0, 8)}` : '(아직 없음)'}`,
+                  `Assigned Agent: ${currentAttempt?.agent ?? '(미배정)'}`,
+                  `Status: ${managedStatus}`,
+                  `Result: ${managedResult}`,
+                  `Review / Judgment: ${managedReview}`,
+                  `Next: ${managedNext}`,
+                ].join('\n')}</pre>
+              </div>
             </span>
           </div>
 
