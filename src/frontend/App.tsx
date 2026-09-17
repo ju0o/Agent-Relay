@@ -186,7 +186,7 @@ function AppInner(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [dfMode, setDfMode]             = useState(false);
   const [pdMode, setPdMode]             = useState(false);
-  // V2 R4 — Task History 읽기 전용 패널
+  // Managed Relay — canonical Goal/Task/Run/Result/Judgment read-only projection
   const [thMode, setThMode]             = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
@@ -1341,9 +1341,9 @@ function AppInner(): React.ReactElement {
             <button
               className={`mini df-toggle${thMode ? ' on' : ''}`}
               disabled={!project}
-              title={project ? `"${projectLabel(project)}" Task 타임라인 조회 (읽기 전용)` : '프로젝트를 먼저 선택하세요'}
+              title={project ? `"${projectLabel(project)}" Managed Relay 상태 조회 (canonical read-only)` : '프로젝트를 먼저 선택하세요'}
               onClick={() => { setThMode(m => !m); setDfMode(false); setPdMode(false); }}
-            >📜 Task History</button>
+            >⚡ Managed Relay</button>
             <button
               className="mini qdf-toggle"
               disabled={!project}
@@ -1387,7 +1387,7 @@ function AppInner(): React.ReactElement {
               onClose={() => setPdMode(false)}
             />
           ) : thMode && project ? (
-            /* ── V2 R4 — Task History 읽기 전용 패널 (H1 모델) ── */
+            /* ── Managed Relay — V2 R4/H1 canonical read model reuse ── */
             <TaskHistoryPanel
               key={`th:${project}`}
               dataRoot={dataRoot}
