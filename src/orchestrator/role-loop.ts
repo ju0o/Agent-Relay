@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { getTask, createTask, listTasks } from '../backend/goal-task.js';
 import { transitionTaskExecution } from '../backend/goal-task-runtime.js';
 import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun } from '../backend/pm-delivery.js';
-import { submitPmJudgment, listPmJudgments, JUDGMENT_REASON_MAX_CHARS, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS } from '../backend/pm-judgment.js';
+import { submitPmJudgment, listPmJudgments, JUDGMENT_REASON_MAX_CHARS, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS, type PmJudgmentEvidenceGate } from '../backend/pm-judgment.js';
 import { listEvidenceForRun } from '../backend/evidence.js';
 import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
 import { reconcileReadyRetryDispatches } from '../backend/retry-dispatch.js';
@@ -83,7 +83,7 @@ function parseFinalGateJudgment(packet: PmFinalGatePacket, text: string): PmJudg
   return judgment;
 }
 
-// ── evidence gate for ACCEPT (round 38b) ─────────────────────────────────────
+// ── evidence gate for ACCEPT (round 38b / 38c) ────────────────────────────────
 //
 // LIVE P0 (JuControler-Private-planning TASK-0002, DEC-2026-149): the automatic
 // PM judged the SAME evidence class CHANGES, CHANGES, then ACCEPT, because
@@ -95,13 +95,32 @@ function parseFinalGateJudgment(packet: PmFinalGatePacket, text: string): PmJudg
 // frozen contract's `required_evidence` (task-contract.v1, string[]) against the
 // Evidence records actually bound to the accepted run.
 //
-// Each requirement names its minimum acceptable machine Evidence as a
-// `<TYPE>/<TRUSTLEVEL>` token (e.g. "TEST/VERIFIED"); a requirement that names no
-// such token cannot be machine-checked and is treated as unmet — ACCEPT must
-// never be reached on prose. The gate can only REFUSE, never upgrade: nothing
-// here promotes VERIFIED (or anything else) to ACCEPTED automatically.
+// LIVE TASK-0003 (audit line 04:16:36Z): real task-contract.v1 `required_evidence`
+// entries are PROSE written by the planning PM — e.g. "node
+// scripts/founder-brief.mjs --self-test 실행 결과(PASS 마커, exit 0)". The pure-token
+// rule below refused EVERY such task forever, i.e. the same class of release
+// blocker as accepting-without-verification, only mirrored. Round 38c therefore
+// applies ONE of TWO rules per requirement:
+//   - `token`: the requirement names a machine-checkable `<TYPE>/<TRUSTLEVEL>`
+//     token (a type from EVIDENCE_TYPES and a level from EVIDENCE_TRUST_LEVELS,
+//     case-insensitive, e.g. "TEST/VERIFIED") — round 38b behaviour unchanged:
+//     at least one non-FAIL record bound to the run must match the exact TYPE
+//     and at least that trust level.
+//   - `floor`: the requirement names no such token (the normal prose case) —
+//     default floor: at least one record bound to the run has trustLevel
+//     VERIFIED (or higher, ACCEPTED) and status is not FAIL. The QA-minted
+//     VERIFIED record (src/backend/qa-evidence.ts) satisfies an ordinary prose
+//     requirement, yet an ADAPTER_OBSERVATION/OBSERVED-only run never can.
+// The gate can only REFUSE, never upgrade: nothing here promotes VERIFIED (or
+// anything else) to ACCEPTED automatically. The applied judgment (and the audit
+// line on refusal) records which rule matched per requirement (`token`/`floor`).
 
 const EVIDENCE_TRUST_RANK: Record<string, number> = { CLAIMED: 0, OBSERVED: 1, VERIFIED: 2, ACCEPTED: 3 };
+
+/** Round 38c default floor for prose requirements: VERIFIED, or higher (ACCEPTED). */
+const DEFAULT_EVIDENCE_FLOOR_TRUST: EvidenceTrustLevel = 'VERIFIED';
+
+type EvidenceGateRuleKind = 'token' | 'floor';
 
 interface RequiredEvidenceSpec {
   /** 0-based index into contract.required_evidence (audit id = REQ-<index+1>). */
@@ -111,10 +130,25 @@ interface RequiredEvidenceSpec {
   trustLevel: EvidenceTrustLevel;
 }
 
+interface EvidenceGateRequirement {
+  requirementIndex: number;
+  requirement: string;
+  /** Which rule matched this requirement: explicit TYPE/TRUST token, or the VERIFIED floor. */
+  rule: EvidenceGateRuleKind;
+}
+
 interface EvidenceGateUnmet {
   requirementIndex: number;
   requirement: string;
   parsed?: RequiredEvidenceSpec;
+}
+
+interface EvidenceGateCheck {
+  satisfied: boolean;
+  /** Every contract requirement + the rule that matched it (satisfied or not). */
+  known: EvidenceGateRequirement[];
+  unmet: EvidenceGateUnmet[];
+  present: EvidenceRecord[];
 }
 
 /** Read the minimum acceptable `<TYPE>/<TRUSTLEVEL>` the requirement text names. */
@@ -143,38 +177,66 @@ function evidenceSatisfiesRequired(record: EvidenceRecord, spec: RequiredEvidenc
     && record.status !== 'FAIL';
 }
 
+/** Round 38c default floor for a prose (no-token) requirement: any non-FAIL
+ * record at VERIFIED trust or higher (ACCEPTED). Never satisfied by OBSERVED. */
+function evidenceSatisfiesDefaultFloor(record: EvidenceRecord): boolean {
+  return record.status !== 'FAIL' && trustLevelAtLeast(record.trustLevel, DEFAULT_EVIDENCE_FLOOR_TRUST);
+}
+
 /**
- * Empty/absent `required_evidence` → behaviour unchanged (satisfied). Otherwise
- * EVERY requirement must name a `<TYPE>/<TRUSTLEVEL>` token and at least one
- * non-FAIL Evidence record bound to the run must match its type + trust level.
+ * Round 38b: every token-named requirement needs a non-FAIL record bound to the
+ * run matching its type + trust level. Round 38c: a requirement naming NO
+ * machine-checkable `<TYPE>/<TRUSTLEVEL>` token (the normal prose case) falls
+ * back to the default floor — any non-FAIL VERIFIED-or-higher record bound to
+ * the run satisfies it. Empty/absent `required_evidence` → behaviour unchanged.
  */
 function checkRequiredEvidence(
   contract: TaskRecord['contract'] | undefined,
   runEvidence: EvidenceRecord[],
-): { satisfied: boolean; unmet: EvidenceGateUnmet[]; present: EvidenceRecord[] } {
+): EvidenceGateCheck {
   const required = contract?.required_evidence;
   if (!Array.isArray(required) || required.length === 0) {
-    return { satisfied: true, unmet: [], present: runEvidence };
+    return { satisfied: true, known: [], unmet: [], present: runEvidence };
   }
   const unmet: EvidenceGateUnmet[] = [];
+  const known: EvidenceGateRequirement[] = [];
   required.forEach((requirement, index) => {
     const spec = parseRequiredEvidenceSpec(requirement, index);
-    if (!spec) {
-      unmet.push({ requirementIndex: index, requirement });
+    if (spec) {
+      // Requirement names a machine-checkable TYPE/TRUSTLEVEL token — round 38b
+      // behaviour unchanged (type + trust level must both match).
+      known.push({ requirementIndex: index, requirement, rule: 'token' });
+      if (!runEvidence.some((e) => evidenceSatisfiesRequired(e, spec))) {
+        unmet.push({ requirementIndex: index, requirement, parsed: spec });
+      }
       return;
     }
-    if (!runEvidence.some((e) => evidenceSatisfiesRequired(e, spec))) {
-      unmet.push({ requirementIndex: index, requirement, parsed: spec });
+    // Prose requirement (the normal task-contract.v1 case): apply the default
+    // floor instead of refusing forever. Still fails on an
+    // ADAPTER_OBSERVATION/OBSERVED-only run and on a FAIL-status record.
+    known.push({ requirementIndex: index, requirement, rule: 'floor' });
+    if (!runEvidence.some((e) => evidenceSatisfiesDefaultFloor(e))) {
+      unmet.push({ requirementIndex: index, requirement });
     }
   });
-  return { satisfied: unmet.length === 0, unmet, present: runEvidence };
+  return { satisfied: unmet.length === 0, known, unmet, present: runEvidence };
 }
 
 function describeUnmetRequirement(u: EvidenceGateUnmet): string {
   const id = `REQ-${u.requirementIndex + 1}`;
   return u.parsed
     ? `${id} "${u.requirement}" (requires ${u.parsed.type}/${u.parsed.trustLevel})`
-    : `${id} "${u.requirement}" (names no machine-checkable TYPE/TRUSTLEVEL token)`;
+    : `${id} "${u.requirement}" (floor: VERIFIED evidence absent)`;
+}
+
+/** RequirementId + rule rows persisted on the APPLIED judgment (and audit line)
+ * so a reviewer can see which rule matched per requirement. */
+function evidenceGateJudgmentRows(check: EvidenceGateCheck): PmJudgmentEvidenceGate[] {
+  return check.known.map((k) => ({
+    requirementId: `REQ-${k.requirementIndex + 1}`,
+    requirement: k.requirement,
+    rule: k.rule,
+  }));
 }
 
 /**
@@ -191,7 +253,7 @@ async function refuseAcceptForMissingEvidence(
   deliveryId: string,
   packet: PmFinalGatePacket,
   judgment: PmJudgment,
-  check: { unmet: EvidenceGateUnmet[]; present: EvidenceRecord[] },
+  check: EvidenceGateCheck,
 ): Promise<Record<string, unknown>> {
   const runId = packet.context.attempt.runId;
   const unmetIds = check.unmet.map((u) => `REQ-${u.requirementIndex + 1}`);
@@ -222,10 +284,14 @@ async function refuseAcceptForMissingEvidence(
 
   const retryInstruction = [
     `Evidence gate refused ACCEPT: required_evidence unmet (${unmetText.join('; ')}).`,
-    `Re-run the same Task so a QA/Builder attempt produces non-FAIL Evidence of the required type and trust level for every requirement; prose claims and adapter observations alone cannot satisfy the frozen contract.`,
+    `Re-run the same Task so a QA/Builder attempt mints non-FAIL VERIFIED (or higher) Evidence bound to the run (matching the named TYPE/TRUSTLEVEL token when the requirement names one); prose claims and adapter observations alone cannot satisfy the frozen contract.`,
   ].join(' ').slice(0, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS);
 
-  await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'CHANGES', reason, retryInstruction });
+  const judgmentRows = check.known.length > 0 ? evidenceGateJudgmentRows(check) : undefined;
+  await submitPmJudgment(cfg.dataRoot, cfg.project, {
+    deliveryId, decision: 'CHANGES', reason, retryInstruction,
+    ...(judgmentRows ? { evidenceGate: judgmentRows } : {}),
+  });
   await prepareRetryForJudgment(cfg.dataRoot, cfg.project, deliveryId);
   await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
   audit(cfg.auditDir, {
@@ -236,6 +302,7 @@ async function refuseAcceptForMissingEvidence(
     runId,
     unmet: unmetIds,
     requirements: unmetText,
+    rules: check.known.map((k) => `REQ-${k.requirementIndex + 1}:${k.rule}`),
     present: check.present.map((e) => `${e.evidenceId}:${e.type}/${e.trustLevel}/${e.status}`),
     pmReason,
     ...(pmReasonTruncated ? { pmReasonTruncatedInJudgment: true } : {}),
@@ -790,17 +857,23 @@ async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, p
     return { outcome: 'OWNER_REQUIRED', reason: 'retry_policy.max_pm_changes exhausted' };
   }
   if (judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT') {
-    // Round 38b: mechanically enforce the frozen contract's required_evidence
-    // before applying ACCEPT. Every requirement must be covered by a non-FAIL
-    // Evidence record bound to the accepted run at the required type/trust.
+    // Round 38b/38c: mechanically enforce the frozen contract's required_evidence
+    // before applying ACCEPT. A token-named requirement must be covered by a
+    // non-FAIL Evidence record bound to the accepted run at the required
+    // type/trust; a prose requirement falls back to the default VERIFIED floor.
     // The gate can only REFUSE (never upgrade); on refusal the outcome is
-    // rewritten to CHANGES and forwarded to the normal retry lifecycle.
+    // rewritten to CHANGES and forwarded to the normal retry lifecycle. The
+    // applied judgment records which rule matched per requirement.
     const runId = packet.context.attempt.runId;
     const evidenceGate = checkRequiredEvidence(currentTask.contract, listEvidenceForRun(cfg.dataRoot, cfg.project, runId));
     if (!evidenceGate.satisfied) {
       return refuseAcceptForMissingEvidence(cfg, deliveryId, packet, judgment, evidenceGate);
     }
-    const result = await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'ACCEPT', reason: judgment.reason });
+    const judgmentRows = evidenceGate.known.length > 0 ? evidenceGateJudgmentRows(evidenceGate) : undefined;
+    const result = await submitPmJudgment(cfg.dataRoot, cfg.project, {
+      deliveryId, decision: 'ACCEPT', reason: judgment.reason,
+      ...(judgmentRows ? { evidenceGate: judgmentRows } : {}),
+    });
     let nextTask: Record<string, unknown> | undefined;
     if (judgment.decision === 'ACCEPT_AND_NEXT') {
       nextTask = await handleAcceptAndNext(cfg, currentTask, judgment, async (error) => {

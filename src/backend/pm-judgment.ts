@@ -59,6 +59,23 @@ export const JUDGMENT_ACCEPT_REASON_MAX_CHARS = 1000;
 /** Retry instruction bounds (required for CHANGES, durable for G5-B). */
 export const JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS = 4000;
 
+/** Round 38c: which evidence-gate rule matched a contract required_evidence entry. */
+export const EVIDENCE_GATE_RULE_KINDS = ['token', 'floor'] as const;
+export type EvidenceGateRuleKind = (typeof EVIDENCE_GATE_RULE_KINDS)[number];
+
+/** Round 38c — per-requirement gate metadata persisted on the judgment so a
+ * reviewer can see WHY each required_evidence entry passed or failed. Derived
+ * gate data only; it is not part of the PM intent payload. */
+export interface PmJudgmentEvidenceGate {
+  /** Audit id, e.g. REQ-1 (1-based index into contract.required_evidence). */
+  requirementId: string;
+  /** Verbatim contract required_evidence entry. */
+  requirement: string;
+  /** Which gate rule matched: `token` (explicit TYPE/TRUSTLEVEL token) or
+   * `floor` (prose requirement, default VERIFIED floor). */
+  rule: EvidenceGateRuleKind;
+}
+
 export interface PmJudgmentInput {
   deliveryId: string;
   decision: PmJudgmentDecision;
@@ -66,6 +83,8 @@ export interface PmJudgmentInput {
   retryInstruction?: string;
   /** Transport framing version; required from stdio hosts, optional on MCP. */
   protocolVersion?: unknown;
+  /** Round 38c: which required_evidence rule matched per requirement. */
+  evidenceGate?: PmJudgmentEvidenceGate[];
 }
 
 export interface PmJudgmentRecord {
@@ -80,6 +99,8 @@ export interface PmJudgmentRecord {
   reason?: string;
   /** True when the immutable CHANGES intent payload was committed. */
   retryInstructionPresent: boolean;
+  /** Round 38c: which required_evidence rule matched per requirement. */
+  evidenceGate?: PmJudgmentEvidenceGate[];
   createdAt: string;
   updatedAt: string;
   appliedAt?: string;
@@ -287,16 +308,49 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Bounded round 38c gate-metadata validation: array of {requirementId,
+ * requirement, rule} rows, or undefined when absent. */
+const MAX_EVIDENCE_GATE_ROWS = 64;
+
+function validateEvidenceGate(value: unknown): PmJudgmentEvidenceGate[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new PmJudgmentError('INVALID_ARGUMENT', 'evidenceGate must be an array.');
+  }
+  if (value.length > MAX_EVIDENCE_GATE_ROWS) {
+    throw new PmJudgmentError('INVALID_ARGUMENT', `evidenceGate exceeds ${MAX_EVIDENCE_GATE_ROWS} entries.`);
+  }
+  const out: PmJudgmentEvidenceGate[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new PmJudgmentError('INVALID_ARGUMENT', '잘못된 evidenceGate entry.');
+    }
+    const o = entry as Record<string, unknown>;
+    if (typeof o.requirementId !== 'string' || !o.requirementId.trim()) {
+      throw new PmJudgmentError('INVALID_ARGUMENT', 'evidenceGate requirementId는 비어 있지 않은 문자열이어야 합니다.');
+    }
+    if (typeof o.requirement !== 'string') {
+      throw new PmJudgmentError('INVALID_ARGUMENT', 'evidenceGate requirement는 문자열이어야 합니다.');
+    }
+    if (o.rule !== 'token' && o.rule !== 'floor') {
+      throw new PmJudgmentError('INVALID_ARGUMENT', `알 수 없는 evidenceGate rule: ${String(o.rule)}`);
+    }
+    out.push({ requirementId: o.requirementId.trim(), requirement: o.requirement, rule: o.rule });
+  }
+  return out;
+}
+
 function validateMessageShape(input: PmJudgmentInput): {
   deliveryId: string;
   decision: PmJudgmentDecision;
   reason?: string;
   retryInstruction?: string;
+  evidenceGate?: PmJudgmentEvidenceGate[];
 } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new PmJudgmentError('INVALID_ARGUMENT', 'Judgment must be an object.');
   }
-  const allowed = new Set(['deliveryId', 'decision', 'reason', 'retryInstruction', 'protocolVersion', 'type']);
+  const allowed = new Set(['deliveryId', 'decision', 'reason', 'retryInstruction', 'protocolVersion', 'type', 'evidenceGate']);
   for (const key of Object.keys(input)) {
     if (!allowed.has(key)) {
       throw new PmJudgmentError('INVALID_ARGUMENT', `허용되지 않은 judgment field: ${key}`);
@@ -325,6 +379,7 @@ function validateMessageShape(input: PmJudgmentInput): {
     }
     retryInstruction = input.retryInstruction.trim();
   }
+  const evidenceGate = validateEvidenceGate(input.evidenceGate);
   if (decision === 'ACCEPT') {
     if (retryInstruction !== undefined) {
       throw new PmJudgmentError('INVALID_ARGUMENT', 'ACCEPT must not carry retryInstruction.');
@@ -351,6 +406,7 @@ function validateMessageShape(input: PmJudgmentInput): {
     decision,
     ...(reason !== undefined ? { reason } : {}),
     ...(retryInstruction !== undefined ? { retryInstruction } : {}),
+    ...(evidenceGate !== undefined ? { evidenceGate } : {}),
   };
 }
 
@@ -390,6 +446,9 @@ function renderJudgmentMarkdown(r: PmJudgmentRecord): string {
     `- status: ${r.status}`,
     ...(r.reason ? [`- reason: ${r.reason.slice(0, 500)}`] : []),
     `- retryInstructionPresent: ${r.retryInstructionPresent}`,
+    ...(r.evidenceGate && r.evidenceGate.length > 0
+      ? [`- evidence gate: ${r.evidenceGate.map((g) => `${g.requirementId}:${g.rule}`).join(', ')}`]
+      : []),
     '',
     `createdAt: ${r.createdAt}`,
     `updatedAt: ${r.updatedAt}`,
@@ -585,7 +644,7 @@ export function submitPmJudgment(
   project: string,
   input: PmJudgmentInput,
 ): Promise<PmJudgmentResult> {
-  const { deliveryId, decision, reason, retryInstruction } = validateMessageShape(input);
+  const { deliveryId, decision, reason, retryInstruction, evidenceGate } = validateMessageShape(input);
   const judgmentId = pmJudgmentIdFor(deliveryId);
 
   return withJudgmentLock(dataRoot, project, judgmentId, async (): Promise<PmJudgmentResult> => {
@@ -647,6 +706,7 @@ export function submitPmJudgment(
         decision,
         status: 'RECEIVED',
         ...(reason !== undefined ? { reason } : {}),
+        ...(evidenceGate !== undefined ? { evidenceGate } : {}),
         retryInstructionPresent: true,
         createdAt: ts,
         updatedAt: ts,
@@ -668,6 +728,7 @@ export function submitPmJudgment(
       decision,
       status: 'RECEIVED',
       ...(reason !== undefined ? { reason } : {}),
+      ...(evidenceGate !== undefined ? { evidenceGate } : {}),
       retryInstructionPresent: false,
       createdAt: ts,
       updatedAt: ts,
