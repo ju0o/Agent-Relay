@@ -25,18 +25,23 @@
  *   relative paths only, symlink-escape-safe (realpath must resolve under
  *   `workspaceRoot`). fileExactContent is byte-exact — a trailing-newline
  *   difference IS a mismatch (FAIL), never normalized away.
- * diffScope: `spawn('git', ['status','--porcelain=v1','--no-renames','-uall'],
- *   {cwd: workspaceRoot, shell:false})`, parsed and compared against
- *   `allowedPaths` with boundary-aware prefix matching (`src` never matches
- *   `srcx/...`). Round 33: the dispatch-time workspace baseline is
+ * diffScope: `spawn('git', ['status','--porcelain=v1','-z','--no-renames',
+ *   '-uall'], {cwd: workspaceRoot, shell:false})` — NUL-separated records,
+ *   `XY<space>path<0x00>`, path RAW (never C-quoted, so non-ASCII / quotes /
+ *   backslashes survive byte-for-byte, round 36 P0) — parsed and compared
+ *   against `allowedPaths` with boundary-aware prefix matching (`src` never
+ *   matches `srcx/...`). Round 33: the dispatch-time workspace baseline is
  *   content-aware — a path dirty NOW is subtracted as pre-existing ONLY when
  *   its working-tree content digest still equals the digest recorded at
  *   dispatch (`pre-existing (excluded): …`). If the content differs (or a
  *   baseline digest was never recorded for it), the path counts as changed by
  *   THIS run and is reported as `pre-existing but modified by this run: …`.
- *   A baseline WITHOUT content digests (round-32 array or `{ paths }` object)
- *   falls back to the round-32 path-only subtraction and is noted
- *   `baseline: path-only (legacy)`. No baseline file = legacy behavior.
+ *   An `oversize:` digest (round 36 P1) never proves equality — such a path is
+ *   always treated as changed by the run. A baseline WITHOUT content digests
+ *   (round-32 array, `{ paths }` object, or `truncated: true`) falls back to
+ *   the round-32 path-only subtraction and is noted
+ *   `baseline: path-only (legacy)` (with `, truncated` when the count cap was
+ *   exceeded). No baseline file = legacy behavior.
  * command: `spawn(command, args, {cwd, shell:false})` — argv only, never a
  *   shell string; bounded timeout, bounded/truncated stdout+stderr, no env
  *   dump. A completed run with the wrong exit code is FAIL; a spawn error,
@@ -84,22 +89,22 @@ import {
 } from './qa-attempt.js';
 import {
   computeWorkspacePathDigest,
+  isOversizeDigest,
   normalizeWorkspacePath,
-  parsePorcelainPath,
+  runGitStatusZ,
 } from './workspace-diff-common.js';
 
 // ── bounds ───────────────────────────────────────────────────────────────────
 
-/** Per-stream stdout/stderr cap for `command`/`diffScope`'s internal `git
- * status` invocation — same discipline as pm-verification-context.ts's
+/** Per-stream stdout/stderr cap for the `command` check (the internal
+ * `git status` for diffScope has its own byte budget in workspace-diff-common.ts
+ * since round 36) — same discipline as pm-verification-context.ts's
  * VERIFICATION_RESULT_TEXT_MAX_CHARS, sized for a bounded diagnostic
  * excerpt, never a full transcript. */
 export const MAX_COMMAND_OUTPUT_CHARS = 4_000;
 /** Frozen ceiling from §7 item 2 ("≤ a frozen ceiling, e.g. 300000ms"). */
 export const MAX_COMMAND_TIMEOUT_MS = 300_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
-/** Internal `git status` invocation is never caller-configurable. */
-const GIT_STATUS_TIMEOUT_MS = 30_000;
 /** Bounded byte window around the first mismatching byte in fileExactContent. */
 const MISMATCH_SNIPPET_CONTEXT_BYTES = 40;
 
@@ -439,24 +444,9 @@ export function runProcess(cmd: string, args: string[], cwd: string, timeoutMs: 
 async function runGitStatusPorcelain(
   workspaceRoot: string,
 ): Promise<{ kind: 'ok'; paths: string[] } | { kind: 'blocked'; reason: string }> {
-  const outcome = await runProcess('git', ['status', '--porcelain=v1', '--no-renames', '-uall'], workspaceRoot, GIT_STATUS_TIMEOUT_MS);
-  if (outcome.spawnError) return { kind: 'blocked', reason: `git status 실행 실패 (authoritative diff 확인 불가): ${outcome.spawnError}` };
-  if (outcome.timedOut) return { kind: 'blocked', reason: 'git status 시간 초과 (authoritative diff 확인 불가)' };
-  if (outcome.exitCode !== 0) {
-    return { kind: 'blocked', reason: `git status가 exit ${outcome.exitCode}로 종료되어 authoritative diff를 확인할 수 없습니다.` };
-  }
-  if (outcome.stdoutTruncated) {
-    // Never parse a truncated porcelain stream — a cut-off line could hide
-    // an out-of-scope change. Fail closed rather than trust partial output.
-    return { kind: 'blocked', reason: 'git status 출력이 잘려 authoritative diff를 완전히 판단할 수 없습니다.' };
-  }
-  const paths = outcome.stdout
-    .split('\n')
-    .map((line) => line.replace(/\r$/, ''))
-    .filter((line) => line.length > 0)
-    .map((line) => parsePorcelainPath(line))
-    .filter((p): p is string => p !== null);
-  return { kind: 'ok', paths };
+  const status = await runGitStatusZ(workspaceRoot);
+  if (status.kind === 'error') return { kind: 'blocked', reason: status.reason };
+  return { kind: 'ok', paths: status.paths };
 }
 
 function isPathWithinAllowed(changed: string, allowed: string): boolean {
@@ -476,19 +466,23 @@ function formatPathSample(paths: string[]): string {
 }
 
 /** Dispatch-time dirty-path snapshot written by the dispatcher
- * (workspace-baseline.json). Round 33 shape `{ paths, entries, capturedAt }`:
- * `entries` maps each path to the sha256 content digest of the working-tree
- * file at dispatch ("deleted" when it was already gone). A baseline WITHOUT
- * content digests (round-32 array form, or `{ paths }` object) falls back to
- * the round-32 path-only behavior — the diffScope detail notes
- * `baseline: path-only (legacy)`. Absent (older runs / capture unavailable) →
- * legacy behavior. A PRESENT but malformed baseline fails closed (BLOCKED) —
- * a corrupt snapshot is never silently trusted to hide out-of-scope changes. */
+ * (workspace-baseline.json). Round 33+ shape `{ paths, entries, truncated?,
+ * capturedAt }`: `entries` maps each path to the sha256 content digest of the
+ * working-tree file at dispatch ("deleted" when it was already gone,
+ * `oversize:<bytes>` when it exceeded the per-file hash cap — such a path is
+ * NEVER excludable at QA time because byte equality above the cap cannot be
+ * proven). A baseline WITHOUT content digests (round-32 array form, `{ paths }`
+ * object, or round 36's `truncated: true` count-cap marker) falls back to the
+ * round-32 path-only behavior — the diffScope detail notes
+ * `baseline: path-only (legacy)` (with `, truncated` when marked). Absent
+ * (older runs / capture unavailable) → legacy behavior. A PRESENT but malformed
+ * baseline fails closed (BLOCKED) — a corrupt snapshot is never silently
+ * trusted to hide out-of-scope changes. */
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
 type LoadedBaseline =
-  | { kind: 'ok'; mode: 'content'; paths: Set<string>; entries: Readonly<Record<string, string>> }
-  | { kind: 'ok'; mode: 'path-only-legacy'; paths: Set<string> }
+  | { kind: 'ok'; mode: 'content'; paths: Set<string>; entries: Readonly<Record<string, string>>; truncated?: boolean }
+  | { kind: 'ok'; mode: 'path-only-legacy'; paths: Set<string>; truncated?: boolean }
   | { kind: 'absent' }
   | { kind: 'blocked'; reason: string };
 
@@ -527,26 +521,43 @@ async function loadWorkspaceBaseline(runFolder: string): Promise<LoadedBaseline>
     return { kind: 'ok', mode: 'path-only-legacy', paths };
   }
   if (typeof parsed !== 'object' || parsed === null) {
-    return { kind: 'blocked', reason: 'workspace-baseline.json은 문자열 경로 배열 또는 { paths, entries?, capturedAt? } 객체여야 합니다 (형식 오류 → fail closed).' };
+    return { kind: 'blocked', reason: 'workspace-baseline.json은 문자열 경로 배열 또는 { paths, entries?, truncated?, capturedAt? } 객체여야 합니다 (형식 오류 → fail closed).' };
   }
-  const obj = parsed as { paths?: unknown; entries?: unknown };
+  const obj = parsed as { paths?: unknown; entries?: unknown; truncated?: unknown };
   if (!Array.isArray(obj.paths) || obj.paths.some((p) => !addNormalizedPath(p))) {
     return { kind: 'blocked', reason: 'workspace-baseline.json 의 paths 는 문자열 경로 배열이어야 합니다 (형식 오류 → fail closed).' };
   }
+  let truncated = false;
+  if (obj.truncated !== undefined) {
+    if (typeof obj.truncated !== 'boolean') {
+      return { kind: 'blocked', reason: 'workspace-baseline.json 의 truncated 는 boolean 이어야 합니다 (형식 오류 → fail closed).' };
+    }
+    truncated = obj.truncated;
+  }
   if (obj.entries === undefined) {
     // `{ paths }` object WITHOUT entries → round-32 path-only legacy fallback.
-    return { kind: 'ok', mode: 'path-only-legacy', paths };
+    return { kind: 'ok', mode: 'path-only-legacy', paths, ...(truncated ? { truncated: true } : {}) };
   }
   if (typeof obj.entries !== 'object' || obj.entries === null || Array.isArray(obj.entries)) {
-    return { kind: 'blocked', reason: 'workspace-baseline.json 의 entries 는 { path: sha256 | "deleted" } 객체여야 합니다 (형식 오류 → fail closed).' };
+    return { kind: 'blocked', reason: 'workspace-baseline.json 의 entries 는 { path: sha256 | "deleted" | "oversize:<bytes>" } 객체여야 합니다 (형식 오류 → fail closed).' };
   }
   const entries: Record<string, string> = {};
   for (const [key, value] of Object.entries(obj.entries)) {
     const norm = normalizeWorkspacePath(key);
-    if (norm === null || typeof value !== 'string' || !(value === 'deleted' || SHA256_HEX_RE.test(value))) {
-      return { kind: 'blocked', reason: 'workspace-baseline.json entries 는 { path: sha256 | "deleted" } 여야 합니다 (형식 오류 → fail closed).' };
+    if (
+      norm === null ||
+      typeof value !== 'string' ||
+      !(value === 'deleted' || SHA256_HEX_RE.test(value) || isOversizeDigest(value))
+    ) {
+      return { kind: 'blocked', reason: 'workspace-baseline.json entries 는 { path: sha256 | "deleted" | "oversize:<bytes>" } 여야 합니다 (형식 오류 → fail closed).' };
     }
     entries[norm] = value;
+  }
+  if (truncated) {
+    // Round 36 P1: a count-capped baseline skipped digests entirely at
+    // dispatch → content matching would be meaningless; fall back to path-only
+    // subtraction on the recorded (bounded) path list, visibly noted.
+    return { kind: 'ok', mode: 'path-only-legacy', paths, truncated: true };
   }
   return { kind: 'ok', mode: 'content', paths, entries };
 }
@@ -575,7 +586,13 @@ async function runDiffScopeCheck(
   const baseline = await loadWorkspaceBaseline(runFolder);
   if (baseline.kind === 'blocked') return makeResult(base, 'BLOCKED', baseline.reason);
   const legacy = baseline.kind === 'ok' && baseline.mode === 'path-only-legacy';
-  const legacyNote = legacy ? ' baseline: path-only (legacy)' : '';
+  // Round 36 P1: a truncated (count-capped) baseline gets its own visible note
+  // on top of the path-only-legacy disclosure.
+  const legacyNote = legacy
+    ? baseline.truncated === true
+      ? ' baseline: path-only (legacy, truncated)'
+      : ' baseline: path-only (legacy)'
+    : '';
 
   const outOfScope: string[] = [];
   const preExisting: string[] = [];
@@ -591,13 +608,19 @@ async function runDiffScopeCheck(
         // or a path that never got a recorded digest (not a plain file), is
         // treated as changed by THIS run — a Builder must not be able to hide
         // an out-of-scope edit behind a file that merely was dirty already.
+        // Round 36 P1: an `oversize:` digest on EITHER side proves nothing
+        // (the file was above the hash cap, never fully read) — such a path
+        // is NEVER excluded, always treated as changed by this run.
         if (baselineDigest !== undefined) {
           const currentDigest = await computeWorkspacePathDigest(workspaceRoot, norm);
-          if (currentDigest !== null && currentDigest === baselineDigest) {
+          if (isOversizeDigest(baselineDigest) || isOversizeDigest(currentDigest ?? '')) {
+            modifiedPreExisting.push(norm);
+          } else if (currentDigest !== null && currentDigest === baselineDigest) {
             preExisting.push(norm);
             continue;
+          } else {
+            modifiedPreExisting.push(norm);
           }
-          modifiedPreExisting.push(norm);
         } else {
           modifiedPreExisting.push(norm);
         }
@@ -625,6 +648,7 @@ async function runDiffScopeCheck(
       ? {
           baselineApplied: true,
           baselineMode: baseline.mode,
+          ...(baseline.truncated === true ? { baselineTruncated: true } : {}),
           preExistingCount: preExisting.length,
           preExistingSample: preExisting.slice(0, 10),
           modifiedPreExistingCount: modifiedPreExisting.length,

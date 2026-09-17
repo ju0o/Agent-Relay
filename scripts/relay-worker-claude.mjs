@@ -9,8 +9,11 @@
  *   --allowedTool <pattern> (round 35, repeatable, strict allowlist only)
  *
  * None of these are forwarded to Claude Code.
- * (--allowedTool patterns are re-emitted to Claude as --allowedTools on the
- *  Builder relay path only; QA passthrough rejects --allowedTool outright.)
+ * (--allowedTool patterns are re-emitted to Claude as a single comma-joined
+ *  --allowedTools value on the Builder relay path only; the positional prompt
+ *  MUST precede it because --allowedTools is VARIADIC and would otherwise
+ *  swallow the prompt — round 37 fixes the round-35 ordering. QA passthrough
+ *  rejects --allowedTool outright.)
  *
  * Exit semantics:
  *   0  → Claude process completed normally. NOT RESULT_RECEIVED by itself.
@@ -75,13 +78,15 @@ const RELAY_ARGS = new Set([
 const VALID_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
 
 /**
- * Round 35 — strict Builder verification tool allowlist.
+ * Round 35/37 — strict Builder verification tool allowlist.
  *
  * A Builder worker may only run bounded verification commands in --print mode.
  * Each `--allowedTool <pattern>` is validated against these exact shapes and
- * forwarded to Claude as a single `--allowedTools <p1> <p2> …` argv. Everything
- * else (e.g. Bash(*), Bash(rm:*), Bash(git push:*), Bash(sudo:*), Bash(pkill:*))
- * is a fatal ArgError. QA passthrough rejects --allowedTool outright.
+ * forwarded to Claude as a single comma-joined `--allowedTools <p1>,<p2>,…`
+ * value. A comma inside any pattern is a fatal ArgError (round 37) because the
+ * patterns share one comma-joined value. Everything else (e.g. Bash(*),
+ * Bash(rm:*), Bash(git push:*), Bash(sudo:*), Bash(pkill:*)) is a fatal
+ * ArgError. QA passthrough rejects --allowedTool outright.
  */
 const ALLOWED_TOOL_BASH_CMDS = new Set([
   'node',
@@ -127,9 +132,10 @@ function isValidAllowedToolPattern(pattern) {
  *     Duplicate, empty, or invalid enum values are rejected.
  *     'dangerously-skip-permissions' is explicitly rejected.
  *   - Optional (round 35, repeatable): --allowedTool <pattern>. Each pattern is
- *     validated against the strict Builder verification allowlist; anything else
- *     is a fatal ArgError. Forwarded to Claude as --allowedTools on the Builder
- *     relay path only.
+ *     validated against the strict Builder verification allowlist and must not
+ *     contain a comma (round 37 — patterns are comma-joined into one
+ *     --allowedTools value when forwarded to Claude on the Builder relay path);
+ *     anything else is a fatal ArgError.
  *
  * @param {string[]} argv  Slice of process.argv (caller provides slice(2)).
  * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string; allowedTools?: string[] }}
@@ -193,9 +199,19 @@ function parseRelayArgs(argv) {
     }
   }
 
-  // Round 35: validate each --allowedTool pattern against the strict allowlist.
+  // Round 35/37: validate each --allowedTool pattern against the strict allowlist.
   if (result.allowedTools !== undefined) {
     for (const pattern of result.allowedTools) {
+      // Round 37: patterns are comma-joined into a single --allowedTools value
+      // for the real Claude CLI (it is a VARIADIC option), so a comma inside a
+      // pattern would corrupt the joined value. Own error, always fatal.
+      if (pattern.includes(',')) {
+        throw new ArgError(
+          `Invalid --allowedTool pattern: '${pattern}' contains a comma. ` +
+          'Patterns are comma-joined into a single --allowedTools value, so ' +
+          'commas inside a pattern are not allowed.',
+        );
+      }
       if (!isValidAllowedToolPattern(pattern)) {
         throw new ArgError(
           `Invalid --allowedTool pattern: '${pattern}'. ` +
@@ -985,18 +1001,30 @@ async function main() {
     //   'acceptEdits' → --permission-mode acceptEdits
     //   'default' / undefined → no --permission-mode flag (least privilege)
     //
-    // Round 35: the validated Builder verification allowlist is forwarded to
-    // Claude as a single `--allowedTools <p1> <p2> …` argv (exact Claude CLI
+    // Round 35/37: the validated Builder verification allowlist is forwarded to
+    // Claude as a single `--allowedTools Read,Glob` argv (exact Claude CLI
     // spelling per `claude --help`). Only patterns that passed the strict
     // allowlist in parseRelayArgs can reach this point.
-    const claudeArgs = ['--add-dir', workspaceRoot, '--print'];
-    if (permissionMode === 'acceptEdits') {
-      claudeArgs.push('--permission-mode', 'acceptEdits');
-    }
-    if (args.allowedTools && args.allowedTools.length > 0) {
-      claudeArgs.push('--allowedTools', ...args.allowedTools);
-    }
-    claudeArgs.push(prompt);
+    //
+    // ROUND 37 DEFECT FIX: `--allowedTools` is a VARIADIC option
+    // (`--allowedTools <tools...>`), so it consumes every following argv
+    // element INCLUDING the positional prompt. Round 35 emitted
+    // `--allowedTools Bash(node:*) Read …` and the real claude CLI (2.1.273)
+    // swallowed the prompt and exited 1 with "Input must be provided either
+    // through stdin or as a prompt argument when using --print". The positional
+    // prompt is therefore emitted immediately after --print, THEN the
+    // fixed-arity --permission-mode, and the variadic --allowedTools LAST with
+    // one comma-joined value. PM-verified working shape:
+    //   claude --print "<prompt>" --allowedTools "Read,Glob"
+    const claudeArgs = [
+      '--add-dir', workspaceRoot,
+      '--print',
+      prompt,
+      ...(permissionMode === 'acceptEdits' ? ['--permission-mode', 'acceptEdits'] : []),
+      ...(args.allowedTools && args.allowedTools.length > 0
+        ? ['--allowedTools', args.allowedTools.join(',')]
+        : []),
+    ];
 
     let exitCode = 1;
     let exitSignal = null;

@@ -18,9 +18,10 @@ import {
   writeRunMeta,
 } from './fs.js';
 import {
+  MAX_BASELINE_PATHS,
   computeWorkspacePathDigest,
   normalizeWorkspacePath,
-  parsePorcelainPath,
+  runGitStatusZ,
 } from './workspace-diff-common.js';
 import {
   getTask,
@@ -702,93 +703,65 @@ function writeFileAtomicText(folder: string, name: string, content: string): voi
 // since dispatch — so a Builder that leaves its accepted deliverable
 // uncommitted can never poison the next Task's scope gate, yet can never hide
 // an out-of-scope edit behind a file that merely happened to be dirty already.
-
-/** Runs the same authoritative `git status --porcelain=v1 --no-renames -uall`
+/** Runs the same authoritative `git status --porcelain=v1 -z --no-renames -uall`
  * the evaluator uses, and returns the sorted unique normalized path list plus a
  * per-path content digest of the working-tree file at dispatch time (sha256 of
- * the file bytes; the literal "deleted" for an already-missing file). A path
- * that is NOT a plain file (gitlink/submodule, unreadable, or a path that
- * `-uall` never expands into files) gets NO entries record — content cannot be
- * proven, so the evaluator fails closed and never excludes it. Returns null
- * when the workspace cannot be authoritatively inspected (not a git repo, git
- * missing, timeout, non-zero exit) — no baseline file is written and legacy
- * whole-workspace diffScope behavior stays intact for lost captures (and the
- * evaluator would BLOCK such a scope anyway). */
-function captureWorkspaceBaselineSnapshot(
+ * the file bytes ≤ MAX_DIGEST_FILE_BYTES; the literal "deleted" for an
+ * already-missing file; the literal `oversize:<bytes>` for a file above the
+ * per-file cap — recorded WITHOUT reading, and never excludable at QA time).
+ * A path that is NOT a plain file (gitlink/submodule, unreadable, or a path
+ * that `-uall` never expands into files) gets NO entries record — content cannot
+ * be proven, so the evaluator fails closed and never excludes it.
+ *
+ * Bounded hashing (round 36 P1): digests are computed for at most
+ * MAX_BASELINE_PATHS paths; beyond that the digest loop is skipped entirely and
+ * the snapshot is flagged `truncated: true` (the evaluator falls back to
+ * path-only-legacy subtraction with a visible note). Returns null when the
+ * workspace cannot be authoritatively inspected (not a git repo, git missing,
+ * timeout, non-zero exit, over-budget status stream) — no baseline file is
+ * written and legacy whole-workspace diffScope behavior stays intact for lost
+ * captures (and the evaluator would BLOCK such a scope anyway). */
+async function captureWorkspaceBaselineSnapshot(
   workspaceRoot: string,
-): Promise<{ paths: string[]; entries: Record<string, string> } | null> {
-  return new Promise((resolve) => {
-    let child: ChildProcess | undefined;
-    try {
-      child = spawn('git', ['status', '--porcelain=v1', '--no-renames', '-uall'], {
-        cwd: workspaceRoot,
-        shell: false,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch {
-      resolve(null);
-      return;
+): Promise<{ paths: string[]; entries: Record<string, string>; truncated?: boolean } | null> {
+  const status = await runGitStatusZ(workspaceRoot);
+  if (status.kind === 'error') return null;
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const rawPath of status.paths) {
+    const norm = normalizeWorkspacePath(rawPath);
+    if (norm !== null && !seen.has(norm)) {
+      seen.add(norm);
+      paths.push(norm);
     }
-    let stdout = '';
-    let settled = false;
-    const finish = (snapshot: { paths: string[]; entries: Record<string, string> } | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(snapshot);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child?.kill('SIGKILL'); // never leave a stray git running
-      } catch { /* already exited */ }
-      finish(null);
-    }, 30_000);
-    child.stdout?.on('data', (chunk: Buffer) => {
-      if (stdout.length < 100_000) stdout += chunk.toString('utf8');
-    });
-    child.stderr?.resume(); // drain — never interpreted
-    child.once('error', () => finish(null));
-    child.once('close', async (code) => {
-      if (code !== 0) {
-        finish(null);
-        return;
-      }
-      clearTimeout(timer);
-      const seen = new Set<string>();
-      const paths: string[] = [];
-      for (const line of stdout.split('\n')) {
-        const rawPath = parsePorcelainPath(line.replace(/\r$/, ''));
-        if (rawPath === null) continue;
-        const norm = normalizeWorkspacePath(rawPath);
-        if (norm !== null && !seen.has(norm)) {
-          seen.add(norm);
-          paths.push(norm);
-        }
-      }
-      paths.sort();
-      // Content digests recorded for every dirty plain file. A null digest
-      // (directory, gitlink/submodule, unreadable special) stays in `paths`
-      // for backward compatible reporting but gets NO entries record — the
-      // evaluator can then never prove it unchanged (fail closed).
-      const entries: Record<string, string> = {};
-      for (const p of paths) {
-        const digest = await computeWorkspacePathDigest(workspaceRoot, p);
-        if (digest !== null) entries[p] = digest;
-      }
-      finish({ paths, entries });
-    });
-  });
+  }
+  paths.sort();
+  const truncated = paths.length > MAX_BASELINE_PATHS;
+  const entries: Record<string, string> = {};
+  if (!truncated) {
+    // Content digests recorded for every dirty plain file. A null digest
+    // (directory, gitlink/submodule, unreadable special) stays in `paths`
+    // for backward compatible reporting but gets NO entries record — the
+    // evaluator can then never prove it unchanged (fail closed).
+    for (const p of paths) {
+      const digest = await computeWorkspacePathDigest(workspaceRoot, p);
+      if (digest !== null) entries[p] = digest;
+    }
+  }
+  return { paths, entries, ...(truncated ? { truncated: true } : {}) };
 }
+
 
 /** Snapshots the workspace dirtiness + content digests into
  * workspace-baseline.json right where the Run meta is written. Shape
- * `{ paths, entries, capturedAt }`: `paths` keeps the sorted round-32 path
+ * `{ paths, entries, truncated?, capturedAt }`: `paths` keeps the sorted path
  * list (backward compatible — an evaluator reading only `paths` still gets the
  * round-32 semantics), `entries` maps each path to its dispatch-time content
- * digest ("deleted" when the file was already gone). Never throws (a capture
- * failure only means "no baseline" — legacy behavior), so the pre-commit CAS
- * discipline is untouched. */
+ * digest ("deleted" for an already-gone file, `oversize:<bytes>` for a file
+ * above the per-file hash cap), and `truncated: true` is written (round 36 P1)
+ * when the dirty-path count exceeded MAX_BASELINE_PATHS so the digest loop was
+ * skipped. Never throws (a capture failure only means "no baseline" — legacy
+ * behavior), so the pre-commit CAS discipline is untouched. */
 async function writeWorkspaceBaseline(runFolder: string, workspaceRoot: string): Promise<void> {
   const snapshot = await captureWorkspaceBaselineSnapshot(workspaceRoot);
   if (snapshot === null) return; // no authoritative diff available → legacy behavior
@@ -796,7 +769,12 @@ async function writeWorkspaceBaseline(runFolder: string, workspaceRoot: string):
     runFolder,
     'workspace-baseline.json',
     JSON.stringify(
-      { paths: snapshot.paths, entries: snapshot.entries, capturedAt: new Date().toISOString() },
+      {
+        paths: snapshot.paths,
+        entries: snapshot.entries,
+        ...(snapshot.truncated === true ? { truncated: true } : {}),
+        capturedAt: new Date().toISOString(),
+      },
       null,
       2,
     ) + '\n',
