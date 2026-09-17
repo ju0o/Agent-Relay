@@ -5,7 +5,6 @@
  * read-only: it projects Goal → Task → Run → Result → Review truth without
  * creating another workflow/state model.
  *
- *
  * Reuses the H1 read model via IPC `history:get` — no second model, no
  * writes. Goal/task pickers reuse the existing `goal:list` / `task:list`
  * ops. Unknown/corrupt input fails closed (error shown, nothing repaired).
@@ -30,10 +29,12 @@ function pr(hasPrompt: boolean, hasResult: boolean): string {
   return `${hasPrompt ? 'P' : '–'}/${hasResult ? 'R' : '–'}`;
 }
 
-type ManagedRelayStatus = 'READY' | 'WORKING' | 'REVIEWING' | 'CHANGES' | 'PASS' | 'BLOCKED' | 'COMPLETE';
+type ManagedRelayStatus = 'READY' | 'WORKING' | 'REVIEWING' | 'CHANGES' | 'PASS' | 'BLOCKED' | 'OWNER_REQUIRED' | 'COMPLETE';
 
 function managedRelayStatus(task: TaskRecord, goalStatus?: GoalRecord['status']): ManagedRelayStatus {
   if (goalStatus === 'COMPLETED') return 'COMPLETE';
+  if (goalStatus === 'WAITING_OWNER') return 'OWNER_REQUIRED';
+  if (goalStatus === 'BLOCKED') return 'BLOCKED';
   if (task.pmState === 'ACCEPTED') return 'PASS';
   if (task.pmState === 'CHANGES_REQUESTED') return 'CHANGES';
   if (task.executionState === 'BLOCKED' || task.executionState === 'FAILED' || task.executionState === 'CANCELLED') return 'BLOCKED';
@@ -44,6 +45,8 @@ function managedRelayStatus(task: TaskRecord, goalStatus?: GoalRecord['status'])
 
 function managedRelayNext(task: TaskRecord, goalStatus?: GoalRecord['status']): string {
   if (goalStatus === 'COMPLETED') return 'GOAL COMPLETE';
+  if (goalStatus === 'WAITING_OWNER') return 'OWNER_REQUIRED';
+  if (goalStatus === 'BLOCKED') return 'RECOVERY';
   if (task.pmState === 'CHANGES_REQUESTED') return 'SAME TASK → NEW RUN';
   if (task.pmState === 'ACCEPTED') return 'NEXT / GOAL COMPLETE CHECK';
   if (task.executionState === 'BLOCKED' || task.executionState === 'FAILED' || task.executionState === 'CANCELLED') return 'OWNER_REQUIRED / RECOVERY';
@@ -131,9 +134,11 @@ export function TaskHistoryPanel(props: TaskHistoryPanelProps): React.ReactEleme
     ? history.attempts[history.attempts.length - 1]!
     : null;
   const managedStatus = t ? managedRelayStatus(t, selectedGoal?.status) : null;
-  const managedResult = currentAttempt
-    ? (currentAttempt.hasResult ? 'CAPTURED' : 'WAITING')
-    : 'NOT STARTED';
+  const managedResult = t?.executionState === 'RESULT_RECEIVED'
+    ? 'RECEIVED'
+    : currentAttempt
+      ? (currentAttempt.hasResult ? 'CAPTURED' : 'WAITING')
+      : 'NOT STARTED';
   const managedReview = !t
     ? 'NOT ISSUED'
     : currentAttempt?.judgment
