@@ -1290,6 +1290,168 @@ test('exhausted FAILED Task is audited once and bootstrap creates one replacemen
   assert.equal(first.steps.some((step) => step.step === 'bootstrap'), true);
 });
 
+// ── round 39: a terminal Task's leftover Delivery is superseded, not re-decided ──
+// LIVE starvation (JuControler-Private-planning): TASK-0001 reached terminal
+// executionState FAILED while its TASK_VERIFY delivery PMD-TASK-0001-eeb756bd-…
+// stayed PENDING with a cached OWNER_REQUIRED final-gate decision. From 03:11Z
+// to 04:16Z the orchestrator logged `final-gate FINAL_GATE_DECISION_CACHED` for
+// that same delivery every ~10 s and never processed the live delivery of
+// TASK-0003 — a healthy Task waited an hour behind a dead one. The final-gate
+// step now reads the Task's executionState before re-deciding; a terminal
+// Task's leftover delivery is superseded EXACTLY ONCE through the certified
+// delivery-consumption API (ignorePmDelivery) with a machine reason naming the
+// terminal state, and the same cycle still processes every remaining delivery.
+
+/** Terminal Task (FAILED | CANCELLED) with a PENDING TASK_VERIFY delivery.
+ * FAILED uses the certified failed-run mint; CANCELLED has no certified mint
+ * path, so the PENDING fixture is written directly (test-only construction). */
+async function mintTerminalDelivery(project, terminalState) {
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const task = await gt.createTask(dataRoot, project, {
+    goalId: goal.goalId, title: `dead ${terminalState.toLowerCase()} task`, goal: 'dead work', reason: 'orchestrator certification',
+    scope: 'out.txt only', completionCriteria: ['done'], executionState: 'READY', pmState: 'PENDING',
+    contract: { goal: 'dead work', bounded_scope: 'out.txt only', acceptance_criteria: [{ id: 'AC-01', description: 'done', validationMode: 'DETERMINISTIC' }], required_evidence: [], qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }] }, retry_policy: { same_task_only: true, max_qa_remediations: 0, max_pm_changes: 0 } },
+  });
+  const runId = `${terminalState.toLowerCase()}-run-${++seq}`;
+  const folder = path.join(dataRoot, project, '_runs', `r39-${seq}`);
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify({ tags: [], runId, goalId: goal.goalId, taskId: task.taskId, workspaceRoot: ROOT, workerId: 'dead-builder' }));
+  await gt.linkRunToTask(dataRoot, project, task.taskId, folder);
+  if (terminalState === 'FAILED') {
+    await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: 'READY', to: 'DISPATCHED', reason: 'test dispatch' });
+  }
+  await rt.transitionTaskExecution(dataRoot, project, task.taskId, { expectedExecutionState: terminalState === 'FAILED' ? 'DISPATCHED' : 'READY', to: terminalState, reason: `test ${terminalState}` });
+  let delivery;
+  if (terminalState === 'FAILED') {
+    delivery = await pmDel.ensurePmDeliveryForFailedRun(dataRoot, project, task.taskId, runId);
+  } else {
+    const deliveryId = `PMD-${task.taskId}-${runId}`;
+    const delFolder = path.join(dataRoot, project, '_relay', 'pm-deliveries', deliveryId);
+    fs.mkdirSync(delFolder, { recursive: true });
+    const now = new Date().toISOString();
+    fs.writeFileSync(path.join(delFolder, 'delivery.json'), JSON.stringify({ schemaVersion: 1, deliveryId, project, kind: 'TASK_VERIFY', taskId: task.taskId, runId, status: 'PENDING', createdAt: now, updatedAt: now, source: { kind: 'pm-work', workKind: 'TASK_VERIFY' } }, null, 2) + '\n');
+    delivery = pmDel.getPmDelivery(dataRoot, project, deliveryId);
+  }
+  assert.ok(delivery, `${terminalState} delivery minted`);
+  return { taskId: task.taskId, runId, deliveryId: delivery.deliveryId };
+}
+
+/** Seed the state file with the cached OWNER_REQUIRED decision the LIVE trace
+ * had — the exact precondition that made TASK-0001's delivery re-decide from
+ * cache every tick instead of being consumed. */
+function seedCachedOwnerRequired(stateFile, deliveryId, contextHash) {
+  const state = {
+    schemaVersion: 1, blocked: {},
+    finalGateDecisions: { [deliveryId]: { contextHash, outcome: 'OWNER_REQUIRED', reason: 'owner review required', updatedAt: new Date().toISOString() } },
+    pendingReask: {}, exhausted: {},
+  };
+  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + '\n');
+}
+
+/** A second, LIVE delivery in the same project whose ACCEPT envelope lets the
+ * fake PM apply normally; proves the same cycle is not starved by the dead one. */
+async function mintLiveAcceptDelivery(project, adapter, pkg) {
+  const live = await mintPendingDelivery(project);
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, live.deliveryId);
+  adapter.scripted.push(fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'live delivery accepted', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash }));
+  return { live, packet };
+}
+
+test('(r39-a) a pending delivery whose Task is FAILED is superseded once, audited, and a second live delivery in the same cycle is still processed', async () => {
+  const project = 'OrchR39SupersedeFailed';
+  const dead = await mintTerminalDelivery(project, 'FAILED');
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const deadPacket = pkg.buildPmFinalGatePacket(dataRoot, project, dead.deliveryId);
+  const { auditDir, stateFile } = mkTestDirs('r39-supersede-failed');
+  seedCachedOwnerRequired(stateFile, dead.deliveryId, deadPacket.contextHash);
+  const adapter = new FakePmAdapter('fake-pm');
+  const { live, packet: livePacket } = await mintLiveAcceptDelivery(project, adapter, pkg);
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+
+  const result = await roleLoop.runOnce(cfg);
+
+  assert.equal(pmDel.getPmDelivery(dataRoot, project, dead.deliveryId).status, 'IGNORED', 'dead FAILED-task delivery superseded');
+  const supersedes = auditLines(auditDir).filter((l) => l.outcome === 'DELIVERY_SUPERSEDED_TERMINAL_TASK');
+  assert.equal(supersedes.length, 1, 'superseded exactly once');
+  assert.equal(supersedes[0].step, 'final-gate');
+  assert.equal(supersedes[0].deliveryId, dead.deliveryId);
+  assert.equal(supersedes[0].taskId, dead.taskId);
+  assert.equal(supersedes[0].terminalState, 'FAILED');
+  assert.match(supersedes[0].reason, /FAILED/, 'machine reason names the terminal state');
+  assert.ok(!auditLines(auditDir).some((l) => l.outcome === 'FINAL_GATE_DECISION_CACHED' && l.deliveryId === dead.deliveryId), 'cached decision not kept alive');
+  // Same cycle still processed the live delivery.
+  assert.equal(pmDel.getPmDelivery(dataRoot, project, live.deliveryId).status, 'ACKNOWLEDGED', 'live delivery processed in the same cycle');
+  assert.ok(result.steps.some((s) => s.outcome === 'DELIVERY_SUPERSEDED_TERMINAL_TASK' && s.deliveryId === dead.deliveryId));
+  assert.ok(result.steps.some((s) => s.outcome === 'APPLIED' && s.deliveryId === live.deliveryId));
+});
+
+test('(r39-b) a pending delivery whose Task is CANCELLED behaves the same: superseded once, audited, live sibling processed', async () => {
+  const project = 'OrchR39SupersedeCancelled';
+  const dead = await mintTerminalDelivery(project, 'CANCELLED');
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const deadPacket = pkg.buildPmFinalGatePacket(dataRoot, project, dead.deliveryId);
+  const { auditDir, stateFile } = mkTestDirs('r39-supersede-cancelled');
+  seedCachedOwnerRequired(stateFile, dead.deliveryId, deadPacket.contextHash);
+  const adapter = new FakePmAdapter('fake-pm');
+  const { live, packet: livePacket } = await mintLiveAcceptDelivery(project, adapter, pkg);
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+
+  const result = await roleLoop.runOnce(cfg);
+
+  assert.equal(pmDel.getPmDelivery(dataRoot, project, dead.deliveryId).status, 'IGNORED', 'dead CANCELLED-task delivery superseded');
+  const supersedes = auditLines(auditDir).filter((l) => l.outcome === 'DELIVERY_SUPERSEDED_TERMINAL_TASK');
+  assert.equal(supersedes.length, 1, 'superseded exactly once');
+  assert.equal(supersedes[0].step, 'final-gate');
+  assert.equal(supersedes[0].deliveryId, dead.deliveryId);
+  assert.equal(supersedes[0].taskId, dead.taskId);
+  assert.equal(supersedes[0].terminalState, 'CANCELLED');
+  assert.match(supersedes[0].reason, /CANCELLED/, 'machine reason names the terminal state');
+  assert.ok(!auditLines(auditDir).some((l) => l.outcome === 'FINAL_GATE_DECISION_CACHED' && l.deliveryId === dead.deliveryId), 'cached decision not kept alive');
+  assert.equal(pmDel.getPmDelivery(dataRoot, project, live.deliveryId).status, 'ACKNOWLEDGED', 'live delivery processed in the same cycle');
+  assert.ok(result.steps.some((s) => s.outcome === 'DELIVERY_SUPERSEDED_TERMINAL_TASK' && s.deliveryId === dead.deliveryId));
+});
+
+test('(r39-c) a pending delivery whose Task is still open is untouched and decided normally', async () => {
+  const project = 'OrchR39OpenTask';
+  const d = await mintPendingDelivery(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const roleConfig = makeRoleConfig(project);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'open task decided normally', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })] });
+  const { auditDir, stateFile } = mkTestDirs('r39-open-task');
+  const cfg = { dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  const result = await roleLoop.processFinalGate(cfg, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(pmDel.getPmDelivery(dataRoot, project, d.deliveryId).status, 'ACKNOWLEDGED');
+  assert.equal(gt.getTask(dataRoot, project, d.taskId).pmState, 'ACCEPTED');
+  assert.equal(auditLines(auditDir).filter((l) => l.outcome === 'DELIVERY_SUPERSEDED_TERMINAL_TASK').length, 0, 'open task is never superseded');
+  const replay = await roleLoop.processFinalGate(cfg, d.deliveryId);
+  assert.equal(replay.outcome, 'REPLAY_IGNORED');
+});
+
+test('(r39-d) replaying the same cycle does not supersede the terminal delivery twice', async () => {
+  const project = 'OrchR39SupersedeReplay';
+  const dead = await mintTerminalDelivery(project, 'FAILED');
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const deadPacket = pkg.buildPmFinalGatePacket(dataRoot, project, dead.deliveryId);
+  const { auditDir, stateFile } = mkTestDirs('r39-supersede-replay');
+  seedCachedOwnerRequired(stateFile, dead.deliveryId, deadPacket.contextHash);
+  const adapter = new FakePmAdapter('fake-pm');
+  await mintLiveAcceptDelivery(project, adapter, pkg);
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+
+  await roleLoop.runOnce(cfg);
+  await roleLoop.runOnce(cfg); // replay of the same cycle shape
+  const supersedes = auditLines(auditDir).filter((l) => l.outcome === 'DELIVERY_SUPERSEDED_TERMINAL_TASK');
+  assert.equal(supersedes.length, 1, 'never superseded twice');
+  assert.equal(supersedes[0].deliveryId, dead.deliveryId);
+  assert.equal(pmDel.getPmDelivery(dataRoot, project, dead.deliveryId).status, 'IGNORED');
+  // A direct replay of the final-gate step over the consumed delivery is REPLAY_IGNORED.
+  const direct = await roleLoop.processFinalGate(cfg, dead.deliveryId);
+  assert.equal(direct.outcome, 'REPLAY_IGNORED');
+  assert.equal(auditLines(auditDir).filter((l) => l.outcome === 'DELIVERY_SUPERSEDED_TERMINAL_TASK').length, 1);
+});
+
 // ── zero live-dataRoot writes ─────────────────────────────────────────────────
 after(() => {
   if (fs.existsSync(LIVE_ROOT)) {

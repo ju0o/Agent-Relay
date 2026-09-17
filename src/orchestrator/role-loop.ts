@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getTask, createTask, listTasks } from '../backend/goal-task.js';
 import { transitionTaskExecution } from '../backend/goal-task-runtime.js';
-import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun } from '../backend/pm-delivery.js';
+import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun, ignorePmDelivery, PmDeliveryError } from '../backend/pm-delivery.js';
 import { submitPmJudgment, listPmJudgments, JUDGMENT_REASON_MAX_CHARS, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS, type PmJudgmentEvidenceGate } from '../backend/pm-judgment.js';
 import { listEvidenceForRun } from '../backend/evidence.js';
 import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
@@ -23,6 +23,7 @@ import {
   type EvidenceTrustLevel,
   type EvidenceType,
   type TaskRecord,
+  type TaskExecutionState,
 } from '../shared/types.js';
 import { buildPmBootstrapPacket, buildPmFinalGatePacket, listClosedTerminalTasks, type PmFinalGatePacket } from './pm-packets.js';
 import { parsePmTaskDecision, parsePmJudgment, type PmTaskDecision, type PmJudgment } from './pm-schemas.js';
@@ -561,6 +562,18 @@ function hasInFlightTerminalRun(dataRoot: string, project: string): boolean {
   });
 }
 
+/** Round 39: the Task's executionState when it is TERMINAL, else null.
+ * A missing/unreadable Task record is treated as non-terminal so the normal
+ * final-gate error path stays unchanged. */
+function terminalExecutionOfTask(dataRoot: string, project: string, taskId: string): TaskExecutionState | null {
+  try {
+    const task = getTask(dataRoot, project, taskId);
+    return task.executionState === 'FAILED' || task.executionState === 'CANCELLED' ? task.executionState : null;
+  } catch {
+    return null;
+  }
+}
+
 function deriveTitle(rawContract: Record<string, unknown>): string {
   const goal = typeof rawContract.goal === 'string' ? rawContract.goal : 'next task';
   return goal.length > 80 ? goal.slice(0, 80) + '…' : goal;
@@ -907,6 +920,48 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
   const state = readState(cfg.stateFile);
   const cached = state.finalGateDecisions?.[deliveryId];
   if (cached && cached.contextHash === packet.contextHash) {
+    // Round 39 (live TASK-0001 / PMD-TASK-0001-eeb756bd-…, JuControler-Private,
+    // 03:11Z–04:16Z): a PENDING delivery left over by a TERMINAL Task was
+    // re-decided from its cached OWNER_REQUIRED decision every ~10 s
+    // (FINAL_GATE_DECISION_CACHED), and the live delivery of the next Task was
+    // never processed — one dead Task starved the whole cycle for an hour.
+    // Before re-deciding, read the Task's executionState: when it is terminal
+    // (FAILED | CANCELLED) do NOT re-decide and do NOT keep the cached decision
+    // alive. Supersede the leftover delivery EXACTLY ONCE through the certified
+    // delivery-consumption API (ignorePmDelivery — the same CAS transition the
+    // relay_pm_ignore_delivery operator tool runs), with a machine-generated
+    // reason naming the terminal state, and emit one audit line. A replay then
+    // returns REPLAY_IGNORED above, so a second supersede is never emitted. A
+    // FRESH failed-run recovery delivery (no cached decision) still proceeds to
+    // the normal PM judgment below.
+    const terminalState = terminalExecutionOfTask(cfg.dataRoot, cfg.project, delivery.taskId);
+    if (terminalState !== null) {
+      let superseded = false;
+      try {
+        await ignorePmDelivery(cfg.dataRoot, cfg.project, deliveryId, 'PENDING');
+        superseded = true;
+      } catch (err) {
+        // A concurrent host/operator already consumed this delivery.
+        if (!(err instanceof PmDeliveryError) || err.code !== 'CONFLICT') throw err;
+      }
+      if (state.finalGateDecisions) delete state.finalGateDecisions[deliveryId];
+      delete state.blocked[`final-gate:${deliveryId}`];
+      writeState(cfg.stateFile, state);
+      if (!superseded) {
+        // Already finalised by a concurrent consumer — never audit twice.
+        const latest = getPmDelivery(cfg.dataRoot, cfg.project, deliveryId);
+        return { outcome: 'REPLAY_IGNORED', status: latest.status };
+      }
+      audit(cfg.auditDir, {
+        step: 'final-gate',
+        deliveryId,
+        taskId: delivery.taskId,
+        outcome: 'DELIVERY_SUPERSEDED_TERMINAL_TASK',
+        terminalState,
+        reason: `delivery superseded because Task ${delivery.taskId} reached terminal executionState ${terminalState}`,
+      });
+      return { outcome: 'DELIVERY_SUPERSEDED_TERMINAL_TASK', taskId: delivery.taskId, terminalState };
+    }
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'FINAL_GATE_DECISION_CACHED', cachedOutcome: cached.outcome, ...(cached.reason ? { reason: cached.reason } : {}), contextHash: packet.contextHash });
     return { outcome: cached.outcome, ...(cached.reason ? { reason: cached.reason } : {}) };
   }
