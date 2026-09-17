@@ -27,6 +27,7 @@ const events = await import('../dist/server/backend/event.js');
 const actlBridge = await import('../dist/server/backend/actl-bridge.js');
 const roleLoop = await import('../dist/server/orchestrator/role-loop.js');
 const v1Intake = await import('../dist/server/backend/v1-intake.js');
+const evk = await import('../dist/server/backend/evidence.js');
 
 const QA_WORKER = path.resolve('scripts/fake-qa-worker.mjs');
 const BUILDER_WORKER = path.resolve('scripts/fake-builder-worker.mjs');
@@ -119,7 +120,7 @@ function auditLines(auditDir) {
 /** Direct construction (no dispatcher): mints a QA-gated Task with a full
  * TASK_CONTRACT v1 and a PENDING TASK_VERIFY Delivery, same "V16 dogfood
  * style" pattern as test/v1-qa-loop.test.mjs and test/github-pm-bridge.test.mjs. */
-async function mintPendingDelivery(project) {
+async function mintPendingDelivery(project, opts = {}) {
   const n = ++seq;
   const counter = path.join(ROOT, `qa-${n}.count`);
   fs.writeFileSync(counter, '1'); // PASS on first real QA call
@@ -137,7 +138,7 @@ async function mintPendingDelivery(project) {
     contract: {
       goal: 'produce correct output', bounded_scope: 'out.txt only',
       acceptance_criteria: [{ id: 'AC-SEMANTIC', description: 'output is correct', validationMode: 'SEMANTIC' }],
-      required_evidence: ['diff --stat'],
+      required_evidence: opts.requiredEvidence ?? [],
       qa_route: { deterministic: [{ kind: 'fileExists', path: 'out.txt' }], semantic: { qaWorkerId }, maxQaRemediationAttempts: 1 },
     },
   });
@@ -419,6 +420,124 @@ test('final gate ACCEPT applies once: judgment APPLIED, Delivery ACKNOWLEDGED', 
 test('a second final-gate pass over an already-ACKNOWLEDGED delivery is REPLAY_IGNORED', async () => {
   const result = await roleLoop.processFinalGate(acceptDelivery.cfg, acceptDelivery.deliveryId);
   assert.equal(result.outcome, 'REPLAY_IGNORED');
+});
+
+// ── round 38b: final gate mechanically enforces contract required_evidence ──
+test('(r38b-a) ACCEPT is refused and rewritten to CHANGES when the contract requires TEST/VERIFIED but only ADAPTER_OBSERVATION/OBSERVED exists', async () => {
+  const project = 'OrchEvGateRefuse';
+  const d = await mintPendingDelivery(project, { requiredEvidence: ['TEST/VERIFIED machine-proof of the --self-test run'] });
+  await evk.recordAdapterObservation(dataRoot, project, {
+    summary: 'Adapter RESPONSE_COMPLETE observed for Task TASK-1 Run orch-run',
+    taskId: d.taskId, runId: d.runId,
+  });
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const pmReason = 'the raw self-test output is visible in the cited record, so I accept on this basis';
+  const adapter = new FakePmAdapter('fake-pm', {
+    scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: pmReason, contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })],
+  });
+  const { auditDir, stateFile } = mkTestDirs('evgate-refuse');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'ACCEPT_REFUSED_EVIDENCE');
+  assert.equal(result.decision, 'CHANGES');
+  const judgment = pmJud.getPmJudgment(dataRoot, project, `PMJ-${d.deliveryId}`);
+  assert.equal(judgment.decision, 'CHANGES', 'applied judgment decision is CHANGES, not ACCEPT');
+  assert.match(judgment.reason, /TEST\/VERIFIED/, 'machine reason names the unmet requirement');
+  assert.ok(judgment.reason.includes(pmReason), 'PM prose reason preserved verbatim in the stored judgment');
+  assert.notEqual(gt.getTask(dataRoot, project, d.taskId).pmState, 'ACCEPTED', 'the Task is NOT accepted on prose');
+  const refusal = auditLines(auditDir).find((line) => line.outcome === 'ACCEPT_REFUSED_EVIDENCE');
+  assert.ok(refusal, 'audit line carries outcome ACCEPT_REFUSED_EVIDENCE');
+  assert.deepEqual(refusal.unmet, ['REQ-1'], 'unmet requirement id visible in role-loop.jsonl');
+  assert.match(refusal.requirements[0], /TEST\/VERIFIED/);
+  assert.ok(refusal.present.some((s) => /ADAPTER_OBSERVATION\/OBSERVED/.test(s)), 'present records are listed in the audit line');
+});
+
+test('(r38b-b) ACCEPT applies unchanged when a required TEST/VERIFIED record is bound to the run', async () => {
+  const project = 'OrchEvGateSatisfied';
+  const d = await mintPendingDelivery(project, { requiredEvidence: ['TEST/VERIFIED machine-proof of the --self-test run'] });
+  await evk.recordTestEvidence(dataRoot, project, {
+    summary: 'deterministic QA: node scripts/founder-brief.mjs --self-test exited 0',
+    status: 'PASS', source: { kind: 'qa-gate', tool: 'qa-deterministic-evaluator' },
+    taskId: d.taskId, runId: d.runId,
+  });
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const adapter = new FakePmAdapter('fake-pm', {
+    scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'verified test evidence is bound', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })],
+  });
+  const { auditDir, stateFile } = mkTestDirs('evgate-satisfied');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(result.decision, 'ACCEPT');
+  assert.equal(gt.getTask(dataRoot, project, d.taskId).pmState, 'ACCEPTED');
+  assert.ok(!auditLines(auditDir).some((line) => line.outcome === 'ACCEPT_REFUSED_EVIDENCE'), 'no refusal audit line');
+});
+
+test('(r38b-c) no required_evidence in the contract: ACCEPT applies unchanged', async () => {
+  const project = 'OrchEvGateNoRequirement';
+  const d = await mintPendingDelivery(project, { requiredEvidence: [] });
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const adapter = new FakePmAdapter('fake-pm', {
+    scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'no evidence requirements named', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })],
+  });
+  const { auditDir, stateFile } = mkTestDirs('evgate-none');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'APPLIED');
+  assert.equal(result.decision, 'ACCEPT');
+  assert.equal(gt.getTask(dataRoot, project, d.taskId).pmState, 'ACCEPTED');
+  assert.ok(!auditLines(auditDir).some((line) => line.outcome === 'ACCEPT_REFUSED_EVIDENCE'));
+});
+
+test('(r38b-d) a FAIL-status record of the right type/level does not satisfy the requirement', async () => {
+  const project = 'OrchEvGateFailRecord';
+  const d = await mintPendingDelivery(project, { requiredEvidence: ['TEST/VERIFIED machine-proof of the --self-test run'] });
+  await evk.recordTestEvidence(dataRoot, project, {
+    summary: 'deterministic QA: node scripts/founder-brief.mjs --self-test exited 7',
+    status: 'FAIL', source: { kind: 'qa-gate', tool: 'qa-deterministic-evaluator' },
+    taskId: d.taskId, runId: d.runId,
+  });
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const pmReason = 'the failing run is still evidence that the test ran, so I accept';
+  const adapter = new FakePmAdapter('fake-pm', {
+    scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: pmReason, contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })],
+  });
+  const { auditDir, stateFile } = mkTestDirs('evgate-fail-record');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'ACCEPT_REFUSED_EVIDENCE');
+  const judgment = pmJud.getPmJudgment(dataRoot, project, `PMJ-${d.deliveryId}`);
+  assert.equal(judgment.decision, 'CHANGES');
+  const refusal = auditLines(auditDir).find((line) => line.outcome === 'ACCEPT_REFUSED_EVIDENCE');
+  assert.ok(refusal, 'refusal audited');
+  assert.deepEqual(refusal.unmet, ['REQ-1'], 'FAIL record of the right type/level is still unmet');
+  assert.ok(refusal.present.some((s) => /:TEST\/VERIFIED\/FAIL/.test(s)), 'the FAIL record is listed as present');
+  assert.ok(judgment.reason.includes(pmReason), 'PM prose reason preserved verbatim in the stored judgment');
+});
+
+test("(r38b-e) the PM's original reason text is preserved verbatim in the stored CHANGES judgment", async () => {
+  const project = 'OrchEvGateReasonPreserved';
+  const d = await mintPendingDelivery(project, { requiredEvidence: ['TEST/VERIFIED machine-proof of the --self-test run'] });
+  const roleConfig = makeRoleConfig(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const pmReason = 'this run shows the adapter RESPONSE_COMPLETE only, yet the contract wants machine-verified test proof';
+  const adapter = new FakePmAdapter('fake-pm', {
+    scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: pmReason, contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })],
+  });
+  const { auditDir, stateFile } = mkTestDirs('evgate-reason');
+  const result = await roleLoop.processFinalGate({ dataRoot, project, roleConfig, pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile }, d.deliveryId);
+  assert.equal(result.outcome, 'ACCEPT_REFUSED_EVIDENCE');
+  const judgment = pmJud.getPmJudgment(dataRoot, project, `PMJ-${d.deliveryId}`);
+  assert.equal(judgment.decision, 'CHANGES');
+  assert.ok(judgment.reason.includes('--- PM reason (verbatim):'), 'verbatim marker present');
+  assert.ok(judgment.reason.includes(pmReason), 'PM reason appears verbatim inside the stored judgment reason');
+  const refusal = auditLines(auditDir).find((line) => line.outcome === 'ACCEPT_REFUSED_EVIDENCE');
+  assert.equal(refusal.pmReason, pmReason, 'audit line also preserves the full PM reason');
 });
 
 // ── CHANGES+SAME_TASK → retry preparation for the same task, no new task ────

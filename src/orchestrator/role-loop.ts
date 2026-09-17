@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import { getTask, createTask, listTasks } from '../backend/goal-task.js';
 import { transitionTaskExecution } from '../backend/goal-task-runtime.js';
 import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun } from '../backend/pm-delivery.js';
-import { submitPmJudgment, listPmJudgments } from '../backend/pm-judgment.js';
+import { submitPmJudgment, listPmJudgments, JUDGMENT_REASON_MAX_CHARS, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS } from '../backend/pm-judgment.js';
+import { listEvidenceForRun } from '../backend/evidence.js';
 import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
 import { reconcileReadyRetryDispatches } from '../backend/retry-dispatch.js';
 import { reconcileQaGate, type QaRemediationDispatchHook } from '../backend/qa-gate.js';
@@ -15,7 +16,14 @@ import { listEvents } from '../backend/event.js';
 import type { RoleConfig, RoleAssignment } from '../roles/role-config.js';
 import type { RoleRuntimeAdapter, InputEnvelope } from '../integrations/core/role-runtime.js';
 import { readRoleSession, roleSessionPath, writeRoleSession } from '../integrations/core/role-runtime.js';
-import type { TaskRecord } from '../shared/types.js';
+import {
+  EVIDENCE_TRUST_LEVELS,
+  EVIDENCE_TYPES,
+  type EvidenceRecord,
+  type EvidenceTrustLevel,
+  type EvidenceType,
+  type TaskRecord,
+} from '../shared/types.js';
 import { buildPmBootstrapPacket, buildPmFinalGatePacket, listClosedTerminalTasks, type PmFinalGatePacket } from './pm-packets.js';
 import { parsePmTaskDecision, parsePmJudgment, type PmTaskDecision, type PmJudgment } from './pm-schemas.js';
 
@@ -73,6 +81,166 @@ function parseFinalGateJudgment(packet: PmFinalGatePacket, text: string): PmJudg
     throw new Error(`ACCEPT requires QA PASS; latest QA status is ${packet.context.qa.status}${packet.context.qa.reason ? `: ${packet.context.qa.reason}` : ''}`);
   }
   return judgment;
+}
+
+// ── evidence gate for ACCEPT (round 38b) ─────────────────────────────────────
+//
+// LIVE P0 (JuControler-Private-planning TASK-0002, DEC-2026-149): the automatic
+// PM judged the SAME evidence class CHANGES, CHANGES, then ACCEPT, because
+// ACCEPT-without-machine-verification was reachable by retry pressure alone — its
+// accepting reason claimed the cited record held raw self-test output, while the
+// record (ADAPTER_OBSERVATION, trust OBSERVED, status INFO) only said
+// "Adapter RESPONSE_COMPLETE observed for Task … Run …". Before an ACCEPT /
+// ACCEPT_AND_NEXT decision is applied, the gate now mechanically checks the
+// frozen contract's `required_evidence` (task-contract.v1, string[]) against the
+// Evidence records actually bound to the accepted run.
+//
+// Each requirement names its minimum acceptable machine Evidence as a
+// `<TYPE>/<TRUSTLEVEL>` token (e.g. "TEST/VERIFIED"); a requirement that names no
+// such token cannot be machine-checked and is treated as unmet — ACCEPT must
+// never be reached on prose. The gate can only REFUSE, never upgrade: nothing
+// here promotes VERIFIED (or anything else) to ACCEPTED automatically.
+
+const EVIDENCE_TRUST_RANK: Record<string, number> = { CLAIMED: 0, OBSERVED: 1, VERIFIED: 2, ACCEPTED: 3 };
+
+interface RequiredEvidenceSpec {
+  /** 0-based index into contract.required_evidence (audit id = REQ-<index+1>). */
+  requirementIndex: number;
+  requirement: string;
+  type: EvidenceType;
+  trustLevel: EvidenceTrustLevel;
+}
+
+interface EvidenceGateUnmet {
+  requirementIndex: number;
+  requirement: string;
+  parsed?: RequiredEvidenceSpec;
+}
+
+/** Read the minimum acceptable `<TYPE>/<TRUSTLEVEL>` the requirement text names. */
+function parseRequiredEvidenceSpec(requirement: string, index: number): RequiredEvidenceSpec | null {
+  const tokenRe = /([A-Za-z][A-Za-z0-9_]*)\s*\/\s*([A-Za-z][A-Za-z0-9_]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = tokenRe.exec(requirement)) !== null) {
+    const type = (m[1] ?? '').toUpperCase();
+    const trust = (m[2] ?? '').toUpperCase();
+    if ((EVIDENCE_TYPES as readonly string[]).includes(type) && (EVIDENCE_TRUST_LEVELS as readonly string[]).includes(trust)) {
+      return { requirementIndex: index, requirement, type: type as EvidenceType, trustLevel: trust as EvidenceTrustLevel };
+    }
+  }
+  return null;
+}
+
+function trustLevelAtLeast(actual: EvidenceTrustLevel, required: EvidenceTrustLevel): boolean {
+  const a = EVIDENCE_TRUST_RANK[actual];
+  const r = EVIDENCE_TRUST_RANK[required];
+  return a !== undefined && r !== undefined && a >= r;
+}
+
+function evidenceSatisfiesRequired(record: EvidenceRecord, spec: RequiredEvidenceSpec): boolean {
+  return record.type === spec.type
+    && trustLevelAtLeast(record.trustLevel, spec.trustLevel)
+    && record.status !== 'FAIL';
+}
+
+/**
+ * Empty/absent `required_evidence` → behaviour unchanged (satisfied). Otherwise
+ * EVERY requirement must name a `<TYPE>/<TRUSTLEVEL>` token and at least one
+ * non-FAIL Evidence record bound to the run must match its type + trust level.
+ */
+function checkRequiredEvidence(
+  contract: TaskRecord['contract'] | undefined,
+  runEvidence: EvidenceRecord[],
+): { satisfied: boolean; unmet: EvidenceGateUnmet[]; present: EvidenceRecord[] } {
+  const required = contract?.required_evidence;
+  if (!Array.isArray(required) || required.length === 0) {
+    return { satisfied: true, unmet: [], present: runEvidence };
+  }
+  const unmet: EvidenceGateUnmet[] = [];
+  required.forEach((requirement, index) => {
+    const spec = parseRequiredEvidenceSpec(requirement, index);
+    if (!spec) {
+      unmet.push({ requirementIndex: index, requirement });
+      return;
+    }
+    if (!runEvidence.some((e) => evidenceSatisfiesRequired(e, spec))) {
+      unmet.push({ requirementIndex: index, requirement, parsed: spec });
+    }
+  });
+  return { satisfied: unmet.length === 0, unmet, present: runEvidence };
+}
+
+function describeUnmetRequirement(u: EvidenceGateUnmet): string {
+  const id = `REQ-${u.requirementIndex + 1}`;
+  return u.parsed
+    ? `${id} "${u.requirement}" (requires ${u.parsed.type}/${u.parsed.trustLevel})`
+    : `${id} "${u.requirement}" (names no machine-checkable TYPE/TRUSTLEVEL token)`;
+}
+
+/**
+ * Apply the refusal: the PM's ACCEPT is NOT applied; the outcome is rewritten
+ * to a CHANGES judgment whose reason is machine-generated and names exactly the
+ * unmet requirements and the records actually present (id/type/trustLevel/
+ * status). The PM's own prose reason is preserved verbatim at the end so
+ * nothing is hidden. The retry lifecycle then proceeds exactly like a CHANGES
+ * verdict (prepare + reconcile), so the loop re-runs the Task until machine
+ * Evidence exists — but the gate never upgrades any record toward ACCEPTED.
+ */
+async function refuseAcceptForMissingEvidence(
+  cfg: RoleLoopConfig,
+  deliveryId: string,
+  packet: PmFinalGatePacket,
+  judgment: PmJudgment,
+  check: { unmet: EvidenceGateUnmet[]; present: EvidenceRecord[] },
+): Promise<Record<string, unknown>> {
+  const runId = packet.context.attempt.runId;
+  const unmetIds = check.unmet.map((u) => `REQ-${u.requirementIndex + 1}`);
+  const unmetText = check.unmet.map(describeUnmetRequirement);
+  const presentText = check.present.length === 0
+    ? '(none)'
+    : check.present.map((e) => `${e.evidenceId} ${e.type}/${e.trustLevel}/${e.status}`).join('; ');
+
+  const machinePrefix = `ACCEPT_REFUSED_EVIDENCE: contract required_evidence unmet (${unmetText.join('; ')}) — records bound to run ${runId}: ${presentText}. ACCEPT refused and rewritten to CHANGES.`;
+  const pmReason = judgment.reason ?? '';
+  const marker = '--- PM reason (verbatim):';
+  let verbatimSuffix = `${marker} ${pmReason}`;
+  // Keep at least a readable machine prefix; when a pathological max-length PM
+  // prose cannot share the reason cap, the PM prose is the priority and the
+  // full text is audited below (`pmReason`).
+  const minMachine = 30;
+  const maxSuffix = JUDGMENT_REASON_MAX_CHARS - minMachine;
+  let pmReasonTruncated = false;
+  if (verbatimSuffix.length > maxSuffix) {
+    verbatimSuffix = `${marker} ${pmReason.slice(0, Math.max(1, maxSuffix - marker.length - 1))}…`;
+    pmReasonTruncated = true;
+  }
+  const budgetForMachine = JUDGMENT_REASON_MAX_CHARS - verbatimSuffix.length;
+  const machine = machinePrefix.length <= budgetForMachine
+    ? machinePrefix
+    : `${machinePrefix.slice(0, Math.max(1, budgetForMachine - 1))}…`;
+  const reason = `${machine} ${verbatimSuffix}`.trim();
+
+  const retryInstruction = [
+    `Evidence gate refused ACCEPT: required_evidence unmet (${unmetText.join('; ')}).`,
+    `Re-run the same Task so a QA/Builder attempt produces non-FAIL Evidence of the required type and trust level for every requirement; prose claims and adapter observations alone cannot satisfy the frozen contract.`,
+  ].join(' ').slice(0, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS);
+
+  await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'CHANGES', reason, retryInstruction });
+  await prepareRetryForJudgment(cfg.dataRoot, cfg.project, deliveryId);
+  await reconcileReadyRetryDispatches(cfg.dataRoot, cfg.project);
+  audit(cfg.auditDir, {
+    step: 'final-gate',
+    deliveryId,
+    outcome: 'ACCEPT_REFUSED_EVIDENCE',
+    decision: judgment.decision,
+    runId,
+    unmet: unmetIds,
+    requirements: unmetText,
+    present: check.present.map((e) => `${e.evidenceId}:${e.type}/${e.trustLevel}/${e.status}`),
+    pmReason,
+    ...(pmReasonTruncated ? { pmReasonTruncatedInJudgment: true } : {}),
+  });
+  return { outcome: 'ACCEPT_REFUSED_EVIDENCE', decision: 'CHANGES', pmDecision: judgment.decision };
 }
 
 // ── (a) runtime billing guard ────────────────────────────────────────────────
@@ -622,6 +790,16 @@ async function applyFinalGateJudgment(cfg: RoleLoopConfig, deliveryId: string, p
     return { outcome: 'OWNER_REQUIRED', reason: 'retry_policy.max_pm_changes exhausted' };
   }
   if (judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT') {
+    // Round 38b: mechanically enforce the frozen contract's required_evidence
+    // before applying ACCEPT. Every requirement must be covered by a non-FAIL
+    // Evidence record bound to the accepted run at the required type/trust.
+    // The gate can only REFUSE (never upgrade); on refusal the outcome is
+    // rewritten to CHANGES and forwarded to the normal retry lifecycle.
+    const runId = packet.context.attempt.runId;
+    const evidenceGate = checkRequiredEvidence(currentTask.contract, listEvidenceForRun(cfg.dataRoot, cfg.project, runId));
+    if (!evidenceGate.satisfied) {
+      return refuseAcceptForMissingEvidence(cfg, deliveryId, packet, judgment, evidenceGate);
+    }
     const result = await submitPmJudgment(cfg.dataRoot, cfg.project, { deliveryId, decision: 'ACCEPT', reason: judgment.reason });
     let nextTask: Record<string, unknown> | undefined;
     if (judgment.decision === 'ACCEPT_AND_NEXT') {
