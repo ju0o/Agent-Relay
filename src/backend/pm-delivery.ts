@@ -389,6 +389,64 @@ export function ensurePmDeliveryForTaskVerify(
 }
 
 /**
+ * Certified EXACT-RUN recovery mint (round 41B): create the deterministic
+ * `PMD-{taskId}-{runId}` TASK_VERIFY record for a SPECIFIC linked Run whose
+ * folder already carries a worker Result (`result.md` / `agent-result.md`),
+ * independently of which attempt is currently resolved. Restart recovery needs
+ * this when ONE open Task holds TWO stranded Runs (LIVE: TASK-0003 Runs 4-5):
+ * the newer no-result Run is recorded as a failed run first (Task → FAILED),
+ * and only a per-run mint can still surface the older Run's already-written
+ * Result to PM instead of losing it. Idempotent like the current-attempt mint
+ * (exclusive file-exists collapse; terminal records never reset). Refuses — returns
+ * null — when the Task already ACCEPTED this Run, the Run is no longer linked,
+ * or the Run has no result file (never invents a Result, never double-mints).
+ */
+export function ensurePmDeliveryForTaskVerifyRun(
+  dataRoot: string,
+  project: string,
+  taskId: string,
+  runId: string,
+): Promise<PmDeliveryRecord | null> {
+  const tid = requireNonEmptyString(taskId, 'taskId');
+  const rid = requireNonEmptyString(runId, 'runId');
+  const deliveryId = pmDeliveryIdFor(tid, rid);
+
+  return withDeliveryLock(dataRoot, project, deliveryId, (): PmDeliveryRecord | null => {
+    const folder = pmDeliveryFolder(dataRoot, project, deliveryId);
+    const file = deliveryJsonPath(folder);
+    if (fs.existsSync(file)) return readDeliveryRecord(dataRoot, project, deliveryId);
+    const task = getTask(dataRoot, project, tid);
+    if (task.pmState === 'ACCEPTED' || task.acceptedRunId === rid) {
+      return null;
+    }
+    const linked = task.linkedRuns.find((r) => r.runId === rid);
+    if (!linked) return null;
+    if (
+      !fs.existsSync(path.join(linked.folder, 'result.md'))
+      && !fs.existsSync(path.join(linked.folder, 'agent-result.md'))
+    ) {
+      return null;
+    }
+    const ts = nowIso();
+    const record: PmDeliveryRecord = {
+      schemaVersion: PM_DELIVERY_SCHEMA_VERSION,
+      deliveryId,
+      project,
+      kind: 'TASK_VERIFY',
+      taskId: tid,
+      runId: rid,
+      status: 'PENDING',
+      createdAt: ts,
+      updatedAt: ts,
+      source: { kind: 'pm-work', workKind: 'TASK_VERIFY' },
+    };
+    fs.mkdirSync(folder, { recursive: true });
+    persistDeliveryRecord(folder, record);
+    return record;
+  });
+}
+
+/**
  * Canonical recovery delivery for a dispatch/runtime failure before Result.
  * The delivery keeps TASK_VERIFY identity so the existing PM judgment and
  * retry path can recover the same Task; it never fabricates a Result.

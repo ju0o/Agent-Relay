@@ -1502,6 +1502,51 @@ function strandedRecoveredSteps(auditDir) {
   return auditLines(auditDir).filter((l) => l.step === 'resume-collect' && (l.outcome === 'RECOVERED_RESULT' || l.outcome === 'RECOVERED_NO_RESULT'));
 }
 
+/** Round 41B direct construction of the LIVE TASK-0003 miss: ONE open Task with
+ * TWO stranded Runs — an OLDER Run whose worker already wrote result files
+ * (`result.md`/`agent-result.md`, no Delivery ever minted) and a NEWER Run that
+ * produced nothing. Round 40 only walked the latest linked Run, so the newer
+ * no-result Run was recorded as FAILED while the older result-bearing Run was
+ * never recovered. */
+async function mintTwoRunStrandedTask(project) {
+  const n = ++seq;
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const contract = {
+    goal: 'recover stranded result', bounded_scope: 'out.txt only',
+    acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }],
+    required_evidence: [],
+    qa_route: { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }] },
+    retry_policy: { same_task_only: true, max_qa_remediations: 1, max_pm_changes: 1 },
+  };
+  const task = await gt.createTask(dataRoot, project, {
+    goalId: goal.goalId, title: `two-stranded ${n}`, goal: 'recover me', reason: 'round 41b', scope: 'out.txt only',
+    completionCriteria: ['done'], executionState: 'DISPATCHED', pmState: 'PENDING', contract,
+  });
+  const taskId = task.taskId;
+  async function linkRun(tag, withResult) {
+    const folder = path.join(dataRoot, project, '_runs', `two-stranded-${n}-${tag}`);
+    const workspaceRoot = path.join(ROOT, 'workspace', `two-stranded-${n}-${tag}`);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const runId = `stranded-two-${n}-${tag}`;
+    const meta = { tags: [], runId, goalId: goal.goalId, taskId, workspaceRoot, workerId: 'stranded-builder' };
+    fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify(meta));
+    await gt.linkRunToTask(dataRoot, project, taskId, folder);
+    if (withResult) {
+      fs.mkdirSync(path.join(folder, 'evidence'), { recursive: true });
+      fs.writeFileSync(path.join(folder, 'evidence', 'adapter.json'), '{}');
+      fs.writeFileSync(path.join(folder, 'result.md'), `stranded worker result for run ${tag}\n`);
+      fs.writeFileSync(path.join(workspaceRoot, 'out.txt'), `ok ${tag}\n`);
+    }
+    return { runId, folder, workspaceRoot };
+  }
+  // LIVE shape: the RESULT-bearing run is the OLDER attempt (seq 1) and the
+  // no-result run is the NEWER/current attempt (seq 2).
+  const olderResult = await linkRun('older-result', true);
+  const newerNoResult = await linkRun('newer-noresult', false);
+  return { task, taskId, goalId: goal.goalId, olderResult, newerNoResult };
+}
+
 
 after(() => {
   if (fs.existsSync(LIVE_ROOT)) {
@@ -1640,4 +1685,42 @@ test('(r40-e) a healthy cycle with nothing stranded is unchanged — no RECOVERE
   assert.equal(auditLines(auditDir).filter((l) => l.outcome === 'RECOVERED_RESULT' || l.outcome === 'RECOVERED_NO_RESULT').length, 0);
   assert.equal(pmDel.getPmDelivery(dataRoot, project, d.deliveryId).status, 'ACKNOWLEDGED');
   assert.equal(gt.getTask(dataRoot, project, d.taskId).pmState, 'ACCEPTED');
+});
+
+test('(r41-a) ONE open Task with TWO stranded runs (older with a Result, newer without) recovers BOTH in a single cycle — one RECOVERED_* audit per run, and a replay adds no second Delivery and no second failure record', async () => {
+  const project = `OrchTwoRuns${seq}`;
+  const { taskId, olderResult, newerNoResult } = await mintTwoRunStrandedTask(project);
+  const { auditDir, stateFile } = mkTestDirs('r41-two-runs');
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+
+  await roleLoop.runOnce(cfg);
+
+  // Exactly one audit line per stranded run, with the round-40 field shape.
+  const resultAudit = strandedRecoveredSteps(auditDir).find((l) => l.runId === olderResult.runId);
+  assert.equal(resultAudit?.outcome, 'RECOVERED_RESULT', 'older run with result files recovered');
+  assert.equal(resultAudit?.taskId, taskId);
+  assert.equal(resultAudit?.folder, olderResult.folder);
+  const noResultAudit = strandedRecoveredSteps(auditDir).find((l) => l.runId === newerNoResult.runId);
+  assert.equal(noResultAudit?.outcome, 'RECOVERED_NO_RESULT', 'newer no-result run recorded as failed');
+  assert.equal(noResultAudit?.taskId, taskId);
+  assert.equal(noResultAudit?.folder, newerNoResult.folder);
+  assert.equal(strandedRecoveredSteps(auditDir).length, 2, 'exactly one audit line per run');
+
+  // Both runs recovered through the certified APIs in the SAME cycle: the older
+  // result run has its own Delivery; the newer no-result run its failed-run record.
+  const resultDeliveries = pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === olderResult.runId);
+  assert.equal(resultDeliveries.length, 1, 'result run has exactly one Delivery');
+  assert.equal(resultDeliveries[0].status, 'PENDING');
+  const failedDeliveries = pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === newerNoResult.runId);
+  assert.equal(failedDeliveries.length, 1, 'no-result run has exactly one failed-run Delivery');
+  assert.equal(failedDeliveries[0].status, 'PENDING');
+  const cycle = auditLines(auditDir).find((l) => l.step === 'cycle');
+  assert.equal(cycle.outcome, 'ACTED', 'a recovering cycle is ACTED, never IDLE');
+
+  // Replay of the same cycle: no second Delivery, no second failure record, no
+  // duplicate audit lines (the failed Task is no longer scanned for recovery).
+  await roleLoop.runOnce(cfg);
+  assert.equal(pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === olderResult.runId).length, 1, 'replay never mints a second Delivery');
+  assert.equal(pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === newerNoResult.runId).length, 1, 'replay never mints a second failure record');
+  assert.equal(strandedRecoveredSteps(auditDir).length, 2, 'replay emits no duplicate RECOVERED_* audit lines');
 });

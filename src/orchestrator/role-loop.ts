@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getTask, createTask, listTasks } from '../backend/goal-task.js';
 import { transitionTaskExecution, markResultReceived, markQaResultReceived } from '../backend/goal-task-runtime.js';
-import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun, ensurePmDeliveryForTaskVerify, ignorePmDelivery, PmDeliveryError } from '../backend/pm-delivery.js';
+import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun, ensurePmDeliveryForTaskVerifyRun, ensurePmDeliveryForTaskVerify, ignorePmDelivery, PmDeliveryError } from '../backend/pm-delivery.js';
 import { listActiveDispatches } from '../backend/dispatcher.js';
 import { submitPmJudgment, listPmJudgments, JUDGMENT_REASON_MAX_CHARS, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS, type PmJudgmentEvidenceGate } from '../backend/pm-judgment.js';
 import { listEvidenceForRun } from '../backend/evidence.js';
@@ -1092,6 +1092,22 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
 // A recovered Run is never silently dropped and never double-recorded: the
 // deterministic `PMD-{taskId}-{runId}` Delivery (or the post-FAILED state)
 // makes a second cycle a no-op, so a replay never mints twice.
+//
+// ── Round 41B: EVERY unresolved Run, not only the latest ──────────────────────
+// Round 40 recovered only the latest linked Run, but a restart can strand
+// SEVERAL Runs of one open Task at once. LIVE: after a supervisor restart,
+// `resume-collect RECOVERED_NO_RESULT` fired for TASK-0003 run `d6813884…`
+// while the SAME Task's run `5bdc800f…` — which HAS `result.md` and
+// `agent-result.md` under 2026-09-17/worker-builder-claude-pro/12 — was never
+// recovered: `RECOVERED_RESULT` never appeared in the audit and that run has no
+// Delivery. The scan now walks EVERY unresolved run of EVERY open Task, newest
+// attempt first (the current attempt is the only one the certified failed-run
+// API can record), and each run keeps its own round-40 rule + its own
+// idempotency anchor. A per-run certified exact-run Delivery mint
+// (`ensurePmDeliveryForTaskVerifyRun`) carries an older run's already-written
+// Result to PM even when a newer no-result run already moved the Task to FAILED
+// in the same cycle — so a recovered Result is never lost to the single
+// executionState a Task can occupy at a time.
 
 const RESULT_FILE_NAMES = ['result.md', 'agent-result.md'] as const;
 
@@ -1116,17 +1132,20 @@ function recordRecoveredStep(cfg: RoleLoopConfig, steps: Array<Record<string, un
  * Delivery: re-admit it through the SAME certified primitives a normal collect
  * uses (markResultReceived / markQaResultReceived + the certified Delivery
  * mint), then let the same cycle continue into QA/gate. Never invents a result.
+ * Round 41B: when a sibling stranded Run has already moved the shared Task
+ * (only one executionState per Task), admission is best-effort and the Result
+ * reaches PM through the certified exact-run Delivery mint bound to THIS run.
  */
 async function recoverRunWithResult(
   cfg: RoleLoopConfig,
   task: TaskRecord,
-  latest: TaskRecord['linkedRuns'][number],
+  run: TaskRecord['linkedRuns'][number],
   steps: Array<Record<string, unknown>>,
   qaReconciled: Set<string>,
 ): Promise<void> {
   const taskId = task.taskId;
-  const runId = latest.runId;
-  const folder = latest.folder;
+  const runId = run.runId;
+  const folder = run.folder;
   try {
     if (task.qaContract) {
       // QA-gated Tasks stay PENDING — the QA gate owns the PENDING → VERIFYING
@@ -1135,6 +1154,13 @@ async function recoverRunWithResult(
     } else {
       await markResultReceived(cfg.dataRoot, cfg.project, taskId, runId, { expectedExecutionState: task.executionState });
     }
+  } catch {
+    // A sibling Run's recovery in this same cycle may have already advanced or
+    // FAILED the shared Task. Admission for THIS exact Run is best-effort — the
+    // certified exact-run Delivery mint below is what carries the already-
+    // written Result to PM, so the Result is never lost to a state conflict.
+  }
+  try {
     const admitted = getTask(cfg.dataRoot, cfg.project, taskId);
     if (admitted.qaContract) {
       qaReconciled.add(taskId);
@@ -1142,10 +1168,30 @@ async function recoverRunWithResult(
     } else {
       await ensurePmDeliveryForTaskVerify(cfg.dataRoot, cfg.project, taskId);
     }
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    recordRecoveredStep(cfg, steps, { outcome: 'BLOCKED_RUNTIME', taskId, runId, folder, reason });
-    return;
+  } catch {
+    // The QA gate binds to the Task's current attempt; a recovered NON-current
+    // Run (or a Task already moved by a sibling recovery) has no gate binding.
+    // Never fail the whole recovery here — the exact-run mint below decides.
+  }
+  // Round 40 only ever minted for the Task's current attempt. When this run is
+  // a non-current (older) attempt — or the Task already moved — mint the
+  // deterministic per-run Delivery through the certified exact-run mint, so the
+  // worker's already-written Result still reaches PM exactly once.
+  if (!hasDeliveryForRun(cfg, taskId, runId)) {
+    try {
+      const delivery = await ensurePmDeliveryForTaskVerifyRun(cfg.dataRoot, cfg.project, taskId, runId);
+      if (!delivery) {
+        recordRecoveredStep(cfg, steps, {
+          outcome: 'BLOCKED_RUNTIME', taskId, runId, folder,
+          reason: 'per-run Delivery was not minted by the certified API (run not linked / no result file / task already accepted)',
+        });
+        return;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      recordRecoveredStep(cfg, steps, { outcome: 'BLOCKED_RUNTIME', taskId, runId, folder, reason });
+      return;
+    }
   }
   recordRecoveredStep(cfg, steps, { outcome: 'RECOVERED_RESULT', taskId, runId, folder });
 }
@@ -1195,10 +1241,18 @@ async function recoverRunWithoutResult(
 }
 
 /**
- * First action of every cycle: scan open Tasks' latest dispatched-but-unfinished
- * Run and recover it deterministically, for BOTH relay-path and actl-managed
- * workers. Returns the set of QA-gated Tasks already handed to the QA gate (so
- * the post-collect seam re-reconciles them once, never twice).
+ * First action of every cycle: scan every open Task's every unresolved
+ * dispatched-but-unfinished Run and recover it deterministically, for BOTH
+ * relay-path and actl-managed workers. Unlike round 40 (latest linked Run
+ * only), a restart can strand several Runs of one open Task at once — a newer
+ * Run without a Result plus an older Run that already produced result files —
+ * and only the newest was being recovered (LIVE: TASK-0003 run `d6813884…`
+ * recorded as FAILED while the same Task's older run `5bdc800f…` with
+ * result.md/agent-result.md stayed stranded with no Delivery). Runs are walked
+ * newest attempt first (the certified failed-run API can only record the
+ * current attempt) and each Run is judged by the SAME per-run rule with its
+ * own idempotency anchor. Returns the set of QA-gated Tasks already handed to
+ * the QA gate (so the post-collect seam re-reconciles them once, never twice).
  */
 async function recoverStrandedDispatchedRuns(
   cfg: RoleLoopConfig,
@@ -1208,35 +1262,36 @@ async function recoverStrandedDispatchedRuns(
   const liveDispatches = listActiveDispatches(cfg.project);
   for (const task of listTasks(cfg.dataRoot, cfg.project)) {
     if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') continue;
-    const latest = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
-    if (!latest) continue;
-    // Idempotency anchor: any Delivery (any status) for this exact attempt
-    // means it was already admitted/recovered — never mint a second one.
-    if (hasDeliveryForRun(cfg, task.taskId, latest.runId)) continue;
+    const runs = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence);
+    for (const run of runs) {
+      // Idempotency anchor: any Delivery (any status) for this exact attempt
+      // means it was already admitted/recovered — never mint a second one.
+      if (hasDeliveryForRun(cfg, task.taskId, run.runId)) continue;
 
-    const hasResult = hasRunResultFile(latest.folder);
-    let binding: ReturnType<typeof readRuntimeBinding>;
-    try {
-      binding = readRuntimeBinding(latest.folder);
-    } catch {
-      binding = null;
+      const hasResult = hasRunResultFile(run.folder);
+      let binding: ReturnType<typeof readRuntimeBinding>;
+      try {
+        binding = readRuntimeBinding(run.folder);
+      } catch {
+        binding = null;
+      }
+
+      // The dispatcher's RESERVED lineage owns its own admission; a FINAL_BOUND
+      // transport without a Result is closeout-owned and is never declared failed.
+      if (binding && (binding.collectStatus === 'RESERVED' || (binding.collectStatus === 'FINAL_BOUND' && !hasResult))) continue;
+
+      if (hasResult) {
+        await recoverRunWithResult(cfg, task, run, steps, qaReconciled);
+        continue;
+      }
+
+      // No Result on disk. Only a truly stranded Run is declared failed: one
+      // with no live in-process dispatch handle and no durable actl transport
+      // binding that a collect hook could still resume.
+      const live = liveDispatches.some((r) => r.taskId === task.taskId && (r.runId ?? run.runId) === run.runId);
+      if (live || binding) continue;
+      await recoverRunWithoutResult(cfg, task, run, steps);
     }
-
-    // The dispatcher's RESERVED lineage owns its own admission; a FINAL_BOUND
-    // transport without a Result is closeout-owned and is never declared failed.
-    if (binding && (binding.collectStatus === 'RESERVED' || (binding.collectStatus === 'FINAL_BOUND' && !hasResult))) continue;
-
-    if (hasResult) {
-      await recoverRunWithResult(cfg, task, latest, steps, qaReconciled);
-      continue;
-    }
-
-    // No Result on disk. Only a truly stranded Run is declared failed: one
-    // with no live in-process dispatch handle and no durable actl transport
-    // binding that a collect hook could still resume.
-    const live = liveDispatches.some((r) => r.taskId === task.taskId && (r.runId ?? latest.runId) === latest.runId);
-    if (live || binding) continue;
-    await recoverRunWithoutResult(cfg, task, latest, steps);
   }
   return qaReconciled;
 }
