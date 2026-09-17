@@ -1453,6 +1453,56 @@ test('(r39-d) replaying the same cycle does not supersede the terminal delivery 
 });
 
 // ── zero live-dataRoot writes ─────────────────────────────────────────────────
+// ── Round 40: restart-stranded dispatched-run recovery ────────────────────────
+
+/** Direct construction (round 40): the LIVE TASK-0003 shape — a dispatcher-
+ * orphaned relay-path Run (folder with meta.json only, NO runtime-binding.json,
+ * which is exactly why the actl-only operator collect refuses it). Task stays
+ * DISPATCHED with the run linked. Optionally carries a worker result + canonical
+ * capture marker + out.txt so the orchestrator can re-admit it. */
+async function mintStrandedRun(project, opts = {}) {
+  const n = ++seq;
+  const { goal } = await v1Intake.ensureV1ContainerGoal(dataRoot, project);
+  const qaGated = opts.qaGated ?? false;
+  const contract = {
+    goal: 'recover stranded result', bounded_scope: 'out.txt only',
+    acceptance_criteria: [{ id: 'AC-01', description: 'output exists', validationMode: 'DETERMINISTIC' }],
+    required_evidence: [],
+    qa_route: qaGated
+      ? { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }], maxQaRemediationAttempts: 1 }
+      : { deterministic: [{ kind: 'fileExists', criterionId: 'AC-01', path: 'out.txt' }] },
+    retry_policy: { same_task_only: true, max_qa_remediations: 1, max_pm_changes: 1 },
+  };
+  const task = await gt.createTask(dataRoot, project, {
+    goalId: goal.goalId, title: `stranded ${n}`, goal: 'recover me', reason: 'round 40', scope: 'out.txt only',
+    completionCriteria: ['done'], executionState: 'DISPATCHED', pmState: 'PENDING', contract,
+  });
+  const runId = `stranded-run-${n}${opts.remediation ? '-rem' : ''}`;
+  const folder = path.join(dataRoot, project, '_runs', `stranded-${n}`);
+  const workspaceRoot = path.join(ROOT, 'workspace', `stranded-${n}`);
+  fs.mkdirSync(folder, { recursive: true });
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  const meta = { tags: [], runId, goalId: goal.goalId, taskId: task.taskId, workspaceRoot, workerId: 'stranded-builder' };
+  if (opts.remediation) meta.qaRemediationPreparationId = `QRP-QA-${task.taskId}-rem-${n}`;
+  fs.writeFileSync(path.join(folder, 'meta.json'), JSON.stringify(meta));
+  await gt.linkRunToTask(dataRoot, project, task.taskId, folder);
+  if (opts.result) {
+    fs.mkdirSync(path.join(folder, 'evidence'), { recursive: true });
+    fs.writeFileSync(path.join(folder, 'evidence', 'adapter.json'), '{}');
+    fs.writeFileSync(path.join(folder, 'result.md'), `stranded worker result for run ${n}\n`);
+    if (opts.remediation) {
+      fs.writeFileSync(path.join(folder, 'qa-remediation-context.json'), JSON.stringify({ schemaVersion: 1, preparationId: meta.qaRemediationPreparationId, qaRemediationPreparationId: meta.qaRemediationPreparationId, sourceRunId: `stranded-src-${n}`, taskId: task.taskId }));
+    }
+    fs.writeFileSync(path.join(workspaceRoot, 'out.txt'), `ok ${n}\n`);
+  }
+  return { task, taskId: task.taskId, runId, folder, workspaceRoot, goalId: goal.goalId };
+}
+
+function strandedRecoveredSteps(auditDir) {
+  return auditLines(auditDir).filter((l) => l.step === 'resume-collect' && (l.outcome === 'RECOVERED_RESULT' || l.outcome === 'RECOVERED_NO_RESULT'));
+}
+
+
 after(() => {
   if (fs.existsSync(LIVE_ROOT)) {
     const writes = execFileSync('find', [LIVE_ROOT, '-path', path.join(LIVE_ROOT, 'V02CControlTower'), '-prune', '-o', '-newer', LIVE_MARKER, '-print'], { encoding: 'utf8' }).trim();
@@ -1461,4 +1511,133 @@ after(() => {
   }
   fs.rmSync(ROOT, { recursive: true, force: true });
   fs.rmSync(LIVE_MARKER, { force: true });
+});
+
+test('(r40-a) a stranded run folder with a worker result and no Delivery → Delivery created once, RECOVERED_RESULT audit, cycle ACTED not IDLE', async () => {
+  const project = `OrchStrandedResult${seq}`;
+  const { taskId, runId, folder } = await mintStrandedRun(project, { result: true });
+  const { auditDir, stateFile } = mkTestDirs('r40-stranded-result');
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  const result = await roleLoop.runOnce(cfg);
+
+  const step = result.steps.find((s) => s.step === 'resume-collect' && s.outcome === 'RECOVERED_RESULT');
+  assert.ok(step, 'recovery step emitted');
+  assert.equal(step.taskId, taskId);
+  assert.equal(step.runId, runId);
+  assert.equal(step.folder, folder);
+  const audit = strandedRecoveredSteps(auditDir).find((l) => l.runId === runId);
+  assert.equal(audit?.outcome, 'RECOVERED_RESULT');
+  assert.equal(audit?.taskId, taskId);
+  assert.equal(audit?.folder, folder);
+
+  const deliveries = pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === runId);
+  assert.equal(deliveries.length, 1, 'exactly one Delivery minted from the recovered result');
+  assert.equal(deliveries[0].status, 'PENDING');
+  const task = gt.getTask(dataRoot, project, taskId);
+  assert.equal(task.executionState, 'RESULT_RECEIVED');
+  assert.equal(task.pmState, 'VERIFYING');
+  const cycle = auditLines(auditDir).find((l) => l.step === 'cycle');
+  assert.equal(cycle.outcome, 'ACTED', 'a recovering cycle is ACTED, never IDLE');
+});
+
+test('(r40-b) a stranded run folder with no result → failure recorded once with a machine reason and the Task can retry', async () => {
+  const project = `OrchStrandedNoResult${seq}`;
+  const { taskId, runId, folder } = await mintStrandedRun(project);
+  const { auditDir, stateFile } = mkTestDirs('r40-stranded-no-result');
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  const result = await roleLoop.runOnce(cfg);
+
+  const step = result.steps.find((s) => s.step === 'resume-collect' && s.outcome === 'RECOVERED_NO_RESULT');
+  assert.ok(step, 'failure-record step emitted');
+  assert.equal(step.taskId, taskId);
+  assert.equal(step.runId, runId);
+  assert.equal(step.folder, folder);
+  assert.match(step.reason, /no result\.md\/agent-result\.md and no live process handle/);
+  const audit = strandedRecoveredSteps(auditDir).find((l) => l.runId === runId);
+  assert.equal(audit?.outcome, 'RECOVERED_NO_RESULT');
+
+  const task = gt.getTask(dataRoot, project, taskId);
+  assert.equal(task.executionState, 'FAILED', 'stranded run recorded as a failed run');
+  const deliveries = pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === runId);
+  assert.equal(deliveries.length, 1, 'exactly one failed-run Delivery');
+  assert.equal(deliveries[0].status, 'PENDING');
+
+  // The Task can retry through the existing failed-run PM path.
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, deliveries[0].deliveryId);
+  assert.match(packet.text, /Run FAILED before producing a Result — reason: run has no result\.md\/agent-result\.md and no live process handle/);
+  const judgment = await pmJud.submitPmJudgment(dataRoot, project, { deliveryId: deliveries[0].deliveryId, decision: 'CHANGES', reason: 'retry after stranded run', retryInstruction: 'retry the same task' });
+  assert.equal(judgment.judgment.decision, 'CHANGES');
+  const prepared = await rtp.prepareRetryForJudgment(dataRoot, project, deliveries[0].deliveryId);
+  assert.equal(prepared.task.taskId, taskId);
+  assert.equal(prepared.task.executionState, 'READY');
+  const cycle = auditLines(auditDir).find((l) => l.step === 'cycle');
+  assert.equal(cycle.outcome, 'ACTED', 'a recovering cycle is ACTED, never IDLE');
+});
+
+test('(r40-c) replaying the same cycle recovers neither again — no second Delivery, no second failure record, no duplicate audit', async () => {
+  const project = `OrchStrandedReplay${seq}`;
+  const withResult = await mintStrandedRun(project, { result: true });
+  const noResult = await mintStrandedRun(project);
+  const { auditDir, stateFile } = mkTestDirs('r40-replay');
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+
+  await roleLoop.runOnce(cfg);
+  await roleLoop.runOnce(cfg); // replay of the same cycle shape
+
+  const resultDeliveries = pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === withResult.taskId && d.runId === withResult.runId);
+  assert.equal(resultDeliveries.length, 1, 'result recovery never mints a second Delivery');
+  assert.equal(strandedRecoveredSteps(auditDir).filter((l) => l.runId === withResult.runId && l.outcome === 'RECOVERED_RESULT').length, 1);
+
+  const failedDeliveries = pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === noResult.taskId && d.runId === noResult.runId);
+  assert.equal(failedDeliveries.length, 1, 'no-result recovery never mints a second failure record');
+  assert.equal(strandedRecoveredSteps(auditDir).filter((l) => l.runId === noResult.runId && l.outcome === 'RECOVERED_NO_RESULT').length, 1);
+
+  assert.equal(strandedRecoveredSteps(auditDir).filter((l) => l.outcome === 'RECOVERED_RESULT' || l.outcome === 'RECOVERED_NO_RESULT').length, 2);
+});
+
+test('(r40-d) a QA-remediation run (folder with qa-remediation-context.json) with a result recovers the same way through the QA gate', async () => {
+  const project = `OrchStrandedRem${seq}`;
+  const { taskId, runId, folder, workspaceRoot } = await mintStrandedRun(project, { result: true, remediation: true, qaGated: true });
+  assert.ok(fs.existsSync(path.join(folder, 'qa-remediation-context.json')), 'fixture carries the QA-remediation lineage marker');
+  const { auditDir, stateFile } = mkTestDirs('r40-stranded-rem');
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: new FakePmAdapter('fake-pm'), dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  const result = await roleLoop.runOnce(cfg);
+
+  const step = result.steps.find((s) => s.step === 'resume-collect' && s.outcome === 'RECOVERED_RESULT');
+  assert.ok(step, 'QA-remediation run recovered');
+  assert.equal(step.taskId, taskId);
+  assert.equal(step.runId, runId);
+  assert.equal(step.folder, folder);
+  const audit = strandedRecoveredSteps(auditDir).find((l) => l.runId === runId);
+  assert.equal(audit?.outcome, 'RECOVERED_RESULT');
+
+  // QA-gated re-admission leaves the Delivery mint to the SAME QA gate that a
+  // normal collect uses; deterministic check PASSes on the recovered out.txt.
+  const deliveries = pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === runId);
+  assert.equal(deliveries.length, 1, 'QA-gated recovered run produced exactly one Delivery');
+  assert.equal(gt.getTask(dataRoot, project, taskId).pmState, 'VERIFYING', 'gate advanced the recovered run to VERIFYING');
+  assert.ok(fs.existsSync(path.join(workspaceRoot, 'out.txt')));
+  const cycle = auditLines(auditDir).find((l) => l.step === 'cycle');
+  assert.equal(cycle.outcome, 'ACTED');
+
+  // Idempotent replay: no duplicate audit, no second Delivery.
+  await roleLoop.runOnce(cfg);
+  assert.equal(strandedRecoveredSteps(auditDir).filter((l) => l.runId === runId && l.outcome === 'RECOVERED_RESULT').length, 1);
+  assert.equal(pmDel.listPmDeliveries(dataRoot, project).filter((d) => d.taskId === taskId && d.runId === runId).length, 1);
+});
+
+test('(r40-e) a healthy cycle with nothing stranded is unchanged — no RECOVERED_* steps', async () => {
+  const project = `OrchStrandedHealthy${seq}`;
+  const d = await mintPendingDelivery(project);
+  const pkg = await import('../dist/server/orchestrator/pm-packets.js');
+  const packet = pkg.buildPmFinalGatePacket(dataRoot, project, d.deliveryId);
+  const adapter = new FakePmAdapter('fake-pm', { scripted: [fence('PM_JUDGMENT v1', { decision: 'ACCEPT', retry: 'NONE', reason: 'healthy accept', contract_hash: packet.context.task.contract_hash, context_hash: packet.contextHash })] });
+  const { auditDir, stateFile } = mkTestDirs('r40-healthy');
+  const cfg = { dataRoot, project, roleConfig: makeRoleConfig(project), pmAdapter: adapter, dispatchHook: fakeDispatchHook([]), auditDir, stateFile };
+  const result = await roleLoop.runOnce(cfg);
+  assert.equal(result.steps.filter((s) => s.step === 'resume-collect' && (s.outcome === 'RECOVERED_RESULT' || s.outcome === 'RECOVERED_NO_RESULT')).length, 0);
+  assert.equal(auditLines(auditDir).filter((l) => l.outcome === 'RECOVERED_RESULT' || l.outcome === 'RECOVERED_NO_RESULT').length, 0);
+  assert.equal(pmDel.getPmDelivery(dataRoot, project, d.deliveryId).status, 'ACKNOWLEDGED');
+  assert.equal(gt.getTask(dataRoot, project, d.taskId).pmState, 'ACCEPTED');
 });

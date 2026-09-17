@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getTask, createTask, listTasks } from '../backend/goal-task.js';
-import { transitionTaskExecution } from '../backend/goal-task-runtime.js';
-import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun, ignorePmDelivery, PmDeliveryError } from '../backend/pm-delivery.js';
+import { transitionTaskExecution, markResultReceived, markQaResultReceived } from '../backend/goal-task-runtime.js';
+import { listPendingPmDeliveries, getPmDelivery, listPmDeliveries, ensurePmDeliveryForFailedRun, ensurePmDeliveryForTaskVerify, ignorePmDelivery, PmDeliveryError } from '../backend/pm-delivery.js';
+import { listActiveDispatches } from '../backend/dispatcher.js';
 import { submitPmJudgment, listPmJudgments, JUDGMENT_REASON_MAX_CHARS, JUDGMENT_RETRY_INSTRUCTION_MAX_CHARS, type PmJudgmentEvidenceGate } from '../backend/pm-judgment.js';
 import { listEvidenceForRun } from '../backend/evidence.js';
 import { prepareRetryForJudgment } from '../backend/retry-preparation.js';
@@ -1072,7 +1073,176 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
   return result;
 }
 
+// ── Round 40: restart-stranded dispatched-run recovery ───────────────────────
+// A supervisor stop/restart can leave an open Task's Run dispatched-but-
+// unfinished with no process alive to finish it (the operator's only collect
+// tool is actl-managed and refuses relay-path Runs with "runtime-binding.json
+// missing"). LIVE: JuControler-Private-planning TASK-0003 Runs 4-5 — run 4 had
+// result.md/agent-result.md but never got a Delivery; run 5 (QA remediation,
+// qa-remediation-context.json) was never collected; every post-restart cycle
+// logged `cycle IDLE — no actionable work` while openTasks:["TASK-0003"].
+// Recovery is deterministic and idempotent for BOTH worker kinds:
+//   - result files present, no Delivery → re-admit through the same certified
+//     primitives a normal collect uses (markResultReceived / markQaResultReceived
+//     + the certified Delivery mint), then the SAME cycle continues into
+//     QA/gate exactly like a live COLLECTED run;
+//   - no result and no live process handle → record the Run as FAILED through
+//     the certified failed-run API with a machine reason naming the missing
+//     result, so the Task can retry instead of hanging.
+// A recovered Run is never silently dropped and never double-recorded: the
+// deterministic `PMD-{taskId}-{runId}` Delivery (or the post-FAILED state)
+// makes a second cycle a no-op, so a replay never mints twice.
+
+const RESULT_FILE_NAMES = ['result.md', 'agent-result.md'] as const;
+
+function hasRunResultFile(folder: string): boolean {
+  return RESULT_FILE_NAMES.some((name) => fs.existsSync(path.join(folder, name)));
+}
+
+function hasDeliveryForRun(cfg: RoleLoopConfig, taskId: string, runId: string): boolean {
+  return listPmDeliveries(cfg.dataRoot, cfg.project).some((d) => d.taskId === taskId && d.runId === runId);
+}
+
+/** Emit the mandated audit line + cycle step for a recovered Run (so a
+ * recovering cycle is always ACTED, never IDLE). */
+function recordRecoveredStep(cfg: RoleLoopConfig, steps: Array<Record<string, unknown>>, item: Record<string, unknown>): void {
+  audit(cfg.auditDir, { step: 'resume-collect', ...item });
+  steps.push({ step: 'resume-collect', ...item });
+}
+
+
+/**
+ * Recover a stranded dispatched Run that has a worker Result on disk but no
+ * Delivery: re-admit it through the SAME certified primitives a normal collect
+ * uses (markResultReceived / markQaResultReceived + the certified Delivery
+ * mint), then let the same cycle continue into QA/gate. Never invents a result.
+ */
+async function recoverRunWithResult(
+  cfg: RoleLoopConfig,
+  task: TaskRecord,
+  latest: TaskRecord['linkedRuns'][number],
+  steps: Array<Record<string, unknown>>,
+  qaReconciled: Set<string>,
+): Promise<void> {
+  const taskId = task.taskId;
+  const runId = latest.runId;
+  const folder = latest.folder;
+  try {
+    if (task.qaContract) {
+      // QA-gated Tasks stay PENDING — the QA gate owns the PENDING → VERIFYING
+      // transition and mints the Delivery on PASS / budget-exhausted FAIL.
+      await markQaResultReceived(cfg.dataRoot, cfg.project, taskId, runId, { expectedExecutionState: task.executionState });
+    } else {
+      await markResultReceived(cfg.dataRoot, cfg.project, taskId, runId, { expectedExecutionState: task.executionState });
+    }
+    const admitted = getTask(cfg.dataRoot, cfg.project, taskId);
+    if (admitted.qaContract) {
+      qaReconciled.add(taskId);
+      await reconcileQaGate(cfg.dataRoot, cfg.project, taskId, { dispatchRemediation: cfg.qaRemediationDispatchHook });
+    } else {
+      await ensurePmDeliveryForTaskVerify(cfg.dataRoot, cfg.project, taskId);
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    recordRecoveredStep(cfg, steps, { outcome: 'BLOCKED_RUNTIME', taskId, runId, folder, reason });
+    return;
+  }
+  recordRecoveredStep(cfg, steps, { outcome: 'RECOVERED_RESULT', taskId, runId, folder });
+}
+
+/**
+ * Recover a stranded dispatched Run that has NO worker Result and no live
+ * process handle: record it as a FAILED run through the certified failed-run
+ * API with a machine reason naming the missing result, so the Task can retry
+ * instead of hanging forever.
+ */
+async function recoverRunWithoutResult(
+  cfg: RoleLoopConfig,
+  task: TaskRecord,
+  latest: TaskRecord['linkedRuns'][number],
+  steps: Array<Record<string, unknown>>,
+): Promise<void> {
+  const taskId = task.taskId;
+  const runId = latest.runId;
+  const folder = latest.folder;
+  const reason = 'run has no result.md/agent-result.md and no live process handle; recorded as failed by resume-collect';
+  try {
+    await transitionTaskExecution(cfg.dataRoot, cfg.project, taskId, {
+      expectedExecutionState: task.executionState,
+      to: 'FAILED',
+      reason,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    recordRecoveredStep(cfg, steps, { outcome: 'BLOCKED_RUNTIME', taskId, runId, folder, reason: msg });
+    return;
+  }
+  try {
+    const delivery = await ensurePmDeliveryForFailedRun(cfg.dataRoot, cfg.project, taskId, runId);
+    if (!delivery) {
+      recordRecoveredStep(cfg, steps, {
+        outcome: 'BLOCKED_RUNTIME', taskId, runId, folder,
+        reason: 'failed-run Delivery was not minted by the certified API (canonical state moved)',
+      });
+      return;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    recordRecoveredStep(cfg, steps, { outcome: 'BLOCKED_RUNTIME', taskId, runId, folder, reason: msg });
+    return;
+  }
+  recordRecoveredStep(cfg, steps, { outcome: 'RECOVERED_NO_RESULT', taskId, runId, folder, reason });
+}
+
+/**
+ * First action of every cycle: scan open Tasks' latest dispatched-but-unfinished
+ * Run and recover it deterministically, for BOTH relay-path and actl-managed
+ * workers. Returns the set of QA-gated Tasks already handed to the QA gate (so
+ * the post-collect seam re-reconciles them once, never twice).
+ */
+async function recoverStrandedDispatchedRuns(
+  cfg: RoleLoopConfig,
+  steps: Array<Record<string, unknown>>,
+): Promise<Set<string>> {
+  const qaReconciled = new Set<string>();
+  const liveDispatches = listActiveDispatches(cfg.project);
+  for (const task of listTasks(cfg.dataRoot, cfg.project)) {
+    if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') continue;
+    const latest = [...task.linkedRuns].sort((a, b) => b.taskRunSequence - a.taskRunSequence)[0];
+    if (!latest) continue;
+    // Idempotency anchor: any Delivery (any status) for this exact attempt
+    // means it was already admitted/recovered — never mint a second one.
+    if (hasDeliveryForRun(cfg, task.taskId, latest.runId)) continue;
+
+    const hasResult = hasRunResultFile(latest.folder);
+    let binding: ReturnType<typeof readRuntimeBinding>;
+    try {
+      binding = readRuntimeBinding(latest.folder);
+    } catch {
+      binding = null;
+    }
+
+    // The dispatcher's RESERVED lineage owns its own admission; a FINAL_BOUND
+    // transport without a Result is closeout-owned and is never declared failed.
+    if (binding && (binding.collectStatus === 'RESERVED' || (binding.collectStatus === 'FINAL_BOUND' && !hasResult))) continue;
+
+    if (hasResult) {
+      await recoverRunWithResult(cfg, task, latest, steps, qaReconciled);
+      continue;
+    }
+
+    // No Result on disk. Only a truly stranded Run is declared failed: one
+    // with no live in-process dispatch handle and no durable actl transport
+    // binding that a collect hook could still resume.
+    const live = liveDispatches.some((r) => r.taskId === task.taskId && (r.runId ?? latest.runId) === latest.runId);
+    if (live || binding) continue;
+    await recoverRunWithoutResult(cfg, task, latest, steps);
+  }
+  return qaReconciled;
+}
+
 // ── top-level pass ────────────────────────────────────────────────────────────
+
 
 export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Record<string, unknown>> }> {
   const steps: Array<Record<string, unknown>> = [];
@@ -1100,7 +1270,16 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
   // collects in-process, but later supervisor cycles must resume that same
   // durable collect path. Never collect a RESERVED (not-sent) reservation;
   // retry reconciliation owns that state.
-  const qaReconciled = new Set<string>();
+  //
+  // Round 40: BEFORE the actl-only resume/collect pass, recover dispatched runs
+  // that a restart stranded — for BOTH relay-path and actl-managed workers.
+  // A Run with a worker result on disk and no Delivery is re-admitted exactly
+  // like a normal collect and continues into QA/gate this same cycle; a Run
+  // with no result and no live process handle is recorded as a FAILED run so
+  // the Task can retry. Recovery is idempotent and emits one
+  // `resume-collect RECOVERED_RESULT|RECOVERED_NO_RESULT` audit line per run,
+  // so a recovering cycle is never IDLE while an open Task is unresolved.
+  const qaReconciled = await recoverStrandedDispatchedRuns(cfg, steps);
   if (cfg.collectHook) {
     for (const task of listTasks(cfg.dataRoot, cfg.project)) {
       if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') continue;
