@@ -200,9 +200,14 @@ console.log('\n── F4-08/09 stale expectedUpdatedAt CAS ──');
     expectedUpdatedAt: staleUpdatedAt, title: 'Winner Title',
   });
 
+  // Back-to-back writes can share the same wall-clock millisecond, so nowIso()
+  // may leave updatedAt unchanged and the raw captured value is NOT guaranteed
+  // stale. 1 ms before the captured timestamp is always <= any current
+  // updatedAt, so the CAS conflict is deterministic.
+  const definitelyStale = new Date(Date.parse(staleUpdatedAt) - 1).toISOString();
   await shouldThrow(
     () => taskEdit.editTaskNarrative(TEST_ROOT, project, t.taskId, {
-      expectedUpdatedAt: staleUpdatedAt, title: 'Loser Title',
+      expectedUpdatedAt: definitelyStale, title: 'Loser Title',
     }),
     'F4-08 stale expectedUpdatedAt -> CONFLICT',
     'CONFLICT',
@@ -415,8 +420,11 @@ console.log('\n── F4-30 stale conflict banner ──');
   const t = await makeTask(g.goalId);
   const stale = t.updatedAt;
   await taskEdit.editTaskNarrative(TEST_ROOT, project, t.taskId, { expectedUpdatedAt: stale, title: 'first writer' });
+  // Same-millisecond writes may leave updatedAt equal to `stale`; 1 ms before
+  // is deterministically stale (see F4-08 above).
+  const definitelyStale = new Date(Date.parse(stale) - 1).toISOString();
   const result = await actions.executeTaskEdit(
-    { dataRoot: TEST_ROOT, project, taskId: t.taskId, expectedUpdatedAt: stale },
+    { dataRoot: TEST_ROOT, project, taskId: t.taskId, expectedUpdatedAt: definitelyStale },
     'title', 'second writer (stale)',
   );
   check(result.ok === false && result.code === 'CONFLICT', 'F4-30a stale conflict classified CONFLICT via bridge');

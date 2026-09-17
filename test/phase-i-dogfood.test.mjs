@@ -465,9 +465,18 @@ console.log('\n── I-13..I-14 shell safety ──');
 }
 
 {
-  // I-14: no exec() / eval() in wrapper source.
+  // I-14: no child_process exec() / eval() in wrapper source.
   const src = fs.readFileSync(WRAPPER, 'utf8');
-  const hasExec = /\bexec\s*\(/.test(src) || /\bexecSync\s*\(/.test(src);
+  // Only 'spawn' may be imported from node:child_process — exec / execSync /
+  // execFile / spawnSync / fork are forbidden command-execution surfaces.
+  // (Regex method calls like ALLOWED_TOOL_BASH_RE.exec(pattern) are NOT
+  // child_process exec and must not be flagged.)
+  const cpImport = src.match(/import\s*\{([^}]*)\}\s*from\s*['"]node:child_process['"]/);
+  const cpNames = cpImport ? cpImport[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+  const hasExec = !cpImport
+    || cpNames.some((name) => name !== 'spawn')
+    || /\bexecSync\s*\(/.test(src)
+    || /\bexecFileSync\s*\(/.test(src);
   const hasEval = /\beval\s*\(/.test(src);
   const hasCommandConcat = /execFile|execFileSync/.test(src) && src.includes('shell');
   check(!hasExec, 'I-14 wrapper has no exec/execSync call');
@@ -540,8 +549,16 @@ console.log('\n── I-15..I-17 exit semantics + log ──');
   check(src.includes('exitCode'), 'I-17 log includes exitCode');
 
   // Verify dangerous fields are NOT in log: no env dump, no full chain-of-thought.
-  check(!src.includes('process.env,'), 'I-17 log does not dump process.env');
-  check(!src.includes('...process.env'), 'I-17 log does not spread process.env into log');
+  // The child Claude spawn DOES legitimately inherit the parent env via the
+  // spawn env: block (...process.env, PWD, ...) — that is the child process
+  // environment, not the log. Strip those spawn env blocks; nothing else may
+  // dump/spread process.env (in particular no worker-launch.log payload may).
+  const srcWithoutSpawnEnv = src.replace(
+    /env:\s*\{\s*\.\.\.process\.env,[\s\S]*?^\s*\},?$/gm,
+    '',
+  );
+  check(!srcWithoutSpawnEnv.includes('process.env,'), 'I-17 log does not dump process.env');
+  check(!srcWithoutSpawnEnv.includes('...process.env'), 'I-17 log does not spread process.env into log');
 
   // Verify a real log is written when wrapper runs.
   const goal = await makeGoal('I-17 goal');
@@ -861,9 +878,12 @@ const wrFull = await import(pathToFileURL(path.join(DIST_BACKEND, 'worker-regist
     src.includes(`claudeArgs.push('--permission-mode', 'acceptEdits')`),
     "I-29 wrapper pushes '--permission-mode', 'acceptEdits' as discrete argv elements",
   );
-  // Verify prompt is pushed AFTER the permission-mode flag.
+  // Verify prompt is pushed AFTER the permission-mode flag in the relay-run
+  // dispatch construction. (The earlier '--print' QA passthrough path pushes
+  // its prompt with no permission-mode flag at all — restrict the ordering
+  // check to the first prompt push that FOLLOWS the flag.)
   const permIdx = src.indexOf("'--permission-mode'");
-  const promptPushIdx = src.indexOf("claudeArgs.push(prompt)");
+  const promptPushIdx = src.indexOf("claudeArgs.push(prompt)", permIdx);
   check(
     permIdx > 0 && promptPushIdx > permIdx,
     'I-29 prompt is pushed after --permission-mode flag in claudeArgs construction',
@@ -904,8 +924,8 @@ const wrFull = await import(pathToFileURL(path.join(DIST_BACKEND, 'worker-regist
     const contents = relayArgsMatch[1];
     // Known safe relay args only:
     const allowed = new Set([
-      "'--dataRoot'", "'--project'", "'--taskId'", "'--runId'", "'--workspaceRoot'", "'--permissionMode'",
-      '"--dataRoot"', '"--project"', '"--taskId"', '"--runId"', '"--workspaceRoot"', '"--permissionMode"',
+      "'--dataRoot'", "'--project'", "'--taskId'", "'--runId'", "'--workspaceRoot'", "'--claudeConfigDir'", "'--permissionMode'", "'--allowedTool'",
+      '"--dataRoot"', '"--project"', '"--taskId"', '"--runId"', '"--workspaceRoot"', '"--claudeConfigDir"', '"--permissionMode"', '"--allowedTool"',
     ]);
     // Split on commas and trim, check each non-empty token
     const tokens = contents.split(',').map((s) => s.trim()).filter(Boolean);

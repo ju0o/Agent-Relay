@@ -94,12 +94,19 @@ console.log('\n── INIT-05 --force replaces config but preserves data ─');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-init05-'));
   const ws = path.join(tmp, 'ws5');
   fs.mkdirSync(ws, { recursive: true });
-  // isolate dataRoot for this test via env override
+  // isolate dataRoot for this test via env override. getDefaultDataRoot()
+  // honors LOCALAPPDATA only on win32 and XDG_DATA_HOME on unix — set both so
+  // the default dataRoot lands in the isolated tmp dir on every platform
+  // (otherwise the test would count stale goals accumulated in the shared
+  // real data root across runs).
   const isolatedData = path.join(tmp, 'isolated-data');
   const origLD = process.env.LOCALAPPDATA;
+  const origXDG = process.env.XDG_DATA_HOME;
   process.env.LOCALAPPDATA = isolatedData;
+  process.env.XDG_DATA_HOME = isolatedData;
   const first = await initMod.runInit({ cwd: ws, yes: true, force: false, json: false, packageRoot: path.resolve('.'), claudeMock: { status: 'NOT_FOUND' } });
   process.env.LOCALAPPDATA = origLD;
+  process.env.XDG_DATA_HOME = origXDG;
   const dataRoot = first.dataRoot;
   const project = first.project;
   // create a Goal in that dataRoot/project
@@ -108,8 +115,10 @@ console.log('\n── INIT-05 --force replaces config but preserves data ─');
   check(goalsBefore === 1, `INIT-05 goalsBefore 1 (got ${goalsBefore})`);
   // force re-init with same isolated dataRoot env
   process.env.LOCALAPPDATA = isolatedData;
+  process.env.XDG_DATA_HOME = isolatedData;
   const second = await initMod.runInit({ cwd: ws, yes: true, force: true, json: false, packageRoot: path.resolve('.'), claudeMock: { status: 'NOT_FOUND' } });
   process.env.LOCALAPPDATA = origLD;
+  process.env.XDG_DATA_HOME = origXDG;
   const goalsAfter = gt.listGoals(dataRoot, project).length;
   check(goalsAfter === goalsBefore, `INIT-05 goalsAfter preserved (${goalsBefore} -> ${goalsAfter})`);
   // config should be overwritten (dataRoot same default, but check file mtime changed)
