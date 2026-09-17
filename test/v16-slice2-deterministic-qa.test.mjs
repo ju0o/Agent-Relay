@@ -34,6 +34,7 @@ const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 const gt = await import('../dist/server/backend/goal-task.js');
 const qa = await import('../dist/server/backend/qa-attempt.js');
 const evalr = await import('../dist/server/backend/qa-deterministic-evaluator.js');
+const wdc = await import('../dist/server/backend/workspace-diff-common.js');
 
 const pwdProbe = await evalr.runProcess(process.execPath, ['-e', 'process.stdout.write(process.env.PWD || "")'], ROOT, 5000);
 check(pwdProbe.stdout === ROOT, 'runProcess gives child the authoritative cwd as PWD');
@@ -434,6 +435,146 @@ console.log('-- 14h) legacy { paths } baseline WITHOUT entries → round-32 path
   check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), `14h legacy subtraction still reported as pre-existing (excluded) (got: ${c.detail})`);
   check(c.detail.includes('baseline: path-only (legacy)'), `14h detail carries the path-only legacy note (got: ${c.detail})`);
   check(c.evidence.baselineMode === 'path-only-legacy' && c.evidence.preExistingCount === 1, '14h evidence records path-only-legacy mode + preExistingCount=1');
+}
+
+console.log('-- 14i) round-36 P0: NUL porcelain — baseline keys agree byte-for-byte for non-ASCII / quote / backslash filenames --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  // Pre-existing dirt whose paths the round-32/33 textual parser mangled: a
+  // Korean filename (every byte ≥0x80 is C-quoted), embedded double-quotes,
+  // and a literal backslash. With `-z` they survive byte-for-byte, and the
+  // baseline keys below are exactly the raw strings git emitted.
+  const koreanPath = 'docs/문서.md';
+  const quotedPath = 'docs/notes with "quotes".md';
+  const backslashPath = 'docs/odd\\name.md';
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', '문서.md'), 'korean-v1', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'notes with "quotes".md'), 'quoted-v1', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'odd\\name.md'), 'backslash-v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+    paths: [koreanPath, quotedPath, backslashPath],
+    entries: {
+      [koreanPath]: sha256('korean-v1'),
+      [quotedPath]: sha256('quoted-v1'),
+      [backslashPath]: sha256('backslash-v1'),
+    },
+    capturedAt: new Date().toISOString(),
+  }), 'utf8');
+  // The run only changes an allowed new file.
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'PASS', `14i unchanged Korean/quote/backslash pre-existing paths excluded by matching digests → PASS (got ${c.status})`);
+  check(c.detail.includes('pre-existing (excluded):'), `14i detail has the excluded note (got: ${c.detail})`);
+  check(c.detail.includes(koreanPath), `14i detail shows the RAW Korean path, never a C-quoted/octal form (got: ${c.detail})`);
+  check(c.detail.includes(quotedPath), `14i detail shows the RAW quote-containing path (got: ${c.detail})`);
+  check(c.detail.includes(backslashPath), `14i detail shows the RAW backslash path (got: ${c.detail})`);
+  check(!/\\\d{3}/.test(c.detail), `14i no octal-escaped bytes leak into the diffScope detail (got: ${c.detail})`);
+  check(c.evidence.baselineMode === 'content' && c.evidence.preExistingCount === 3 && c.evidence.modifiedPreExistingCount === 0, '14i content mode: all three pre-existing paths excluded, none treated as modified');
+}
+
+console.log('-- 14j) round-36 P0: pre-existing Korean-named file MODIFIED by this run, out of scope → FAIL naming the real path --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  const koreanPath = 'docs/문서.md';
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', '문서.md'), 'ORIGINAL-CONTENT-v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+    paths: [koreanPath],
+    entries: { [koreanPath]: sha256('ORIGINAL-CONTENT-v1') },
+    capturedAt: new Date().toISOString(),
+  }), 'utf8');
+  // The run rewrites the OUT-OF-SCOPE Korean-named pre-existing file — the
+  // exact silent-bypass shape round-33 reviewed (round-32's path-only baseline
+  // excluded it; textual porcelain mangled its key so even the digest compare
+  // matched "deleted"=="deleted" on a nonexistent path).
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', '문서.md'), 'MALICIOUS-OUT-OF-SCOPE-REWRITE-v2', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'FAIL', `14j modified pre-existing Korean path (out of scope) → FAIL, never silently excluded (got ${c.status})`);
+  check(c.detail.includes(`pre-existing but modified by this run: ${koreanPath}`), `14j FAIL names the REAL Korean path with the modified-by-this-run wording (got: ${c.detail})`);
+  check(!c.detail.includes('pre-existing (excluded):') && !/\\\d{3}/.test(c.detail), '14j the Korean path is NOT falsely excluded and no octal/backslash-mangled path appears');
+  check(c.evidence.modifiedPreExistingCount === 1 && c.evidence.preExistingCount === 0 && c.evidence.outOfScopeCount === 1, '14j evidence: modified=1, excluded=0, outOfScope=1');
+}
+
+console.log('-- 14k) round-36 P1: oversize digest (above the per-file cap) is NEVER excludable at QA time --');
+{
+  const bigSize = wdc.MAX_DIGEST_FILE_BYTES + 1;
+  // (a) oversize pre-existing path, out of scope → FAIL naming it as modified.
+  {
+    const { workspaceRoot, folder, attempt } = await makeAttempt();
+    initGitRepo(workspaceRoot);
+    fs.writeFileSync(path.join(workspaceRoot, 'big.bin'), Buffer.alloc(bigSize, 0x61));
+    fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+      paths: ['big.bin'],
+      entries: { 'big.bin': `oversize:${bigSize}` },
+      capturedAt: new Date().toISOString(),
+    }), 'utf8');
+    const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+      qaAttemptId: attempt.qaAttemptId,
+      checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+    });
+    const c = out.record.deterministic.checks[0];
+    check(c.status === 'FAIL', `14k(a) oversize pre-existing path treated as changed by this run (out of scope → FAIL, got ${c.status})`);
+    check(c.detail.includes('pre-existing but modified by this run: big.bin'), `14k(a) FAIL names the oversize path as modified (got: ${c.detail})`);
+    check(c.evidence.preExistingCount === 0 && c.evidence.modifiedPreExistingCount === 1 && c.evidence.outOfScopeCount === 1, '14k(a) oversize path never excluded (excluded=0, modified=1, outOfScope=1)');
+  }
+  // (b) same oversize file INSIDE allowed scope → PASS, but still reported as
+  // modified by this run — an oversize digest proves nothing, so it is never
+  // subtracted as pre-existing in either direction.
+  {
+    const { workspaceRoot, folder, attempt } = await makeAttempt();
+    initGitRepo(workspaceRoot);
+    fs.writeFileSync(path.join(workspaceRoot, 'big.bin'), Buffer.alloc(bigSize, 0x62));
+    fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+      paths: ['big.bin'],
+      entries: { 'big.bin': `oversize:${bigSize}` },
+      capturedAt: new Date().toISOString(),
+    }), 'utf8');
+    const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+      qaAttemptId: attempt.qaAttemptId,
+      checks: [{ kind: 'diffScope', allowedPaths: ['big.bin'] }],
+    });
+    const c = out.record.deterministic.checks[0];
+    check(c.status === 'PASS', `14k(b) oversize pre-existing path inside allowed scope → PASS (got ${c.status})`);
+    check(c.detail.includes('pre-existing but modified by this run: big.bin') && !c.detail.includes('pre-existing (excluded): big.bin'), '14k(b) PASS detail still marks the oversize path as modified — never "excluded"');
+  }
+}
+
+console.log('-- 14l) round-36 P1: truncated baseline (dirty count exceeded the cap) → path-only (legacy, truncated) fallback with a visible note --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'OPERATIONS.md'), 'v1', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  // The dispatcher writes `truncated: true` (and skips the digest loop) when
+  // the dirty-path count exceeds MAX_BASELINE_PATHS. Content matching would be
+  // meaningless, so the evaluator must fall back to round-32 path-only
+  // subtraction — with a visible note, never a silent exclusion.
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+    paths: ['docs/OPERATIONS.md'],
+    entries: { 'docs/OPERATIONS.md': sha256('v1') },
+    truncated: true,
+    capturedAt: new Date().toISOString(),
+  }), 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'PASS', `14l truncated baseline falls back to round-32 path-only subtraction → PASS (got ${c.status})`);
+  check(c.detail.includes('baseline: path-only (legacy, truncated)'), `14l detail carries the visible "(legacy, truncated)" note (got: ${c.detail})`);
+  check(c.detail.includes('pre-existing (excluded): docs/OPERATIONS.md'), '14l the pre-existing path is subtracted by path membership only');
+  check(c.evidence.baselineMode === 'path-only-legacy' && c.evidence.baselineTruncated === true && c.evidence.preExistingCount === 1, '14l evidence records path-only-legacy mode + baselineTruncated=true');
 }
 
 console.log('\n== COMMAND ==');

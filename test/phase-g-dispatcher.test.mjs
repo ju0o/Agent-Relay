@@ -42,6 +42,7 @@ const workerTools = await import('../dist/server/mcp/worker-tools.js');
 const evidence = await import('../dist/server/backend/evidence.js');
 const testFix = await import('../dist/server/integrations/test-fixture/watch.js');
 testFix.ensureTestFixtureAdapterRegistered();
+const wdc = await import('../dist/server/backend/workspace-diff-common.js');
 const WORKSPACE = path.join(TEST_ROOT, '_workspace');
 fs.mkdirSync(WORKSPACE, { recursive: true });
 
@@ -285,6 +286,139 @@ console.log('\n── G-14a dispatch-time workspace baseline ──');
   check(
     typeof baseline?.capturedAt === 'string' && !Number.isNaN(Date.parse(baseline.capturedAt)),
     'G-14a capturedAt is an ISO timestamp',
+  );
+  disp._resetDispatcherStateForTests();
+}
+
+// ── G-14b: NUL porcelain capture — raw non-ASCII/quote/backslash keys ────────
+console.log('\n── G-14b dispatch-time workspace baseline: raw Korean/quote/backslash path keys (round 36 P0) ──');
+
+{
+  const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+  const baseWS = path.join(TEST_ROOT, '_baseline-ws-nul');
+  fs.rmSync(baseWS, { recursive: true, force: true });
+  fs.mkdirSync(baseWS, { recursive: true });
+  execSync('git init -q', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.email g@example.com', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.name "G Fixture"', { cwd: baseWS, stdio: 'ignore' });
+  const koreanPath = 'docs/문서.md';
+  const quotedPath = 'docs/notes with "quotes".md';
+  const backslashPath = 'docs/odd\\name.md';
+  const koreanBytes = 'korean-content-v1';
+  const quotedBytes = 'quoted-content-v1';
+  const backslashBytes = 'backslash-content-v1';
+  fs.mkdirSync(path.join(baseWS, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(baseWS, 'docs', '문서.md'), koreanBytes, 'utf8');
+  fs.writeFileSync(path.join(baseWS, 'docs', 'notes with "quotes".md'), quotedBytes, 'utf8');
+  fs.writeFileSync(path.join(baseWS, 'docs', 'odd\\name.md'), backslashBytes, 'utf8');
+
+  const task = await makeReadyTask(goal.goalId, 'NUL baseline dispatch');
+  const result = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: task.taskId,
+    workerId: 'w-zero',
+    expectedExecutionState: 'READY',
+    workspaceRoot: baseWS,
+  });
+  check(result.executionState === 'RUNNING' && result.runId, 'G-14b dispatch succeeds for a workspace with Korean/quote/backslash filenames');
+  const linked = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.find((r) => r.runId === result.runId);
+  const baseline = JSON.parse(fs.readFileSync(path.join(linked.folder, 'workspace-baseline.json'), 'utf8'));
+  check(
+    baseline.paths.includes(koreanPath) && baseline.paths.includes(quotedPath) && baseline.paths.includes(backslashPath),
+    `G-14b baseline paths are the exact RAW key strings (got ${JSON.stringify(baseline.paths)})`,
+  );
+  check(
+    baseline.entries?.[koreanPath] === sha256(Buffer.from(koreanBytes, 'utf8')) &&
+      baseline.entries?.[quotedPath] === sha256(Buffer.from(quotedBytes, 'utf8')) &&
+      baseline.entries?.[backslashPath] === sha256(Buffer.from(backslashBytes, 'utf8')),
+    `G-14b content digests recorded under the exact raw keys (got ${JSON.stringify(baseline.entries)})`,
+  );
+  check(
+    !baseline.paths.some((p) => p.startsWith('"') || /\\\d{3}/.test(p)),
+    `G-14b no C-quoted / octal-escaped path ever reaches the baseline (got ${JSON.stringify(baseline.paths)})`,
+  );
+  // The evaluator parses the SAME NUL stream through the SAME shared parser
+  // (runGitStatusZ) — prove the two sides of the protocol emit identical keys.
+  const status = await wdc.runGitStatusZ(baseWS);
+  check(
+    status.kind === 'ok' &&
+      status.paths.length === 3 &&
+      status.paths.includes(koreanPath) && status.paths.includes(quotedPath) && status.paths.includes(backslashPath) &&
+      status.paths.every((p) => baseline.paths.includes(p)),
+    `G-14b dispatcher baseline keys ≡ evaluator-side parser keys (both sides agree byte-for-byte; got ${status.kind === 'ok' ? JSON.stringify(status.paths) : status.reason})`,
+  );
+  disp._resetDispatcherStateForTests();
+}
+
+// ── G-14c: oversize dirty file → `oversize:<bytes>` digest (round 36 P1) ─────
+console.log('\n── G-14c dispatch-time workspace baseline: oversize file above the per-file cap ──');
+
+{
+  const baseWS = path.join(TEST_ROOT, '_baseline-ws-oversize');
+  fs.rmSync(baseWS, { recursive: true, force: true });
+  fs.mkdirSync(baseWS, { recursive: true });
+  execSync('git init -q', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.email g@example.com', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.name "G Fixture"', { cwd: baseWS, stdio: 'ignore' });
+  const bigSize = wdc.MAX_DIGEST_FILE_BYTES + 1;
+  fs.writeFileSync(path.join(baseWS, 'big.bin'), Buffer.alloc(bigSize, 0x61));
+
+  const task = await makeReadyTask(goal.goalId, 'Oversize baseline dispatch');
+  const result = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: task.taskId,
+    workerId: 'w-zero',
+    expectedExecutionState: 'READY',
+    workspaceRoot: baseWS,
+  });
+  check(result.executionState === 'RUNNING' && result.runId, 'G-14c dispatch succeeds with an oversize dirty file');
+  const linked = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.find((r) => r.runId === result.runId);
+  const baseline = JSON.parse(fs.readFileSync(path.join(linked.folder, 'workspace-baseline.json'), 'utf8'));
+  check(
+    baseline.entries?.['big.bin'] === `oversize:${bigSize}`,
+    `G-14c oversize dirty file recorded as oversize:<bytes>, never read/hashed (got ${baseline.entries?.['big.bin']})`,
+  );
+  check(
+    Array.isArray(baseline.paths) && baseline.paths.includes('big.bin') && baseline.truncated !== true,
+    'G-14c oversize path still listed in paths, baseline not truncated',
+  );
+  disp._resetDispatcherStateForTests();
+}
+
+// ── G-14d: dirty-path count cap → `truncated: true`, no digests (round 36 P1) ─
+console.log('\n── G-14d dispatch-time workspace baseline: dirty-path count cap → truncated ──');
+
+{
+  const baseWS = path.join(TEST_ROOT, '_baseline-ws-many');
+  fs.rmSync(baseWS, { recursive: true, force: true });
+  fs.mkdirSync(baseWS, { recursive: true });
+  execSync('git init -q', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.email g@example.com', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.name "G Fixture"', { cwd: baseWS, stdio: 'ignore' });
+  const count = wdc.MAX_BASELINE_PATHS + 1; // exactly over the cap
+  for (let i = 0; i < count; i++) {
+    fs.writeFileSync(path.join(baseWS, `dirty-${String(i).padStart(4, '0')}.txt`), String(i), 'utf8');
+  }
+
+  const task = await makeReadyTask(goal.goalId, 'Count-cap baseline dispatch');
+  const result = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: task.taskId,
+    workerId: 'w-zero',
+    expectedExecutionState: 'READY',
+    workspaceRoot: baseWS,
+  });
+  check(result.executionState === 'RUNNING' && result.runId, 'G-14d dispatch succeeds past the dirty-path count cap');
+  const linked = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.find((r) => r.runId === result.runId);
+  const baseline = JSON.parse(fs.readFileSync(path.join(linked.folder, 'workspace-baseline.json'), 'utf8'));
+  check(
+    baseline.truncated === true,
+    `G-14d baseline is marked truncated: true (got ${JSON.stringify(baseline.truncated)})`,
+  );
+  check(
+    Array.isArray(baseline.paths) && baseline.paths.length === count,
+    `G-14d the bounded path list is still written for the legacy fallback (got ${baseline.paths?.length})`,
+  );
+  check(
+    baseline.entries !== undefined && Object.keys(baseline.entries).length === 0,
+    'G-14d NO content digests are computed past the count cap (bounded hashing)',
   );
   disp._resetDispatcherStateForTests();
 }
