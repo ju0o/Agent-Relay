@@ -620,6 +620,77 @@ console.log('\n── G-40..G-45 phase regressions (smoke) ──');
   check(!!mat.folder && fs.existsSync(mat.folder), 'G-45 Phase A regression (run materialize)');
 }
 
+// ── R35 allowedTools: worker record → repeated --allowedTool relay args ──────
+console.log('\n── R35 allowedTools relay args ──');
+
+{
+  const argv = disp.buildDispatchArgv(
+    ['/path/to/wrapper.mjs'],
+    {
+      dataRoot: '/data',
+      project: 'proj',
+      taskId: 'TASK-0001',
+      runId: 'run-id',
+      workspaceRoot: '/workspace',
+      allowedTools: ['Bash(node:*)', 'Read', 'Bash(git status:*)'],
+    },
+  );
+  check(argv.includes('--allowedTool'), 'R35 buildDispatchArgv forwards --allowedTool relay args');
+  const i0 = argv.indexOf('--allowedTool');
+  check(i0 !== -1 && argv[i0 + 1] === 'Bash(node:*)', 'R35 first --allowedTool pattern is Bash(node:*)');
+  check(argv[i0 + 2] === '--allowedTool' && argv[i0 + 3] === 'Read', 'R35 --allowedTool is repeatable (Read)');
+  check(argv[i0 + 4] === '--allowedTool' && argv[i0 + 5] === 'Bash(git status:*)', 'R35 --allowedTool is repeatable (Bash(git status:*))');
+
+  const noAllowed = disp.buildDispatchArgv(
+    ['/path/to/wrapper.mjs'],
+    {
+      dataRoot: '/data',
+      project: 'proj',
+      taskId: 'TASK-0001',
+      runId: 'run-id',
+      workspaceRoot: '/workspace',
+    },
+  );
+  check(!noAllowed.includes('--allowedTool'), 'R35 absent allowedTools injects no relay args');
+
+  await shouldThrow(
+    async () => wr.validateWorkerRegistryRecord(TEST_ROOT, {
+      schemaVersion: 'G.2',
+      workerId: 'w-r35-bad',
+      launchCommand: NODE,
+      launchArgsPrefix: [FIX_ZERO],
+      driverOptions: { claude: { allowedTools: ['Bash(rm:*)'] } },
+    }),
+    'R35 registry rejects off-allowlist allowedTools pattern',
+    'allowedTools',
+  );
+
+  wr.writeWorkerRegistryRecord(TEST_ROOT, {
+    schemaVersion: 'G.2',
+    workerId: 'w-r35',
+    displayName: 'r35',
+    launchCommand: NODE,
+    launchArgsPrefix: [FIX_ZERO],
+    capabilities: ['fixture'],
+    observationAdapterId: 'test-fixture',
+    driverOptions: { claude: { allowedTools: ['Bash(node:*)', 'Read'] } },
+  });
+  const rec = wr.loadWorkerRegistryRecord(TEST_ROOT, 'w-r35');
+  check(
+    rec.driverOptions?.claude?.allowedTools?.join(',') === 'Bash(node:*),Read',
+    'R35 worker record round-trips allowedTools',
+  );
+  const fromRec = disp.buildDispatchArgv(['/x'], {
+    dataRoot: '/data',
+    project: 'proj',
+    taskId: 'T',
+    runId: 'r',
+    workspaceRoot: '/w',
+    allowedTools: rec.driverOptions?.claude?.allowedTools,
+  });
+  check(fromRec.includes('--allowedTool') && fromRec[fromRec.indexOf('--allowedTool') + 1] === 'Bash(node:*)', 'R35 worker-record allowedTools produce the relay args');
+}
+
 disp._resetDispatcherStateForTests();
 await (await import('../dist/server/backend/capture-service.js'))._resetCaptureServiceForTests();
 

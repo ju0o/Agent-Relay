@@ -31,6 +31,53 @@ export const ALLOWED_EXECUTABLE_BASENAMES: ReadonlySet<string> = new Set([
  */
 export type ClaudePermissionMode = 'default' | 'acceptEdits';
 
+/**
+ * Round 35 — strict Builder verification tool allowlist.
+ *
+ * A Builder (implementation role) Claude worker may declare a bounded set of
+ * verification commands it may run via Bash in --print mode. Patterns are
+ * forwarded as repeated `--allowedTool <pattern>` relay args and reach Claude
+ * as a single `--allowedTools <p1> <p2> …` argv. Everything outside this
+ * allowlist is rejected by the registry AND by the wrapper as a fatal ArgError
+ * — least privilege, never a subtitle for arbitrary CLI flags or shell.
+ */
+export const ALLOWED_TOOL_BASH_CMDS: ReadonlySet<string> = new Set([
+  'node',
+  'npm',
+  'npx',
+  'git status',
+  'git diff',
+  'git log',
+  'ls',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'grep',
+  'rg',
+  'find',
+  'test',
+]);
+
+/** Non-Bash tools allowed exactly — Claude built-in read/write tools only. */
+export const ALLOWED_TOOL_EXACT_TOOLS: ReadonlySet<string> = new Set([
+  'Read',
+  'Glob',
+  'Grep',
+  'Edit',
+  'Write',
+]);
+
+const ALLOWED_TOOL_BASH_RE = /^Bash\(([^:]+):\*\)$/;
+
+/** True when `pattern` is one of the strict Builder verification patterns. */
+export function isAllowedToolPattern(pattern: string): boolean {
+  if (ALLOWED_TOOL_EXACT_TOOLS.has(pattern)) return true;
+  const m = ALLOWED_TOOL_BASH_RE.exec(pattern);
+  if (!m) return false;
+  return ALLOWED_TOOL_BASH_CMDS.has(m[1]);
+}
+
 /** Strongly typed Claude driver options. Never allows arbitrary flags or shell fragments. */
 export interface ClaudeDriverOptions {
   /** Explicit Claude profile directory for quota isolation. */
@@ -40,6 +87,13 @@ export interface ClaudeDriverOptions {
    * If absent, preserves existing Claude default (least privilege).
    */
   permissionMode?: ClaudePermissionMode;
+  /**
+   * Round 35 — optional strict Builder verification allowlist. Each entry must
+   * satisfy `isAllowedToolPattern`: `Bash(<cmd>:*)` for a verify-only command
+   * (node/npm/npx/git status/git diff/git log/ls/cat/head/tail/wc/grep/rg/find/test)
+   * or exactly one of Read/Glob/Grep/Edit/Write. QA workers must never set this.
+   */
+  allowedTools?: string[];
 }
 
 /**
@@ -361,16 +415,56 @@ export function validateWorkerRegistryRecord(
       }
       const claudeObj = doObj.claude as Record<string, unknown>;
 
-      // Only trusted Claude profile and permission settings are allowed.
+      // Only trusted Claude profile, permission, and Builder verification
+      // allowlist settings are allowed.
       for (const key of Object.keys(claudeObj)) {
-        if (key !== 'configDir' && key !== 'permissionMode') {
-          throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown driverOptions.claude key: '${key}'. Only 'configDir' and 'permissionMode' are allowed.`);
+        if (key !== 'configDir' && key !== 'permissionMode' && key !== 'allowedTools') {
+          throw new WorkerRegistryError('INVALID_ARGUMENT', `Unknown driverOptions.claude key: '${key}'. Only 'configDir', 'permissionMode', and 'allowedTools' are allowed.`);
         }
       }
 
       const configDir = claudeObj.configDir === undefined || claudeObj.configDir === null
         ? undefined
         : requireExistingAbsoluteDirectory(claudeObj.configDir, 'driverOptions.claude.configDir');
+      // Round 35: optional Builder verification allowlist. Each pattern must be
+      // one of the strict verify-only shapes below; everything else fails closed.
+      let allowedTools: string[] | undefined;
+      if (claudeObj.allowedTools !== undefined && claudeObj.allowedTools !== null) {
+        if (!Array.isArray(claudeObj.allowedTools)) {
+          throw new WorkerRegistryError(
+            'INVALID_ARGUMENT',
+            'driverOptions.claude.allowedTools must be string[].',
+          );
+        }
+        const seen = new Set<string>();
+        allowedTools = [];
+        for (const p of claudeObj.allowedTools) {
+          if (typeof p !== 'string' || !p.trim()) {
+            throw new WorkerRegistryError(
+              'INVALID_ARGUMENT',
+              'driverOptions.claude.allowedTools entries must be non-empty strings.',
+            );
+          }
+          const pattern = p.trim();
+          if (!isAllowedToolPattern(pattern)) {
+            throw new WorkerRegistryError(
+              'INVALID_ARGUMENT',
+              'Invalid driverOptions.claude.allowedTools pattern: ' +
+              `'${pattern}'. Allowed: Bash(<cmd>:*) with <cmd> in ` +
+              '{node, npm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}, ' +
+              'or exactly one of Read, Glob, Grep, Edit, Write.',
+            );
+          }
+          if (seen.has(pattern)) {
+            throw new WorkerRegistryError(
+              'INVALID_ARGUMENT',
+              `Duplicate driverOptions.claude.allowedTools pattern: '${pattern}'.`,
+            );
+          }
+          seen.add(pattern);
+          allowedTools.push(pattern);
+        }
+      }
       if (claudeObj.permissionMode !== undefined && claudeObj.permissionMode !== null) {
         const pm = claudeObj.permissionMode;
         // Narrow enum check — explicit rejection of dangerous bypass.
@@ -388,9 +482,16 @@ export function validateWorkerRegistryRecord(
             "Allowed values: 'default', 'acceptEdits'.",
           );
         }
-        claudeDriverOpts = { ...(configDir ? { configDir } : {}), permissionMode: pm as ClaudePermissionMode };
+        claudeDriverOpts = {
+          ...(configDir ? { configDir } : {}),
+          ...(allowedTools ? { allowedTools } : {}),
+          permissionMode: pm as ClaudePermissionMode,
+        };
       } else {
-        claudeDriverOpts = configDir ? { configDir } : {};
+        claudeDriverOpts = {
+          ...(configDir ? { configDir } : {}),
+          ...(allowedTools ? { allowedTools } : {}),
+        };
       }
     }
 

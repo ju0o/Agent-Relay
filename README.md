@@ -177,4 +177,68 @@ npm run build:win
 - ChatGPT 전달도 OS 파일 드래그일 뿐 — 앱이 대신 전송하거나 DOM을 조작하지 않는다.
 - 네트워크 통신은 업데이트 확인 시 GitHub Releases 조회(읽기)뿐이다. 기록 데이터는 전송되지 않는다.
 
+## Claude worker verification allowlist (ar/v1-pm driver contract)
+
+The `claude-code` driver (`scripts/relay-worker-claude.mjs`) is used both as a
+Builder (implementation role) and as the Semantic QA agent. Since Claude Code in
+`--print` mode auto-rejects every Bash tool call unless it is allow-listed, a
+Builder may now declare a trusted, bounded verification allowlist in its worker
+registry record:
+
+```json
+{
+  "driverOptions": {
+    "claude": {
+      "permissionMode": "acceptEdits",
+      "allowedTools": [
+        "Bash(node:*)",
+        "Bash(npm:*)",
+        "Bash(npx:*)",
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(wc:*)",
+        "Bash(grep:*)",
+        "Bash(rg:*)",
+        "Bash(find:*)",
+        "Bash(test:*)",
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write"
+      ]
+    }
+  }
+}
+```
+
+How it flows (round 35, `ar/v1-pm`):
+
+1. **Registry** (`src/backend/worker-registry.ts`): `driverOptions.claude.allowedTools`
+   is optional and strictly validated against the allowlist — only
+   `Bash(<cmd>:*)` with `<cmd>` in
+   `{node, npm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}`
+   or exactly one of `Read`, `Glob`, `Grep`, `Edit`, `Write`. Anything else
+   (e.g. `Bash(*)`, `Bash(rm:*)`, `Bash(git push:*)`, `Bash(sudo:*)`, `Bash(pkill:*)`)
+   is rejected at record write time.
+2. **Dispatcher** (`src/backend/dispatcher.ts`): mirrors the `--claudeConfigDir`
+   forwarding and emits one repeated `--allowedTool <pattern>` relay arg per entry.
+3. **Wrapper** (`scripts/relay-worker-claude.mjs`): re-validates every
+   `--allowedTool` with the same strict allowlist (a forbidden pattern is a fatal
+   `ArgError`), then forwards them to Claude as a single
+   `--allowedTools <p1> <p2> …` argv **on the Builder relay path only**.
+   The Semantic QA passthrough rejects `--allowedTool` with a fatal error — QA
+   judges and never edits, and it must never receive a permission mode or an
+   allowed-tools allowlist.
+
+Still forbidden for a Builder: arbitrary Bash commands (`rm`, `sudo`, `pkill`,
+`git push`, shell operators, wildcard-only patterns), arbitrary Claude CLI flags,
+and any override from Task/Goal/PM narrative — the allowlist comes only from the
+trusted worker registry.
+
 

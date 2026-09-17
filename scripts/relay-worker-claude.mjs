@@ -5,8 +5,12 @@
  *
  * Accepts (and consumes) Relay internal args:
  *   --dataRoot, --project, --taskId, --runId, --workspaceRoot
+ *   --claudeConfigDir, --permissionMode (optional)
+ *   --allowedTool <pattern> (round 35, repeatable, strict allowlist only)
  *
  * None of these are forwarded to Claude Code.
+ * (--allowedTool patterns are re-emitted to Claude as --allowedTools on the
+ *  Builder relay path only; QA passthrough rejects --allowedTool outright.)
  *
  * Exit semantics:
  *   0  → Claude process completed normally. NOT RESULT_RECEIVED by itself.
@@ -61,6 +65,7 @@ const RELAY_ARGS = new Set([
   '--workspaceRoot',
   '--claudeConfigDir',
   '--permissionMode',
+  '--allowedTool',
 ]);
 
 /**
@@ -68,6 +73,46 @@ const RELAY_ARGS = new Set([
  * 'dangerously-skip-permissions' is intentionally absent.
  */
 const VALID_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
+
+/**
+ * Round 35 — strict Builder verification tool allowlist.
+ *
+ * A Builder worker may only run bounded verification commands in --print mode.
+ * Each `--allowedTool <pattern>` is validated against these exact shapes and
+ * forwarded to Claude as a single `--allowedTools <p1> <p2> …` argv. Everything
+ * else (e.g. Bash(*), Bash(rm:*), Bash(git push:*), Bash(sudo:*), Bash(pkill:*))
+ * is a fatal ArgError. QA passthrough rejects --allowedTool outright.
+ */
+const ALLOWED_TOOL_BASH_CMDS = new Set([
+  'node',
+  'npm',
+  'npx',
+  'git status',
+  'git diff',
+  'git log',
+  'ls',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'grep',
+  'rg',
+  'find',
+  'test',
+]);
+
+/** Non-Bash tools allowed exactly — Claude built-in read/write tools only. */
+const ALLOWED_TOOL_EXACT_TOOLS = new Set(['Read', 'Glob', 'Grep', 'Edit', 'Write']);
+
+const ALLOWED_TOOL_BASH_RE = /^Bash\(([^:]+):\*\)$/;
+
+/** True when `pattern` is one of the strict Builder verification patterns. */
+function isValidAllowedToolPattern(pattern) {
+  if (ALLOWED_TOOL_EXACT_TOOLS.has(pattern)) return true;
+  const m = ALLOWED_TOOL_BASH_RE.exec(pattern);
+  if (!m) return false;
+  return ALLOWED_TOOL_BASH_CMDS.has(m[1]);
+}
 
 // ── argv parsing ──────────────────────────────────────────────────────────────
 
@@ -81,9 +126,13 @@ const VALID_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
  *   - Optional: --permissionMode (enum: 'default' | 'acceptEdits').
  *     Duplicate, empty, or invalid enum values are rejected.
  *     'dangerously-skip-permissions' is explicitly rejected.
+ *   - Optional (round 35, repeatable): --allowedTool <pattern>. Each pattern is
+ *     validated against the strict Builder verification allowlist; anything else
+ *     is a fatal ArgError. Forwarded to Claude as --allowedTools on the Builder
+ *     relay path only.
  *
  * @param {string[]} argv  Slice of process.argv (caller provides slice(2)).
- * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string }}
+ * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string; allowedTools?: string[] }}
  */
 function parseRelayArgs(argv) {
   const result = {};
@@ -95,11 +144,6 @@ function parseRelayArgs(argv) {
 
     const key = tok.slice(2); // strip leading '--'
 
-    if (seen.has(key)) {
-      throw new ArgError(`Duplicate relay arg: ${tok}`);
-    }
-    seen.add(key);
-
     const next = argv[i + 1];
 
     // Missing value: next token is another relay arg or beyond array end.
@@ -109,6 +153,19 @@ function parseRelayArgs(argv) {
     if (!next.trim()) {
       throw new ArgError(`Empty value for relay arg: ${tok}`);
     }
+
+    // Round 35: --allowedTool is repeatable — one pattern per occurrence.
+    if (key === 'allowedTool') {
+      if (result.allowedTools === undefined) result.allowedTools = [];
+      result.allowedTools.push(next.trim());
+      i++; // consume the value token
+      continue;
+    }
+
+    if (seen.has(key)) {
+      throw new ArgError(`Duplicate relay arg: ${tok}`);
+    }
+    seen.add(key);
 
     result[key] = next.trim();
     i++; // consume the value token
@@ -136,7 +193,21 @@ function parseRelayArgs(argv) {
     }
   }
 
-  return /** @type {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string }} */ (result);
+  // Round 35: validate each --allowedTool pattern against the strict allowlist.
+  if (result.allowedTools !== undefined) {
+    for (const pattern of result.allowedTools) {
+      if (!isValidAllowedToolPattern(pattern)) {
+        throw new ArgError(
+          `Invalid --allowedTool pattern: '${pattern}'. ` +
+          'Allowed: Bash(<cmd>:*) with <cmd> in ' +
+          '{node, npm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}, ' +
+          'or exactly one of Read, Glob, Grep, Edit, Write.',
+        );
+      }
+    }
+  }
+
+  return /** @type {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string; allowedTools?: string[] }} */ (result);
 }
 
 class ArgError extends Error {
@@ -762,6 +833,10 @@ function detectQaPassthroughArgs(argv) {
       prompt = argv[++i];
     } else if (tok === '--permissionMode') {
       throw new ArgError('--permissionMode is forbidden in QA passthrough.');
+    } else if (tok === '--allowedTool') {
+      // Round 35: the QA passthrough judges and never edits — it must never
+      // receive a permission mode or an allowed-tools allowlist.
+      throw new ArgError('--allowedTool is forbidden in QA passthrough.');
     } else if (tok === '--claudeConfigDir') {
       const key = tok.slice(2);
       if (options[key] !== undefined || argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new ArgError(`Invalid QA passthrough argument: ${tok}`);
@@ -910,9 +985,16 @@ async function main() {
     //   'acceptEdits' → --permission-mode acceptEdits
     //   'default' / undefined → no --permission-mode flag (least privilege)
     //
+    // Round 35: the validated Builder verification allowlist is forwarded to
+    // Claude as a single `--allowedTools <p1> <p2> …` argv (exact Claude CLI
+    // spelling per `claude --help`). Only patterns that passed the strict
+    // allowlist in parseRelayArgs can reach this point.
     const claudeArgs = ['--add-dir', workspaceRoot, '--print'];
     if (permissionMode === 'acceptEdits') {
       claudeArgs.push('--permission-mode', 'acceptEdits');
+    }
+    if (args.allowedTools && args.allowedTools.length > 0) {
+      claudeArgs.push('--allowedTools', ...args.allowedTools);
     }
     claudeArgs.push(prompt);
 

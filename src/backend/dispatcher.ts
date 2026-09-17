@@ -400,6 +400,11 @@ function mapRegistryError(err: unknown): never {
  * Phase I correction: includes --permissionMode when worker registry specifies
  * a Claude driver permission mode. Only 'acceptEdits' is injected (by enum);
  * 'default' and absent mode are equivalent (no flag → least privilege).
+ *
+ * Round 35 correction: includes repeated --allowedTool <pattern> relay args
+ * when worker registry specifies driverOptions.claude.allowedTools (mirrors the
+ * --claudeConfigDir forwarding); the wrapper validates and forwards them to
+ * Claude as --allowedTools only on the Builder relay path.
  */
 export function buildDispatchArgv(
   launchArgsPrefix: string[],
@@ -413,6 +418,8 @@ export function buildDispatchArgv(
     claudeConfigDir?: string;
     /** Trusted worker registry permission mode — never from Task/Goal/PM narrative. */
     permissionMode?: ClaudePermissionMode;
+    /** Trusted worker registry Builder verification allowlist — never from narrative. */
+    allowedTools?: string[];
   },
 ): string[] {
   const argv = [
@@ -432,6 +439,13 @@ export function buildDispatchArgv(
   // 'default' and absent are equivalent (no flag); omitting preserves least privilege.
   if (binding.permissionMode === 'acceptEdits') {
     argv.push('--permissionMode', 'acceptEdits');
+  }
+  // Round 35: repeated --allowedTool relay args mirror the --claudeConfigDir
+  // forwarding. Never injected from Task/Goal/PM narrative — worker registry only.
+  if (binding.allowedTools && binding.allowedTools.length > 0) {
+    for (const pattern of binding.allowedTools) {
+      argv.push('--allowedTool', pattern);
+    }
   }
   return argv;
 }
@@ -1238,7 +1252,9 @@ export async function dispatchTask(
     // use it as spawn cwd for Claude. Never forwarded as arbitrary CLI syntax.
     // Phase I correction: pass permissionMode from trusted worker registry only.
     // Task/Goal/PM narrative cannot supply or override this value.
+    // Round 35: also pass the Builder verification allowlist from the registry.
     const permissionMode = worker.driverOptions?.claude?.permissionMode;
+    const allowedTools = worker.driverOptions?.claude?.allowedTools;
     const argv = buildDispatchArgv(worker.launchArgsPrefix, {
       dataRoot: root,
       project: proj,
@@ -1247,6 +1263,7 @@ export async function dispatchTask(
       workspaceRoot,
       ...(claudeConfigDir ? { claudeConfigDir } : {}),
       ...(permissionMode ? { permissionMode } : {}),
+      ...(allowedTools && allowedTools.length > 0 ? { allowedTools } : {}),
     });
 
     const spawnOpts: Parameters<typeof spawn>[2] = {
