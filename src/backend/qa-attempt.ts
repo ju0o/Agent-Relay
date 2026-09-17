@@ -169,6 +169,13 @@ export interface QaAttemptRecord {
   failedCriteria: string[];
   remediationInstruction?: string;   // only ever set when finalQaStatus === 'FAIL'
   remediationPreparationId?: string; // set once a QaRemediationPreparationRecord references this attempt
+  /**
+   * Round 38: Evidence-kernel records minted for this attempt's deterministic
+   * verdict (one VERIFIED TEST/QA Evidence per attempt, sourceEventId
+   * `qa-attempt:{qaAttemptId}`). Empty/absent until the QA gate records it;
+   * append-only, never rewritten, never removed.
+   */
+  evidenceIds?: string[];
   createdAt: string;
   updatedAt: string;
   completedAt?: string;              // set exactly when finalQaStatus leaves PENDING
@@ -352,6 +359,11 @@ export function validateQaAttemptRecord(r: QaAttemptRecord): void {
   }
   if (!Array.isArray(r.failedCriteria) || r.failedCriteria.some((c) => typeof c !== 'string')) {
     throw new QaAttemptError('INVALID_STATE', 'failedCriteria는 문자열 배열이어야 합니다.');
+  }
+  if (r.evidenceIds !== undefined && (
+    !Array.isArray(r.evidenceIds) || r.evidenceIds.some((id) => typeof id !== 'string' || !id.trim())
+  )) {
+    throw new QaAttemptError('INVALID_STATE', 'evidenceIds는 비어 있지 않은 문자열 배열이어야 합니다.');
   }
   if (r.deterministic !== undefined) validateDeterministicEvidence(r.deterministic);
   if (r.semantic !== undefined) validateSemanticEvidence(r.semantic);
@@ -890,6 +902,36 @@ export function linkRemediationPreparation(
     }
     const ts = nowIso();
     const next: QaAttemptRecord = { ...current, remediationPreparationId, updatedAt: ts };
+    persistQaAttemptRecord(qaAttemptFolder(dataRoot, project, qaAttemptId), next);
+    return next;
+  });
+}
+
+/** Additive, append-only linkage between one QaAttempt and ONE Evidence record
+ * (round 38 — deterministic QA verdict → VERIFIED TEST/QA Evidence). Never
+ * changes finalQaStatus; never appends a duplicate of an already-linked id.
+ * The caller (qa-evidence.ts) is the sole writer; this kernel only persists. */
+export function linkQaAttemptEvidence(
+  dataRoot: string,
+  project: string,
+  qaAttemptId: string,
+  evidenceId: string,
+): Promise<QaAttemptRecord> {
+  if (!evidenceId || !evidenceId.trim()) {
+    throw new QaAttemptError('INVALID_ARGUMENT', 'evidenceId는 비어 있지 않은 문자열이어야 합니다.');
+  }
+  return withQaAttemptLock(dataRoot, project, qaAttemptId, (): QaAttemptRecord => {
+    const current = getQaAttempt(dataRoot, project, qaAttemptId);
+    if (current.deterministic === undefined) {
+      throw new QaAttemptError('CONFLICT', `QA Attempt ${qaAttemptId}는 deterministic evidence 없이 Evidence에 연결될 수 없습니다.`);
+    }
+    if ((current.evidenceIds ?? []).includes(evidenceId)) return current; // idempotent replay
+    const ts = nowIso();
+    const next: QaAttemptRecord = {
+      ...current,
+      evidenceIds: [...(current.evidenceIds ?? []), evidenceId],
+      updatedAt: ts,
+    };
     persistQaAttemptRecord(qaAttemptFolder(dataRoot, project, qaAttemptId), next);
     return next;
   });

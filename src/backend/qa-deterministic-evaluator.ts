@@ -87,6 +87,7 @@ import {
   getQaAttempt,
   recordDeterministicEvidence,
 } from './qa-attempt.js';
+import { recordQaAttemptVerifiedEvidence } from './qa-evidence.js';
 import {
   computeWorkspacePathDigest,
   isOversizeDigest,
@@ -932,7 +933,13 @@ export function evaluateDeterministicQa(
     // or attempts to repair/recreate it.
     const attempt = getQaAttempt(dataRoot, project, input.qaAttemptId);
     if (attempt.deterministic !== undefined) {
-      return { outcome: 'ALREADY_EVALUATED', record: attempt };
+      // Round 38 replay: reconcile the VERIFIED Evidence + attempt linkage
+      // idempotently (the Evidence kernel dedupes on
+      // `qa-attempt:{qaAttemptId}`, so no second record is ever written —
+      // this only heals a crash between the evidence write and the linkage
+      // persist), then re-read so the returned record reflects durable state.
+      await recordQaAttemptVerifiedEvidence(dataRoot, project, attempt);
+      return { outcome: 'ALREADY_EVALUATED', record: getQaAttempt(dataRoot, project, input.qaAttemptId) };
     }
 
     validateCheckKindsOrThrow(input.checks);
@@ -949,11 +956,21 @@ export function evaluateDeterministicQa(
     }
 
     const status = aggregateDeterministicStatus(results);
-    const afterDeterministic = await recordDeterministicEvidence(dataRoot, project, input.qaAttemptId, {
+    let afterDeterministic = await recordDeterministicEvidence(dataRoot, project, input.qaAttemptId, {
       status,
       checks: results,
       ...(status === 'FAIL' ? { failedCriteria: deriveFailedCriteria(results) } : {}),
     });
+
+    // Round 38 — root-cause fix: the deterministic QA gate now mints exactly
+    // one VERIFIED TEST/QA Evidence record per attempt (PASS/FAIL aggregates
+    // only) through recordTestEvidence/recordQaEvidence, so a Task contract
+    // requiring machine-level proof of the QA run is satisfiable. The write
+    // runs BEFORE any completion so a final PASS/FAIL attempt is never
+    // observable without its Evidence; replay never duplicates it (the
+    // Evidence kernel dedupes on the `qa-attempt:{qaAttemptId}` sourceEventId).
+    const evidenced = await recordQaAttemptVerifiedEvidence(dataRoot, project, afterDeterministic);
+    afterDeterministic = evidenced.updatedAttempt ?? afterDeterministic;
 
     if (status !== 'PASS') {
       // recordDeterministicEvidence already finalized FAIL/BLOCKED in the

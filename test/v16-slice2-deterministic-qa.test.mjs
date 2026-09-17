@@ -35,6 +35,7 @@ const gt = await import('../dist/server/backend/goal-task.js');
 const qa = await import('../dist/server/backend/qa-attempt.js');
 const evalr = await import('../dist/server/backend/qa-deterministic-evaluator.js');
 const wdc = await import('../dist/server/backend/workspace-diff-common.js');
+const evidence = await import('../dist/server/backend/evidence.js');
 
 const pwdProbe = await evalr.runProcess(process.execPath, ['-e', 'process.stdout.write(process.env.PWD || "")'], ROOT, 5000);
 check(pwdProbe.stdout === ROOT, 'runProcess gives child the authoritative cwd as PWD');
@@ -963,6 +964,125 @@ console.log('-- 48) QA PASS never mutates the Task record (authority boundary) -
   const after = gt.getTask(ROOT, project, task.taskId);
   check(after.updatedAt === before.updatedAt, '48b Task record byte-identical after QA PASS — no write occurred');
   check(after.executionState === before.executionState && after.pmState === before.pmState, '48c executionState/pmState unchanged — QA PASS never sets ACCEPTED or advances a Plan; only GPT PM ACCEPT may');
+}
+
+console.log('\n== ROUND 38: deterministic QA attempt writes VERIFIED Evidence ==');
+
+console.log('-- 49) passing attempt with a command check writes exactly one TEST/PASS/VERIFIED Evidence bound to the run --');
+{
+  const { task, runId, attempt } = await makeAttempt();
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'command', command: process.execPath, args: ['-e', 'process.exit(0)'], criterionId: 'AC-1' }],
+  });
+  check(out.record.finalQaStatus === 'PASS', '49a command PASS attempt finalized PASS (precondition)');
+  const refs = out.record.evidenceIds ?? [];
+  check(refs.length === 1, `49b attempt carries exactly one evidenceIds entry (got ${refs.length})`);
+  if (refs.length === 1) {
+    const ev = evidence.getEvidence(ROOT, project, refs[0]);
+    check(ev.type === 'TEST' && ev.trustLevel === 'VERIFIED' && ev.status === 'PASS', `49c type=TEST trust=VERIFIED status=PASS (got ${ev.type}/${ev.trustLevel}/${ev.status})`);
+    check(ev.runId === runId && ev.taskId === task.taskId && ev.goalId === task.goalId, '49d Evidence bound to the same run/task/goal as the QA attempt');
+    check(ev.sourceEventId === `qa-attempt:${attempt.qaAttemptId}`, '49e sourceEventId is the idempotency key (exactly-once per attempt)');
+    check(ev.summary.includes('process.exit(0)') && ev.summary.includes('exit=0'), '49f summary carries the exact argv + exit code');
+  }
+}
+
+console.log('-- 50) failing attempt writes TEST/FAIL --');
+{
+  const { attempt } = await makeAttempt();
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'command', command: process.execPath, args: ['-e', 'process.exit(7)'], criterionId: 'AC-1' }],
+  });
+  check(out.record.finalQaStatus === 'FAIL', '50a command FAIL attempt finalized FAIL (precondition)');
+  const refs = out.record.evidenceIds ?? [];
+  check(refs.length === 1, `50b FAIL attempt still carries exactly one evidenceIds entry (got ${refs.length})`);
+  if (refs.length === 1) {
+    const ev = evidence.getEvidence(ROOT, project, refs[0]);
+    check(ev.type === 'TEST' && ev.trustLevel === 'VERIFIED' && ev.status === 'FAIL', `50c type=TEST trust=VERIFIED status=FAIL (got ${ev.type}/${ev.trustLevel}/${ev.status})`);
+    check(ev.summary.includes('exit=7'), `50d summary carries the actual exit code 7 (got: ${ev.summary})`);
+  }
+}
+
+console.log('-- 51) attempt with only file checks writes type QA --');
+{
+  const { workspaceRoot, attempt } = await makeAttempt();
+  fs.writeFileSync(path.join(workspaceRoot, 'present.txt'), 'hi', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [
+      { kind: 'fileExists', path: 'present.txt', criterionId: 'AC-1' },
+      { kind: 'fileExactContent', path: 'present.txt', expectedContent: 'hi', criterionId: 'AC-2' },
+    ],
+  });
+  check(out.record.finalQaStatus === 'PASS', '51a file-only attempt finalized PASS (precondition)');
+  const refs = out.record.evidenceIds ?? [];
+  check(refs.length === 1, `51b file-only attempt carries exactly one evidenceIds entry (got ${refs.length})`);
+  if (refs.length === 1) {
+    const ev = evidence.getEvidence(ROOT, project, refs[0]);
+    check(ev.type === 'QA' && ev.trustLevel === 'VERIFIED' && ev.status === 'PASS', `51c type=QA trust=VERIFIED status=PASS (got ${ev.type}/${ev.trustLevel}/${ev.status})`);
+    check(ev.summary.includes('fileExists') && ev.summary.includes('fileExactContent'), '51d summary names the file checks');
+  }
+}
+
+console.log('-- 52) replay of the same attempt never writes a second record --');
+{
+  const { attempt } = await makeAttempt();
+  const checks = [{ kind: 'command', command: process.execPath, args: ['-e', 'process.exit(0)'], criterionId: 'AC-1' }];
+  const first = await evalr.evaluateDeterministicQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, checks });
+  const firstRefs = first.record.evidenceIds ?? [];
+  check(firstRefs.length === 1, '52a first evaluation wrote exactly one evidence id');
+  const replay = await evalr.evaluateDeterministicQa(ROOT, project, { qaAttemptId: attempt.qaAttemptId, checks });
+  check(replay.outcome === 'ALREADY_EVALUATED', '52b replay is ALREADY_EVALUATED (no check re-ran)');
+  const replayRefs = replay.record.evidenceIds ?? [];
+  check(replayRefs.length === 1 && replayRefs[0] === firstRefs[0], `52c replay keeps exactly the same single evidence id (got ${replayRefs.length} ref: ${replayRefs[0]})`);
+  const listed = evidence.listEvidenceWithDiagnostics(ROOT, project).evidence.filter((e) => e.sourceEventId === `qa-attempt:${attempt.qaAttemptId}`);
+  check(listed.length === 1, `52d exactly ONE Evidence record exists for this attempt across the kernel (found ${listed.length})`);
+  if (firstRefs.length === 1) {
+    const ev = evidence.getEvidence(ROOT, project, firstRefs[0]);
+    check(listed[0] && listed[0].evidenceId === ev.evidenceId, '52e the one existing record is the original, not a second mint');
+  }
+}
+
+console.log('-- 53) no secret or unbounded stdout lands in the summary --');
+{
+  const { attempt } = await makeAttempt();
+  // The secret is assembled at runtime (concatenated string literals) so it
+  // never appears verbatim inside the argv the command check records either;
+  // and it is written ~3600 chars into a >24k stream so the BOUNDED 4000-char
+  // capture ends with it — the summary tail therefore hits the scrubber.
+  const secret = 'sk-ROUND38SECRETMARKER9876543210';
+  const blob = 'P'.repeat(20_000);
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{
+      kind: 'command', command: process.execPath, criterionId: 'AC-1',
+      args: ['-e', `process.stdout.write('P'.repeat(3600) + 'sk-' + 'ROUND38SECRETMARKER9876543210' + 'P'.repeat(20000)); process.exit(3)`],
+    }],
+  });
+  check(out.record.finalQaStatus === 'FAIL', '53a command FAIL precondition holds');
+  const refs = out.record.evidenceIds ?? [];
+  check(refs.length === 1, `53b FAIL attempt carries exactly one evidence id (got ${refs.length})`);
+  if (refs.length === 1) {
+    const ev = evidence.getEvidence(ROOT, project, refs[0]);
+    check(ev.summary.includes('[REDACTED]'), `53c secret scrubbed to [REDACTED] in the summary tail (got tail: ${ev.summary.slice(-120)})`);
+    check(!ev.summary.includes(secret), '53d raw secret never appears in the summary');
+    check(!ev.summary.includes(blob), '53e the unbounded 20000-char stdout blob never lands in the summary verbatim');
+    check(ev.summary.length <= 4_000, `53f summary is bounded (${ev.summary.length} chars ≤ 4000)`);
+  }
+}
+
+console.log('-- 54) BLOCKED aggregate writes no VERIFIED Evidence (nothing machine-verified) --');
+{
+  const { attempt } = await makeAttempt();
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'command', command: 'this-executable-does-not-exist-xyz-123', args: [] }],
+  });
+  check(out.record.deterministic.status === 'BLOCKED', '54a spawn failure is BLOCKED (precondition)');
+  check((out.record.evidenceIds ?? []).length === 0, '54b BLOCKED attempt writes no Evidence record');
+  const listed = evidence.listEvidenceWithDiagnostics(ROOT, project).evidence.filter((e) => e.sourceEventId === `qa-attempt:${attempt.qaAttemptId}`);
+  check(listed.length === 0, `54c no Evidence record exists for the BLOCKED attempt (found ${listed.length})`);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
