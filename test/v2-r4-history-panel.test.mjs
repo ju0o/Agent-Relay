@@ -277,6 +277,8 @@ console.log('\n-- R4-11: Managed Relay UI contract --');
   check(requiredLabels.every((label) => panelSource.includes(label)), 'Founder-facing canonical relay fields stay visible');
   check(panelSource.includes('SAME TASK → NEW RUN'), 'CHANGES keeps same-Task retry lineage visible');
   check(panelSource.includes('NEXT / GOAL COMPLETE CHECK'), 'PASS makes NEXT/complete transition visible');
+  check(panelSource.includes("goalStatus === 'WAITING_OWNER'") && panelSource.includes("return 'OWNER_REQUIRED'"), 'WAITING_OWNER projects as OWNER_REQUIRED');
+  check(panelSource.includes("t?.executionState === 'RESULT_RECEIVED'") && panelSource.includes("? 'RECEIVED'"), 'canonical RESULT_RECEIVED wins over file-presence hint');
   check(appSource.includes('⚡ Managed Relay'), 'desktop app exposes Managed Relay entry');
 }
 
