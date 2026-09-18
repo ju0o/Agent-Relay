@@ -70,11 +70,13 @@ const check = (c, m) => {
   else { console.log(`  FAIL  ${m}`); failed += 1; process.exitCode = 1; }
 };
 
-// Fixture implementation worker (never actually spawned here — the wrapper is
-// invoked directly with relay args, exactly as the Dispatcher would).
+// Fixture implementation worker (spawned by the live remediation dispatch via
+// the Dispatcher: launchCommand=node + script prefix runs on ALL platforms,
+// including Windows — node.exe is real; only DIRECT single-path spawn needs
+// the compiled .exe, which is CLAUDE_EXE-only below).
 wr.writeWorkerRegistryRecord(ROOT, {
   schemaVersion: 'G.2', workerId: 'wrap-remed-worker', displayName: 'wrap fixture',
-  launchCommand: process.execPath, launchArgsPrefix: [resolveFakeClaudeExe()],
+  launchCommand: process.execPath, launchArgsPrefix: [ECHO_MJS],
   capabilities: ['fixture'], observationAdapterId: 'test-fixture',
 });
 
