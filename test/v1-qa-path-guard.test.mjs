@@ -40,6 +40,29 @@ const QA = path.resolve('scripts/fake-qa-worker.mjs');
 const BUILDER = path.resolve('scripts/fake-builder-worker.mjs');
 const PROJECT = 'WBS67-PG';
 
+/**
+ * Best-effort temp cleanup. Windows commonly reports EBUSY/EPERM when
+ * removing a just-used temp tree (child-handle release timing, AV scans,
+ * junction handles). Cleanup must never fail the test — the OS reclaims
+ * os.tmpdir() entries. Retry briefly, then swallow.
+ */
+function rmBestEffort(p) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+      return;
+    } catch {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+  }
+}
+
+function unlinkBestEffort(p) {
+  try {
+    fs.unlinkSync(p);
+  } catch { /* absent or locked — covered by rmBestEffort / OS cleanup */ }
+}
+
 function reset() {
   disp._resetDispatcherStateForTests();
   capture._resetCaptureServiceForTests();
@@ -115,8 +138,8 @@ test('symlink-spelled root still reaches semantic FAIL and dispatches SAME-Task 
     assert.equal(after.linkedRuns.length, 2);
     assert.deepEqual(after.linkedRuns.map((r) => r.taskRunSequence).sort(), [1, 2]);
   } finally {
-    try { fs.unlinkSync(ROOT); } catch { /* keep FS tidy, best-effort */ }
-    fs.rmSync(REAL, { recursive: true, force: true });
+    unlinkBestEffort(ROOT);
+    rmBestEffort(REAL);
   }
 });
 
@@ -136,6 +159,6 @@ test('true symlink escape outside the workspace is still BLOCKED', async () => {
     assert.equal(qrp.listQaRemediationPreparations(ROOT, PROJECT).length, 0);
   } finally {
     try { fs.unlinkSync(outside); } catch { /* best-effort */ }
-    fs.rmSync(ROOT, { recursive: true, force: true });
+    rmBestEffort(ROOT);
   }
 });
