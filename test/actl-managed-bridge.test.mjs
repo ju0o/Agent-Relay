@@ -7,7 +7,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -123,18 +123,29 @@ function registerActlWorker(workerId, stateDir, extra = {}) {
   });
 }
 
-// Fake actl is invoked as: spawn(NODE, [FAKE_ACTL, 'runtime', op, '--request-stdin'])
-// But bridge spawns launchCommand with ['runtime', op, '--request-stdin'] only.
-// So launchCommand must be a wrapper script, OR we point launchCommand at a shell-free
-// executable that is the fake itself when invoked as `fake-actl runtime ...`.
-// Use a small launcher that execs node fake-actl.mjs with remaining args.
-
-const FAKE_LAUNCHER = path.join(TEST_ROOT, 'fake-actl-launcher');
+// Bridge requires an absolute executable and deliberately uses shell:false.
+// A bash launcher works on Linux but is not an executable on Windows. Keep the
+// production contract intact and make the fixture cross-platform by launching
+// the real Node executable and using a test-only Node preload. The preload
+// intercepts the synthetic "runtime <op> --request-stdin" main-script shape,
+// rewrites argv to the existing fake-actl.mjs shape, and imports the fixture.
+// It does nothing for every other Node child spawned by this test.
+const FAKE_LAUNCHER = NODE;
+const FAKE_ACTL_PRELOAD = path.join(TEST_ROOT, 'fake-actl-preload.mjs');
 fs.writeFileSync(
-  FAKE_LAUNCHER,
-  `#!/usr/bin/env bash\nexec "${NODE}" "${FAKE_ACTL}" "$@"\n`,
-  { mode: 0o755 },
+  FAKE_ACTL_PRELOAD,
+  [
+    "import * as path from 'node:path';",
+    `if (path.basename(process.argv[1] ?? '') === 'runtime') {`,
+    `  process.argv = [process.argv[0], ${JSON.stringify(FAKE_ACTL)}, 'runtime', ...process.argv.slice(2)];`,
+    `  await import(${JSON.stringify(pathToFileURL(FAKE_ACTL).href)});`,
+    '}',
+    '',
+  ].join('\\n'),
+  'utf8',
 );
+const preloadOption = `--import=${pathToFileURL(FAKE_ACTL_PRELOAD).href}`;
+process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preloadOption].filter(Boolean).join(' ');
 
 function registerActlWorkerAbs(workerId, extra = {}) {
   return wr.writeWorkerRegistryRecord(TEST_ROOT, {
