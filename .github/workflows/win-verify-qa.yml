@@ -38,6 +38,9 @@ jobs:
       - name: v1-qa-path-guard (2 tests)
         run: npm run test:v1-qa-path-guard
 
+      - name: v1-g5c-auto-redispatch (retry loop host projection)
+        run: npm run test:v1-g5c-auto-redispatch
+
       - name: QA regression slice 1 (kernel)
         run: npm run test:v16-slice1-qa-kernel
 
