@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  qa-loop:
+  verify:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,5 +19,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: QA loop diagnostic
+      - run: npm run typecheck
+      - name: QA loop regression
         run: npm run test:v1-qa-loop
+      - name: G5C same-task retry regression
+        run: npm run test:v1-g5c-auto-redispatch
+      - name: Phase I wrapper regression
+        run: npm run test:phase-i
+      - name: Full release baseline
+        run: npm test
