@@ -30,15 +30,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Release baseline tests (base signal)
-        continue-on-error: true
-        run: npm test
-
       - name: Managed Relay UI contract
         run: npm run test:v2-r4-history-panel
 
-      - name: Same-Task retry regression
-        run: npm run test:v1-g5c-auto-redispatch
+      - name: V1 QA loop
+        run: npm run test:v1-qa-loop
 
-      - name: Full QA loop regression
+      - name: V1.5 PASS to NEXT regression
+        run: npm run test:v15-plan-accept-advancement
+
+      - name: V1.6 full QA loop regression
         run: npm run test:v16-slice7-full-qa
