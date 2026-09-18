@@ -93,6 +93,7 @@
     "test:v2-r3-restart": "node test/v2-r3-restart.test.mjs",
     "test:v2-r1-resume-scan": "node test/v2-r1-resume-scan.test.mjs",
     "test:stable-hardening-01": "node test/stable-hardening-01-worker-release.test.mjs",
+    "test:goal-loop": "node test/goal-loop.test.mjs",
     "mcp:app": "node dist/server/mcp/app-server-main.js",
     "mcp:pm": "node dist/server/mcp/index.js --surface pm",
     "cli": "node dist/server/cli/index.js",

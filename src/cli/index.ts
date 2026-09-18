@@ -24,6 +24,7 @@ Commands:
   history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
   resume-scan         Scan stuck/interrupted work (V2 R1, read-only report)
   resume act          Run one guided recovery action (V2 R2, Owner confirm required)
+  goal-loop           Drive a Goal automatically (AUTO loop, headless)
   init                Initialize project (interactive or --yes)
   connect <client>    Configure PM MCP (claude-code)
   host watch          Watch pending PM Deliveries and hand them to the PM Host
@@ -49,7 +50,8 @@ Examples:
   agent-relay resume-scan
   agent-relay resume-scan --json
   agent-relay resume act --task TASK-0001 --pattern ORPHANED_DISPATCH --orphan-action KEEP_WAITING --yes
-  agent-relay init
+  agent-relay goal-loop --goal GOAL-0001 --worker <workerId> --workspace <dir> --yes
+  agent-relay goal-loop --goal-title "Fix X" --goal-statement "..." --worker <workerId> --workspace <dir> --yes
   agent-relay init --yes
   agent-relay init --yes --json
   agent-relay connect claude-code
@@ -58,7 +60,7 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; goal: string | null; goalTitle: string | null; goalStatement: string | null; worker: string | null; workspace: string | null; transport: string | null; actlAgent: string | null; projectName: string | null; dataRoot: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -78,6 +80,15 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let once = false;
   let pollMs: number | null = null;
   let hostConfig: string | null = null;
+  let goal: string | null = null;
+  let goalTitle: string | null = null;
+  let goalStatement: string | null = null;
+  let worker: string | null = null;
+  let workspace: string | null = null;
+  let transport: string | null = null;
+  let actlAgent: string | null = null;
+  let projectName: string | null = null;
+  let dataRoot: string | null = null;
   let unknown: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
@@ -89,7 +100,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--yes') yes = true;
     else if (a === '--force') force = true;
     else if (a === '--once') once = true;
-    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason') {
+    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--goal' || a === '--goal-title' || a === '--goal-statement' || a === '--worker' || a === '--workspace' || a === '--transport' || a === '--actl-agent' || a === '--project' || a === '--data-root') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) { unknown = a; break; }
       if (a === '--poll-ms') {
@@ -108,6 +119,24 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
         orphanAction = next;
       } else if (a === '--reason') {
         reason = next;
+      } else if (a === '--goal') {
+        goal = next;
+      } else if (a === '--goal-title') {
+        goalTitle = next;
+      } else if (a === '--goal-statement') {
+        goalStatement = next;
+      } else if (a === '--worker') {
+        worker = next;
+      } else if (a === '--workspace') {
+        workspace = next;
+      } else if (a === '--transport') {
+        transport = next;
+      } else if (a === '--actl-agent') {
+        actlAgent = next;
+      } else if (a === '--project') {
+        projectName = next;
+      } else if (a === '--data-root') {
+        dataRoot = next;
       } else {
         hostConfig = next;
       }
@@ -115,7 +144,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'goal-loop')) {
       command = a;
     } else if ((command === 'connect' || command === 'host' || command === 'resume') && !sub) {
       sub = a;
@@ -127,7 +156,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, goal, goalTitle, goalStatement, worker, workspace, transport, actlAgent, projectName, dataRoot, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function promptOwnerConfirm(question: string): Promise<boolean> {
@@ -142,7 +171,7 @@ async function promptOwnerConfirm(question: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, goal, goalTitle, goalStatement, worker, workspace, transport, actlAgent, projectName, dataRoot, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -361,6 +390,30 @@ async function main(): Promise<void> {
       ...(hostConfig !== null ? { hostConfigDir: hostConfig } : {}),
     });
     process.exit(code);
+  }
+
+  if (command === 'goal-loop') {
+    const { runGoalLoopCli, renderGoalLoopHuman, goalLoopUsage, GOAL_LOOP_SCHEMA_VERSION } = await import('./goal-loop.js');
+    let confirmed = yes;
+    if (!confirmed) {
+      if (process.stdin.isTTY) confirmed = await promptOwnerConfirm('Start AUTO goal loop (dispatch + capture + review)?');
+      if (!confirmed) {
+        const msg = 'refused: Owner confirmation required (--yes or interactive y). Nothing executed.';
+        if (json) console.log(JSON.stringify({ schemaVersion: GOAL_LOOP_SCHEMA_VERSION, ok: false, error: msg }, null, 2));
+        else console.error(msg);
+        process.exit(1);
+      }
+    }
+    if (!worker || !workspace || (!goal && (!goalTitle || !goalStatement))) {
+      if (json) console.log(JSON.stringify({ schemaVersion: GOAL_LOOP_SCHEMA_VERSION, ok: false, error: goalLoopUsage() }, null, 2));
+      else console.error(goalLoopUsage());
+      process.exit(1);
+    }
+    const res = await runGoalLoopCli(cwd, { goal, goalTitle, goalStatement, worker, workspace, transport, actlAgent, projectName, dataRoot, yes: confirmed, json });
+    if (json) console.log(JSON.stringify({ schemaVersion: GOAL_LOOP_SCHEMA_VERSION, ...res }, null, 2));
+    else if (!res.ok && res.error === 'not-initialized') console.log(notInitializedMessage());
+    else console.log(renderGoalLoopHuman(res));
+    process.exit(res.ok ? 0 : 1);
   }
 
   // Bare agent-relay (no command)

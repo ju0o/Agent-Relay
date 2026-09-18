@@ -153,9 +153,12 @@ export type RelayRequest =
  | { op: 'event:markDelivered'; dataRoot: string; project: string; eventId: string; expectedStatus: EventDeliveryStatus }
  | { op: 'event:acknowledge'; dataRoot: string; project: string; eventId: string; expectedStatus: EventDeliveryStatus }
  | { op: 'event:ignore'; dataRoot: string; project: string; eventId: string; expectedStatus: EventDeliveryStatus }
- | { op: 'update:check' }
- | { op: 'update:download' }
- | { op: 'update:install' };
+  | { op: 'update:check' }
+  | { op: 'update:download' }
+  | { op: 'update:install' }
+  | { op: 'goal-loop:start'; dataRoot: string; project: string; goalId?: string; goalTitle?: string; goalStatement?: string; taskPlan?: string[]; workerId: string; workspaceRoot: string; transport?: 'internal' | 'actl'; actlAgent?: string; maxTasks?: number; maxAttemptsPerTask?: number; resultWaitMs?: number }
+  | { op: 'goal-loop:status'; dataRoot: string; project: string; goalId: string }
+  | { op: 'chatgpt:review'; goalTitle: string; goalStatement: string; taskId: string; taskTitle: string; acceptanceCriteria?: string[]; runId: string; attemptSequence?: number; resultExcerpt: string; diffStat?: string; repoSha?: string; priorRetryInstruction?: string };
 
 /** Standard successful response envelope. */
 export type RelayResult<T = unknown> = { ok: true; value: T };
