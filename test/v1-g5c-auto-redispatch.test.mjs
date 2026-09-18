@@ -515,10 +515,18 @@ console.log('\n-- FULL G5 LOOP (bridge host + fixture worker) --');
     const r2 = t.linkedRuns[t.linkedRuns.length - 1];
     return (t.executionState === 'DISPATCHED' || t.executionState === 'RUNNING') ? r2.runId : null;
   });
+  check(run2 !== runId1, 'loop: automatic retry Run #2 created');
+  // Run materialization and host-response recording are two asynchronous
+  // observations. On Windows the Run can become visible before the fake host
+  // flushes PM_JUDGMENT_APPLIED to its evidence file, so wait for the response
+  // itself before stopping the bridge.
+  await waitFor('loop judgment response', () => {
+    const rows = readRecords(rec).filter((r) => r.event === 'judgment-response');
+    return rows.find((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'REDISPATCHED' && r.message?.retryRunId === run2) ?? null;
+  });
   await b.stop();
   delete process.env.FAKE_HOST_RECORD_FILE;
   delete process.env.FAKE_HOST_MODE;
-  check(run2 !== runId1, 'loop: automatic retry Run #2 created');
   const loopRows = readRecords(rec).filter((r) => r.event === 'judgment-response');
   check(loopRows.some((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'REDISPATCHED' && r.message?.retryRunId === run2), 'loop: host received REDISPATCHED with retryRunId');
   // Capture Run #2 → Result #2 → delivery #2.
