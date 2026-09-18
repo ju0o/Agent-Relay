@@ -1,14 +1,27 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.join(os.tmpdir(), `arl-b15-fix-a-${process.pid}-${Date.now()}`);
 const workspace = path.join(root, 'workspace');
 fs.mkdirSync(workspace, { recursive: true });
 const fake = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/actl/fake-actl.mjs');
-const launcher = path.join(root, 'actl');
-fs.writeFileSync(launcher, `#!/usr/bin/env bash\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+// Keep the production bridge shell:false contract intact. Use the real Node
+// executable plus a test-only preload so the fake actl is executable on both
+// POSIX and Windows while launchArgsPrefix remains [] as the actl driver
+// contract requires.
+const launcher = process.execPath;
+const preload = path.join(root, 'fake-actl-preload.mjs');
+fs.writeFileSync(preload, [
+  "import * as path from 'node:path';",
+  `if (path.basename(process.argv[1] ?? '') === 'runtime') {`,
+  `  process.argv = [process.argv[0], ${JSON.stringify(fake)}, 'runtime', ...process.argv.slice(2)];`,
+  `  await import(${JSON.stringify(pathToFileURL(fake).href)});`,
+  '}',
+  '',
+].join('\n'), 'utf8');
+process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`].filter(Boolean).join(' ');
 const profile = path.join(root, 'codex-home');
 fs.mkdirSync(profile, { recursive: true });
 const socket = path.join(root, 'tmux.sock');
