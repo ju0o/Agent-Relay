@@ -391,7 +391,8 @@ console.log('\n── F4-28 Esc cancels ──');
     'F4-28b Esc on the field menu clears editTaskCtx (no mutation call)',
   );
   check(
-    tuiSrc.includes('function handleTaskEditFieldKey') && tuiSrc.includes("view = 'TASK_EDIT_MENU';\n      editFieldKey = null;"),
+    tuiSrc.includes('function handleTaskEditFieldKey')
+      && /view = 'TASK_EDIT_MENU';\r?\n\s*editFieldKey = null;/.test(tuiSrc),
     'F4-28c Esc on the field input clears editFieldKey and returns to the menu (no mutation call)',
   );
 }
