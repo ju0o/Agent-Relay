@@ -18,6 +18,18 @@ function runCli(args, opts = {}) {
   return spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', timeout: 8000 });
 }
 
+// Windows portability: the OS releases a just-exited child process's CWD
+// handle asynchronously (NTFS/AV/indexer timing), so immediate recursive
+// removal of a directory that was a spawnSync child's cwd can raise
+// transient EBUSY/EPERM/ENOTEMPTY. Product processes are fully reaped
+// (init/doctor CLI paths use only synchronous spawnSync; verified — no
+// daemon/watcher/detached child exists), and the test itself retains no
+// handles, so a small bounded retry is the correct remedy: persistent
+// failures still throw (never swallowed), assertions untouched.
+function rmTempDir(p) {
+  fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 if (!fs.existsSync(CLI)) {
   console.log('  SKIP CLI not built');
   process.exit(0);
@@ -41,7 +53,7 @@ console.log('\n── INIT-01 new project creates config ───────�
   check(fs.existsSync(cfgPath), `INIT-01 config created at ${cfgPath}`);
   const j = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
   check(typeof j.project === 'string' && j.project.length > 0, `INIT-01 config has project`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-02 config contains only safe fields ─────────');
@@ -57,7 +69,7 @@ console.log('\n── INIT-02 config contains only safe fields ─────�
   check(!('launchCommand' in cfg), `INIT-02 no launchCommand`);
   check(!('permissionMode' in cfg), `INIT-02 no permissionMode`);
   check(cfg.schemaVersion === 'cli.config.v1', `INIT-02 schemaVersion cli.config.v1`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-03 config atomic write ───────────────────────');
@@ -71,7 +83,7 @@ console.log('\n── INIT-03 config atomic write ──────────
   try { JSON.parse(raw); PASS(`INIT-03 config valid JSON`); } catch { FAIL(`INIT-03 config not valid JSON`); }
   const dirFiles = fs.readdirSync(path.join(ws, '.agent-relay'));
   check(!dirFiles.some((f) => f.endsWith('.tmp')), `INIT-03 no tmp leftover`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-04 already initialized refuses overwrite ─────');
@@ -86,7 +98,7 @@ console.log('\n── INIT-04 already initialized refuses overwrite ────
   // via CLI
   const r = runCli(['init', '--yes'], { cwd: ws });
   check(r.status !== 0, `INIT-04 CLI init --yes without force exits non-zero`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-05 --force replaces config but preserves data ─');
@@ -123,7 +135,7 @@ console.log('\n── INIT-05 --force replaces config but preserves data ─');
   check(goalsAfter === goalsBefore, `INIT-05 goalsAfter preserved (${goalsBefore} -> ${goalsAfter})`);
   // config should be overwritten (dataRoot same default, but check file mtime changed)
   check(fs.existsSync(path.join(ws, '.agent-relay', 'config.json')), `INIT-05 config still exists after force`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-06 default dataRoot outside workspace ────────');
@@ -136,7 +148,7 @@ console.log('\n── INIT-06 default dataRoot outside workspace ─────
   const inside = dataRoot.startsWith(ws + path.sep) || dataRoot === ws;
   check(!inside, `INIT-06 dataRoot outside workspace (${dataRoot})`);
   check(dataRoot.includes('AgentRelay') || dataRoot.includes('agent-relay'), `INIT-06 dataRoot contains agent-relay (${dataRoot})`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-07 gitignore addition idempotent ─────────────');
@@ -151,7 +163,7 @@ console.log('\n── INIT-07 gitignore addition idempotent ──────�
   const count = (gi.match(/\.agent-relay\//g) || []).length;
   check(count === 1, `INIT-07 gitignore added once (count ${count})`);
   check(gi.includes('node_modules'), `INIT-07 preserves existing gitignore`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-08 Claude detection does not launch session ──');
@@ -182,7 +194,7 @@ console.log('\n── INIT-10 trusted record uses claude-code adapter ───'
     check(rec.observationAdapterId === 'claude-code', `INIT-10 observationAdapterId claude-code`);
     check(rec.workerId === 'claude-code', `INIT-10 workerId claude-code`);
   }
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-11 permissionMode acceptEdits typed ──────────');
@@ -193,7 +205,7 @@ console.log('\n── INIT-11 permissionMode acceptEdits typed ─────�
   const res = await initMod.runInit({ cwd: ws, yes: true, force: false, json: false, packageRoot: path.resolve('.'), claudeMock: { status: 'DETECTED' } });
   const rec = JSON.parse(fs.readFileSync(path.join(res.dataRoot, '_relay', 'workers', 'claude-code.json'), 'utf8'));
   check(rec.driverOptions?.claude?.permissionMode === 'acceptEdits', `INIT-11 permissionMode acceptEdits (got ${rec.driverOptions?.claude?.permissionMode})`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-12 no dangerous-skip permission ──────────────');
@@ -219,7 +231,7 @@ console.log('\n── INIT-13 package-root wrapper path stable ─────�
   // Check that findPackageRoot logic exists
   const initSrc = fs.readFileSync('src/cli/init.ts', 'utf8');
   check(initSrc.includes('findPackageRoot') && initSrc.includes('package.json'), `INIT-13 findPackageRoot uses package.json walk`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-14 launchCommand safe ────────────────────────');
@@ -232,7 +244,7 @@ console.log('\n── INIT-14 launchCommand safe ──────────�
   check(rec.launchCommand === process.execPath, `INIT-14 launchCommand is process.execPath (${rec.launchCommand})`);
   // allowlist check: node basename is allowed
   check(rec.launchCommand.includes('node') || path.isAbsolute(rec.launchCommand), `INIT-14 launchCommand safe`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-15 existing equivalent worker idempotent ─────');
@@ -244,7 +256,7 @@ console.log('\n── INIT-15 existing equivalent worker idempotent ────
   const second = await initMod.runInit({ cwd: ws, yes: true, force: true, json: false, packageRoot: path.resolve('.'), claudeMock: { status: 'DETECTED' } });
   check(second.worker?.already === true || second.worker?.installed === true, `INIT-15 second init idempotent (already=${second.worker?.already})`);
   // via API without force should throw or skip? Our runInit with --force true should handle idempotent; without force it throws Already initialized before worker check, so this test uses force
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-16 conflicting worker requires force ─────────');
@@ -274,7 +286,7 @@ console.log('\n── INIT-16 conflicting worker requires force ─────�
   const second = await initMod.runInit({ cwd: ws, yes: true, force: true, json: false, packageRoot: path.resolve('.'), claudeMock: { status: 'DETECTED' } });
   const after = JSON.parse(fs.readFileSync(wrPath, 'utf8'));
   check(after.launchArgsPrefix[0] !== '/tmp/fake.mjs', `INIT-16 conflicting worker overwritten with force`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-17 no Goals/Tasks/Runs deleted ──────────────');
@@ -297,7 +309,7 @@ console.log('\n── INIT-17 no Goals/Tasks/Runs deleted ───────�
   process.env.LOCALAPPDATA = origLD2;
   const afterTasks = gt.listTasks(dataRoot, project).length;
   check(beforeTasks === afterTasks, `INIT-17 tasks preserved (${beforeTasks} -> ${afterTasks})`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-18 init --yes noninteractive ────────────────');
@@ -308,7 +320,7 @@ console.log('\n── INIT-18 init --yes noninteractive ────────
   const r = runCli(['init', '--yes'], { cwd: ws });
   check(r.status === 0, `INIT-18 CLI init --yes exit 0 (got ${r.status}) stdout ${r.stdout.slice(0,80)}`);
   check(fs.existsSync(path.join(ws, '.agent-relay', 'config.json')), `INIT-18 config created via CLI`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-19 init --yes --json valid JSON only ────────');
@@ -323,7 +335,7 @@ console.log('\n── INIT-19 init --yes --json valid JSON only ─────�
   check(j !== null && j.schemaVersion === 'cli.init.v1', `INIT-19 schemaVersion cli.init.v1`);
   check(r.stdout.trim().startsWith('{'), `INIT-19 stdout starts with {`);
   check(j && j.ok === true, `INIT-19 ok true`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-20 doctor passes after fixture init ─────────');
@@ -334,7 +346,7 @@ console.log('\n── INIT-20 doctor passes after fixture init ─────�
   runCli(['init', '--yes'], { cwd: ws });
   const r = runCli(['doctor'], { cwd: ws });
   check(r.status === 0, `INIT-20 doctor after init exits 0 (got ${r.status})`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  rmTempDir(tmp);
 }
 
 console.log('\n── INIT-21 Electron regression ───────────────────────');
