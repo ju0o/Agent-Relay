@@ -47,6 +47,9 @@ jobs:
       - name: phase-i3-init (bounded rm retry for CWD-handle timing)
         run: npm run test:phase-i3-init
 
+      - name: actl-managed-bridge (portable .exe launcher, full suite PASS)
+        run: npm run test:actl-managed-bridge
+
       - name: phase-i3f4-safe-task-edit (CRLF-normalized source reads, must be 84/84)
         run: npm run test:phase-i3f4-safe-task-edit
 
