@@ -60,9 +60,11 @@ jobs:
           npm run test:v16-slice6-restart-reconcile &&
           npm run test:v16-slice7-full-qa
 
-      - name: QA regression slice 8 (known-red wrapper spawn fixture on Windows)
-        continue-on-error: true
+      - name: QA regression slice 8 remediation (portable fixture)
         run: npm run test:v16-slice8-wrapper-qa-remediation
+
+      - name: QA regression slice 8 QA mode (portable fixture)
+        run: npm run test:v16-slice8-wrapper-qa-mode
 
       - name: Windows lineage evidence dump
         run: node test/win-verify-lineage-dump.mjs
