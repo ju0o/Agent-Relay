@@ -25,6 +25,6 @@ jobs:
       - name: G5C same-task retry regression
         run: npm run test:v1-g5c-auto-redispatch
       - name: Phase I wrapper regression
-        run: npm run test:phase-i
+        run: npm run test:phase-i-dogfood
       - name: Full release baseline
         run: npm test
