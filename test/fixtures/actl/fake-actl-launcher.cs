@@ -8,6 +8,8 @@
 // starts the existing Node fake (FAKE_ACTL_SCRIPT via FAKE_ACTL_NODE_BIN,
 // both supplied by the test through the child env), forwards argv verbatim,
 // pumps stdin/stdout/stderr as raw bytes, and returns the fake's exit code.
+// Opt-in FAKE_ACTL_COLLECT_DELAY_MS sleeps before `runtime collect` only
+// (b15-fix-03-a delayed-launcher semantics); unset means no delay.
 //
 // The Node child is placed in a KILL_ON_JOB_CLOSE job (best effort) so a
 // bridge timeout kill of this launcher cannot orphan the grandchild the way
@@ -17,6 +19,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 public static class FakeActlLauncher
@@ -120,6 +123,23 @@ public static class FakeActlLauncher
         {
             Console.Error.Write("fake-actl-launcher: node binary or fake script missing\n");
             return 127;
+        }
+
+        // TEST-ONLY opt-in collect delay (b15-fix-03-a RUNNING-CAS race window).
+        // The POSIX delayed launcher sleeps 0.3s before collect so the test can
+        // race the DISPATCHED -> RUNNING CAS; mirror that here only when
+        // FAKE_ACTL_COLLECT_DELAY_MS parses to > 0. Unset/zero keeps the
+        // Repair 05/06 launch contract byte-identical (no delay anywhere).
+        // C# 5-compatible: no out-var.
+        int collectDelayMs = 0;
+        string delayRaw = Environment.GetEnvironmentVariable("FAKE_ACTL_COLLECT_DELAY_MS");
+        if (!string.IsNullOrEmpty(delayRaw))
+        {
+            int.TryParse(delayRaw, out collectDelayMs);
+        }
+        if (collectDelayMs > 0 && args.Length >= 2 && args[0] == "runtime" && args[1] == "collect")
+        {
+            Thread.Sleep(collectDelayMs);
         }
 
         string arguments = QuoteArg(script);

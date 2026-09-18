@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -8,12 +9,47 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-b15-fix-03-'));
 const workspace = path.join(root, 'workspace');
 fs.mkdirSync(workspace, { recursive: true });
 const fake = path.join(repo, 'test/fixtures/actl/fake-actl.mjs');
-const launcher = path.join(root, 'actl');
-fs.writeFileSync(launcher, `#!/usr/bin/env bash\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+// POSIX: extensionless bash launchers (shebang + exec bit) run under production's
+// shell:false spawn. Windows: CreateProcess cannot execute a bash/shebang script
+// with shell:false (ENOENT before any JSON reaches the fake) — shell:true/cmd.exe
+// stay forbidden — so compile the tiny test-only C# launcher fixture (Repair 05
+// pattern: same Node fake-actl.mjs, argv forwarded verbatim, stdio pumped as raw
+// bytes, exit code propagated) to real .exe files under the disposable root.
+// launchArgsPrefix stays [] on both platforms; production is untouched.
+const launcherSh = path.join(root, 'actl');
+fs.writeFileSync(launcherSh, `#!/usr/bin/env bash\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
 // Delayed-collect launcher: inserts a sleep before collect so tests can race the
 // DISPATCHED → RUNNING CAS with a concurrent state transition.
-const delayedLauncher = path.join(root, 'actl-delayed');
-fs.writeFileSync(delayedLauncher, `#!/usr/bin/env bash\nif [ "$2" = "collect" ]; then sleep 0.3; fi\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+const delayedLauncherSh = path.join(root, 'actl-delayed');
+fs.writeFileSync(delayedLauncherSh, `#!/usr/bin/env bash\nif [ "$2" = "collect" ]; then sleep 0.3; fi\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+function compileLauncherExe(exePath) {
+  const cs = path.join(repo, 'test/fixtures/actl/fake-actl-launcher.cs');
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const q = (s) => `'${s.replace(/'/g, "''")}'`;
+  const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+    `Add-Type -TypeDefinition ([IO.File]::ReadAllText(${q(cs)})) -OutputAssembly ${q(exePath)} -OutputType ConsoleApplication`,
+  ], { shell: false, encoding: 'utf8', timeout: 180000 });
+  if (r.status !== 0 || !fs.existsSync(exePath)) {
+    throw new Error(`fake actl launcher .exe compile failed (status=${r.status}): ${(r.stderr || '').slice(0, 500)}`);
+  }
+  return exePath;
+}
+function resolveLauncher(shPath, exeName) {
+  if (process.platform !== 'win32') return shPath;
+  const exe = path.join(root, exeName);
+  if (!fs.existsSync(exe)) compileLauncherExe(exe);
+  return exe;
+}
+const launcher = resolveLauncher(launcherSh, 'actl.exe');
+// The delayed launcher's pre-collect sleep is load-bearing for the RUNNING-CAS
+// race below; on Windows the same .cs provides it via the opt-in
+// FAKE_ACTL_COLLECT_DELAY_MS env (scoped to the CAS section only).
+const delayedLauncher = resolveLauncher(delayedLauncherSh, 'actl-delayed.exe');
+if (process.platform === 'win32') {
+  process.env.FAKE_ACTL_NODE_BIN = process.execPath;
+  process.env.FAKE_ACTL_SCRIPT = fake;
+}
 const profile = path.join(root, 'codex-home');
 fs.mkdirSync(profile, { recursive: true });
 const socket = path.join(root, 'tmux.sock');
@@ -83,6 +119,11 @@ check(typeof bridge.closeActlManagedReservationForTask === 'function', 'shared c
 // the same canonical path the relay_pm_accept_result MCP tool reaches.
 const acceptDir = path.join(root, 'pm-accept'); fs.mkdirSync(acceptDir);
 const acceptDispatch = await dispatchToVerifying('pm accept closeout', acceptDir);
+// Launch evidence: only the real fake ACTL process mints state.json (neither
+// launcher touches it; the disposable root cannot contain a pre-created copy),
+// so this cannot pass unless production spawned the launch target with
+// shell:false and the fake actually ran.
+check(fs.existsSync(path.join(acceptDir, 'state.json')), 'fake actl process actually executed behind the launcher (state.json minted)');
 const acceptResult = await judgment.submitPmJudgment(root, project, {
   deliveryId: acceptDispatch.delivery.deliveryId, decision: 'ACCEPT', reason: 'closeout acceptance',
 });
@@ -136,6 +177,10 @@ process.env.FAKE_ACTL_STATE_DIR = casDir;
 process.env.FAKE_ACTL_MODE = 'happy';
 bridge.setActlInputPermitFactory(args => bridge.buildDefaultInputPermit({ ...args, snapshotHash: args.currentSnapshotHash }));
 const casTask = await makeTask('running cas failure');
+// Mirror the POSIX delayed launcher's pre-collect sleep on Windows via the
+// test-only .exe's opt-in env (ignored by the bash launcher on POSIX). Scoped
+// to this CAS race only so the rest of the suite keeps its normal timing.
+process.env.FAKE_ACTL_COLLECT_DELAY_MS = '300';
 const casDispatchP = disp.dispatchTask(root, project, {
   taskId: casTask.taskId, workerId: 'w-cas', expectedExecutionState: 'READY', workspaceRoot: workspace,
 });
@@ -159,6 +204,7 @@ if (casReady) {
 }
 let casError;
 try { await casDispatchP; } catch (err) { casError = err; }
+delete process.env.FAKE_ACTL_COLLECT_DELAY_MS;
 check(casReady && !casTransitionError && casError?.code === 'CONFLICT' && anyHeld(casDir), 'RUNNING-CAS failure keeps the reservation held');
 disp._resetDispatcherStateForTests();
 bridge.setActlInputPermitFactory(null);
@@ -207,6 +253,24 @@ binding.reservationId = stored.reservationId;
 binding.leaseToken = stored.leaseToken;
 const reconciled = await bridge.closeActlManagedReservation(launcher, binding, { disposition: 'FAILED' });
 check(reconciled.closeoutStatus === 'RELEASED', 'production closeout reconciles exact already-released reservation');
+
+// ── timing evidence for the delayed-launcher contract ───────────────────────
+// A bare collect through the DELAYED launcher must carry the ~300ms race
+// window (the fake answers RESULT_NOT_FINAL immediately, so any elapsed time
+// above the floor is the launcher's own pre-collect sleep). Threshold 250ms
+// tolerates timer slop; the sleep guarantees a 300ms floor. A launcher
+// failure throws here instead of passing vacuously.
+const probeDir = path.join(root, 'delay-probe'); fs.mkdirSync(probeDir);
+process.env.FAKE_ACTL_COLLECT_DELAY_MS = '300';
+const probeEnv = { ...process.env, FAKE_ACTL_STATE_DIR: probeDir, FAKE_ACTL_MODE: 'happy' };
+const collectT0 = Date.now();
+await bridge.invokeActlRuntime(delayedLauncher, 'collect', {
+  contractVersion: 1, requestId: bridge.newRequestId(), operation: 'collect',
+  runtimeId: 'rt_fix03', commandId: 'cmd_probe',
+}, { env: probeEnv });
+const collectMs = Date.now() - collectT0;
+delete process.env.FAKE_ACTL_COLLECT_DELAY_MS;
+check(collectMs >= 250, `delayed launcher delays collect (~300ms window, observed ${collectMs}ms)`);
 
 console.log(`B15 FIX 03 tests: ${passed} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
