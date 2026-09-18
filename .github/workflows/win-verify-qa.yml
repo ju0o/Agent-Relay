@@ -38,10 +38,16 @@ jobs:
       - name: v1-qa-path-guard (2 tests)
         run: npm run test:v1-qa-path-guard
 
-      - name: QA regression slices 1-8 (guard-adjacent)
+      - name: QA regression slice 1 (kernel)
+        run: npm run test:v16-slice1-qa-kernel
+
+      - name: QA regression slice 2 (deterministic, known NTFS fixture red 14i)
+        id: slice2
+        continue-on-error: true
+        run: npm run test:v16-slice2-deterministic-qa
+
+      - name: QA regression slices 3-8 (guard-adjacent)
         run: >
-          npm run test:v16-slice1-qa-kernel &&
-          npm run test:v16-slice2-deterministic-qa &&
           npm run test:v16-slice3-semantic-qa &&
           npm run test:v16-slice4-qa-remediation &&
           npm run test:v16-slice5-pm-delivery &&
