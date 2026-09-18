@@ -40,25 +40,7 @@ async function linkResult(taskId, n, builderId, text = 'result', existingWorkspa
 async function finishCurrent(taskId, builderId, n, text) { const r = await linkResult(taskId, n, builderId, text); const out = await gate.runOrResumeQaGate(ROOT, PROJECT, taskId); return { r, out }; }
 
 test('Result 1 → QA FAIL → same-Task remediation → Result 2 → QA PASS → one pending Delivery', async () => {
-  reset(); const { task, builderId } = await setup(); const first = await finishCurrent(task.taskId, builderId, 1, 'wrong result');
-  if (first.out.outcome !== 'FAIL_REMEDIATION_DISPATCHED') {
-    const attempts = qa.listQaAttemptsForTask(ROOT, PROJECT, task.taskId);
-    console.log('WINDOWS_QA_DIAG first.out=', JSON.stringify(first.out));
-    console.log('WINDOWS_QA_DIAG task=', JSON.stringify(gt.getTask(ROOT, PROJECT, task.taskId)));
-    console.log('WINDOWS_QA_DIAG attempts=', JSON.stringify(attempts));
-    for (const a of attempts) {
-      const runDir = path.join(ROOT, PROJECT, '_relay', 'qa-semantic-runs', a.qaAttemptId);
-      if (fs.existsSync(runDir)) {
-        for (const name of fs.readdirSync(runDir).sort()) {
-          const p = path.join(runDir, name);
-          if (fs.statSync(p).isFile()) {
-            console.log('WINDOWS_QA_DIAG file', name, fs.readFileSync(p, 'utf8').slice(0, 4000));
-          }
-        }
-      }
-    }
-  }
-  assert.equal(first.out.outcome, 'FAIL_REMEDIATION_DISPATCHED');
+  reset(); const { task, builderId } = await setup(); const first = await finishCurrent(task.taskId, builderId, 1, 'wrong result'); assert.equal(first.out.outcome, 'FAIL_REMEDIATION_DISPATCHED');
   const afterFail = gt.getTask(ROOT, PROJECT, task.taskId); assert.equal(afterFail.taskId, task.taskId); assert.equal(afterFail.linkedRuns.length, 2); assert.equal(qrp.listQaRemediationPreparations(ROOT, PROJECT).length, 1); assert.equal(qa.listQaAttemptsForTask(ROOT, PROJECT, task.taskId)[0].finalQaStatus, 'FAIL');
   const secondRun = await linkResult(task.taskId, 2, builderId, 'correct result', first.r.workspaceRoot); const secondOut = await gate.runOrResumeQaGate(ROOT, PROJECT, task.taskId); assert.equal(secondOut.outcome, 'PASS_DELIVERED'); const attempts = qa.listQaAttemptsForTask(ROOT, PROJECT, task.taskId); assert.equal(attempts.length, 2); assert.equal(attempts[1].finalQaStatus, 'PASS'); const deliveries = pm.listPmDeliveries(ROOT, PROJECT).filter(d => d.taskId === task.taskId); assert.equal(deliveries.length, 1); assert.equal(deliveries[0].status, 'PENDING');
 });
