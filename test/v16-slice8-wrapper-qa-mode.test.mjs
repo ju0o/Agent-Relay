@@ -21,7 +21,50 @@ const REPO = path.resolve(__dirname, '..');
 const WRAPPER = path.join(REPO, 'scripts', 'relay-worker-claude.mjs');
 const ECHO = path.join(REPO, 'test', 'fixtures', 'workers', 'fake-claude-qa-echo.mjs');
 const FAIL = path.join(REPO, 'test', 'fixtures', 'workers', 'fake-claude-qa-fail.mjs');
+const ECHO_CS = path.join(REPO, 'test', 'fixtures', 'workers', 'fake-claude-qa-echo.cs');
 for (const f of [ECHO, FAIL]) fs.chmodSync(f, 0o755);
+
+/**
+ * Resolve the fake Claude executable for THIS platform, per fake role.
+ *
+ * POSIX: the .mjs fixtures are directly executable (shebang + exec bit).
+ * Windows: CreateProcess cannot execute a script with shell:false (EFTYPE) —
+ * shell:true/cmd.exe stay forbidden — so compile the tiny C# echo fixture
+ * (same argv contract per FAKE_CLAUDE_MODE) to a real .exe, test-only, under
+ * the disposable CWD. No production code is involved.
+ *
+ * Roles mirror the .mjs fixtures: 'echo' (PASS + ECHO marker),
+ * 'fail' (exit 3), 'argv' (argv|CONFIG|PWD line).
+ */
+function resolveFakeClaudeExe() {
+  if (process.platform !== 'win32') return null;
+  const exe = path.join(CWD, 'fake-claude-qa-echo.exe');
+  if (!fs.existsSync(exe)) {
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const q = (s) => `'${s.replace(/'/g, "''")}'`;
+    const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+      `Add-Type -TypeDefinition ([IO.File]::ReadAllText(${q(ECHO_CS)})) -OutputAssembly ${q(exe)} -OutputType ConsoleApplication`,
+    ], { shell: false, encoding: 'utf8', timeout: 180000 });
+    if (r.status !== 0 || !fs.existsSync(exe)) {
+      throw new Error(`fake Claude .exe compile failed (status=${r.status}): ${(r.stderr || '').slice(0, 500)}`);
+    }
+  }
+  return exe;
+}
+
+/** CLAUDE_EXE + FAKE_CLAUDE_MODE env for one fake role (mode is a no-op on POSIX). */
+function fakeEnv(role, extra = {}) {
+  const exe = process.platform !== 'win32'
+    ? (role === 'fail' ? FAIL : role === 'argv' ? ARGV : ECHO)
+    : resolveFakeClaudeExe();
+  return {
+    ...process.env,
+    CLAUDE_EXE: exe,
+    ...(process.platform === 'win32' ? { FAKE_CLAUDE_MODE: role } : {}),
+    ...extra,
+  };
+}
 
 let passed = 0; let failed = 0;
 const check = (c, m) => {
@@ -31,7 +74,7 @@ const check = (c, m) => {
 
 const CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-v16-s8-wrap-'));
 const ARGV = path.join(CWD, 'fake-claude-argv.mjs');
-fs.writeFileSync(ARGV, "#!/usr/bin/env node\nconsole.log(process.argv.slice(2).join('|') + '|CONFIG=' + (process.env.CLAUDE_CONFIG_DIR || '') + '|PWD=' + (process.env.PWD || ''));\n", 'utf8');
+fs.writeFileSync(ARGV, "#!/usr/bin/env node\nimport fs from 'node:fs';\nconst dumpPath = process.env.FAKE_CLAUDE_ARGV_DUMP;\nif (dumpPath) { try { fs.writeFileSync(dumpPath, process.argv.slice(2).join('\\n'), 'utf8'); } catch {} }\nconsole.log(process.argv.slice(2).join('|') + '|CONFIG=' + (process.env.CLAUDE_CONFIG_DIR || '') + '|PWD=' + (process.env.PWD || ''));\n", 'utf8');
 fs.chmodSync(ARGV, 0o755);
 
 // Round 35/37 shared relay fixture: a minimal canonical Task/Run so the Builder
@@ -78,13 +121,21 @@ const redactArgvElem = (a) => (/^-/.test(a) ? a : a.length <= 80 ? a : a.slice(0
 
 // 1. QA shape forwards prompt verbatim, stdout passes through, exit 0.
 {
+  const argvDump = path.join(CWD, 'fake-argv-echo.txt');
   const r = spawnSync(process.execPath, [WRAPPER, '--print', 'CANARY-PROMPT-123'], {
     cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
-    env: { ...process.env, CLAUDE_EXE: ECHO },
+    env: fakeEnv('echo', { FAKE_CLAUDE_ARGV_DUMP: argvDump }),
   });
   check(r.status === 0, `QA passthrough exits 0 (got ${r.status}, stderr=${JSON.stringify((r.stderr || '').slice(0, 200))})`);
   check((r.stdout || '').includes('ECHO:CANARY-PROMPT-123'), 'QA passthrough forwards prompt verbatim to claude');
   check((r.stdout || '').includes('status: PASS'), 'QA passthrough relays claude stdout unaltered');
+  check(!(r.stderr || '').includes('EFTYPE'), 'no EFTYPE: ECHO fake process actually launched');
+  check(fs.existsSync(argvDump), 'ECHO fake process ran and dumped its received argv');
+  if (fs.existsSync(argvDump)) {
+    const dumped = fs.readFileSync(argvDump, 'utf8');
+    check(dumped.split('\n').includes('--print'), 'ECHO fake received the --print flag verbatim');
+    check(dumped.includes('CANARY-PROMPT-123'), 'ECHO fake received the prompt bytes (argv receipt proven)');
+  }
 }
 
 // 1b. Explicit profile is allowed, but permission mode is forbidden for QA.
@@ -105,18 +156,22 @@ const redactArgvElem = (a) => (/^-/.test(a) ? a : a.length <= 80 ? a : a.slice(0
   fs.mkdirSync(profile, { recursive: true });
   const r = spawnSync(process.execPath, [WRAPPER, '--claudeConfigDir', profile, '--print', 'OPTIONS-PROMPT'], {
     cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
-    env: { ...process.env, CLAUDE_EXE: ARGV },
+    env: fakeEnv('argv'),
   });
   check(r.status === 0 && (r.stdout || '').includes(`--add-dir|${CWD}|--print|OPTIONS-PROMPT`) && (r.stdout || '').includes(`CONFIG=${profile}`) && (r.stdout || '').includes(`PWD=${CWD}`), 'QA passthrough applies config, add-dir, and spawn PWD without permission mode');
 }
 
 // 2. Non-zero Claude exit propagates (evaluator treats as reattempt-eligible, not success).
 {
+  const argvDump = path.join(CWD, 'fake-argv-fail.txt');
+  try { fs.unlinkSync(argvDump); } catch { /* absent */ }
   const r = spawnSync(process.execPath, [WRAPPER, '--print', 'anything'], {
     cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
-    env: { ...process.env, CLAUDE_EXE: FAIL },
+    env: fakeEnv('fail', { FAKE_CLAUDE_ARGV_DUMP: argvDump }),
   });
   check(r.status === 3, `QA passthrough propagates claude exit code (got ${r.status})`);
+  check(!(r.stderr || '').includes('EFTYPE'), 'no EFTYPE: FAIL fake process actually launched before returning exit 3');
+  check(fs.existsSync(argvDump), 'FAIL fake process ran (argv dump proves launch preceded exit 3)');
 }
 
 // 3. Missing relay args WITHOUT --print still fails closed (existing behavior preserved).
@@ -153,11 +208,15 @@ const redactArgvElem = (a) => (/^-/.test(a) ? a : a.length <= 80 ? a : a.slice(0
     '--workspaceRoot', wsDir,
     ...patterns.flatMap((p) => ['--allowedTool', p]),
   ];
+  const argvDump = path.join(CWD, 'fake-argv-builder.txt');
+  try { fs.unlinkSync(argvDump); } catch { /* absent */ }
   const r = spawnSync(process.execPath, relayArgv, {
     cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
-    env: { ...process.env, CLAUDE_EXE: ARGV },
+    env: fakeEnv('argv', { FAKE_CLAUDE_ARGV_DUMP: argvDump }),
   });
   check(r.status === 0, `Builder relay with allowedTools exits 0 (got ${r.status}, stderr=${JSON.stringify((r.stderr || '').slice(0, 200))})`);
+  check(!(r.stderr || '').includes('EFTYPE'), 'no EFTYPE: builder fake process actually launched');
+  check(fs.existsSync(argvDump), 'builder fake process ran and dumped its received argv');
   // The Builder relay path captures Claude's stdout/stderr for bounded diagnostics
   // only, so the forwarded argv is asserted from the run's worker-launch.log
   // argvShape (g6 convention), never from wrapper stdout.
@@ -165,8 +224,10 @@ const redactArgvElem = (a) => (/^-/.test(a) ? a : a.length <= 80 ? a : a.slice(0
   const printIdx = shape.indexOf('--print');
   const toolIdx = shape.indexOf('--allowedTools');
   const promptElem = shape[printIdx + 1];
+  // argvShape[0] is the resolved fake executable (platform-dependent path).
+  const expectedExe = fakeEnv('argv').CLAUDE_EXE;
   check(
-    shape[0] === ARGV && printIdx !== -1 && promptElem !== undefined && promptElem.startsWith('You are executing one Agent Relay Task.'),
+    shape[0] === expectedExe && printIdx !== -1 && promptElem !== undefined && promptElem.startsWith('You are executing one Agent Relay Task.'),
     'Builder relay argv places the positional prompt immediately after --print',
   );
   check(
@@ -211,9 +272,10 @@ const redactArgvElem = (a) => (/^-/.test(a) ? a : a.length <= 80 ? a : a.slice(0
     '--workspaceRoot', wsDir,
   ], {
     cwd: CWD, shell: false, encoding: 'utf8', timeout: 30000,
-    env: { ...process.env, CLAUDE_EXE: ARGV },
+    env: fakeEnv('argv'),
   });
   check(r.status === 0, `Builder relay without allowedTools exits 0 (got ${r.status}, stderr=${JSON.stringify((r.stderr || '').slice(0, 200))})`);
+  check(!(r.stderr || '').includes('EFTYPE'), 'no EFTYPE on the default-shape relay run');
   const shape = lastArgvShape(relayRun);
   // Replicate the wrapper's deterministic buildWorkerPrompt for this fixture
   // (task TASK-0001, title 't', goal 'g', reason 'r', scope 's', one criterion)
@@ -247,7 +309,7 @@ const redactArgvElem = (a) => (/^-/.test(a) ? a : a.length <= 80 ? a : a.slice(0
     '  verification performed, and remaining blockers.',
   ].join('\n');
   const expectedShape = [
-    ARGV,
+    fakeEnv('argv').CLAUDE_EXE,
     '--add-dir', wsDir, '--print',
     redactArgvElem(expectedPrompt),
   ];
