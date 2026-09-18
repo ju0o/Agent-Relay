@@ -44,11 +44,11 @@ async function shouldThrow(fn, label, fragment) {
   }
 }
 
-const taskEditSrc = fs.readFileSync('src/backend/task-edit.ts', 'utf8');
-const actionsSrc = fs.readFileSync('src/tui/actions.ts', 'utf8');
-const tuiSrc = fs.readFileSync('src/tui/tui.ts', 'utf8');
-const taskDetailSrc = fs.readFileSync('src/tui/views/task-detail.ts', 'utf8');
-const goalTaskSrc = fs.readFileSync('src/backend/goal-task.ts', 'utf8');
+const taskEditSrc = fs.readFileSync('src/backend/task-edit.ts', 'utf8').replace(/\r\n/g, '\n');
+const actionsSrc = fs.readFileSync('src/tui/actions.ts', 'utf8').replace(/\r\n/g, '\n');
+const tuiSrc = fs.readFileSync('src/tui/tui.ts', 'utf8').replace(/\r\n/g, '\n');
+const taskDetailSrc = fs.readFileSync('src/tui/views/task-detail.ts', 'utf8').replace(/\r\n/g, '\n');
+const goalTaskSrc = fs.readFileSync('src/backend/goal-task.ts', 'utf8').replace(/\r\n/g, '\n');
 
 const relay = await import('../dist/server/backend/fs.js');
 const gt = await import('../dist/server/backend/goal-task.js');
