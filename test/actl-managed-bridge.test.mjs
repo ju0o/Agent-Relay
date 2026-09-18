@@ -129,12 +129,51 @@ function registerActlWorker(workerId, stateDir, extra = {}) {
 // executable that is the fake itself when invoked as `fake-actl runtime ...`.
 // Use a small launcher that execs node fake-actl.mjs with remaining args.
 
-const FAKE_LAUNCHER = path.join(TEST_ROOT, 'fake-actl-launcher');
+const FAKE_ACTL_CS = path.resolve(__dirname, 'fixtures/actl/fake-actl-launcher.cs');
+const FAKE_LAUNCHER_SH = path.join(TEST_ROOT, 'fake-actl-launcher');
 fs.writeFileSync(
-  FAKE_LAUNCHER,
+  FAKE_LAUNCHER_SH,
   `#!/usr/bin/env bash\nexec "${NODE}" "${FAKE_ACTL}" "$@"\n`,
   { mode: 0o755 },
 );
+
+/**
+ * Resolve the fake ACTL launch target for THIS platform.
+ *
+ * POSIX: the extensionless bash launcher above is directly executable
+ * (shebang + exec bit) under production's shell:false spawn.
+ * Windows: CreateProcess cannot execute a bash/shebang script with
+ * shell:false (ENOENT) — shell:true/cmd.exe stay forbidden — so compile
+ * the tiny C# launcher fixture (same launch contract: argv forwarded
+ * verbatim to the SAME Node fake, stdio pumped, exit code propagated)
+ * to a real .exe, test-only, under the disposable TEST_ROOT.
+ * launchArgsPrefix stays [] on both platforms; production is untouched.
+ */
+function resolveFakeActlLauncher() {
+  if (process.platform !== 'win32') return FAKE_LAUNCHER_SH;
+  const exe = path.join(TEST_ROOT, 'fake-actl-launcher.exe');
+  if (!fs.existsSync(exe)) {
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const q = (s) => `'${s.replace(/'/g, "''")}'`;
+    const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+      `Add-Type -TypeDefinition ([IO.File]::ReadAllText(${q(FAKE_ACTL_CS)})) -OutputAssembly ${q(exe)} -OutputType ConsoleApplication`,
+    ], { shell: false, encoding: 'utf8', timeout: 180000 });
+    if (r.status !== 0 || !fs.existsSync(exe)) {
+      throw new Error(`fake actl launcher .exe compile failed (status=${r.status}): ${(r.stderr || '').slice(0, 500)}`);
+    }
+  }
+  return exe;
+}
+
+const FAKE_LAUNCHER = resolveFakeActlLauncher();
+if (process.platform === 'win32') {
+  // The .exe locates the Node fake through its own env, which the bridge
+  // passes through opaquely (direct invokes spread process.env via actlEnv;
+  // dispatcher spawns inherit process.env). Test-only; never production.
+  process.env.FAKE_ACTL_NODE_BIN = NODE;
+  process.env.FAKE_ACTL_SCRIPT = FAKE_ACTL;
+}
 
 function registerActlWorkerAbs(workerId, extra = {}) {
   return wr.writeWorkerRegistryRecord(TEST_ROOT, {
@@ -351,6 +390,13 @@ console.log('\n── Bridge JSON subprocess round-trip ──');
     workspaceRoot: WORKSPACE,
   });
   check(frozen.paneId === '%fixture', 'reserve freezes paneId into context');
+  // Launch evidence: only the real fake ACTL process mints state.json (the
+  // launcher itself never touches it), so this cannot pass unless production
+  // spawned the launch target with shell:false and the fake actually ran.
+  check(
+    fs.existsSync(path.join(stateDir, 'state.json')),
+    'fake actl process actually executed behind the launcher (state.json minted)',
+  );
 
   const commandId = 'cmd1_fixture_roundtrip';
   const { wirePrompt, promptSha256 } = bridge.composeWirePrompt(commandId, 'hello fixture\n');
