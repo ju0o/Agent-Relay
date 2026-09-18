@@ -44,6 +44,10 @@ jobs:
       - name: phase-g-dispatcher (G-14a posix keys + G-14b portable/POSIX split)
         run: npm run test:phase-g-dispatcher
 
+      - name: aggregate npm test (next-blocker discovery only, do not fix)
+        continue-on-error: true
+        run: npm test
+
       - name: phase-i-dogfood (I-17/I-29/I-32 drift check)
         run: npm run test:phase-i-dogfood
 
