@@ -223,17 +223,31 @@ function isUnderRoot(candidate: string, root: string): boolean {
  * 'blocked'), matching §9's "missing file is FAIL, unreadable/unsafe is
  * BLOCKED" split. */
 async function resolveExistingPathUnderRoot(workspaceRoot: string, absPath: string): Promise<ExistingPathResolution> {
+  let real: string;
   try {
-    const real = await fsp.realpath(absPath);
-    if (!isUnderRoot(real, workspaceRoot)) {
-      return { kind: 'blocked', reason: `심볼릭 링크가 workspace 밖을 가리킵니다: ${real}` };
-    }
-    return { kind: 'ok', real };
+    real = await fsp.realpath(absPath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'missing' };
     return { kind: 'blocked', reason: `경로를 확인할 수 없습니다: ${err instanceof Error ? err.message : String(err)}` };
   }
+  // Canonicalize BOTH sides before the containment check. `real` is fully
+  // resolved while `workspaceRoot` may be spelled via a junction/symlink, an
+  // 8.3 short name, or differing on-disk case for the SAME directory
+  // (notably Windows Temp: RUNNER~1 vs runneradmin). Comparing a canonical
+  // path against a non-canonical root with a lexical check falsely reports
+  // containment failure — a spurious BLOCKED that finalizes the QA attempt
+  // and escalates BLOCKED_ESCALATED without semantic QA ever running.
+  let realRoot: string;
+  try {
+    realRoot = await fsp.realpath(workspaceRoot);
+  } catch (err) {
+    return { kind: 'blocked', reason: `workspace 루트를 확인할 수 없습니다: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!isUnderRoot(real, realRoot)) {
+    return { kind: 'blocked', reason: `심볼릭 링크가 workspace 밖을 가리킵니다: ${real}` };
+  }
+  return { kind: 'ok', real };
 }
 
 // ── check result helper ─────────────────────────────────────────────────────
