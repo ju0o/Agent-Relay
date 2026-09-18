@@ -539,9 +539,9 @@ console.log('\n── I-15..I-17 exit semantics + log ──');
   check(src.includes('startedAt'), 'I-17 log includes startedAt');
   check(src.includes('exitCode'), 'I-17 log includes exitCode');
 
-  // Verify dangerous fields are NOT in log: no env dump, no full chain-of-thought.
-  check(!src.includes('process.env,'), 'I-17 log does not dump process.env');
-  check(!src.includes('...process.env'), 'I-17 log does not spread process.env into log');
+  // process.env is legitimately inherited by the Claude child process, so a
+  // whole-file source-string check is invalid here. Log safety is verified
+  // against the actual worker-launch.log payload below.
 
   // Verify a real log is written when wrapper runs.
   const goal = await makeGoal('I-17 goal');
@@ -861,12 +861,16 @@ const wrFull = await import(pathToFileURL(path.join(DIST_BACKEND, 'worker-regist
     src.includes(`claudeArgs.push('--permission-mode', 'acceptEdits')`),
     "I-29 wrapper pushes '--permission-mode', 'acceptEdits' as discrete argv elements",
   );
-  // Verify prompt is pushed AFTER the permission-mode flag.
-  const permIdx = src.indexOf("'--permission-mode'");
-  const promptPushIdx = src.indexOf("claudeArgs.push(prompt)");
+  // Verify prompt is pushed AFTER the permission-mode flag in the RELAY path.
+  // The file also contains a QA passthrough claudeArgs block, so scope the
+  // source check to the final Relay-path construction instead of using the
+  // first global occurrence.
+  const relayArgsIdx = src.lastIndexOf("const claudeArgs = ['--print'];");
+  const permIdx = src.indexOf("claudeArgs.push('--permission-mode', 'acceptEdits')", relayArgsIdx);
+  const promptPushIdx = src.indexOf("claudeArgs.push(prompt)", relayArgsIdx);
   check(
-    permIdx > 0 && promptPushIdx > permIdx,
-    'I-29 prompt is pushed after --permission-mode flag in claudeArgs construction',
+    relayArgsIdx > 0 && permIdx > relayArgsIdx && promptPushIdx > permIdx,
+    'I-29 prompt is pushed after --permission-mode flag in relay claudeArgs construction',
   );
 }
 
@@ -904,8 +908,8 @@ const wrFull = await import(pathToFileURL(path.join(DIST_BACKEND, 'worker-regist
     const contents = relayArgsMatch[1];
     // Known safe relay args only:
     const allowed = new Set([
-      "'--dataRoot'", "'--project'", "'--taskId'", "'--runId'", "'--workspaceRoot'", "'--permissionMode'",
-      '"--dataRoot"', '"--project"', '"--taskId"', '"--runId"', '"--workspaceRoot"', '"--permissionMode"',
+      "'--dataRoot'", "'--project'", "'--taskId'", "'--runId'", "'--workspaceRoot'", "'--claudeConfigDir'", "'--permissionMode'",
+      '"--dataRoot"', '"--project"', '"--taskId"', '"--runId"', '"--workspaceRoot"', '"--claudeConfigDir"', '"--permissionMode"',
     ]);
     // Split on commas and trim, check each non-empty token
     const tokens = contents.split(',').map((s) => s.trim()).filter(Boolean);
