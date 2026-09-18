@@ -515,12 +515,31 @@ console.log('\n-- FULL G5 LOOP (bridge host + fixture worker) --');
     const r2 = t.linkedRuns[t.linkedRuns.length - 1];
     return (t.executionState === 'DISPATCHED' || t.executionState === 'RUNNING') ? r2.runId : null;
   });
+  // Host handshake, not scheduling luck: the REDISPATCHED reply is composed
+  // only after the canonical commit above and travels child-stdio
+  // asynchronously to the host record file. Stopping the bridge on canonical
+  // state alone can SIGTERM the host with the reply still in flight (slow
+  // spawn widens the DISPATCHED window, so Windows loses it systematically)
+  // — wait for the host-observed row before stopping.
+  // Row scoping (deliveryId === D1): the bridge is a project-wide pump, so
+  // legitimately-pending deliveries left by EARLIER blocks are also handed
+  // to the fresh fake host here, which judges everything first-received and
+  // produces truthful REDISPATCHED rows for STALE tasks too. Only this
+  // task's own delivery proves this loop — never the first row in the file.
+  const D1 = `PMD-${taskId}-${runId1}`;
+  await waitFor('host REDISPATCHED row', () => {
+    if (!fs.existsSync(rec)) return null;
+    const hit = readRecords(rec).filter((r) => r.event === 'judgment-response').find(
+      (r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'REDISPATCHED' && r.deliveryId === D1,
+    );
+    return hit ? hit.message.retryRunId : null;
+  });
   await b.stop();
   delete process.env.FAKE_HOST_RECORD_FILE;
   delete process.env.FAKE_HOST_MODE;
   check(run2 !== runId1, 'loop: automatic retry Run #2 created');
   const loopRows = readRecords(rec).filter((r) => r.event === 'judgment-response');
-  check(loopRows.some((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'REDISPATCHED' && r.message?.retryRunId === run2), 'loop: host received REDISPATCHED with retryRunId');
+  check(loopRows.some((r) => r.message?.type === 'PM_JUDGMENT_APPLIED' && r.message?.status === 'REDISPATCHED' && r.deliveryId === D1 && r.message?.retryRunId === run2), 'loop: host received REDISPATCHED with retryRunId');
   // Capture Run #2 → Result #2 → delivery #2.
   await injectResultIntoRun(taskId, run2, 'ses-loop-2', 'loop result two', WORKSPACE_B);
   const D2 = `PMD-${taskId}-${run2}`;
