@@ -1,14 +1,44 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(os.tmpdir(), `arl-b15-fix-a-${process.pid}-${Date.now()}`);
 const workspace = path.join(root, 'workspace');
 fs.mkdirSync(workspace, { recursive: true });
 const fake = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/actl/fake-actl.mjs');
-const launcher = path.join(root, 'actl');
-fs.writeFileSync(launcher, `#!/usr/bin/env bash\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+// POSIX: extensionless bash launcher (shebang + exec bit) runs under production's
+// shell:false spawn. Windows: CreateProcess cannot execute a bash/shebang script
+// with shell:false (ENOENT before any JSON reaches the fake) — shell:true/cmd.exe
+// stay forbidden — so compile the tiny test-only C# launcher fixture (Repair 05
+// pattern: same Node fake-actl.mjs, argv forwarded verbatim, stdio pumped as raw
+// bytes, exit code propagated) to a real .exe under the disposable root.
+// launchArgsPrefix stays [] on both platforms; production is untouched.
+const launcherSh = path.join(root, 'actl');
+fs.writeFileSync(launcherSh, `#!/usr/bin/env bash\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+function resolveLauncher() {
+  if (process.platform !== 'win32') return launcherSh;
+  const exe = path.join(root, 'actl.exe');
+  if (!fs.existsSync(exe)) {
+    const cs = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/actl/fake-actl-launcher.cs');
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const q = (s) => `'${s.replace(/'/g, "''")}'`;
+    const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+      `Add-Type -TypeDefinition ([IO.File]::ReadAllText(${q(cs)})) -OutputAssembly ${q(exe)} -OutputType ConsoleApplication`,
+    ], { shell: false, encoding: 'utf8', timeout: 180000 });
+    if (r.status !== 0 || !fs.existsSync(exe)) {
+      throw new Error(`fake actl launcher .exe compile failed (status=${r.status}): ${(r.stderr || '').slice(0, 500)}`);
+    }
+  }
+  return exe;
+}
+const launcher = resolveLauncher();
+if (process.platform === 'win32') {
+  process.env.FAKE_ACTL_NODE_BIN = process.execPath;
+  process.env.FAKE_ACTL_SCRIPT = fake;
+}
 const profile = path.join(root, 'codex-home');
 fs.mkdirSync(profile, { recursive: true });
 const socket = path.join(root, 'tmux.sock');
@@ -81,6 +111,9 @@ async function dispatchOne(title, stateDir, permitFactory, decision = 'ACCEPT', 
 
 const happyDir = path.join(root, 'happy'); fs.mkdirSync(happyDir);
 const happy = await dispatchOne('successful closeout', happyDir, args => bridge.buildDefaultInputPermit({ ...args, snapshotHash: args.currentSnapshotHash }));
+// Launch evidence: only the real fake ACTL process mints state.json (the launcher
+// itself never touches it), so this cannot pass from a pre-created fixture file.
+check(fs.existsSync(path.join(happyDir, 'state.json')), 'fake actl process actually executed behind the launcher (state.json minted)');
 check(happy.accepted?.task.pmState === 'ACCEPTED', 'ACCEPT applies canonical task state');
 const happyReservation = Object.values(happy.state.reservations)[0];
 check(happyReservation.captureAck?.kind === 'FINAL_CAPTURE' && happyReservation.captureAck?.resultId, 'successful FINAL performs captureAck');
