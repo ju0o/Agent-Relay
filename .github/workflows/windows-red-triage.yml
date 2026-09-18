@@ -26,5 +26,7 @@ jobs:
         run: npm run test:v1-g5c-auto-redispatch
       - name: Phase I wrapper regression
         run: npm run test:phase-i-dogfood
+      - name: actl managed bridge regression
+        run: npm run test:actl-managed-bridge
       - name: Full release baseline
         run: npm test
