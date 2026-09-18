@@ -28,5 +28,9 @@ jobs:
         run: npm run test:phase-i-dogfood
       - name: actl managed bridge regression
         run: npm run test:actl-managed-bridge
+      - name: B15 FIX-01 regression
+        run: npm run test:b15-fix-01-a
+      - name: B15 FIX-03 regression
+        run: npm run test:b15-fix-03-a
       - name: Full release baseline
         run: npm test
