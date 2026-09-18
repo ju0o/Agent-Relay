@@ -47,6 +47,9 @@ jobs:
       - name: phase-i3-init (bounded rm retry for CWD-handle timing)
         run: npm run test:phase-i3-init
 
+      - name: phase-i3f4-safe-task-edit (CRLF-normalized source reads, must be 84/84)
+        run: npm run test:phase-i3f4-safe-task-edit
+
       - name: aggregate npm test (next-blocker discovery only, do not fix)
         continue-on-error: true
         run: npm test
