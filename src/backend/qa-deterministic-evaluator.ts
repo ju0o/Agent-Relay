@@ -204,8 +204,18 @@ function isUnderRoot(candidate: string, root: string): boolean {
  * BLOCKED" split. */
 async function resolveExistingPathUnderRoot(workspaceRoot: string, absPath: string): Promise<ExistingPathResolution> {
   try {
-    const real = await fsp.realpath(absPath);
-    if (!isUnderRoot(real, workspaceRoot)) {
+    // Canonicalize BOTH sides before containment comparison. On Windows the
+    // authoritative workspace binding can legitimately use an 8.3 short-path
+    // alias (for example C:\\Users\\RUNNER~1\\...), while realpath(absPath)
+    // expands it to the long form (C:\\Users\\runneradmin\\...). Comparing
+    // a real candidate against a non-real root falsely reports a symlink escape.
+    // Realpathing the root preserves the escape guard while making equivalent
+    // filesystem identities compare as the same directory.
+    const [realRoot, real] = await Promise.all([
+      fsp.realpath(workspaceRoot),
+      fsp.realpath(absPath),
+    ]);
+    if (!isUnderRoot(real, realRoot)) {
       return { kind: 'blocked', reason: `심볼릭 링크가 workspace 밖을 가리킵니다: ${real}` };
     }
     return { kind: 'ok', real };
