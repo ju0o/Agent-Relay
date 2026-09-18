@@ -17,7 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const TEST_ROOT = path.join(os.tmpdir(), `arl-g6-launch-${process.pid}-${Date.now()}`);
 fs.mkdirSync(TEST_ROOT, { recursive: true });
@@ -41,6 +41,38 @@ fs.writeFileSync(
   'utf8',
 );
 fs.chmodSync(FAKE_WORKER, 0o755);
+
+// Windows: CreateProcess cannot start a .mjs/shebang fake with the wrapper's
+// shell:false spawn (ENOENT before any fake output exists; the diagnostic
+// excerpt stays empty and the test trips on the absent field) —
+// shell:true/cmd.exe stay forbidden — so run the SAME fake scripts through
+// the tiny test-only C# node-runner .exe (argv forwarded verbatim, stdio
+// pumped as raw bytes, exit code propagated, env inherited). POSIX keeps the
+// direct .mjs fakes; production is untouched.
+const NODE_RUNNER_CS = path.resolve(__dirname, 'fixtures/g6/fake-node-script-launcher.cs');
+const NODE_RUNNER_EXE = path.join(TEST_ROOT, 'fake-node-runner.exe');
+if (process.platform === 'win32') {
+  if (!fs.existsSync(NODE_RUNNER_EXE)) {
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const q = (s) => `'${s.replace(/'/g, "''")}'`;
+    const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+      `Add-Type -TypeDefinition ([IO.File]::ReadAllText(${q(NODE_RUNNER_CS)})) -OutputAssembly ${q(NODE_RUNNER_EXE)} -OutputType ConsoleApplication`,
+    ], { shell: false, encoding: 'utf8', timeout: 180000 });
+    if (r.status !== 0 || !fs.existsSync(NODE_RUNNER_EXE)) {
+      throw new Error(`fake node-runner .exe compile failed (status=${r.status}): ${(r.stderr || '').slice(0, 500)}`);
+    }
+  }
+  process.env.G6_NODE_BIN = process.execPath;
+}
+// Resolve the wrapper child target for THIS platform. The argv-shape
+// expectation follows the resolved executable (same semantic both ways:
+// resolved exe + flags, no prompt leak).
+function workerTarget(script) {
+  if (process.platform !== 'win32') return { CLAUDE_EXE: script };
+  return { CLAUDE_EXE: NODE_RUNNER_EXE, G6_NODE_SCRIPT: script };
+}
+const expectedArgvExe = (script) => (process.platform === 'win32' ? NODE_RUNNER_EXE : script);
 
 // Sentinel that the wrapper must NEVER write into any log (env leakage test).
 const SENTINEL_SECRET = 'G6_SENTINEL_SECRET_VALUE';
@@ -93,13 +125,13 @@ function readLaunchLog() {
 // ── 1/2/3: non-zero worker stderr captured, bounded, no secrets ──
 console.log('\n-- non-zero diagnostics --');
 {
-  const res = await runWrapper({ CLAUDE_EXE: FAKE_WORKER, G6_SENTINEL_SECRET: SENTINEL_SECRET });
+  const res = await runWrapper({ ...workerTarget(FAKE_WORKER), G6_SENTINEL_SECRET: SENTINEL_SECRET });
   const log = readLaunchLog();
   check(res.code === 1, '1 wrapper propagates non-zero exit');
   check(typeof log.stderrExcerpt === 'string' && log.stderrExcerpt.includes('LAUNCH_ERROR_ABORT'), '1 non-zero stderr captured');
   check(log.stderrExcerpt.length <= 16 * 1024, '2 diagnostic bounded (<=16KiB)');
   check(!JSON.stringify(log).includes(SENTINEL_SECRET), '3 no env/secret leaked into launch log');
-  check(Array.isArray(log.argvShape) && log.argvShape[0] === FAKE_WORKER && log.argvShape.includes('--print'), '5 argv shape recorded (resolved exe + flags)');
+  check(Array.isArray(log.argvShape) && log.argvShape[0] === expectedArgvExe(FAKE_WORKER) && log.argvShape.includes('--print'), '5 argv shape recorded (resolved exe + flags)');
   check(!log.argvShape.some((a) => typeof a === 'string' && a.includes(SENTINEL_SECRET)), '5 argv shape has no secret');
   check(typeof log.stdoutExcerpt === 'string' && log.stdoutExcerpt.includes('some stdout'), '1 stdout captured when relevant');
   check(log.stderrExcerpt === undefined || typeof log.stderrExcerpt === 'string', '2 stderr excerpt is a bounded string');
@@ -111,7 +143,7 @@ console.log('\n-- success path --');
   const OK_WORKER = path.join(TEST_ROOT, 'ok-worker.mjs');
   fs.writeFileSync(OK_WORKER, `#!/usr/bin/env node\nprocess.stdout.write('RESPONSE_OK\\n');\nprocess.exit(0);\n`, 'utf8');
   fs.chmodSync(OK_WORKER, 0o755);
-  const run = await runWrapper({ CLAUDE_EXE: OK_WORKER });
+  const run = await runWrapper({ ...workerTarget(OK_WORKER) });
   check(run.code === 0, '4 successful worker exit 0');
   const log = readLaunchLog();
   check(log.phase === 'completed' && log.exitCode === 0, '4 success recorded');
@@ -121,7 +153,7 @@ console.log('\n-- success path --');
 console.log('\n-- run-bound profile propagation --');
 {
   const run = await runWrapper(
-    { CLAUDE_EXE: PROFILE_WORKER, CLAUDE_CONFIG_DIR: path.join(TEST_ROOT, 'wrong-ambient-profile') },
+    { ...workerTarget(PROFILE_WORKER), CLAUDE_CONFIG_DIR: path.join(TEST_ROOT, 'wrong-ambient-profile') },
     ['--claudeConfigDir', PROFILE_DIR],
   );
   const log = readLaunchLog();
