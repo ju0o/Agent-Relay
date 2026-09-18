@@ -44,6 +44,9 @@ jobs:
       - name: phase-g-dispatcher (G-14a posix keys + G-14b portable/POSIX split)
         run: npm run test:phase-g-dispatcher
 
+      - name: phase-i3-init (bounded rm retry for CWD-handle timing)
+        run: npm run test:phase-i3-init
+
       - name: aggregate npm test (next-blocker discovery only, do not fix)
         continue-on-error: true
         run: npm test
