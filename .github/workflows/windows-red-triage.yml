@@ -1,0 +1,23 @@
+name: Windows Red Triage
+
+on:
+  push:
+    branches:
+      - dev/windows-red-triage-01
+
+permissions:
+  contents: read
+
+jobs:
+  qa-loop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: QA loop diagnostic
+        run: npm run test:v1-qa-loop
