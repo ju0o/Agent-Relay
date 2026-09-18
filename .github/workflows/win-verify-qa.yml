@@ -1,0 +1,50 @@
+# TEMPORARY Windows verification workflow (NOT part of the fix).
+# Lives only on ar/v1-pm-win-verify-* branches. No packaging, no publish,
+# no release, no merge. Runs build + typecheck + the QA gate suites affected
+# by the path-canonicalization fix, plus a portable lineage dump.
+name: Win Verify QA Fix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  win-verify:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (client + server)
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: v1-qa-loop (6 tests)
+        run: npm run test:v1-qa-loop
+
+      - name: v1-qa-path-guard (2 tests)
+        run: npm run test:v1-qa-path-guard
+
+      - name: QA regression slices 1-8 (guard-adjacent)
+        run: >
+          npm run test:v16-slice1-qa-kernel &&
+          npm run test:v16-slice2-deterministic-qa &&
+          npm run test:v16-slice3-semantic-qa &&
+          npm run test:v16-slice4-qa-remediation &&
+          npm run test:v16-slice5-pm-delivery &&
+          npm run test:v16-slice6-restart-reconcile &&
+          npm run test:v16-slice7-full-qa &&
+          npm run test:v16-slice8-wrapper-qa-remediation
+
+      - name: Windows lineage evidence dump
+        run: node test/win-verify-lineage-dump.mjs
