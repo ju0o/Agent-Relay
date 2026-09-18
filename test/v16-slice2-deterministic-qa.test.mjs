@@ -438,7 +438,84 @@ console.log('-- 14h) legacy { paths } baseline WITHOUT entries → round-32 path
   check(c.evidence.baselineMode === 'path-only-legacy' && c.evidence.preExistingCount === 1, '14h evidence records path-only-legacy mode + preExistingCount=1');
 }
 
-console.log('-- 14i) round-36 P0: NUL porcelain — baseline keys agree byte-for-byte for non-ASCII / quote / backslash filenames --');
+console.log('-- 14i-a) round-36 P0 PURE PARSER PROOF: synthetic NUL records preserve raw bytes (all platforms, no filesystem) --');
+{
+  // Platform-independent by construction: no file is created, so NTFS
+  // filename legality cannot affect this. Feeds parsePorcelainZRecords() the
+  // exact byte layout `git status --porcelain=v1 -z` produces.
+  const koreanRaw = 'docs/문서.md';
+  const quotedRaw = 'docs/notes with "quotes".md';
+  const backslashRaw = 'docs/odd\\name.md';
+  const trailingSpaceRaw = 'docs/with space .md';
+  const octalDecoyRaw = 'docs/back\\303\\251slash.md'; // literal backslash+digits: must NOT octal-decode to é
+  const records = [
+    `?? ${koreanRaw}`,
+    `?? ${quotedRaw}`,
+    `?? ${backslashRaw}`,
+    `?? ${trailingSpaceRaw}`,
+    `?? ${octalDecoyRaw}`,
+    ' M docs/modified.md',
+  ];
+  const buf = Buffer.from(records.join('\0') + '\0', 'utf8');
+  const parsed = wdc.parsePorcelainZRecords(buf);
+  const expected = [koreanRaw, quotedRaw, backslashRaw, trailingSpaceRaw, octalDecoyRaw, 'docs/modified.md'];
+  check(JSON.stringify(parsed) === JSON.stringify(expected), '14i-a NUL records parse to byte-for-byte raw paths in order');
+  check(parsed.includes(quotedRaw), '14i-a embedded double-quote survives (no quote stripping)');
+  check(parsed.includes(backslashRaw), '14i-a literal backslash survives as one char (not a separator, not an escape)');
+  check(parsed.includes(octalDecoyRaw) && !parsed.includes('docs/backéslash.md'), '14i-a backslash+digits are NOT octal-decoded');
+  check(parsed.includes(trailingSpaceRaw), '14i-a trailing-space filename is NOT trimmed');
+  check(parsed.includes(koreanRaw), '14i-a non-ASCII filename survives byte-for-byte (no C-quote/octal form)');
+  check(JSON.stringify(wdc.parsePorcelainZRecords(buf.toString('utf8'))) === JSON.stringify(expected), '14i-a string input parses identically to Buffer input');
+  // Normalization (shared by dispatcher baseline + evaluator) must not
+  // reinterpret the raw bytes: posix-only, no backslash-to-separator mapping.
+  check(wdc.normalizeWorkspacePath(backslashRaw) === backslashRaw, '14i-a normalizeWorkspacePath keeps a literal backslash literal');
+  check(wdc.normalizeWorkspacePath(quotedRaw) === quotedRaw, '14i-a normalizeWorkspacePath keeps embedded quotes');
+  check(wdc.normalizeWorkspacePath(koreanRaw) === koreanRaw, '14i-a normalizeWorkspacePath keeps non-ASCII bytes');
+}
+
+console.log('-- 14i-b) portable filesystem integration: baseline/digest exclusion with cross-platform-safe names (all platforms) --');
+{
+  const { workspaceRoot, folder, attempt } = await makeAttempt();
+  initGitRepo(workspaceRoot);
+  fs.mkdirSync(path.join(workspaceRoot, 'docs'), { recursive: true });
+  // NTFS-representable names only (no " no literal backslash): Korean covers
+  // the old C-quote/octal mangling end-to-end through real git -z output;
+  // quote/backslash byte-invariance itself is proven by 14i-a above.
+  const koreanPath = 'docs/문서.md';
+  const spacedPath = 'docs/notes with spaces.md';
+  const symbolsPath = 'docs/dashed-name_with.symbols+plus(parens).md';
+  fs.writeFileSync(path.join(workspaceRoot, koreanPath), 'korean-v1', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, spacedPath), 'spaced-v1', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, symbolsPath), 'symbols-v1', 'utf8');
+  fs.writeFileSync(path.join(folder, 'workspace-baseline.json'), JSON.stringify({
+    paths: [koreanPath, spacedPath, symbolsPath],
+    entries: {
+      [koreanPath]: sha256('korean-v1'),
+      [spacedPath]: sha256('spaced-v1'),
+      [symbolsPath]: sha256('symbols-v1'),
+    },
+    capturedAt: new Date().toISOString(),
+  }), 'utf8');
+  // The run only changes an allowed new file.
+  fs.writeFileSync(path.join(workspaceRoot, 'docs', 'RELEASE_NOTES.md'), 'v1', 'utf8');
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'PASS', `14i-b unchanged pre-existing paths excluded by matching digests → PASS (got ${c.status})`);
+  check(c.detail.includes('pre-existing (excluded):'), `14i-b detail has the excluded note (got: ${c.detail})`);
+  check(c.detail.includes(koreanPath), `14i-b detail shows the RAW Korean path, never a C-quoted/octal form (got: ${c.detail})`);
+  check(c.detail.includes(spacedPath), `14i-b detail shows the spaced path verbatim (got: ${c.detail})`);
+  check(c.detail.includes(symbolsPath), `14i-b detail shows the symbols path verbatim (got: ${c.detail})`);
+  check(!/\\\d{3}/.test(c.detail), `14i-b no octal-escaped bytes leak into the diffScope detail (got: ${c.detail})`);
+  check(c.evidence.baselineMode === 'content' && c.evidence.preExistingCount === 3 && c.evidence.modifiedPreExistingCount === 0, '14i-b content mode: all three pre-existing paths excluded, none treated as modified');
+}
+
+if (process.platform === 'win32') {
+  console.log('-- 14i-c) POSIX-only on-disk quote/backslash integration SKIPPED on Windows (NTFS cannot represent " or backslash in filenames; the parser invariant is proven by 14i-a on all platforms) --');
+} else {
+console.log('-- 14i-c) POSIX-only: on-disk quote/backslash integration (same-old 14i body, NTFS-unrepresentable) --');
 {
   const { workspaceRoot, folder, attempt } = await makeAttempt();
   initGitRepo(workspaceRoot);
@@ -469,13 +546,14 @@ console.log('-- 14i) round-36 P0: NUL porcelain — baseline keys agree byte-for
     checks: [{ kind: 'diffScope', allowedPaths: ['docs/RELEASE_NOTES.md'] }],
   });
   const c = out.record.deterministic.checks[0];
-  check(c.status === 'PASS', `14i unchanged Korean/quote/backslash pre-existing paths excluded by matching digests → PASS (got ${c.status})`);
-  check(c.detail.includes('pre-existing (excluded):'), `14i detail has the excluded note (got: ${c.detail})`);
-  check(c.detail.includes(koreanPath), `14i detail shows the RAW Korean path, never a C-quoted/octal form (got: ${c.detail})`);
-  check(c.detail.includes(quotedPath), `14i detail shows the RAW quote-containing path (got: ${c.detail})`);
-  check(c.detail.includes(backslashPath), `14i detail shows the RAW backslash path (got: ${c.detail})`);
-  check(!/\\\d{3}/.test(c.detail), `14i no octal-escaped bytes leak into the diffScope detail (got: ${c.detail})`);
-  check(c.evidence.baselineMode === 'content' && c.evidence.preExistingCount === 3 && c.evidence.modifiedPreExistingCount === 0, '14i content mode: all three pre-existing paths excluded, none treated as modified');
+  check(c.status === 'PASS', `14i-c unchanged Korean/quote/backslash pre-existing paths excluded by matching digests → PASS (got ${c.status})`);
+  check(c.detail.includes('pre-existing (excluded):'), `14i-c detail has the excluded note (got: ${c.detail})`);
+  check(c.detail.includes(koreanPath), `14i-c detail shows the RAW Korean path, never a C-quoted/octal form (got: ${c.detail})`);
+  check(c.detail.includes(quotedPath), `14i-c detail shows the RAW quote-containing path (got: ${c.detail})`);
+  check(c.detail.includes(backslashPath), `14i-c detail shows the RAW backslash path (got: ${c.detail})`);
+  check(!/\\\d{3}/.test(c.detail), `14i-c no octal-escaped bytes leak into the diffScope detail (got: ${c.detail})`);
+  check(c.evidence.baselineMode === 'content' && c.evidence.preExistingCount === 3 && c.evidence.modifiedPreExistingCount === 0, '14i-c content mode: all three pre-existing paths excluded, none treated as modified');
+}
 }
 
 console.log('-- 14j) round-36 P0: pre-existing Korean-named file MODIFIED by this run, out of scope → FAIL naming the real path --');
