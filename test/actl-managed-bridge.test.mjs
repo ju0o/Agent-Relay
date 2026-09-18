@@ -141,7 +141,7 @@ fs.writeFileSync(
     `  await import(${JSON.stringify(pathToFileURL(FAKE_ACTL).href)});`,
     '}',
     '',
-  ].join('\\n'),
+  ].join('\n'),
   'utf8',
 );
 const preloadOption = `--import=${pathToFileURL(FAKE_ACTL_PRELOAD).href}`;
