@@ -5,6 +5,9 @@
 name: Win Verify QA Fix
 
 on:
+  push:
+    branches:
+      - ar/v1-pm-win-verify-867ecb2
   workflow_dispatch:
 
 jobs:
