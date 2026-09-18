@@ -1,19 +1,27 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'arl-b15-fix-03-'));
 const workspace = path.join(root, 'workspace');
 fs.mkdirSync(workspace, { recursive: true });
 const fake = path.join(repo, 'test/fixtures/actl/fake-actl.mjs');
-const launcher = path.join(root, 'actl');
-fs.writeFileSync(launcher, `#!/usr/bin/env bash\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
-// Delayed-collect launcher: inserts a sleep before collect so tests can race the
-// DISPATCHED → RUNNING CAS with a concurrent state transition.
-const delayedLauncher = path.join(root, 'actl-delayed');
-fs.writeFileSync(delayedLauncher, `#!/usr/bin/env bash\nif [ "$2" = "collect" ]; then sleep 0.3; fi\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+// Cross-platform fake executable: production still spawns one absolute
+// executable with shell:false; the test uses Node plus a preload that remaps
+// the synthetic "runtime <op> --request-stdin" invocation to fake-actl.mjs.
+const launcher = process.execPath;
+const preload = path.join(root, 'fake-actl-preload.mjs');
+fs.writeFileSync(preload, [
+  "import * as path from 'node:path';",
+  `if (path.basename(process.argv[1] ?? '') === 'runtime') {`,
+  `  process.argv = [process.argv[0], ${JSON.stringify(fake)}, 'runtime', ...process.argv.slice(2)];`,
+  `  await import(${JSON.stringify(pathToFileURL(fake).href)});`,
+  '}',
+  '',
+].join('\n'), 'utf8');
+process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`].filter(Boolean).join(' ');
 const profile = path.join(root, 'codex-home');
 fs.mkdirSync(profile, { recursive: true });
 const socket = path.join(root, 'tmux.sock');
@@ -129,11 +137,12 @@ check(allReleased(taskChangesDir) && allReleased(ownerDir), 'canonical ACCEPT an
 // The failure handler must NOT release the actl reservation.
 const casDir = path.join(root, 'running-cas'); fs.mkdirSync(casDir);
 wr.writeWorkerRegistryRecord(root, {
-  schemaVersion: 'G.2', workerId: 'w-cas', launchCommand: delayedLauncher, launchArgsPrefix: [],
+  schemaVersion: 'G.2', workerId: 'w-cas', launchCommand: launcher, launchArgsPrefix: [],
   observationAdapterId: 'actl-managed', driverOptions: { actl: actlOpts },
 });
 process.env.FAKE_ACTL_STATE_DIR = casDir;
 process.env.FAKE_ACTL_MODE = 'happy';
+process.env.FAKE_ACTL_COLLECT_DELAY_MS = '300';
 bridge.setActlInputPermitFactory(args => bridge.buildDefaultInputPermit({ ...args, snapshotHash: args.currentSnapshotHash }));
 const casTask = await makeTask('running cas failure');
 const casDispatchP = disp.dispatchTask(root, project, {
@@ -160,6 +169,7 @@ if (casReady) {
 let casError;
 try { await casDispatchP; } catch (err) { casError = err; }
 check(casReady && !casTransitionError && casError?.code === 'CONFLICT' && anyHeld(casDir), 'RUNNING-CAS failure keeps the reservation held');
+delete process.env.FAKE_ACTL_COLLECT_DELAY_MS;
 disp._resetDispatcherStateForTests();
 bridge.setActlInputPermitFactory(null);
 
