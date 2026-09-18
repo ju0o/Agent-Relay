@@ -298,6 +298,10 @@ if (cliOp === 'send') {
 }
 
 if (cliOp === 'collect') {
+  const collectDelayMs = Number(process.env.FAKE_ACTL_COLLECT_DELAY_MS || '0');
+  if (Number.isFinite(collectDelayMs) && collectDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(collectDelayMs, 5_000)));
+  }
   if (!state.sent && (mode === 'happy' || mode === 'final-same-poll')) {
     emit(envelope(requestId, false, null, {
       code: 'RESULT_NOT_FINAL',
