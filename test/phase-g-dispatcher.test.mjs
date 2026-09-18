@@ -239,7 +239,13 @@ console.log('\n── G-14a dispatch-time workspace baseline ──');
   const modifiedBytes = 'modified-after-commit';
   fs.writeFileSync(path.join(baseWS, modifiedPath), modifiedBytes, 'utf8');
   // `??` (untracked file): docs/OPERATIONS.md exists before dispatch.
+  // NOTE: the canonical baseline key form is posix (`docs/OPERATIONS.md`,
+  // produced by the shared posix-only normalizer both sides use). Only
+  // path.join() may be used for filesystem access; key comparisons below
+  // must use the posix literal, because path.join yields backslashes on
+  // Windows and would never match a canonical key.
   const untrackedPath = path.join('docs', 'OPERATIONS.md');
+  const untrackedKey = 'docs/OPERATIONS.md';
   const untrackedBytes = 'uncommitted-from-before';
   fs.mkdirSync(path.join(baseWS, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(baseWS, untrackedPath), untrackedBytes, 'utf8');
@@ -267,7 +273,7 @@ console.log('\n── G-14a dispatch-time workspace baseline ──');
     `G-14a baseline is the { paths, entries, capturedAt } object shape (got ${JSON.stringify(baseline)?.slice(0, 200)})`,
   );
   check(
-    Array.isArray(baseline?.paths) && baseline.paths.includes(untrackedPath) && baseline.paths.includes(modifiedPath),
+    Array.isArray(baseline?.paths) && baseline.paths.includes(untrackedKey) && baseline.paths.includes(modifiedPath),
     `G-14a baseline paths contain both the ?-untracked and the M-modified path (got ${JSON.stringify(baseline?.paths)})`,
   );
   check(
@@ -276,8 +282,8 @@ console.log('\n── G-14a dispatch-time workspace baseline ──');
   );
   check(baseline.paths.length === 2, 'G-14a exactly the two dirty paths are snapshotted (clean standalone commit otherwise)');
   check(
-    baseline?.entries?.[untrackedPath] === sha256(Buffer.from(untrackedBytes, 'utf8')),
-    `G-14a content digest recorded for the ?? entry (got ${baseline?.entries?.[untrackedPath]})`,
+    baseline?.entries?.[untrackedKey] === sha256(Buffer.from(untrackedBytes, 'utf8')),
+    `G-14a content digest recorded for the ?? entry (got ${baseline?.entries?.[untrackedKey]})`,
   );
   check(
     baseline?.entries?.[modifiedPath] === sha256(Buffer.from(modifiedBytes, 'utf8')),
@@ -290,8 +296,73 @@ console.log('\n── G-14a dispatch-time workspace baseline ──');
   disp._resetDispatcherStateForTests();
 }
 
+// ── G-14b-portable: dispatch-time baseline with NTFS-representable names ───
+// Same dispatch-side capture contract as G-14b below, with cross-platform
+// filenames (Korean covers the old C-quote/octal mangling end-to-end through
+// real `git -z` output). Quote/backslash byte-invariance is proven by the
+// shared-parser synthetic seam (v16-slice2 14i-a, same parsePorcelainZRecords
+// + normalizeWorkspacePath both sides use here) on all platforms.
+console.log('\n── G-14b-portable dispatch-time baseline: portable names, raw posix keys ──');
+
+{
+  const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+  const baseWS = path.join(TEST_ROOT, '_baseline-ws-portable');
+  fs.rmSync(baseWS, { recursive: true, force: true });
+  fs.mkdirSync(baseWS, { recursive: true });
+  execSync('git init -q', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.email g@example.com', { cwd: baseWS, stdio: 'ignore' });
+  execSync('git config user.name "G Fixture"', { cwd: baseWS, stdio: 'ignore' });
+  const koreanPath = 'docs/문서.md';
+  const spacedPath = 'docs/notes with spaces.md';
+  const symbolsPath = 'docs/dashed-name_with.symbols+plus(parens).md';
+  const koreanBytes = 'korean-content-v1';
+  const spacedBytes = 'spaced-content-v1';
+  const symbolsBytes = 'symbols-content-v1';
+  fs.mkdirSync(path.join(baseWS, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(baseWS, koreanPath), koreanBytes, 'utf8');
+  fs.writeFileSync(path.join(baseWS, spacedPath), spacedBytes, 'utf8');
+  fs.writeFileSync(path.join(baseWS, symbolsPath), symbolsBytes, 'utf8');
+
+  const task = await makeReadyTask(goal.goalId, 'NUL baseline dispatch (portable)');
+  const result = await disp.dispatchTask(TEST_ROOT, project, {
+    taskId: task.taskId,
+    workerId: 'w-zero',
+    expectedExecutionState: 'READY',
+    workspaceRoot: baseWS,
+  });
+  check(result.executionState === 'RUNNING' && result.runId, 'G-14b-portable dispatch succeeds');
+  const linked = gt.getTask(TEST_ROOT, project, task.taskId).linkedRuns.find((r) => r.runId === result.runId);
+  const baseline = JSON.parse(fs.readFileSync(path.join(linked.folder, 'workspace-baseline.json'), 'utf8'));
+  check(
+    baseline.paths.includes(koreanPath) && baseline.paths.includes(spacedPath) && baseline.paths.includes(symbolsPath),
+    `G-14b-portable baseline paths are the exact RAW key strings (got ${JSON.stringify(baseline.paths)})`,
+  );
+  check(
+    baseline.entries?.[koreanPath] === sha256(Buffer.from(koreanBytes, 'utf8')) &&
+      baseline.entries?.[spacedPath] === sha256(Buffer.from(spacedBytes, 'utf8')) &&
+      baseline.entries?.[symbolsPath] === sha256(Buffer.from(symbolsBytes, 'utf8')),
+    `G-14b-portable content digests recorded under the exact raw keys (got ${JSON.stringify(baseline.entries)})`,
+  );
+  check(
+    !baseline.paths.some((p) => p.startsWith('"') || /\\\d{3}/.test(p)),
+    `G-14b-portable no C-quoted / octal-escaped path ever reaches the baseline (got ${JSON.stringify(baseline.paths)})`,
+  );
+  const status = await wdc.runGitStatusZ(baseWS);
+  check(
+    status.kind === 'ok' &&
+      status.paths.length === 3 &&
+      status.paths.includes(koreanPath) && status.paths.includes(spacedPath) && status.paths.includes(symbolsPath) &&
+      status.paths.every((p) => baseline.paths.includes(p)),
+    `G-14b-portable dispatcher baseline keys ≡ evaluator-side parser keys (got ${status.kind === 'ok' ? JSON.stringify(status.paths) : status.reason})`,
+  );
+  disp._resetDispatcherStateForTests();
+}
+
+if (process.platform === 'win32') {
+  console.log('\n── G-14b POSIX-only on-disk quote/backslash integration SKIPPED on Windows (NTFS cannot represent " or backslash in filenames; byte-invariance is proven by v16-slice2 14i-a through the same shared parser on all platforms) ──');
+} else {
 // ── G-14b: NUL porcelain capture — raw non-ASCII/quote/backslash keys ────────
-console.log('\n── G-14b dispatch-time workspace baseline: raw Korean/quote/backslash path keys (round 36 P0) ──');
+console.log('\n── G-14b dispatch-time workspace baseline: raw Korean/quote/backslash path keys (round 36 P0, POSIX-only) ──');
 
 {
   const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
@@ -348,6 +419,7 @@ console.log('\n── G-14b dispatch-time workspace baseline: raw Korean/quote/b
   );
   disp._resetDispatcherStateForTests();
 }
+} // end POSIX-only G-14b (win32 skips above with an explicit note)
 
 // ── G-14c: oversize dirty file → `oversize:<bytes>` digest (round 36 P1) ─────
 console.log('\n── G-14c dispatch-time workspace baseline: oversize file above the per-file cap ──');
