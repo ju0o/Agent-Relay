@@ -52,6 +52,13 @@ const FAIL = (m) => { console.log('  FAIL  ' + m); failed++; process.exitCode = 
 const check = (cond, m) => { if (cond) PASS(m); else FAIL(m); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Platform-independent path comparison for the AR-04 fs monkeypatch seams
+// below: production builds paths with path.join (backslash separators on
+// Windows), so comparing raw strings against '/'-literal suffixes never
+// matches there. Normalizing separators preserves the exact injected
+// race/failure behavior on every platform.
+const normSlashes = (p) => String(p).split(/[\\/]/).join('/');
+
 async function shouldThrow(fn, label, fragment) {
   try {
     await fn();
@@ -212,7 +219,7 @@ console.log('\n-- AR-04: race and replay repair --');
   let raced = false;
   fsDefault.readFileSync = function (file, ...args) {
     const value = originalRead.call(this, file, ...args);
-    if (!raced && String(file).endsWith(`/pm-deliveries/${D}/delivery.json`) && String(value).includes('"status": "PENDING"')) {
+    if (!raced && normSlashes(file).endsWith(`/pm-deliveries/${D}/delivery.json`) && String(value).includes('"status": "PENDING"')) {
       raced = true;
       const record = JSON.parse(String(value));
       record.status = 'ACKNOWLEDGED';
@@ -237,7 +244,7 @@ console.log('\n-- AR-04: race and replay repair --');
   const originalRename = fsDefault.renameSync;
   let forced = false;
   fsDefault.renameSync = function (from, to) {
-    if (!forced && String(to).endsWith('/delivery.json') && String(to).includes('/pm-deliveries/')) {
+    if (!forced && normSlashes(to).endsWith('/delivery.json') && normSlashes(to).includes('/pm-deliveries/')) {
       forced = true;
       throw new Error('forced disposable delivery reconcile failure');
     }
