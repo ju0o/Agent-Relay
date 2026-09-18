@@ -1,0 +1,46 @@
+# TEMPORARY certification plumbing ONLY (ar/v1-pm-win-cert-* branches).
+# No product/test source differences from ar/v1-pm@0d93239. No publish, no merge.
+name: Win Full Certification
+
+on:
+  push:
+    branches:
+      - ar/v1-pm-win-cert-0d93239
+  workflow_dispatch:
+
+jobs:
+  certify:
+    runs-on: windows-latest
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Typecheck
+        run: npm run typecheck
+      - name: 'A: aggregate npm test'
+        continue-on-error: true
+        run: set +e; npm test > /tmp/cert-aggregate.log 2>&1; code=$?; tail -15 /tmp/cert-aggregate.log; echo "CERT::aggregate-npm-test=$([ $code -eq 0 ] && echo PASS || echo FAIL)"
+      - name: 'EVIDENCE: v1-g5a-pm-judgment full output'
+        continue-on-error: true
+        run: set +e; npm run test:v1-g5a-pm-judgment > /tmp/ev-g5a.log 2>&1; code=$?; echo "CERT::evidence-g5a=$([ $code -eq 0 ] && echo PASS || echo FAIL)"; cat /tmp/ev-g5a.log
+      - name: 'EVIDENCE: slice8-qa-mode full output'
+        continue-on-error: true
+        run: set +e; npm run test:v16-slice8-wrapper-qa-mode > /tmp/ev-s8mode.log 2>&1; code=$?; echo "CERT::evidence-s8mode=$([ $code -eq 0 ] && echo PASS || echo FAIL)"; cat /tmp/ev-s8mode.log
+      - name: 'EVIDENCE: b15-fix-01-a full output'
+        continue-on-error: true
+        run: set +e; npm run test:b15-fix-01-a > /tmp/ev-b15.log 2>&1; code=$?; echo "CERT::evidence-b15=$([ $code -eq 0 ] && echo PASS || echo FAIL)"; cat /tmp/ev-b15.log
+      - name: Certification gate summary
+        if: always()
+        run: echo CERTIFICATION MATRIX COMPLETE
