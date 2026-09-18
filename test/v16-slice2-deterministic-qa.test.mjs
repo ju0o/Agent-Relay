@@ -1010,6 +1010,21 @@ console.log('-- 46) command evidence carries argv/cwd for audit --');
   check(c.evidence.cwd === '.', '46b workspace-relative cwd recorded in evidence');
 }
 
+console.log('-- 47a-portable) fail-closed BLOCKED branch is reachable on all platforms (NUL-byte path can never be a real file) --');
+{
+  const { attempt } = await makeAttempt();
+  const out = await evalr.evaluateDeterministicQa(ROOT, project, {
+    qaAttemptId: attempt.qaAttemptId,
+    checks: [{ kind: 'fileExists', path: 'a\0b.txt' }],
+  });
+  const c = out.record.deterministic.checks[0];
+  check(c.status === 'BLOCKED', `47a-portable NUL-byte path is BLOCKED, never guessed as FAIL/PASS (got ${c.status}: ${c.detail})`);
+  check(out.record.finalQaStatus === 'BLOCKED', '47a-portable unreadable-unsafe input finalizes the attempt as BLOCKED (structural non-override)');
+}
+
+if (process.platform === 'win32') {
+  console.log('-- 47) POSIX-only chmod-based unreadable-target proof SKIPPED on Windows (NTFS ACLs ignore POSIX mode bits and runners are elevated; the fail-closed BLOCKED branch is proven by 47a-portable on all platforms) --');
+} else {
 console.log('-- 47) unreadable target (permission denied) → BLOCKED, not FAIL --');
 {
   const { workspaceRoot, attempt } = await makeAttempt();
@@ -1023,10 +1038,11 @@ console.log('-- 47) unreadable target (permission denied) → BLOCKED, not FAIL 
       checks: [{ kind: 'fileExists', path: 'locked/secret.txt' }],
     });
     const c = out.record.deterministic.checks[0];
-    check(c.status === 'BLOCKED', `47a permission-denied path is BLOCKED, never guessed as FAIL (got ${c.status}: ${c.detail})`);
+    check(c.status === 'BLOCKED', `47b POSIX permission-denied path is BLOCKED, never guessed as FAIL (got ${c.status}: ${c.detail})`);
   } finally {
     fs.chmodSync(dir, 0o755); // restore so ROOT cleanup / later fixtures are unaffected
   }
+}
 }
 
 console.log('-- 48) QA PASS never mutates the Task record (authority boundary) --');
