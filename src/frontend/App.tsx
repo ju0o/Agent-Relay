@@ -7,6 +7,7 @@ import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { must, hasBridge, dragLocalFile, onUpdateStatus, onCaptureStatus } from './bridge.js';
 import { agentNameToAdapterId } from '../shared/adapter-map.js';
 import { FieldText } from './components.js';
+import { GoalLoopPanel } from './GoalLoopPanel.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { TaskHistoryPanel } from './taskhistory.js';
 import { QuickDogfood } from './quickdf.js';
@@ -1700,7 +1701,7 @@ function AppInner(): React.ReactElement {
                                 dragResultToGpt(activeTab);
                               }
                             }}
-                          >📤 GPT로 드래그</button>
+                          >📤 GPT로 드래그 (수동 폴백)</button>
                         )}
                         {activeTab.resultSaved && activeTab.folder && (
                           <button
@@ -1859,6 +1860,12 @@ function AppInner(): React.ReactElement {
                 onOpen={() => undefined}
               />
             </div>
+
+            {dataRoot && project && (
+              <div className="settings-section">
+                <GoalLoopPanel dataRoot={dataRoot} project={project} notify={notify} />
+              </div>
+            )}
 
             <div className="modalbtns">
               <button className="btn subtle" onClick={() => setShowSettings(false)}>닫기</button>

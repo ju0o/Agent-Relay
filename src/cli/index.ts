@@ -61,6 +61,7 @@ Examples:
   agent-relay workspace run --lane actl
   agent-relay workspace run --lane actl --live --project actl
   agent-relay runner run --store <dir> --lane actl --once --cycle <id>
+  agent-relay goal-loop --goal-title "Fix X" --goal-statement "..." --worker <id> --workspace <dir> --yes
   agent-relay runner status --store <dir>
   agent-relay runner stop --store <dir>
   agent-relay history TASK-0001
@@ -77,7 +78,7 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; store: string | null; transportFile: string | null; worker: string | null; dataRootOpt: string | null; goalBriefDir: string | null; testsFile: string | null; commandsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; note: string | null; ttlHours: number | null; tasksMax: number | null; turnTimeoutMs: number | null; turnAttempts: number | null; noNewTasks: boolean; noTmuxSends: boolean; autoContinue: boolean; nightCycle: string | null; expectedSha: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; allowTmuxSends: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; goal: string | null; goalTitle: string | null; goalStatement: string | null; workspace: string | null; transport: string | null; actlAgent: string | null; projectName: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; store: string | null; transportFile: string | null; worker: string | null; dataRootOpt: string | null; dataRoot: string | null; goalBriefDir: string | null; testsFile: string | null; commandsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; note: string | null; ttlHours: number | null; tasksMax: number | null; turnTimeoutMs: number | null; turnAttempts: number | null; noNewTasks: boolean; noTmuxSends: boolean; autoContinue: boolean; nightCycle: string | null; expectedSha: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; allowTmuxSends: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -88,6 +89,13 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let prep: string | null = null;
   let orphanAction: string | null = null;
   let reason: string | null = null;
+  let goal: string | null = null;
+  let goalTitle: string | null = null;
+  let goalStatement: string | null = null;
+  let workspace: string | null = null;
+  let transport: string | null = null;
+  let actlAgent: string | null = null;
+  let projectName: string | null = null;
   let lane: string | null = null;
   let preset: string | null = null;
   let script: string | null = null;
@@ -97,6 +105,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let transportFile: string | null = null;
   let worker: string | null = null;
   let dataRootOpt: string | null = null;
+  let dataRoot: string | null = null;
   let goalBriefDir: string | null = null;
   let testsFile: string | null = null;
   let commandsFile: string | null = null;
@@ -145,7 +154,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--no-new-tasks') noNewTasks = true;
     else if (a === '--no-tmux-sends') noTmuxSends = true;
     else if (a === '--allow-tmux-sends') allowTmuxSends = true;
-    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--tests' || a === '--commands-file' || a === '--risks-file' || a === '--base' || a === '--ready' || a === '--store' || a === '--transport-file' || a === '--worker' || a === '--data-root' || a === '--goal-brief-dir' || a === '--note' || a === '--ttl-hours' || a === '--tasks' || a === '--turn-timeout-ms' || a === '--turn-attempts' || a === '--max-turns') {
+    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--goal' || a === '--goal-title' || a === '--goal-statement' || a === '--workspace' || a === '--transport' || a === '--actl-agent' || a === '--project-name' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--tests' || a === '--commands-file' || a === '--risks-file' || a === '--base' || a === '--ready' || a === '--store' || a === '--transport-file' || a === '--worker' || a === '--data-root' || a === '--goal-brief-dir' || a === '--note' || a === '--ttl-hours' || a === '--tasks' || a === '--turn-timeout-ms' || a === '--turn-attempts' || a === '--max-turns') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) { unknown = a; break; }
       if (a === '--poll-ms') {
@@ -216,6 +225,22 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
         orphanAction = next;
       } else if (a === '--reason') {
         reason = next;
+      } else if (a === '--goal') {
+        goal = next;
+      } else if (a === '--goal-title') {
+        goalTitle = next;
+      } else if (a === '--goal-statement') {
+        goalStatement = next;
+      } else if (a === '--workspace') {
+        workspace = next;
+      } else if (a === '--transport') {
+        transport = next;
+      } else if (a === '--actl-agent') {
+        actlAgent = next;
+      } else if (a === '--project-name') {
+        projectName = next;
+      } else if (a === '--data-root') {
+        dataRoot = next;
       } else {
         hostConfig = next;
       }
@@ -223,7 +248,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'workspace' || a === 'runner' || a === 'night-run')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'workspace' || a === 'runner' || a === 'night-run' || a === 'goal-loop')) {
       command = a;
     } else if ((command === 'connect' || command === 'host' || command === 'resume' || command === 'workspace' || command === 'runner' || command === 'night-run') && !sub) {
       sub = a;
@@ -235,7 +260,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, autoContinue, nightCycle, expectedSha, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, goal, goalTitle, goalStatement, workspace, transport, actlAgent, projectName, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, dataRoot, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, autoContinue, nightCycle, expectedSha, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function promptOwnerConfirm(question: string): Promise<boolean> {
@@ -250,7 +275,7 @@ async function promptOwnerConfirm(question: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, autoContinue, nightCycle, expectedSha, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, goal, goalTitle, goalStatement, workspace, transport, actlAgent, projectName, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, dataRoot, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, autoContinue, nightCycle, expectedSha, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -469,6 +494,31 @@ async function main(): Promise<void> {
       ...(hostConfig !== null ? { hostConfigDir: hostConfig } : {}),
     });
     process.exit(code);
+  }
+
+  if (command === 'goal-loop') {
+    const { runGoalLoopCli, renderGoalLoopHuman, goalLoopUsage, GOAL_LOOP_SCHEMA_VERSION } = await import('./goal-loop.js');
+    let confirmed = yes;
+    if (!confirmed && process.stdin.isTTY) confirmed = await promptOwnerConfirm('Start AUTO goal loop (dispatch + capture + review)?');
+    if (!confirmed) {
+      const msg = 'refused: Owner confirmation required (--yes or interactive y). Nothing executed.';
+      if (json) console.log(JSON.stringify({ schemaVersion: GOAL_LOOP_SCHEMA_VERSION, ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    if (!worker || !workspace || (!goal && (!goalTitle || !goalStatement))) {
+      if (json) console.log(JSON.stringify({ schemaVersion: GOAL_LOOP_SCHEMA_VERSION, ok: false, error: goalLoopUsage() }, null, 2));
+      else console.error(goalLoopUsage());
+      process.exit(1);
+    }
+    const res = await runGoalLoopCli(cwd, {
+      goal, goalTitle, goalStatement, worker, workspace, transport, actlAgent, projectName, dataRoot,
+      yes: confirmed, json,
+    });
+    if (json) console.log(JSON.stringify({ schemaVersion: GOAL_LOOP_SCHEMA_VERSION, ...res }, null, 2));
+    else if (!res.ok && res.error === 'not-initialized') console.log(notInitializedMessage());
+    else console.log(renderGoalLoopHuman(res));
+    process.exit(res.ok ? 0 : 1);
   }
 
   if (command === 'workspace') {

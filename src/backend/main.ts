@@ -23,6 +23,8 @@ import { authorizeEffect } from './permission-gate.js';
 import { CaptureManager } from './capture-manager.js';
 import { setCaptureManager } from './capture-service.js';
 import { migrateSettings } from './migrate.js';
+import { startGoalLoop, getGoalLoopStatus } from './goal-loop.js';
+import { reviewRunWithChatGpt } from './chatgpt-review.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
   AppSettings,
@@ -680,6 +682,44 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'update:install':
       installUpdate();
       return true;
+
+    case 'goal-loop:start':
+      return startGoalLoop({
+        dataRoot: req.dataRoot,
+        project: req.project,
+        goalId: req.goalId,
+        goalTitle: req.goalTitle,
+        goalStatement: req.goalStatement,
+        taskPlan: req.taskPlan,
+        workerId: req.workerId,
+        workspaceRoot: req.workspaceRoot,
+        transport: req.transport,
+        actlAgent: req.actlAgent,
+        maxTasks: req.maxTasks,
+        maxAttemptsPerTask: req.maxAttemptsPerTask,
+        resultWaitMs: req.resultWaitMs,
+      });
+
+    case 'goal-loop:status':
+      return getGoalLoopStatus(req.dataRoot, req.project, req.goalId);
+
+    case 'chatgpt:review':
+      return reviewRunWithChatGpt(
+        {
+          goalTitle: req.goalTitle,
+          goalStatement: req.goalStatement,
+          taskId: req.taskId,
+          taskTitle: req.taskTitle,
+          acceptanceCriteria: req.acceptanceCriteria ?? [],
+          runId: req.runId,
+          attemptSequence: req.attemptSequence ?? 1,
+          resultExcerpt: String(req.resultExcerpt ?? '').slice(0, 8000),
+          diffStat: String(req.diffStat ?? '').slice(0, 2000),
+          repoSha: String(req.repoSha ?? '').slice(0, 40),
+          priorRetryInstruction: req.priorRetryInstruction,
+        },
+        { reviewMode: 'real' },
+      );
 
     default:
       throw new Error('알 수 없는 요청입니다.');
