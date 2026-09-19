@@ -5,6 +5,7 @@
 import React from 'react';
 import type { WorkspaceProject } from '../relay/workspace-adapter.js';
 import type { ChatBinding } from '../chat/chat-bindings.js';
+import { isBindingConnected } from '../chat/chat-bindings.js';
 import { statusDotTone } from '../shared/status-labels.js';
 
 export interface SidebarProject extends WorkspaceProject {
@@ -52,15 +53,18 @@ export function ProjectSidebar(props: Props): React.ReactElement {
             </button>
             {active && (
               <div className="ws-bindings">
+                {/* FOUNDER FIX 01: green only via isBindingConnected (chatUrl required).
+                    Selection highlight stays neutral for unbound bindings. */}
                 {p.bindings.map((b) => (
                   <button
                     key={b.id}
-                    className={`ws-binding ${b.id === props.activeBindingId ? 'active' : ''}`}
+                    className={`ws-binding ${b.id === props.activeBindingId ? 'selected' : ''} ${isBindingConnected(b) ? 'bound' : 'unbound'}`}
                     onClick={() => props.onSelectBinding(p.name, b.id)}
+                    title={isBindingConnected(b) ? '채팅 바인딩 연결됨' : '미연결 바인딩 (URL 없음)'}
                   >
                     <span className="ws-binding-role">{b.role}</span>
                     <span className="ws-binding-name">{b.name}</span>
-                    <span className={`ws-dot sm tone-${b.status === 'connected' ? 'active' : 'idle'}`} />
+                    <span className={`ws-dot sm tone-${isBindingConnected(b) ? 'active' : 'idle'}`} />
                   </button>
                 ))}
               </div>

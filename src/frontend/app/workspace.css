@@ -149,10 +149,20 @@
   background: var(--bg3);
 }
 
-.ws-binding.active {
+/* FOUNDER FIX 01: selection is neutral; green/accent ONLY for .bound.
+   Unbound bindings never render active/green. */
+.ws-binding.selected {
   color: var(--fg);
+  background: var(--bg3);
+}
+
+.ws-binding.bound {
   border-color: var(--accent);
   background: rgba(78, 161, 255, 0.08);
+}
+
+.ws-binding.unbound {
+  border-color: transparent;
 }
 
 .ws-binding-role {

@@ -29,6 +29,8 @@ const STORE_KEY = 'agent-relay.workspace.chatBindings.v0';
 
 function seedForProject(projectId: string): ChatBinding[] {
   const base = projectId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
+  // FOUNDER FIX 01: a seed with no chatUrl / established binding must NEVER
+  // claim `connected`. Unbound seeds are `idle` — no green indicator anywhere.
   return [
     {
       id: `cb-${base}-pm`,
@@ -37,7 +39,7 @@ function seedForProject(projectId: string): ChatBinding[] {
       role: 'PM',
       provider: 'ChatGPT',
       chatUrl: '',
-      status: 'connected',
+      status: 'idle',
       uiOnly: true,
     },
     {
@@ -51,6 +53,28 @@ function seedForProject(projectId: string): ChatBinding[] {
       uiOnly: true,
     },
   ];
+}
+
+/**
+ * FOUNDER FIX 01 — truthfulness guard (single choke point).
+ *
+ * Three states stay semantically separate:
+ *   - Agent Relay bridge connected  (IPC transport; owned by AppShell)
+ *   - ChatBinding connected         (requires a real chatUrl + established binding)
+ *   - provider authenticated        (future slice; never inferred here)
+ *
+ * A binding with no chatUrl can never be `connected`, no matter what the
+ * stored status claims (stale cache, hand-edited localStorage, old seed).
+ * Renderers must use this — never `binding.status` directly.
+ */
+export function effectiveBindingStatus(b: ChatBinding): ChatBindingStatus {
+  if (!b.chatUrl || !b.chatUrl.trim()) return 'idle';
+  return b.status;
+}
+
+/** True only for an actually established chat binding. Drives green UI. */
+export function isBindingConnected(b: ChatBinding): boolean {
+  return effectiveBindingStatus(b) === 'connected';
 }
 
 function readStore(): Record<string, ChatBinding[]> {

@@ -65,6 +65,7 @@ function walk(dir, out = []) {
 
 let labels = null;
 let adapter = null;
+let bindings = null;
 
 before(() => {
   // Compile pure TS modules to CJS for behavioral tests (no new deps).
@@ -76,6 +77,7 @@ before(() => {
       'tsc',
       'src/frontend/features/shared/status-labels.ts',
       'src/frontend/features/relay/workspace-adapter.ts',
+      'src/frontend/features/chat/chat-bindings.ts',
       'src/frontend/bridge.ts',
       'src/shared/types.ts',
       '--outDir',
@@ -84,6 +86,8 @@ before(() => {
       'commonjs',
       '--target',
       'es2020',
+      '--lib',
+      'es2020,dom',
       '--moduleResolution',
       'node',
       '--esModuleInterop',
@@ -94,6 +98,7 @@ before(() => {
   );
   labels = require(path.join(TMP, 'frontend/features/shared/status-labels.js'));
   adapter = require(path.join(TMP, 'frontend/features/relay/workspace-adapter.js'));
+  bindings = require(path.join(TMP, 'frontend/features/chat/chat-bindings.js'));
 });
 
 describe('workspace-shell-v0: status label mapping', () => {
@@ -304,6 +309,106 @@ describe('workspace-shell-v0: history (same task / multiple runs)', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/backend/task-history.ts'), 'utf8');
     assert.ok(/retryInstruction/.test(src), 'history read model must expose retryInstruction');
     assert.ok(/getRetryInstructionForDelivery/.test(src), 'read from durable intent payload');
+  });
+});
+
+describe('workspace-shell-v0: chat binding truthfulness (FOUNDER FIX 01)', () => {
+  function stubLocalStorage() {
+    const mem = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+      setItem: (k, v) => void mem.set(k, String(v)),
+      removeItem: (k) => void mem.delete(k),
+      clear: () => void mem.clear(),
+    };
+  }
+
+  it('seed never claims connected without a chatUrl', () => {
+    stubLocalStorage();
+    for (const project of ['Juceipt', 'Controler']) {
+      const list = bindings.listChatBindings(project);
+      assert.ok(list.length >= 2);
+      for (const b of list) {
+        // Empty chatUrl cannot be connected — idle or unknown only.
+        assert.ok(!b.chatUrl, 'seed has no URL');
+        assert.ok(
+          b.status === 'idle' || b.status === 'unknown',
+          `seed binding ${b.id} must be idle/unknown, found ${b.status}`,
+        );
+        assert.equal(bindings.isBindingConnected(b), false);
+        assert.equal(bindings.effectiveBindingStatus(b), 'idle');
+      }
+    }
+    delete globalThis.localStorage;
+  });
+
+  it('empty chatUrl cannot be connected even when stored status lies', () => {
+    const liar = {
+      id: 'cb-x', projectId: 'P', name: 'PM', role: 'PM', provider: 'ChatGPT',
+      chatUrl: '', status: 'connected', uiOnly: true,
+    };
+    assert.equal(bindings.effectiveBindingStatus(liar), 'idle');
+    assert.equal(bindings.isBindingConnected(liar), false);
+    const ws = {
+      ...liar, chatUrl: '   ',
+    };
+    assert.equal(bindings.isBindingConnected(ws), false);
+  });
+
+  it('a real URL + established binding can be connected', () => {
+    const real = {
+      id: 'cb-x', projectId: 'P', name: 'PM', role: 'PM', provider: 'ChatGPT',
+      chatUrl: 'https://chat.openai.com/c/abc', status: 'connected', uiOnly: true,
+    };
+    assert.equal(bindings.isBindingConnected(real), true);
+    assert.equal(bindings.effectiveBindingStatus({ ...real, status: 'idle' }), 'idle');
+  });
+
+  it('unbound ChatBinding does not render active/green', () => {
+    const sidebar = fs.readFileSync(
+      path.join(ROOT, 'src/frontend/features/projects/ProjectSidebar.tsx'), 'utf8');
+    const panel = fs.readFileSync(
+      path.join(ROOT, 'src/frontend/features/chat/ChatBindingPanel.tsx'), 'utf8');
+    // Renderers must go through the truthfulness guard, never raw status.
+    assert.ok(/isBindingConnected/.test(sidebar), 'sidebar must use isBindingConnected');
+    assert.ok(/isBindingConnected/.test(panel), 'panel must use isBindingConnected');
+    assert.ok(!/b\.status\s*===\s*['"]connected['"]/.test(sidebar), 'sidebar must not map raw status to green');
+    assert.ok(!/active\.status\s*===\s*['"]connected['"]/.test(panel), 'panel must not map raw status to green');
+    // Green tone only behind the guard in both renderers.
+    // (Project-level dots reflect Relay task state, not bindings — out of scope here.)
+    for (const [name, src] of [['sidebar', sidebar], ['panel', panel]]) {
+      const dotExprs = [...src.matchAll(/ws-dot[^\n]*?tone-\$\{([^}]+)\}/g)].map((m) => m[1].trim());
+      const guardedAliases = [...src.matchAll(/(?:const|let)\s+(\w+)\s*=\s*isBindingConnected\(/g)].map((m) => m[1]);
+      // Binding dots render a green/idle ternary; project dots use a plain Relay-state variable.
+      const bindingDots = dotExprs.filter((e) => /'active'/.test(e));
+      assert.ok(bindingDots.length > 0, `${name} has a binding dot`);
+      for (const expr of bindingDots) {
+        const ok =
+          /isBindingConnected/.test(expr) || guardedAliases.some((a) => expr.includes(a));
+        assert.ok(ok, `${name} binding dot must be guarded: ${expr}`);
+      }
+    }
+    // Unbound selection highlight is neutral — no accent/green class for unbound.
+    assert.ok(/unbound/.test(sidebar), 'sidebar distinguishes unbound bindings');
+    const css = fs.readFileSync(path.join(ROOT, 'src/frontend/app/workspace.css'), 'utf8');
+    assert.ok(/\.ws-binding\.unbound/.test(css), 'unbound style exists');
+    assert.ok(!/\.ws-binding\.unbound[^}]*background:\s*(#[0-9a-fA-F]{3,6}|rgba?\([^)]*\))\s*;[^}]*#30[dD]158/.test(css), 'unbound never green');
+  });
+
+  it('Relay bridge connected state remains independent', () => {
+    const layout = fs.readFileSync(
+      path.join(ROOT, 'src/frontend/app/WorkspaceLayout.tsx'), 'utf8');
+    const shell = fs.readFileSync(path.join(ROOT, 'src/frontend/app/AppShell.tsx'), 'utf8');
+    // Top bar names the bridge explicitly — cannot be mistaken for chat binding.
+    assert.ok(/Relay bridge/.test(layout), 'top bar must label the Relay bridge explicitly');
+    assert.ok(!/['"]Connected['"]/.test(layout), 'bare "Connected" label is forbidden');
+    // Bridge state comes from IPC transport only, never from a ChatBinding.
+    assert.ok(/hasBridge/.test(shell), 'bridge state derives from hasBridge()');
+    assert.ok(!/setConnected/.test(shell), 'bridge state is never updated from bindings');
+    assert.ok(!/connected.*[Bb]inding|[Bb]inding.*connected/.test(shell), 'bridge state independent of bindings');
+    const sidebar = fs.readFileSync(
+      path.join(ROOT, 'src/frontend/features/projects/ProjectSidebar.tsx'), 'utf8');
+    assert.ok(!/hasBridge|ws-conn/.test(sidebar), 'binding dots never read bridge state');
   });
 });
 

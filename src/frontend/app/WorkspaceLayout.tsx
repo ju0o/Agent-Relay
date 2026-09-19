@@ -33,8 +33,14 @@ export function WorkspaceLayout(props: Props): React.ReactElement {
       <header className="ws-topbar">
         <span className="ws-brand">AGENT RELAY</span>
         <span className="ws-proj-title">{props.activeProject || '—'}</span>
-        <span className={`ws-conn ${props.connected ? 'on' : 'off'}`}>
-          {props.connected ? 'Connected' : 'Bridge 없음'}
+        {/* FOUNDER FIX 01: explicit Relay-bridge label — this is the IPC
+            transport to the Relay backend, NOT a ChatGPT chat binding and
+            NOT provider authentication. */}
+        <span
+          className={`ws-conn ${props.connected ? 'on' : 'off'}`}
+          title="Agent Relay backend bridge (IPC). ChatGPT 채팅 바인딩 연결 상태가 아닙니다."
+        >
+          {props.connected ? 'Relay bridge 연결됨' : 'Relay bridge 없음'}
         </span>
         <button className="btn subtle" onClick={props.onBack} title="기존 로그 화면으로">
           로그 화면

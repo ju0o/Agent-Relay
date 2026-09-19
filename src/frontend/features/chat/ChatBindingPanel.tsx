@@ -5,7 +5,7 @@
  */
 import React from 'react';
 import type { ChatBinding } from './chat-bindings.js';
-import { touchChatBindingOpened } from './chat-bindings.js';
+import { isBindingConnected, touchChatBindingOpened } from './chat-bindings.js';
 
 interface Props {
   projectName: string;
@@ -34,6 +34,10 @@ export function ChatBindingPanel(props: Props): React.ReactElement {
     );
   }
 
+  // FOUNDER FIX 01: connection display derives from isBindingConnected —
+  // empty chatUrl can never render green, regardless of stored status.
+  const connected = isBindingConnected(active);
+
   return (
     <section className="ws-card" aria-label="채팅 연결">
       <div className="ws-tabs" role="tablist" aria-label="Chat bindings">
@@ -53,7 +57,8 @@ export function ChatBindingPanel(props: Props): React.ReactElement {
         <span className="ws-chat-name">{active.name}</span>
         <span className="ws-pill">{active.role}</span>
         <span className="ws-pill ghost">{active.provider}</span>
-        <span className={`ws-dot tone-${active.status === 'connected' ? 'active' : 'idle'}`} />
+        <span className={`ws-dot tone-${connected ? 'active' : 'idle'}`} />
+        <span className="muted">{connected ? '채팅 바인딩 연결됨' : '미연결 바인딩'}</span>
         {active.chatUrl ? (
           <span className="ws-link muted">{active.chatUrl}</span>
         ) : (
