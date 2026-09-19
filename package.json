@@ -76,6 +76,7 @@
     "test:ar01-local-auth": "node test/ar01-local-auth.test.mjs",
     "test:g6-worker-launch-diag": "node test/g6-worker-launch-diag.test.mjs",
     "test:real-pm-host": "node test/real-pm-host.test.mjs",
+    "test:goal-intake-01": "node test/goal-intake-01.test.mjs",
     "test:g6-observation-profile-context": "node test/g6-observation-profile-context.test.mjs",
     "test:v15-plan-kernel": "node test/v15-plan-kernel.test.mjs",
     "test:v15-plan-first-dispatch": "node test/v15-plan-first-dispatch.test.mjs",
