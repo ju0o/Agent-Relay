@@ -14,7 +14,7 @@ import { getTask } from './goal-task.js';
 import { readRunMeta } from './fs.js';
 import { getPmDelivery, pmDeliveryIdFor } from './pm-delivery.js';
 import type { PmDeliveryRecord } from './pm-delivery.js';
-import { getPmJudgment, pmJudgmentIdFor } from './pm-judgment.js';
+import { getPmJudgment, getRetryInstructionForDelivery, pmJudgmentIdFor } from './pm-judgment.js';
 import type { PmJudgmentRecord } from './pm-judgment.js';
 import { listEvents } from './event.js';
 import { listEvidenceForTask } from './evidence.js';
@@ -36,7 +36,7 @@ export interface TaskHistoryAttempt {
   hasResult: boolean;
   tags: string[];
   delivery: Pick<PmDeliveryRecord, 'deliveryId' | 'status' | 'deliveredAt'> | null;
-  judgment: Pick<PmJudgmentRecord, 'judgmentId' | 'decision' | 'status' | 'reason'> | null;
+  judgment: (Pick<PmJudgmentRecord, 'judgmentId' | 'decision' | 'status' | 'reason'> & { retryInstruction?: string }) | null;
 }
 
 export interface TaskHistoryEvent {
@@ -98,7 +98,23 @@ export function getTaskHistory(dataRoot: string, project: string, taskId: string
         delivery = { deliveryId: rec.deliveryId, status: rec.status, deliveredAt: rec.deliveredAt };
         try {
           const j = getPmJudgment(dataRoot, project, pmJudgmentIdFor(rec.deliveryId));
-          judgment = { judgmentId: j.judgmentId, decision: j.decision, status: j.status, reason: j.reason };
+          // V0 workspace shell: surface the durable CHANGES retry instruction
+          // (pure read of the immutable intent payload; null when absent).
+          let retryInstruction: string | undefined;
+          if (j.decision === 'CHANGES') {
+            try {
+              retryInstruction = getRetryInstructionForDelivery(dataRoot, project, rec.deliveryId);
+            } catch {
+              retryInstruction = undefined;
+            }
+          }
+          judgment = {
+            judgmentId: j.judgmentId,
+            decision: j.decision,
+            status: j.status,
+            reason: j.reason,
+            ...(retryInstruction !== undefined ? { retryInstruction } : {}),
+          };
         } catch {
           judgment = null; // delivery exists, judgment not submitted yet
         }

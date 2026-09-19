@@ -17,6 +17,7 @@ import {
   readWorktabSnapshots,
 } from './worktabs.js';
 import { SessionBindingStatus } from './SessionBindingStatus.js';
+import { AppShell } from './app/AppShell.js';
 import {
   DEFAULT_AGENTS,
   CaptureStatusView,
@@ -188,6 +189,8 @@ function AppInner(): React.ReactElement {
   const [pdMode, setPdMode]             = useState(false);
   // V2 R4 — Task History 읽기 전용 패널
   const [thMode, setThMode]             = useState(false);
+  // WORKSPACE SHELL V0 — read-only workspace shell (separate tree under app/).
+  const [wsMode, setWsMode]             = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
   const [showQuickDf, setShowQuickDf]   = useState(false);
@@ -1355,6 +1358,11 @@ function AppInner(): React.ReactElement {
               title="설정 — 저장공간(Storage)"
               onClick={() => setShowSettings(true)}
             >⚙ 설정</button>
+            <button
+              className={`mini df-toggle${wsMode ? ' on' : ''}`}
+              title="Workspace Shell V0 — 읽기 전용 AI 작업 화면"
+              onClick={() => setWsMode(m => !m)}
+            >🛰 Workspace</button>
           </header>
 
           {msg && (
@@ -1364,7 +1372,10 @@ function AppInner(): React.ReactElement {
             </div>
           )}
 
-          {dfMode ? (
+          {wsMode ? (
+            /* ── WORKSPACE SHELL V0 — 읽기 전용 AI 작업 화면 ── */
+            <AppShell onBack={() => setWsMode(false)} />
+          ) : dfMode ? (
             /* ── App Dogfooding 패널 — Agent Relay 앱 자체 개선 기록 ── */
             <DogfoodPanel
               key="df-app"
