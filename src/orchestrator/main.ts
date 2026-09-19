@@ -6,6 +6,7 @@ import { readRoleConfig } from '../roles/role-config.js';
 import { getRoleRuntimeAdapter, registerRoleRuntimeAdapter } from '../integrations/core/role-runtime-registry.js';
 import type { RoleRuntimeAdapter } from '../integrations/core/role-runtime.js';
 import { OpenCodeCommandAdapter } from '../integrations/opencode/command-adapter.js';
+import { TmuxRoleRuntimeAdapter } from '../integrations/tmux/role-runtime-adapter.js';
 import { dispatchV1OwnerApproved } from '../backend/v1-dispatch.js';
 import { dispatchTask } from '../backend/dispatcher.js';
 import {
@@ -102,6 +103,11 @@ function ensurePmAdaptersRegistered(dataRoot: string, roleConfig: ReturnType<typ
   const keys = [pm.runtimeAdapterId, ...(pm.fallbackChain ?? [])];
   for (const key of keys) {
     if (getRoleRuntimeAdapter(key)) continue;
+    if (key === 'tmux-external') {
+      const pmPane = process.env.AGENT_RELAY_PM_PANE?.trim();
+      registerRoleRuntimeAdapter(withId(new TmuxRoleRuntimeAdapter({ targets: pmPane ? { pm: pmPane } : {} }), key));
+      continue;
+    }
     const modelRef = parseModelRef(key) ?? (pm.model ? parseModelRef(`opencode/${pm.model}`) : null) ?? { providerID: 'opencode', modelID: 'nemotron-3.5-lightning-free' };
     // Cast: WBS-3's OpenCodeCommandAdapter.authMode() is async (Promise-returning)
     // while WBS-2's committed RoleRuntimeAdapter interface declares authMode()

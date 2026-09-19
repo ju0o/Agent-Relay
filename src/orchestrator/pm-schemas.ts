@@ -25,6 +25,9 @@ export interface PmTaskDecision {
   /** Raw TASK_CONTRACT v1 fields (project/task_id/contract_hash are server-assigned, never read from here). Required iff decision === 'CREATE_TASK'. */
   task_contract?: Record<string, unknown>;
   reason: string;
+  /** Additive wire action accepted by the autonomous bootstrap loop. */
+  action?: 'DISPATCH' | 'REQUEST_CHANGES' | 'ACCEPT' | 'HUMAN_GATE' | 'MILESTONE_COMPLETE';
+  taskId?: string;
 }
 
 export type PmJudgmentDecisionKind = 'ACCEPT' | 'CHANGES' | 'OWNER_REQUIRED' | 'ACCEPT_AND_NEXT';

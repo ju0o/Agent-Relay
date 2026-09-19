@@ -28,6 +28,7 @@ import {
 } from '../shared/types.js';
 import { buildPmBootstrapPacket, buildPmFinalGatePacket, listClosedTerminalTasks, type PmFinalGatePacket } from './pm-packets.js';
 import { parsePmTaskDecision, parsePmJudgment, type PmTaskDecision, type PmJudgment } from './pm-schemas.js';
+import { parseAutonomousPmAction, type AutonomousPmAction } from './autonomous-actions.js';
 
 export type DispatchHook = (dataRoot: string, project: string, task: TaskRecord) => Promise<{ runId: string } | void>;
 export type CollectHook = (dataRoot: string, project: string, runId: string) => Promise<{ collectStatus: string; runId: string }>;
@@ -77,12 +78,40 @@ function isTerminalFailedRun(dataRoot: string, project: string, link: TaskRecord
 class PmContractValidationError extends Error {}
 
 function parseFinalGateJudgment(packet: PmFinalGatePacket, text: string): PmJudgment {
-  const judgment = parsePmJudgment(text);
+  let judgment: PmJudgment;
+  try {
+    judgment = parsePmJudgment(text);
+  } catch (error) {
+    const action = parseAutonomousPmAction(text);
+    if (action.action === 'DISPATCH') throw error;
+    if (action.action === 'HUMAN_GATE' || action.action === 'MILESTONE_COMPLETE') {
+      return { decision: 'OWNER_REQUIRED', retry: 'NONE', reason: action.reason ?? action.action, contract_hash: packet.context.task.contract_hash ?? '', context_hash: packet.contextHash };
+    }
+    if (action.action === 'ACCEPT') {
+      judgment = { decision: 'ACCEPT', retry: 'NONE', reason: action.reason ?? 'PM accepted the verified result.', contract_hash: packet.context.task.contract_hash ?? '', context_hash: packet.contextHash };
+    } else {
+      judgment = { decision: 'CHANGES', retry: 'SAME_TASK', reason: action.reason ?? 'MISSING_EVIDENCE', retry_instruction: action.reason === 'MISSING_EVIDENCE' ? 'Provide the missing independently observed evidence.' : (action.reason ?? 'Address the requested changes.'), contract_hash: packet.context.task.contract_hash ?? '', context_hash: packet.contextHash };
+    }
+  }
   if ((judgment.decision === 'ACCEPT' || judgment.decision === 'ACCEPT_AND_NEXT')
     && packet.context.qa !== undefined && packet.context.qa.status !== 'PASS') {
     throw new Error(`ACCEPT requires QA PASS; latest QA status is ${packet.context.qa.status}${packet.context.qa.reason ? `: ${packet.context.qa.reason}` : ''}`);
   }
   return judgment;
+}
+
+function parseBootstrapDecision(text: string): PmTaskDecision {
+  try { return parsePmTaskDecision(text); }
+  catch (error) {
+    const action: AutonomousPmAction = parseAutonomousPmAction(text);
+    if (action.action === 'DISPATCH') {
+      if (!action.taskId) throw new Error('DISPATCH requires taskId');
+      return { decision: 'CHANGES', action: action.action, taskId: action.taskId, reason: action.reason ?? 'DISPATCH' };
+    }
+    if (action.action === 'REQUEST_CHANGES') return { decision: 'CHANGES', action: action.action, reason: action.reason ?? 'MISSING_EVIDENCE' };
+    if (action.action === 'HUMAN_GATE') return { decision: 'OWNER_REQUIRED', action: action.action, reason: action.reason ?? 'HUMAN_GATE' };
+    return { decision: 'PROJECT_COMPLETE', action: action.action, reason: action.reason ?? action.action };
+  }
 }
 
 // ── evidence gate for ACCEPT (round 38b / 38c) ────────────────────────────────
@@ -619,12 +648,14 @@ async function ensurePmAdapterAndSession(
   if (newSession || !existing || existing.sessionId !== sessionId || existing.preambleSent !== true) {
     const request = await adapter.send(sessionId, { kind: 'PM_PREAMBLE', schemaVersion: 'pm-role-instructions.v1', contextHash, body: preamble });
     await adapter.collect(sessionId, request.requestId, { timeoutMs: cfg.pmSendTimeoutMs ?? 120_000 });
+    const identity = adapter.sessionIdentity(sessionId).identity;
     writeRoleSession(cfg.dataRoot, cfg.project, 'pm', {
       adapterId: adapter.id,
       sessionId,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       preambleSent: true,
+      ...(identity ? { identity } : {}),
     });
   }
   return { adapter, sessionId };
@@ -712,7 +743,7 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
       sessionId,
       envelope,
       (text) => {
-        const decision = parsePmTaskDecision(text);
+        const decision = parseBootstrapDecision(text);
         if (decision.decision !== 'CREATE_TASK') return decision;
         const normalized = normalizePmTaskContract(cfg.roleConfig, decision.task_contract!);
         qaWorkerOverridden ||= normalized.overridden;
@@ -748,6 +779,13 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
   writeState(cfg.stateFile, state);
 
   const decision = parsed.value;
+  if (decision.action === 'DISPATCH') {
+    const task = decision.taskId ? getTask(cfg.dataRoot, cfg.project, decision.taskId) : null;
+    if (!task || task.executionState !== 'READY') return { outcome: 'BLOCKED', reason: 'DISPATCH requires an existing READY Task' };
+    const dispatch = await cfg.dispatchHook(cfg.dataRoot, cfg.project, task);
+    audit(cfg.auditDir, { step: 'bootstrap', outcome: 'DISPATCH', taskId: task.taskId, runId: dispatch?.runId });
+    return { outcome: 'DISPATCH', taskId: task.taskId, runId: dispatch?.runId };
+  }
   if (decision.decision === 'PROJECT_COMPLETE') {
     state.projectComplete = { contextHash: packet.contextHash, reason: decision.reason, updatedAt: new Date().toISOString() };
     writeState(cfg.stateFile, state);
