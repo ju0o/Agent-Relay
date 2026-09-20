@@ -77,8 +77,7 @@ test('artifact truncates within the byte bound and round-trips on disk', () => {
   assert.equal(readCertArtifact(host, 'nope'), null);
 });
 
-test('latestMandatorySummary discovers the newest orchestration record', async () => {
-  const host = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-certsum-'));
+test('latestMandatorySummary discovers the newest orchestration record', async () => {  const host = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-certsum-'));
   assert.equal(latestMandatorySummary(host), null);
   const dir = path.join(host, '.agent-relay', 'cert');
   fs.mkdirSync(dir, { recursive: true });
@@ -125,4 +124,17 @@ test('mandatory set always includes the QA-gated suites and matches package scri
   for (const suite of MANDATORY_SUITES) {
     assert.ok(pkg.scripts[suite], `package script exists for ${suite}`);
   }
+});
+
+test('classifyUntracked attributes only cycle-era product files, never strays', async () => {
+  const { classifyUntracked } = await import('../dist/server/workspace/cert-cli.js');
+  const isProduct = (p) => /^(src|scripts|test)\//.test(p);
+  const base = 1_700_000_000;
+  const mtimeOf = (p) => ({ 'src/workspace/new.ts': base + 10, 'scripts/old-stray.mjs': base - 10_000 }[p] ?? null);
+  const { cycleCreated, preExisting } = classifyUntracked(
+    ['src/workspace/new.ts', 'scripts/old-stray.mjs', '.g6-dogfood/', 'ghost/missing.ts'],
+    isProduct, base, mtimeOf,
+  );
+  assert.deepEqual(cycleCreated, ['src/workspace/new.ts']);
+  assert.deepEqual(preExisting.sort(), ['.g6-dogfood/', 'ghost/missing.ts', 'scripts/old-stray.mjs'].sort());
 });

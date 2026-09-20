@@ -43,6 +43,34 @@ function readLines(file: string): string[] {
   return fs.readFileSync(file, 'utf8').replace(/\r/g, '').split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
+/**
+ * Attribute untracked product-dir files to the cycle: only files whose
+ * mtime is at/after the base commit count as cycle-created. Pre-existing
+ * strays (older than base — e.g. another lane's untracked work) are listed
+ * separately, never claimed, never deleted. Fresh-clone caveat: a fresh
+ * checkout stamps all mtimes at checkout time, so in that case strays land
+ * in changedFiles and a human must eyeball them (noted on the artifact).
+ */
+export function classifyUntracked(
+  untracked: string[],
+  isProductPath: (p: string) => boolean,
+  baseTimeSec: number,
+  mtimeSecOf: (p: string) => number | null,
+): { cycleCreated: string[]; preExisting: string[] } {
+  const cycleCreated: string[] = [];
+  const preExisting: string[] = [];
+  for (const p of untracked) {
+    if (!isProductPath(p)) {
+      preExisting.push(p);
+      continue;
+    }
+    const mt = mtimeSecOf(p);
+    if (mt === null || mt >= baseTimeSec) cycleCreated.push(p);
+    else preExisting.push(p);
+  }
+  return { cycleCreated, preExisting };
+}
+
 export async function runWorkspaceCert(hostRoot: string, opts: CertCliOptions): Promise<CertCliResult> {
   const root = path.resolve(hostRoot);
   const cycle = opts.cycle.trim();
@@ -91,12 +119,25 @@ export async function runWorkspaceCert(hostRoot: string, opts: CertCliOptions): 
     .split('\n').map((l) => l.trim()).filter((l) => l.startsWith('??'))
     .map((l) => l.slice(2).trim()).filter(Boolean);
   // Review scope: tracked diff vs base + cycle-created files under product
-  // dirs. Pre-existing stray roots are listed separately (not hidden).
+  // dirs. Pre-existing strays are listed separately (not hidden, not claimed).
   const isProductPath = (p: string): boolean =>
     /^(src|scripts|test)\//.test(p) || /^docs\/BOOTSTRAP/.test(p);
-  const productUntracked = untracked.filter(isProductPath);
-  const untrackedOther = untracked.filter((p) => !isProductPath(p));
-  const changedFiles = [...new Set([...changedTracked, ...productUntracked])].sort();
+  let baseTimeSec = 0;
+  try {
+    baseTimeSec = Number(git(root, ['log', '-1', '--format=%ct', base]));
+  } catch {
+    baseTimeSec = 0;
+  }
+  const mtimeSecOf = (p: string): number | null => {
+    try {
+      return fs.statSync(path.join(root, p)).mtimeMs / 1000;
+    } catch {
+      return null;
+    }
+  };
+  const { cycleCreated, preExisting } = classifyUntracked(untracked, isProductPath, baseTimeSec, mtimeSecOf);
+  const untrackedOther = [...untracked.filter((p) => !isProductPath(p)), ...preExisting];
+  const changedFiles = [...new Set([...changedTracked, ...cycleCreated])].sort();
   const diffStat = git(root, ['diff', '--stat', base, 'HEAD']);
   const worktreeClean = git(root, ['status', '--porcelain', '--untracked-files=no']).length === 0;
   let tag: string | null = null;
