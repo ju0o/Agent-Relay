@@ -15,15 +15,22 @@
  */
 import * as fs from 'node:fs';
 import {
-  defaultWorkspaceManifest,
   readWorkspaceManifest,
   validateWorkspaceManifest,
   workspaceManifestPath,
   workspaceStatePath,
-  writeWorkspaceManifest,
   type WorkspaceLane,
   type WorkspaceManifest,
 } from './manifest.js';
+import {
+  loadEffectiveConfig,
+  readWorkspaceConfigV2,
+  defaultWorkspaceConfigV2,
+  writeWorkspaceConfigV2,
+  workspaceConfigPath,
+  type LaneConfigV2,
+  type WorkspaceConfigV2,
+} from './config-v2.js';
 import { probeAllPanes, probeLanes, type LaneProbe, type LivePane } from './probe.js';
 import { detectCursorRuntime, resolveQaFallback } from './qa-fallback.js';
 import { applyConcurrency, type ConcurrencyState } from './concurrency.js';
@@ -53,6 +60,9 @@ export interface WorkspaceStartResult {
   ok: boolean;
   automation: 'AUTOMATION_STARTED' | 'AUTOMATION_DEGRADED';
   manifestPath: string;
+  /** Effective v2 config path (migrated from v1 when needed). */
+  configPath: string;
+  configMigrated: boolean;
   statePath: string;
   manifestCreated: boolean;
   lanes: LaneStartInfo[];
@@ -97,31 +107,41 @@ function readStateFile(hostRoot: string): WorkspaceStateFile | null {
 export function runWorkspaceStart(hostRoot: string, opts?: { qaUnavailableLanes?: string[] }): WorkspaceStartResult {
   const warnings: string[] = [];
   const manifestPath = workspaceManifestPath(hostRoot);
+  const configPath = workspaceConfigPath(hostRoot);
   const statePath = workspaceStatePath(hostRoot);
 
-  let manifest = readWorkspaceManifest(hostRoot);
+  // Effective config is v2 (runtime/model separated). A legacy v1 manifest is
+  // migrated in place (roots/goals/labels preserved) and reported.
+  let v2: WorkspaceConfigV2;
+  let configMigrated = false;
   let manifestCreated = false;
-  if (!manifest) {
-    manifest = defaultWorkspaceManifest();
-    // Only keep lanes whose default roots are absolute (always true); actual
-    // existence is verified per lane below, never fatal for other lanes.
-    writeWorkspaceManifest(hostRoot, manifest);
-    manifestCreated = true;
-  } else {
-    try {
-      validateWorkspaceManifest(manifest);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return {
-        schemaVersion: WORKSPACE_START_SCHEMA, ok: false, automation: 'AUTOMATION_DEGRADED',
-        manifestPath, statePath, manifestCreated, lanes: [], reusedSessions: [], spawnedSessions: [],
-        roleReadiness: {}, fallbackQa: {},
-        concurrency: applyConcurrency([], manifest.maxActiveBuilders, manifest.maxActiveQa),
-        dispatch: 'NOT_DISPATCHED', warnings, error: msg,
-      };
-    }
+  try {
+    const loaded = loadEffectiveConfig(hostRoot);
+    v2 = loaded.config;
+    configMigrated = loaded.migrated;
+    manifestCreated = loaded.created;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      schemaVersion: WORKSPACE_START_SCHEMA, ok: false, automation: 'AUTOMATION_DEGRADED',
+      manifestPath, configPath, configMigrated, statePath, manifestCreated, lanes: [], reusedSessions: [], spawnedSessions: [],
+      roleReadiness: {}, fallbackQa: {},
+      concurrency: applyConcurrency([], 2, 1),
+      dispatch: 'NOT_DISPATCHED', warnings, error: msg,
+    };
   }
-  const activeManifest: WorkspaceManifest = manifest;
+  // v1-shaped lane view over v2 bindings for probe/concurrency logic.
+  const activeManifest: WorkspaceManifest = {
+    schemaVersion: 'workspace.v1',
+    maxActiveBuilders: v2.concurrency.maxActiveBuilders,
+    maxActiveQa: v2.concurrency.maxActiveQa,
+    qaFallbackRuntime: 'cursor',
+    lanes: v2.lanes.map((l) => ({
+      id: l.id, label: l.label, root: l.root, goal: l.goal,
+      roles: { pm: l.pm.runtime, builder: l.builder.runtime, qa: l.qa.runtime },
+      primaryQa: l.qa.runtime,
+    })),
+  };
 
   let livePanes: LivePane[] = [];
   try {
@@ -138,6 +158,7 @@ export function runWorkspaceStart(hostRoot: string, opts?: { qaUnavailableLanes?
   }
 
   const qaUnavailable = new Set(opts?.qaUnavailableLanes ?? []);
+  const v2ById = new Map(v2.lanes.map((l) => [l.id, l]));
   const lanes: LaneStartInfo[] = activeManifest.lanes.map((lane) => {
     const probe = probeById.get(lane.id)!;
     const reused = probe.matchedPanes
@@ -149,7 +170,8 @@ export function runWorkspaceStart(hostRoot: string, opts?: { qaUnavailableLanes?
       builder: ready ? 'READY' : 'NOT_READY',
       qa: ready ? 'READY' : 'NOT_READY',
     };
-    const fb = resolveQaFallback(lane.primaryQa, qaUnavailable.has(lane.id), activeManifest.qaFallbackRuntime, cursorDet);
+    const fallbackRuntime = v2ById.get(lane.id)?.qaFallback.runtime ?? 'cursor';
+    const fb = resolveQaFallback(lane.primaryQa, qaUnavailable.has(lane.id), fallbackRuntime, cursorDet);
     return {
       id: lane.id, label: lane.label, root: lane.root, rootExists: probe.rootExists, goal: lane.goal,
       roles: lane.roles, probeDecision: probe.decision, probeDetail: probe.detail,
@@ -191,7 +213,7 @@ export function runWorkspaceStart(hostRoot: string, opts?: { qaUnavailableLanes?
     schemaVersion: WORKSPACE_START_SCHEMA,
     ok: true,
     automation: degraded ? 'AUTOMATION_DEGRADED' : 'AUTOMATION_STARTED',
-    manifestPath, statePath, manifestCreated, lanes,
+    manifestPath, configPath, configMigrated, statePath, manifestCreated, lanes,
     reusedSessions, spawnedSessions, roleReadiness, fallbackQa,
     concurrency, dispatch: 'NOT_DISPATCHED', warnings,
   };
@@ -230,15 +252,52 @@ export function runWorkspaceStatus(hostRoot: string): WorkspaceStatusResult {
   const warnings: string[] = [];
   const manifestPath = workspaceManifestPath(hostRoot);
   const statePath = workspaceStatePath(hostRoot);
-  const manifest = readWorkspaceManifest(hostRoot);
-  if (!manifest) {
-    return {
-      schemaVersion: WORKSPACE_STATUS_SCHEMA, ok: false, automation: 'NOT_STARTED',
-      manifestPath, statePath, manifestPresent: false, lanes: [],
-      builders: '0/0', qa: '0/0', concurrency: null,
-      warnings: ['workspace manifest missing — run: agent-relay workspace start'],
+  // Read-only: v2 when present, else legacy v1 view (no migration writes here).
+  let v2: WorkspaceConfigV2 | null = readWorkspaceConfigV2(hostRoot);
+  if (!v2) {
+    const legacy = readWorkspaceManifest(hostRoot);
+    if (!legacy) {
+      return {
+        schemaVersion: WORKSPACE_STATUS_SCHEMA, ok: false, automation: 'NOT_STARTED',
+        manifestPath, statePath, manifestPresent: false, lanes: [],
+        builders: '0/0', qa: '0/0', concurrency: null,
+        warnings: ['workspace config missing — run: agent-relay workspace start'],
+      };
+    }
+    try {
+      validateWorkspaceManifest(legacy);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        schemaVersion: WORKSPACE_STATUS_SCHEMA, ok: false, automation: 'NOT_STARTED',
+        manifestPath, statePath, manifestPresent: false, lanes: [],
+        builders: '0/0', qa: '0/0', concurrency: null,
+        warnings: [`legacy manifest invalid: ${msg}`],
+      };
+    }
+    v2 = {
+      schemaVersion: 'workspace.v2',
+      concurrency: { maxActiveBuilders: legacy.maxActiveBuilders, maxActiveQa: legacy.maxActiveQa },
+      lanes: legacy.lanes.map((l) => ({
+        id: l.id, label: l.label, root: l.root, goal: l.goal,
+        pm: { runtime: l.roles.pm, model: 'default', roleProfile: { sessionPolicy: 'persistent', permissionProfile: 'read-only' } },
+        builder: { runtime: l.roles.builder, model: 'default', roleProfile: { sessionPolicy: 'per-task', permissionProfile: 'write-workspace' } },
+        qa: { runtime: l.roles.qa, model: 'default', roleProfile: { sessionPolicy: 'per-task', permissionProfile: 'read-only' } },
+        qaFallback: { runtime: legacy.qaFallbackRuntime, model: 'default' },
+      })),
     };
   }
+  const manifest: WorkspaceManifest = {
+    schemaVersion: 'workspace.v1',
+    maxActiveBuilders: v2.concurrency.maxActiveBuilders,
+    maxActiveQa: v2.concurrency.maxActiveQa,
+    qaFallbackRuntime: 'cursor',
+    lanes: v2.lanes.map((l) => ({
+      id: l.id, label: l.label, root: l.root, goal: l.goal,
+      roles: { pm: l.pm.runtime, builder: l.builder.runtime, qa: l.qa.runtime },
+      primaryQa: l.qa.runtime,
+    })),
+  };
   const cached = readStateFile(hostRoot);
   // Fresh probe for status (read-only, no state write).
   let livePanes: LivePane[] = [];
@@ -250,13 +309,14 @@ export function runWorkspaceStatus(hostRoot: string): WorkspaceStatusResult {
   const probes = probeLanes(manifest.lanes, livePanes);
   const probeById = new Map(probes.map((p) => [p.laneId, p]));
   const cursorDet = detectCursorRuntime();
+  const v2FbById = new Map(v2.lanes.map((l) => [l.id, l.qaFallback.runtime]));
   const lanes: LaneStartInfo[] = manifest.lanes.map((lane) => {
     const probe = probeById.get(lane.id)!;
     const reused = probe.matchedPanes
       .filter((p) => p.health === 'HEALTHY' || p.health === 'BUSY' || p.health === 'STALE')
       .map((p) => ({ paneId: p.paneId, pid: p.pid, cwd: p.cwd, health: p.health }));
     const ready = probe.decision === 'REUSED' && probe.rootExists;
-    const fb = resolveQaFallback(lane.primaryQa, false, manifest.qaFallbackRuntime, cursorDet);
+    const fb = resolveQaFallback(lane.primaryQa, false, v2FbById.get(lane.id) ?? 'cursor', cursorDet);
     const prev = cached?.lanes.find((l) => l.id === lane.id);
     return {
       id: lane.id, label: lane.label, root: lane.root, rootExists: probe.rootExists, goal: lane.goal,
@@ -307,10 +367,71 @@ export function renderWorkspaceStartHuman(r: WorkspaceStartResult): string {
   lines.push('');
   lines.push(`Builders: ${r.concurrency.activeBuilders.length}/${r.concurrency.maxActiveBuilders}`);
   lines.push(`QA: ${r.concurrency.activeQa.length}/${r.concurrency.maxActiveQa}`);
+  if (r.configMigrated) {
+    lines.push('');
+    lines.push('Config migrated: workspace.v1 -> workspace.v2 (runtime/model separated).');
+  }
   if (r.warnings.length) {
     lines.push('');
     lines.push('Warnings:');
     for (const w of r.warnings) lines.push(`! ${w}`);
   }
   return lines.join('\n');
+}
+
+export const WORKSPACE_CONFIGURE_SCHEMA = 'workspace.configure.v1' as const;
+
+export interface WorkspaceConfigureResult {
+  schemaVersion: typeof WORKSPACE_CONFIGURE_SCHEMA;
+  ok: boolean;
+  preset: string;
+  configPath: string;
+  lanes: Array<{ id: string; pm: string; builder: string; qa: string; fallbackQa: string }>;
+  warnings: string[];
+}
+
+/**
+ * `workspace configure` — save a preset without any per-pane manual input.
+ * Presets: `fixtures` (point-in-time fixture bindings, overwrite with force),
+ * `current` (keep/migrate whatever is on disk).
+ */
+export function runWorkspaceConfigure(hostRoot: string, preset: string, force: boolean): WorkspaceConfigureResult {
+  const configPath = workspaceConfigPath(hostRoot);
+  const warnings: string[] = [];
+  if (preset !== 'fixtures' && preset !== 'current') {
+    throw new Error(`unknown preset: ${preset} (expected fixtures|current)`);
+  }
+  if (preset === 'current') {
+    const { config, migrated } = loadEffectiveConfig(hostRoot);
+    if (migrated) warnings.push('legacy v1 manifest migrated to workspace.v2');
+    return {
+      schemaVersion: WORKSPACE_CONFIGURE_SCHEMA, ok: true, preset, configPath,
+      lanes: config.lanes.map((l) => ({
+        id: l.id, pm: `${l.pm.runtime}/${l.pm.model}`, builder: `${l.builder.runtime}/${l.builder.model}`,
+        qa: `${l.qa.runtime}/${l.qa.model}`, fallbackQa: `${l.qaFallback.runtime}/${l.qaFallback.model}`,
+      })),
+      warnings,
+    };
+  }
+  const existing = readWorkspaceConfigV2(hostRoot);
+  if (existing && !force) {
+    return {
+      schemaVersion: WORKSPACE_CONFIGURE_SCHEMA, ok: true, preset, configPath,
+      lanes: existing.lanes.map((l) => ({
+        id: l.id, pm: `${l.pm.runtime}/${l.pm.model}`, builder: `${l.builder.runtime}/${l.builder.model}`,
+        qa: `${l.qa.runtime}/${l.qa.model}`, fallbackQa: `${l.qaFallback.runtime}/${l.qaFallback.model}`,
+      })),
+      warnings: ['config already present; kept as-is (use --force to overwrite with fixtures)'],
+    };
+  }
+  const fresh = defaultWorkspaceConfigV2();
+  writeWorkspaceConfigV2(hostRoot, fresh);
+  return {
+    schemaVersion: WORKSPACE_CONFIGURE_SCHEMA, ok: true, preset, configPath,
+    lanes: fresh.lanes.map((l) => ({
+      id: l.id, pm: `${l.pm.runtime}/${l.pm.model}`, builder: `${l.builder.runtime}/${l.builder.model}`,
+      qa: `${l.qa.runtime}/${l.qa.model}`, fallbackQa: `${l.qaFallback.runtime}/${l.qaFallback.model}`,
+    })),
+    warnings,
+  };
 }

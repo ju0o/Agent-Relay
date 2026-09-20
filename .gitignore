@@ -3,6 +3,9 @@ dist/
 .test-data-root/
 .test-data-root-vnext/
 .test-data-root-v03/
+# test-generated stray root (phase-i3-init suite resolves a relative dataRoot;
+# never source; safe to delete and ignore)
+undefined/
 *.log
 .DS_Store
 Thumbs.db

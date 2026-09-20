@@ -23,6 +23,8 @@ Commands:
   doctor              Run infrastructure health checks
   workspace start     Auto bootstrap multi-project lanes (REUSE FIRST, no dispatch)
   workspace status    Show workspace lanes + concurrency (AUTOMATION_STARTED view)
+  workspace configure Save a workspace preset (fixtures|current, no manual prompts)
+  workspace run       Run ONE project lane (dry-run default, --live is bounded)
   history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
   resume-scan         Scan stuck/interrupted work (V2 R1, read-only report)
   resume act          Run one guided recovery action (V2 R2, Owner confirm required)
@@ -50,6 +52,9 @@ Examples:
   agent-relay workspace start --json
   agent-relay workspace status
   agent-relay workspace status --json
+  agent-relay workspace configure --preset fixtures
+  agent-relay workspace run --lane actl
+  agent-relay workspace run --lane actl --live --project actl
   agent-relay history TASK-0001
   agent-relay history TASK-0001 --json
   agent-relay resume-scan
@@ -64,7 +69,7 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -75,6 +80,14 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let prep: string | null = null;
   let orphanAction: string | null = null;
   let reason: string | null = null;
+  let lane: string | null = null;
+  let preset: string | null = null;
+  let script: string | null = null;
+  let project: string | null = null;
+  let cycle: string | null = null;
+  let maxTurns: number | null = null;
+  let live = false;
+  let dryRun = false;
   let json = false;
   let noTui = false;
   let help = false;
@@ -95,15 +108,31 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--yes') yes = true;
     else if (a === '--force') force = true;
     else if (a === '--once') once = true;
-    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason') {
+    else if (a === '--live') live = true;
+    else if (a === '--dry-run') dryRun = true;
+    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--max-turns') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) { unknown = a; break; }
       if (a === '--poll-ms') {
         const n = Number(next);
         if (!Number.isFinite(n)) { unknown = `${a} ${next}`; break; }
         pollMs = n;
+      } else if (a === '--max-turns') {
+        const n = Number(next);
+        if (!Number.isFinite(n) || n < 1) { unknown = `${a} ${next}`; break; }
+        maxTurns = Math.floor(n);
+      } else if (a === '--lane') {
+        lane = next;
       } else if (a === '--task') {
         task = next;
+      } else if (a === '--preset') {
+        preset = next;
+      } else if (a === '--script') {
+        script = next;
+      } else if (a === '--project') {
+        project = next;
+      } else if (a === '--cycle') {
+        cycle = next;
       } else if (a === '--pattern') {
         pattern = next;
       } else if (a === '--run') {
@@ -133,7 +162,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function promptOwnerConfirm(question: string): Promise<boolean> {
@@ -148,7 +177,7 @@ async function promptOwnerConfirm(question: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -370,23 +399,97 @@ async function main(): Promise<void> {
   }
 
   if (command === 'workspace') {
-    if (sub !== 'start' && sub !== 'status') {
-      const msg = 'Usage: agent-relay workspace <start|status> [--json]';
+    if (sub !== 'start' && sub !== 'status' && sub !== 'configure' && sub !== 'run') {
+      const msg = 'Usage: agent-relay workspace <start|status|configure|run> [--json]';
       if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace.v1', ok: false, error: msg }, null, 2));
       else console.error(msg);
       process.exit(1);
     }
-    const { runWorkspaceStart, runWorkspaceStatus, renderWorkspaceStartHuman, renderWorkspaceStatusHuman } = await import('../workspace/bootstrap.js');
+    const { runWorkspaceStart, runWorkspaceStatus, renderWorkspaceStartHuman, renderWorkspaceStatusHuman, runWorkspaceConfigure } = await import('../workspace/bootstrap.js');
     if (sub === 'start') {
       const res = runWorkspaceStart(cwd);
       if (json) console.log(JSON.stringify(res, null, 2));
       else console.log(renderWorkspaceStartHuman(res));
       process.exit(res.ok ? 0 : 1);
     }
-    const st = runWorkspaceStatus(cwd);
-    if (json) console.log(JSON.stringify(st, null, 2));
-    else console.log(renderWorkspaceStatusHuman(st));
-    process.exit(st.ok ? 0 : 1);
+    if (sub === 'status') {
+      const st = runWorkspaceStatus(cwd);
+      if (json) console.log(JSON.stringify(st, null, 2));
+      else console.log(renderWorkspaceStatusHuman(st));
+      process.exit(st.ok ? 0 : 1);
+    }
+    if (sub === 'configure') {
+      try {
+        const res = runWorkspaceConfigure(cwd, preset ?? 'fixtures', force);
+        if (json) {
+          console.log(JSON.stringify(res, null, 2));
+        } else {
+          console.log(`Workspace preset: ${res.preset}`);
+          for (const l of res.lanes) {
+            console.log(`${l.id}: pm=${l.pm} builder=${l.builder} qa=${l.qa} fallback=${l.fallbackQa}`);
+          }
+          for (const w of res.warnings) console.log(`! ${w}`);
+          console.log(`Config: ${res.configPath}`);
+        }
+        process.exit(0);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (json) console.log(JSON.stringify({ schemaVersion: 'workspace.configure.v1', ok: false, error: msg }, null, 2));
+        else console.error(msg);
+        process.exit(1);
+      }
+    }
+    // sub === 'run': ONE project lane. Dry-run default; --live is bounded.
+    if (!lane) {
+      const msg = 'Usage: agent-relay workspace run --lane <id> [--dry-run|--live] [--script accept|changes] [--project <name>] [--cycle <id>] [--max-turns N] [--json]';
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-run.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    if (script !== null && script !== 'accept' && script !== 'changes') {
+      const msg = `Unknown --script: ${script} (expected accept|changes)`;
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-run.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const { runLaneDryRun, runLaneLive } = await import('../workspace/run-cli.js');
+    try {
+      if (live && !dryRun) {
+        const res = await runLaneLive(cwd, lane, {
+          ...(project !== null ? { project } : {}),
+          ...(maxTurns !== null ? { maxTurns } : {}),
+          ...(cycle !== null ? { correlationId: cycle } : {}),
+        });
+        if (json) {
+          console.log(JSON.stringify({ schemaVersion: 'cli.workspace-run.v1', ...res, audit: undefined }, null, 2));
+        } else {
+          console.log(`lane ${res.laneId} live: ${res.outcome.outcome}${res.outcome.reason ? ` — ${res.outcome.reason}` : ''}`);
+          console.log(`sessions: builder=${res.boundSessions.builder} qa=${res.boundSessions.qa}`);
+          console.log(`safeStop: ${res.safeStop} (a safe stop is a guardrail success, not an end-to-end pass)`);
+          console.log(`founderRelayActions: ${res.founderRelayActions}`);
+          console.log(`audit: ${res.auditFile}`);
+        }
+        process.exit(res.outcome.outcome === 'BLOCKED' || res.outcome.outcome === 'NO_DISPATCHABLE_TASK' ? 2 : 0);
+      }
+      const res = await runLaneDryRun(cwd, lane, {
+        script: script === 'changes' ? 'changes' : 'accept',
+        ...(maxTurns !== null ? { maxTurns } : {}),
+        ...(cycle !== null ? { correlationId: cycle } : {}),
+      });
+      if (json) {
+        console.log(JSON.stringify({ schemaVersion: 'cli.workspace-run.v1', mode: res.mode, laneId: res.laneId, outcome: res.outcome, auditFile: res.auditFile }, null, 2));
+      } else {
+        console.log(`lane ${res.laneId} dry-run: ${res.outcome.outcome}${res.outcome.reason ? ` — ${res.outcome.reason}` : ''}`);
+        console.log(`attempts: ${res.outcome.attempts} qaMode: ${res.outcome.qaMode ?? 'primary'}`);
+        console.log(`audit: ${res.auditFile}`);
+      }
+      process.exit(res.outcome.outcome === 'ACCEPT_AND_ADVANCE' ? 0 : 2);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-run.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
   }
 
   // Bare agent-relay (no command)
