@@ -74,6 +74,8 @@ export const MANDATORY_SUITES = [
   'test:bootstrap-integrity',
   'test:workspace-runner',
   'test:workspace-cert',
+  'test:runner-durable',
+  'test:runner-restart',
 ];
 
 export const PER_SUITE_TIMEOUT_MS = 600000;

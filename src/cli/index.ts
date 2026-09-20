@@ -26,6 +26,10 @@ Commands:
   workspace configure Save a workspace preset (fixtures|current, no manual prompts)
   workspace run       Run ONE project lane (dry-run default, --live is bounded)
   workspace cert      Write the complete Builder Result artifact for a cycle
+  workspace owner-go  Record a durable, bounded Owner GO for live execution
+  runner run          Run the durable autonomous runner (foreground; systemd-ready)
+  runner status       Show runner process + durable lane states
+  runner stop         Stop the running daemon via pidfile
   history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
   resume-scan         Scan stuck/interrupted work (V2 R1, read-only report)
   resume act          Run one guided recovery action (V2 R2, Owner confirm required)
@@ -56,6 +60,9 @@ Examples:
   agent-relay workspace configure --preset fixtures
   agent-relay workspace run --lane actl
   agent-relay workspace run --lane actl --live --project actl
+  agent-relay runner run --store <dir> --lane actl --once --cycle <id>
+  agent-relay runner status --store <dir>
+  agent-relay runner stop --store <dir>
   agent-relay history TASK-0001
   agent-relay history TASK-0001 --json
   agent-relay resume-scan
@@ -70,7 +77,7 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; testsFile: string | null; commandsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; store: string | null; transportFile: string | null; worker: string | null; dataRootOpt: string | null; goalBriefDir: string | null; testsFile: string | null; commandsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; note: string | null; ttlHours: number | null; tasksMax: number | null; turnTimeoutMs: number | null; turnAttempts: number | null; noNewTasks: boolean; noTmuxSends: boolean; maxTurns: number | null; live: boolean; dryRun: boolean; allowTmuxSends: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -86,14 +93,27 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let script: string | null = null;
   let project: string | null = null;
   let cycle: string | null = null;
+  let store: string | null = null;
+  let transportFile: string | null = null;
+  let worker: string | null = null;
+  let dataRootOpt: string | null = null;
+  let goalBriefDir: string | null = null;
   let testsFile: string | null = null;
   let commandsFile: string | null = null;
   let risksFile: string | null = null;
   let base: string | null = null;
   let ready: string | null = null;
+  let note: string | null = null;
+  let ttlHours: number | null = null;
+  let tasksMax: number | null = null;
+  let turnTimeoutMs: number | null = null;
+  let turnAttempts: number | null = null;
+  let noNewTasks = false;
+  let noTmuxSends = false;
   let maxTurns: number | null = null;
   let live = false;
   let dryRun = false;
+  let allowTmuxSends = false;
   let json = false;
   let noTui = false;
   let help = false;
@@ -116,7 +136,10 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--once') once = true;
     else if (a === '--live') live = true;
     else if (a === '--dry-run') dryRun = true;
-    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--tests' || a === '--commands-file' || a === '--risks-file' || a === '--base' || a === '--ready' || a === '--max-turns') {
+    else if (a === '--no-new-tasks') noNewTasks = true;
+    else if (a === '--no-tmux-sends') noTmuxSends = true;
+    else if (a === '--allow-tmux-sends') allowTmuxSends = true;
+    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--tests' || a === '--commands-file' || a === '--risks-file' || a === '--base' || a === '--ready' || a === '--store' || a === '--transport-file' || a === '--worker' || a === '--data-root' || a === '--goal-brief-dir' || a === '--note' || a === '--ttl-hours' || a === '--tasks' || a === '--turn-timeout-ms' || a === '--turn-attempts' || a === '--max-turns') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) { unknown = a; break; }
       if (a === '--poll-ms') {
@@ -149,6 +172,34 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
         base = next;
       } else if (a === '--ready') {
         ready = next;
+      } else if (a === '--note') {
+        note = next;
+      } else if (a === '--ttl-hours') {
+        const n = Number(next);
+        if (!Number.isFinite(n) || n < 1) { unknown = `${a} ${next}`; break; }
+        ttlHours = n;
+      } else if (a === '--turn-attempts') {
+        const n = Number(next);
+        if (!Number.isFinite(n) || n < 1) { unknown = `${a} ${next}`; break; }
+        turnAttempts = Math.floor(n);
+      } else if (a === '--turn-timeout-ms') {
+        const n = Number(next);
+        if (!Number.isFinite(n) || n < 1000) { unknown = `${a} ${next}`; break; }
+        turnTimeoutMs = Math.floor(n);
+      } else if (a === '--tasks') {
+        const n = Number(next);
+        if (!Number.isFinite(n) || n < 1) { unknown = `${a} ${next}`; break; }
+        tasksMax = Math.floor(n);
+      } else if (a === '--store') {
+        store = next;
+      } else if (a === '--transport-file') {
+        transportFile = next;
+      } else if (a === '--worker') {
+        worker = next;
+      } else if (a === '--data-root') {
+        dataRootOpt = next;
+      } else if (a === '--goal-brief-dir') {
+        goalBriefDir = next;
       } else if (a === '--pattern') {
         pattern = next;
       } else if (a === '--run') {
@@ -166,9 +217,9 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'workspace')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'workspace' || a === 'runner')) {
       command = a;
-    } else if ((command === 'connect' || command === 'host' || command === 'resume' || command === 'workspace') && !sub) {
+    } else if ((command === 'connect' || command === 'host' || command === 'resume' || command === 'workspace' || command === 'runner') && !sub) {
       sub = a;
     } else if (command === 'history' && !taskId) {
       taskId = a;
@@ -178,7 +229,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, commandsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function promptOwnerConfirm(question: string): Promise<boolean> {
@@ -193,7 +244,7 @@ async function promptOwnerConfirm(question: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, commandsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -415,8 +466,8 @@ async function main(): Promise<void> {
   }
 
   if (command === 'workspace') {
-    if (sub !== 'start' && sub !== 'status' && sub !== 'configure' && sub !== 'run' && sub !== 'cert') {
-      const msg = 'Usage: agent-relay workspace <start|status|configure|run|cert> [--json]';
+    if (sub !== 'start' && sub !== 'status' && sub !== 'configure' && sub !== 'run' && sub !== 'cert' && sub !== 'owner-go') {
+      const msg = 'Usage: agent-relay workspace <start|status|configure|run|cert|owner-go> [--json]';
       if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace.v1', ok: false, error: msg }, null, 2));
       else console.error(msg);
       process.exit(1);
@@ -541,6 +592,77 @@ async function main(): Promise<void> {
         else console.error(msg);
         process.exit(1);
       }
+    }
+
+    if (sub === 'owner-go') {
+      if (!lane || !cycle) {
+        const msg = 'Usage: agent-relay workspace owner-go --lane <id> [--lane <id>...] --cycle <id> [--tasks N] [--ttl-hours H] [--no-new-tasks] [--no-tmux-sends] [--note <text>] [--store <dir>] [--json]';
+        if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-owner-go.v1', ok: false, error: msg }, null, 2));
+        else console.error(msg);
+        process.exit(1);
+      }
+      const { recordOwnerGo } = await import('../runner/owner-go.js');
+      const { defaultRunnerStore } = await import('../runner/serve-cli.js');
+      try {
+        // --lane accepts a comma-separated list for multi-lane GOs.
+        const go = recordOwnerGo(store ?? defaultRunnerStore(cwd), {
+          cycleId: cycle,
+          lanes: lane.split(',').map((l) => l.trim()).filter(Boolean),
+          ...(tasksMax !== null ? { maxTasksPerLane: tasksMax } : {}),
+          allowNewTasks: !noNewTasks,
+          allowTmuxSends: !noTmuxSends,
+          ...(ttlHours !== null ? { ttlHours } : {}),
+          ...(note !== null ? { note } : {}),
+        });
+        if (json) {
+          console.log(JSON.stringify({ schemaVersion: 'cli.workspace-owner-go.v1', ok: true, go }, null, 2));
+        } else {
+          console.log(`Owner GO recorded: ${go.goId} (cycle ${go.cycleId})`);
+          console.log(`lanes: ${go.lanes.join(',')} tasks/lane<=${go.maxTasksPerLane} new-tasks=${go.allowNewTasks} tmux-sends=${go.allowTmuxSends}`);
+          console.log(`expires: ${go.expiresAt}`);
+        }
+        process.exit(0);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-owner-go.v1', ok: false, error: msg }, null, 2));
+        else console.error(msg);
+        process.exit(1);
+      }
+    }
+  }
+
+  if (command === 'runner') {
+    if (sub !== 'run' && sub !== 'status' && sub !== 'stop') {
+      const msg = 'Usage: agent-relay runner <run|status|stop> [--store <dir>] [--lane <id>] [--project <name>] [--cycle <id>] [--once] [--poll-ms <ms>] [--transport-file <f>] [--worker <id>] [--data-root <dir>] [--allow-tmux-sends] [--json]\nPersistent host: packaging/agent-relay-runner.service (systemd --user).';
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.runner.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const { runRunnerCommand, defaultRunnerStore } = await import('../runner/serve-cli.js');
+    const storeRoot = store ?? defaultRunnerStore(cwd);
+    try {
+      const code = await runRunnerCommand(cwd, sub, {
+        store: storeRoot,
+        ...(lane !== null ? { lanes: lane.split(',').map((l) => l.trim()).filter(Boolean) } : {}),
+        ...(project !== null ? { project } : {}),
+        ...(cycle !== null ? { cycle } : {}),
+        ...(transportFile !== null ? { transportFile } : {}),
+        ...(worker !== null ? { worker } : {}),
+        ...(dataRootOpt !== null ? { dataRoot: dataRootOpt } : {}),
+        ...(goalBriefDir !== null ? { goalBriefDir } : {}),
+        ...(turnTimeoutMs !== null ? { turnTimeoutMs } : {}),
+        once,
+        ...(pollMs !== null ? { pollMs } : {}),
+        ...(turnAttempts !== null ? { turnMaxAttempts: turnAttempts } : {}),
+        allowTmuxSends,
+        json,
+      });
+      process.exit(code);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.runner.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
     }
   }
 

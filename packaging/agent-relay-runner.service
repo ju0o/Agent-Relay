@@ -1,0 +1,18 @@
+[Unit]
+Description=Agent-Relay durable autonomous runner (PM -> Builder -> QA -> PM)
+Documentation=https://github.com/anomalyco/opencode
+After=network-online.target
+
+[Service]
+Type=simple
+# Installed entry point (`npm link` or a packaged install provides it).
+ExecStart=%h/.local/bin/agent-relay runner run --store %h/.local/share/agent-relay/runner
+Restart=always
+RestartSec=10
+# The runner holds no state in memory worth keeping: all progress lives in
+# the turn store, so restarts resume instead of replaying.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

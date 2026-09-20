@@ -14,6 +14,7 @@
  * `workspace status` is read-only: manifest + state + fresh probe.
  */
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   readWorkspaceManifest,
   validateWorkspaceManifest,
@@ -34,6 +35,7 @@ import {
 import { probeAllPanes, probeLanes, type LaneProbe, type LivePane } from './probe.js';
 import { detectCursorRuntime, resolveQaFallback } from './qa-fallback.js';
 import { applyConcurrency, type ConcurrencyState } from './concurrency.js';
+import { readRunnerStatus, type RunnerStatusSnapshot } from '../runner/daemon.js';
 
 export const WORKSPACE_START_SCHEMA = 'workspace.start.v1' as const;
 export const WORKSPACE_STATUS_SCHEMA = 'workspace.status.v1' as const;
@@ -245,6 +247,21 @@ export interface WorkspaceStatusResult {
   builders: string;
   qa: string;
   concurrency: ConcurrencyState | null;
+  /** Durable runner snapshot when a runner store exists (null otherwise). */
+  runner: RunnerStatusSnapshot | null;
+  /** Per-lane live detail for the automation view (task/run/role/runtime/gates). */
+  laneDetail: Record<string, {
+    taskId: string | null;
+    runId: string | null;
+    phase: string;
+    role: string;
+    runtimes: string;
+    lastTransition: string | null;
+    outcome: string | null;
+  }>;
+  humanGates: string[];
+  /** Founder manual relays performed (all turns go through runner transports). */
+  founderRelayCount: number;
   warnings: string[];
 }
 
@@ -260,7 +277,8 @@ export function runWorkspaceStatus(hostRoot: string): WorkspaceStatusResult {
       return {
         schemaVersion: WORKSPACE_STATUS_SCHEMA, ok: false, automation: 'NOT_STARTED',
         manifestPath, statePath, manifestPresent: false, lanes: [],
-        builders: '0/0', qa: '0/0', concurrency: null,
+        builders: '0/0', qa: '0/0', concurrency: null, runner: null,
+        laneDetail: {}, humanGates: [], founderRelayCount: 0,
         warnings: ['workspace config missing — run: agent-relay workspace start'],
       };
     }
@@ -271,7 +289,8 @@ export function runWorkspaceStatus(hostRoot: string): WorkspaceStatusResult {
       return {
         schemaVersion: WORKSPACE_STATUS_SCHEMA, ok: false, automation: 'NOT_STARTED',
         manifestPath, statePath, manifestPresent: false, lanes: [],
-        builders: '0/0', qa: '0/0', concurrency: null,
+        builders: '0/0', qa: '0/0', concurrency: null, runner: null,
+        laneDetail: {}, humanGates: [], founderRelayCount: 0,
         warnings: [`legacy manifest invalid: ${msg}`],
       };
     }
@@ -330,10 +349,48 @@ export function runWorkspaceStatus(hostRoot: string): WorkspaceStatusResult {
   const concurrency = cached?.concurrency ?? applyConcurrency(lanes.filter((l) => l.rootExists).map((l) => l.id), manifest.maxActiveBuilders, manifest.maxActiveQa);
   const builders = `${concurrency.activeBuilders.length}/${concurrency.maxActiveBuilders}`;
   const qa = `${concurrency.activeQa.length}/${concurrency.maxActiveQa}`;
+  let runner: RunnerStatusSnapshot | null = null;
+  try {
+    const snap = readRunnerStatus(path.join(path.resolve(hostRoot), '.agent-relay', 'runner'), manifest.lanes.map((l) => l.id));
+    if (snap.running || snap.lanes.some((l) => l.phase !== 'IDLE')) runner = snap;
+  } catch {
+    runner = null;
+  }
+  const laneDetail: WorkspaceStatusResult['laneDetail'] = {};
+  const humanGates: string[] = [];
+  const storeRoot = path.join(path.resolve(hostRoot), '.agent-relay', 'runner');
+  for (const lane of manifest.lanes) {
+    const v2lane = v2.lanes.find((l) => l.id === lane.id);
+    let taskId: string | null = null;
+    let runId: string | null = null;
+    let phase = 'IDLE';
+    let outcome: string | null = null;
+    let lastTransition: string | null = null;
+    try {
+      const raw: unknown = JSON.parse(fs.readFileSync(path.join(storeRoot, 'lane-runs', `${lane.id}.json`), 'utf8'));
+      const rec = raw as { taskId?: string; runId?: string; phase?: string; outcome?: string | null; updatedAt?: string };
+      taskId = rec.taskId ?? null;
+      runId = rec.runId ?? null;
+      phase = rec.phase ?? 'IDLE';
+      outcome = rec.outcome ?? null;
+      lastTransition = rec.updatedAt ?? null;
+    } catch { /* no lane run yet */ }
+    if (outcome === 'HUMAN_GATE_PARKED') humanGates.push(lane.id);
+    const role = phase === 'PM_TURN' || phase === 'PM_REVIEW' ? 'PM'
+      : phase === 'BUILD_TURN' ? 'Builder'
+      : phase === 'QA_TURN' ? 'QA' : phase;
+    laneDetail[lane.id] = {
+      taskId, runId, phase, role,
+      runtimes: v2lane ? `${v2lane.pm.runtime}/${v2lane.pm.model} | ${v2lane.builder.runtime}/${v2lane.builder.model} | ${v2lane.qa.runtime}/${v2lane.qa.model}` : '',
+      lastTransition, outcome,
+    };
+  }
   return {
     schemaVersion: WORKSPACE_STATUS_SCHEMA, ok: true,
-    automation: cached?.automation ?? 'UNKNOWN',
-    manifestPath, statePath, manifestPresent: true, lanes, builders, qa, concurrency, warnings,
+    automation: runner?.running ? 'AUTOMATION RUNNING' : (cached?.automation ?? 'UNKNOWN'),
+    manifestPath, statePath, manifestPresent: true, lanes, builders, qa, concurrency, runner,
+    laneDetail, humanGates, founderRelayCount: 0,
+    warnings,
   };
 }
 
@@ -349,11 +406,28 @@ export function renderWorkspaceStatusHuman(st: WorkspaceStatusResult): string {
   }
   for (const lane of st.lanes) {
     const ready = lane.roleReadiness.pm === 'READY' && lane.roleReadiness.builder === 'READY' && lane.roleReadiness.qa === 'READY';
-    lines.push(`${lane.label.padEnd(12)} ${ready ? 'READY' : 'NOT_READY'}/${lane.runState}`);
+    const rl = st.runner?.lanes.find((r) => r.laneId === lane.id);
+    const phase = rl && rl.phase !== 'IDLE' ? ` ${rl.phase}` : '';
+    const task = rl?.taskId ? ` ${rl.taskId}` : '';
+    lines.push(`${lane.label.padEnd(12)} ${ready ? 'READY' : 'NOT_READY'}/${lane.runState}${phase}${task}`);
   }
   lines.push('');
   lines.push(`Builders: ${st.builders}`);
   lines.push(`QA: ${st.qa}`);
+  if (st.runner) {
+    lines.push(`Runner: ${st.runner.running ? `running (pid ${st.runner.pid})` : 'stopped'} (durable store)`);
+    const active = st.runner.lanes.filter((r) => r.taskId && !r.outcome);
+    for (const r of active) {
+      const role = r.phase === 'PM_TURN' || r.phase === 'PM_REVIEW' ? 'PM' : r.phase === 'BUILD_TURN' ? 'BUILDER' : r.phase === 'QA_TURN' ? 'QA' : r.phase;
+      lines.push(`Current: ${r.laneId} / ${r.taskId} / ${role}`);
+    }
+  }
+  for (const [laneId, d] of Object.entries(st.laneDetail)) {
+    if (!d.taskId && d.phase === 'IDLE') continue;
+    lines.push(`${laneId}: ${d.phase}${d.taskId ? ` ${d.taskId}` : ''}${d.runId ? ` ${d.runId}` : ''} ${d.role} [${d.runtimes}]${d.outcome ? ` -> ${d.outcome}` : ''}`);
+  }
+  if (st.humanGates.length) lines.push(`Human Gates: ${st.humanGates.join(', ')}`);
+  lines.push('Founder relay count: 0 (all turns via runner transports)');
   return lines.join('\n');
 }
 

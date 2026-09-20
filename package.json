@@ -106,6 +106,8 @@
     "test:workspace-bootstrap": "node --test test/workspace-bootstrap.test.mjs",
     "test:workspace-runner": "node --test test/workspace-runner.test.mjs",
     "test:workspace-cert": "node --test test/workspace-cert.test.mjs",
+    "test:runner-durable": "node --test test/runner-durable.test.mjs",
+    "test:runner-restart": "node --test test/runner-restart.test.mjs",
     "test:mandatory": "node scripts/run-mandatory-tests.mjs",
     "test:bootstrap-integrity": "node --test test/workspace-bootstrap.test.mjs test/autonomous-bootstrap-slice.test.mjs",
     "mcp:app": "node dist/server/mcp/app-server-main.js",
@@ -113,7 +115,7 @@
     "cli": "node dist/server/cli/index.js",
     "cli:help": "node dist/server/cli/index.js --help",
     "mcp:worker": "node dist/server/mcp/index.js --surface worker",
-    "test": "node scripts/run-mandatory-tests.mjs",
+    "test": "npm run build && node scripts/run-mandatory-tests.mjs",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml",
     "check:updater": "node scripts/verify-updater-deps.mjs"
   },
