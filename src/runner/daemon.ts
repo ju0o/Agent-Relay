@@ -34,6 +34,19 @@ export interface DaemonOptions {
   scheduler?: LaneScheduler;
   turnTimeoutMs?: number;
   turnMaxAttempts?: number;
+  /** Cancel other READY tasks in scope after a successful intake (they are
+   *  superseded by the new task and must never redispatch). */
+  supersedeStaleReady?: (lane: LaneConfigV2, keepTaskId: string) => Promise<string[]>;
+  /** Advance past terminal ACCEPT outcomes: archive the lane-run and start a
+   *  fresh cycle (continuous night scheduling). Other terminals stay put. */
+  autoContinue?: boolean;
+  /**
+   * Night mode: after every pass, evaluate NIGHT_RUN_COMPLETE. On completion
+   * the summary is written, scheduling stops, and serve() returns (exit 0).
+   * The machine power-off itself is a SEPARATE explicit step
+   * (`night-run shutdown --poweroff`), never automatic here.
+   */
+  night?: { cycleId: string; startedAt: string };
   allowTmuxSends?: boolean;
   ownerGoRequired?: boolean;
   /**
@@ -47,6 +60,7 @@ export interface DaemonOptions {
     goalBrief?: string;
     goalBriefFor?: (lane: LaneConfigV2) => string;
     projectCurrentFor?: (lane: LaneConfigV2) => Promise<string>;
+    authoritativeFor?: (lane: LaneConfigV2) => Promise<{ ok: boolean; reason?: string }>;
     seams: IntakeSeams;
   };
   audit?: (event: Record<string, unknown>) => void;
@@ -118,6 +132,29 @@ export function readRunnerStatus(storeRoot: string, laneIds: string[]): RunnerSt
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Archive a terminally completed lane-run so a fresh cycle can begin. */
+export function archiveLaneRun(storeRoot: string, laneId: string, outcome: string): string | null {
+  const file = path.join(path.resolve(storeRoot), 'lane-runs', `${laneId}.json`);
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const dir = path.join(path.resolve(storeRoot), 'lane-runs', 'archive');
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dest = path.join(dir, `${laneId}-${stamp}-${outcome}.json`);
+    fs.renameSync(file, dest);
+    return dest;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the intake marker so the next cycle re-proposes (bounded rounds). */
+export function clearIntakeMarker(storeRoot: string, laneId: string): void {
+  try {
+    fs.unlinkSync(path.join(path.resolve(storeRoot), 'intake', `${laneId}.json`));
+  } catch { /* absent is fine */ }
+}
+
 export async function serveOnce(opts: DaemonOptions): Promise<RunnerStatusSnapshot> {
   const scheduler = opts.scheduler ?? new LaneScheduler({ maxActiveBuilders: 2, maxActiveQa: 1 });
   const laneIds = opts.lanes.map((l) => l.id);
@@ -176,11 +213,28 @@ export async function serveOnce(opts: DaemonOptions): Promise<RunnerStatusSnapsh
             projectId: opts.projectId,
             goalBrief: opts.intake.goalBriefFor ? opts.intake.goalBriefFor(lane) : (opts.intake.goalBrief ?? lane.goal),
             ...(opts.intake.projectCurrentFor ? { projectCurrent: () => opts.intake!.projectCurrentFor!(lane) } : {}),
+            ...(opts.intake.authoritativeFor ? { authoritative: () => opts.intake!.authoritativeFor!(lane) } : {}),
             timeoutMs: opts.turnTimeoutMs,
             maxAttempts: opts.turnMaxAttempts,
             audit: opts.audit,
           });
+          if (!ready) {
+            // Parked (HUMAN_GATE) or context-blocked: lane-run already holds
+            // the terminal outcome; do not advance further this pass.
+            opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'intake_parked' });
+            return;
+          }
           opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'intake', taskId: ready.taskId });
+          if (opts.supersedeStaleReady) {
+            try {
+              const dropped = await opts.supersedeStaleReady(lane, ready.taskId);
+              if (dropped.length) {
+                opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'supersede', dropped, kept: ready.taskId });
+              }
+            } catch (err) {
+              opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'supersede_error', error: err instanceof Error ? err.message : String(err) });
+            }
+          }
           res = await advanceLane(lane, opts.stores, opts.seams, bindings as EngineBindings, scheduler, {
             storeRoot: opts.storeRoot,
             correlationId: opts.correlationId,
@@ -192,6 +246,25 @@ export async function serveOnce(opts: DaemonOptions): Promise<RunnerStatusSnapsh
             audit: opts.audit,
           });
           opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'advance', outcome: res.outcome });
+          if (res.outcome === 'ACCEPT_AND_ADVANCE' && opts.autoContinue) {
+            // Continuous night scheduling: archive the completed cycle and
+            // immediately begin the next (re-resolve current, next intake).
+            // Other terminals (BLOCKED_*, HUMAN_GATE, exhausted) stay put.
+            archiveLaneRun(opts.storeRoot, lane.id, res.outcome);
+            clearIntakeMarker(opts.storeRoot, lane.id);
+            opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'cycle_rollover', from: res.laneRun.taskId });
+            res = await advanceLane(lane, opts.stores, opts.seams, bindings as EngineBindings, scheduler, {
+              storeRoot: opts.storeRoot,
+              correlationId: opts.correlationId,
+              projectId: opts.projectId,
+              maxTurnsPerAdvance: opts.maxTurnsPerAdvance ?? 20,
+              requireOwnerGo: opts.ownerGoRequired ?? false,
+              turnTimeoutMs: opts.turnTimeoutMs,
+              turnMaxAttempts: opts.turnMaxAttempts,
+              audit: opts.audit,
+            });
+            opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'advance', outcome: res.outcome });
+          }
         } catch (err) {
           opts.audit?.({
             ts: new Date().toISOString(), laneId: lane.id, step: 'intake_error',
@@ -237,6 +310,7 @@ export async function serve(opts: DaemonOptions): Promise<void> {
   try {
     for (;;) {
       await serveOnce(opts);
+      if (opts.night && await checkNightComplete(opts)) break;
       if (opts.once || stop) break;
       await sleep(opts.pollMs ?? 5000);
     }
@@ -245,8 +319,93 @@ export async function serve(opts: DaemonOptions): Promise<void> {
   }
 }
 
-export function stopRunner(storeRoot: string): boolean {
-  const pid = readPid(storeRoot);
+async function checkNightComplete(opts: DaemonOptions): Promise<boolean> {
+  if (!opts.night) return false;
+  try {
+    const { evaluateNightCompletion, writeLastRun } = await import('./night-run.js');
+    const { listTurns } = await import('./turn-store.js');
+    const runs = opts.lanes.map((l) => readLaneRun(opts.storeRoot, l.id));
+    const allTurns = listTurns(opts.storeRoot);
+    const pending = allTurns.filter((t) => !['VERIFIED', 'FAILED'].includes(t.state));
+    const readyByLane: Record<string, string[]> = {};
+    for (const lane of opts.lanes) {
+      try {
+        readyByLane[lane.id] = opts.stores.listReadyTasks(lane)
+          .filter((t) => t.executionState === 'READY').map((t) => t.taskId);
+      } catch {
+        readyByLane[lane.id] = [];
+      }
+    }
+    const retryable = allTurns.filter((t) => t.state === 'FAILED' && t.transient && t.attempt < t.maxAttempts);
+    // Task->lane map from active lane-runs for failure attribution.
+    const laneOfTask = new Map<string, string>();
+    for (const r of runs) {
+      if (r?.taskId) laneOfTask.set(r.taskId, r.laneId);
+    }
+    const recoverable = [...new Set(retryable.map((t) => laneOfTask.get(t.taskId) ?? t.taskId))];
+    const pendingFallbacks: string[] = [];
+    for (const t of allTurns) {
+      if (t.role !== 'qa' || t.state !== 'VERIFIED' || !t.resultBody) continue;
+      let isUnavailable = false;
+      try {
+        const { parseQaTurn } = await import('./result-parse.js');
+        isUnavailable = parseQaTurn(t.resultBody).verdict === 'QA_UNAVAILABLE';
+      } catch { continue; }
+      if (!isUnavailable) continue;
+      const followed = allTurns.some((u) => u.role === 'qa' && u.taskId === t.taskId && u.runId === t.runId
+        && u.attempt > t.attempt);
+      if (!followed) {
+        const lane = laneOfTask.get(t.taskId) ?? t.taskId;
+        if (!pendingFallbacks.includes(lane)) pendingFallbacks.push(lane);
+      }
+    }
+    const completion = evaluateNightCompletion({
+      runs, pendingTurns: pending, readyByLane, retryable,
+      pendingFallbacks, recoverableFailures: recoverable,
+    });
+    if (!completion.complete) return false;
+    const { buildNightSummary } = await import('./night-run.js');
+    const accepted = runs.filter((r) => r && /ACCEPT/.test(r.outcome ?? '')).map((r) => ({ laneId: r!.laneId, taskId: r!.taskId ?? '' }));
+    const changesLanes = [...new Set(runs.filter((r) => (r?.attempt ?? 0) > 1).map((r) => r!.laneId))];
+    const fallbacksUsed = [...new Set(runs.filter((r) => r?.qaMode.startsWith('fallback:')).map((r) => `${r!.laneId}:${r!.qaMode}`))];
+    const checkpointShas: Record<string, string | null> = {};
+    for (const lane of opts.lanes) {
+      try {
+        const { execFileSync } = await import('node:child_process');
+        checkpointShas[lane.id] = execFileSync('git', ['-C', lane.root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 }).trim();
+      } catch {
+        checkpointShas[lane.id] = null;
+      }
+    }
+    const { summary } = buildNightSummary({
+      cycleId: opts.night!.cycleId,
+      startedAt: opts.night!.startedAt,
+      lanes: opts.lanes.map((l) => ({ id: l.id, root: l.root })),
+      runs, pendingTurns: pending, readyByLane, retryable, pendingFallbacks, recoverableFailures: recoverable,
+      accepted, changesLanes, fallbacksUsed, checkpointShas, errors: [],
+      runnerSha: await currentRunnerSha(),
+    });
+    const { writeLastRun: write } = await import('./night-run.js');
+    write(opts.storeRoot, summary);
+    opts.audit?.({ ts: new Date().toISOString(), step: 'night_complete', cycle: opts.night!.cycleId });
+    return true;
+  } catch (err) {
+    // Evaluation itself must never kill the night: audit and continue.
+    opts.audit?.({ ts: new Date().toISOString(), step: 'night_eval_error', error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+async function currentRunnerSha(): Promise<string | null> {
+  try {
+    const { execFileSync } = await import('node:child_process');
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function stopRunner(storeRoot: string): boolean {  const pid = readPid(storeRoot);
   if (pid === null) return false;
   try {
     process.kill(pid, 'SIGTERM');

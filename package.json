@@ -108,6 +108,7 @@
     "test:workspace-cert": "node --test test/workspace-cert.test.mjs",
     "test:runner-durable": "node --test test/runner-durable.test.mjs",
     "test:runner-restart": "node --test test/runner-restart.test.mjs",
+    "test:night-run": "node --test test/night-run.test.mjs",
     "test:mandatory": "node scripts/run-mandatory-tests.mjs",
     "test:bootstrap-integrity": "node --test test/workspace-bootstrap.test.mjs test/autonomous-bootstrap-slice.test.mjs",
     "mcp:app": "node dist/server/mcp/app-server-main.js",

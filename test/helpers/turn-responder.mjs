@@ -52,6 +52,10 @@ function respond(requestId, seg) {
     out('QA_PASS\ncontract and evidence verified');
     return;
   }
+  if (role === 'qa-unavailable') {
+    out(`QA_UNAVAILABLE ${process.env.RR_QA_CAUSE || 'primary rate-limited (429)'}`);
+    return;
+  }
   if (role === 'propose') {
     out(`\`\`\`json TASK_PROPOSAL v1 ${JSON.stringify({
       goal: 'Run the dependency-free regression subset and report structured evidence',

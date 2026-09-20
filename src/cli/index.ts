@@ -77,7 +77,7 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; store: string | null; transportFile: string | null; worker: string | null; dataRootOpt: string | null; goalBriefDir: string | null; testsFile: string | null; commandsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; note: string | null; ttlHours: number | null; tasksMax: number | null; turnTimeoutMs: number | null; turnAttempts: number | null; noNewTasks: boolean; noTmuxSends: boolean; maxTurns: number | null; live: boolean; dryRun: boolean; allowTmuxSends: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; store: string | null; transportFile: string | null; worker: string | null; dataRootOpt: string | null; goalBriefDir: string | null; testsFile: string | null; commandsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; note: string | null; ttlHours: number | null; tasksMax: number | null; turnTimeoutMs: number | null; turnAttempts: number | null; noNewTasks: boolean; noTmuxSends: boolean; autoContinue: boolean; nightCycle: string | null; expectedSha: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; allowTmuxSends: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -110,6 +110,9 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let turnAttempts: number | null = null;
   let noNewTasks = false;
   let noTmuxSends = false;
+  let autoContinue = false;
+  let nightCycle: string | null = null;
+  let expectedSha: string | null = null;
   let maxTurns: number | null = null;
   let live = false;
   let dryRun = false;
@@ -136,6 +139,9 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--once') once = true;
     else if (a === '--live') live = true;
     else if (a === '--dry-run') dryRun = true;
+    else if (a === '--auto-continue') autoContinue = true;
+    else if (a === '--night') { const nx = args[i + 1]; if (nx === undefined || nx.startsWith('--')) { unknown = a; break; } nightCycle = nx; i++; }
+    else if (a === '--expected-sha') { const ex = args[i + 1]; if (ex === undefined || ex.startsWith('--')) { unknown = a; break; } expectedSha = ex; i++; }
     else if (a === '--no-new-tasks') noNewTasks = true;
     else if (a === '--no-tmux-sends') noTmuxSends = true;
     else if (a === '--allow-tmux-sends') allowTmuxSends = true;
@@ -217,9 +223,9 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'workspace' || a === 'runner')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'workspace' || a === 'runner' || a === 'night-run')) {
       command = a;
-    } else if ((command === 'connect' || command === 'host' || command === 'resume' || command === 'workspace' || command === 'runner') && !sub) {
+    } else if ((command === 'connect' || command === 'host' || command === 'resume' || command === 'workspace' || command === 'runner' || command === 'night-run') && !sub) {
       sub = a;
     } else if (command === 'history' && !taskId) {
       taskId = a;
@@ -229,7 +235,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, autoContinue, nightCycle, expectedSha, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function promptOwnerConfirm(question: string): Promise<boolean> {
@@ -244,7 +250,7 @@ async function promptOwnerConfirm(question: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, store, transportFile, worker, dataRootOpt, goalBriefDir, testsFile, commandsFile, risksFile, base, ready, note, ttlHours, tasksMax, noNewTasks, noTmuxSends, autoContinue, nightCycle, expectedSha, turnTimeoutMs, turnAttempts, maxTurns, live, dryRun, allowTmuxSends, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -633,7 +639,7 @@ async function main(): Promise<void> {
 
   if (command === 'runner') {
     if (sub !== 'run' && sub !== 'status' && sub !== 'stop') {
-      const msg = 'Usage: agent-relay runner <run|status|stop> [--store <dir>] [--lane <id>] [--project <name>] [--cycle <id>] [--once] [--poll-ms <ms>] [--transport-file <f>] [--worker <id>] [--data-root <dir>] [--allow-tmux-sends] [--json]\nPersistent host: packaging/agent-relay-runner.service (systemd --user).';
+      const msg = 'Usage: agent-relay runner <run|status|stop> [--store <dir>] [--lane <id>] [--project <name>] [--cycle <id>] [--once] [--poll-ms <ms>] [--transport-file <f>] [--worker <id>] [--data-root <dir>] [--allow-tmux-sends] [--auto-continue] [--expected-sha <sha>] [--json]\nCertified runs pin --expected-sha (or AGENT_RELAY_RUNNER_SHA); dev checkouts run unpinned.\nPersistent host: packaging/agent-relay-runner.service (systemd --user).';
       if (json) console.log(JSON.stringify({ schemaVersion: 'cli.runner.v1', ok: false, error: msg }, null, 2));
       else console.error(msg);
       process.exit(1);
@@ -655,12 +661,42 @@ async function main(): Promise<void> {
         ...(pollMs !== null ? { pollMs } : {}),
         ...(turnAttempts !== null ? { turnMaxAttempts: turnAttempts } : {}),
         allowTmuxSends,
+        autoContinue,
+        ...(nightCycle !== null ? { nightCycleId: nightCycle, nightStartedAt: new Date().toISOString() } : {}),
+        ...(expectedSha !== null ? { expectedSha } : {}),
         json,
       });
       process.exit(code);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (json) console.log(JSON.stringify({ schemaVersion: 'cli.runner.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+  }
+
+  if (command === 'night-run') {
+    if (sub !== 'start' && sub !== 'status' && sub !== 'stop' && sub !== 'shutdown') {
+      const msg = 'Usage: agent-relay night-run <start|status|stop|shutdown> [--store <dir>] [--lane <id,...>] [--cycle <id>] [--data-root <dir>] [--dry-run] [--poweroff] [--json]\nCertification runs shutdown dry-run only; real poweroff needs an explicit --poweroff plus a passed gate.';
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.night.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const { runNightCommand } = await import('../runner/night-cli.js');
+    try {
+      const code = await runNightCommand(cwd, sub, {
+        ...(store !== null ? { store } : {}),
+        ...(lane !== null ? { lanes: lane.split(',').map((l) => l.trim()).filter(Boolean) } : {}),
+        ...(cycle !== null ? { cycle } : {}),
+        ...(dataRootOpt !== null ? { dataRoot: dataRootOpt } : {}),
+        ...(dryRun ? { dryRun: true as const } : {}),
+        ...(sub === 'shutdown' && !dryRun ? { poweroff: true as const } : {}),
+        json,
+      });
+      process.exit(code);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.night.v1', ok: false, error: msg }, null, 2));
       else console.error(msg);
       process.exit(1);
     }

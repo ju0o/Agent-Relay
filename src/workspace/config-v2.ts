@@ -73,6 +73,20 @@ export interface LaneConfigV2 {
   builder: RoleBinding;
   qa: RoleBinding;
   qaFallback: QaFallbackBinding;
+  /**
+   * Ordered QA fallback runtimes, tried in order on QA_UNAVAILABLE
+   * (429/quota/auth/provider). Defaults to [qaFallback.runtime].
+   * Same Task + same Result are preserved across every hop; the Builder
+   * is never re-run by fallback.
+   */
+  fallbackChain?: string[];
+  /**
+   * Founder-owned holds (HUMAN_GATE list): case-insensitive substrings
+   * matched against a proposed task's goal+scope. A match parks the lane
+   * (HUMAN_GATE) instead of dispatching — e.g. unapproved implementation,
+   * P3 work before its gate opens, Founder-only visual/device gates.
+   */
+  holds?: string[];
   concurrency?: LaneConcurrencyOverride;
 }
 
@@ -138,6 +152,18 @@ export function validateWorkspaceConfigV2(raw: unknown): asserts raw is Workspac
     if (!fb || typeof fb.runtime !== 'string' || !fb.runtime.trim()) fail(`lanes[${i}].qaFallback.runtime required`);
     if (typeof fb.model !== 'string' || !fb.model.trim()) fail(`lanes[${i}].qaFallback.model required`);
     if (!noPaneNumber(fb.runtime) || !noPaneNumber(fb.model)) fail(`lanes[${i}].qaFallback must not be pane numbers`);
+    const chain = l.fallbackChain as unknown;
+    if (chain !== undefined) {
+      if (!Array.isArray(chain) || chain.length === 0 || chain.some((r) => typeof r !== 'string' || !r.trim() || !noPaneNumber(r))) {
+        fail(`lanes[${i}].fallbackChain must be a non-empty string[] without pane numbers`);
+      }
+    }
+    const holds = (l as Record<string, unknown>).holds as unknown;
+    if (holds !== undefined) {
+      if (!Array.isArray(holds) || holds.some((h) => typeof h !== 'string' || !h.trim())) {
+        fail(`lanes[${i}].holds must be a string[]`);
+      }
+    }
     const ov = l.concurrency as Record<string, unknown> | undefined;
     if (ov !== undefined) {
       if (ov.maxBuilders !== undefined && (typeof ov.maxBuilders !== 'number' || ov.maxBuilders < 1)) {

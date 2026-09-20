@@ -823,3 +823,186 @@ test('collect prefers anchor but falls back to agent REF lines', async () => {
   const src = fs.readFileSync(path.resolve('src/runner/transport.ts'), 'utf8');
   assert.ok(src.includes('End your reply'), 'instruction-line exclusion present');
 });
+
+test('lane states derive truthfully from durable records', async () => {
+  const mod = await import('../dist/server/runner/lane-states.js');
+  const run = (over) => ({
+    laneRunId: 'l1', correlationId: 'c', laneId: 'x', projectId: 'p', taskId: null,
+    runId: null, attempt: 0, phase: 'PM_TURN', outcome: null, reason: null,
+    qaMode: 'primary', route: 'full', envelope: null, updatedAt: new Date().toISOString(), ...over,
+  });
+  const t = (state) => ({ turnId: 't1', projectId: 'p', taskId: 'T', runId: 'r', role: 'builder', requestId: 'q', correlationId: 'c', attempt: 1, state, timeoutMs: 1, maxAttempts: 1, requestBody: 'b', resultBody: null, resultRef: null, error: null, transient: false, createdAt: '', updatedAt: '', history: [] });
+  assert.equal(mod.deriveLaneState({ run: null, pendingTurns: [], builderSlotHeld: false, qaSlotHeld: false, unboundRoles: [] }), 'IDLE');
+  assert.equal(mod.deriveLaneState({ run: run({ outcome: 'ACCEPT_AND_ADVANCE' }), pendingTurns: [], builderSlotHeld: false, qaSlotHeld: false, unboundRoles: [] }), 'DONE');
+  assert.equal(mod.deriveLaneState({ run: run({ outcome: 'HUMAN_GATE_PARKED' }), pendingTurns: [], builderSlotHeld: false, qaSlotHeld: false, unboundRoles: [] }), 'HUMAN_GATE');
+  assert.equal(mod.deriveLaneState({ run: run({ outcome: 'BLOCKED_CONTEXT' }), pendingTurns: [], builderSlotHeld: false, qaSlotHeld: false, unboundRoles: [] }), 'BLOCKED_CONTEXT');
+  assert.equal(mod.deriveLaneState({ run: run({ outcome: 'BLOCKED_RUNTIME', reason: 'QA_RUNTIME_UNAVAILABLE x' }), pendingTurns: [], builderSlotHeld: false, qaSlotHeld: false, unboundRoles: [] }), 'BLOCKED_TRANSPORT');
+  assert.equal(mod.deriveLaneState({ run: run({ phase: 'BUILD_TURN', taskId: 'T' }), pendingTurns: [t('RUNNING')], builderSlotHeld: true, qaSlotHeld: false, unboundRoles: [] }), 'ACTIVE');
+  assert.equal(mod.deriveLaneState({ run: run({ phase: 'QA_TURN', taskId: 'T' }), pendingTurns: [], builderSlotHeld: false, qaSlotHeld: false, unboundRoles: ['qa: missing'] }), 'WAITING_FOR_RUNTIME');
+  assert.equal(mod.deriveLaneState({ run: run({ phase: 'BUILD_TURN', taskId: 'T' }), pendingTurns: [t('REQUESTED')], builderSlotHeld: false, qaSlotHeld: false, unboundRoles: [] }), 'WAITING_FOR_SLOT');
+});
+
+test('QA_UNAVAILABLE primary routes to healthy fallback, same Task/Result, Builder never re-runs', async () => {
+  const { dataRoot, project, taskId } = await seedScope();
+  const store = tmp();
+  const audit = [];
+  const { stores, seams } = engineHarness(dataRoot, project);
+  const bindings = {
+    pm: subBinding('pm'), builder: subBinding('builder'),
+    qa: subBinding('qa-unavailable'), qaFallback: subBinding('qa'),
+  };
+  const out = await advanceLane(lane(), stores, seams, bindings, new LaneScheduler({ maxActiveBuilders: 2, maxActiveQa: 1 }), {
+    storeRoot: store, correlationId: 'eng-fb', projectId: project,
+    turnTimeoutMs: 15000, audit: (e) => audit.push(e),
+  });
+  assert.equal(out.outcome, 'ACCEPT_AND_ADVANCE');
+  assert.ok(out.laneRun.qaMode?.startsWith('fallback:'), `qaMode records fallback hop (got ${out.laneRun.qaMode})`);
+  assert.ok(audit.some((e) => e.step === 'qa_fallback'), 'fallback hop audited');
+  // Same Result preserved: exactly one verified builder turn, no re-run.
+  const turns = (await import('../dist/server/runner/turn-store.js')).listTurns(store);
+  const builders = turns.filter((t) => t.role === 'builder' && t.state === 'VERIFIED');
+  assert.equal(builders.length, 1);
+  assert.equal(builders[0].taskId, taskId);
+  // Both QA attempts served the same run.
+  for (const q of turns.filter((t) => t.role === 'qa' && t.state === 'VERIFIED')) {
+    assert.equal(q.taskId, taskId);
+  }
+});
+
+test('unbound QA primary walks chain to fallback immediately', async () => {
+  const { dataRoot, project } = await seedScope();
+  const store = tmp();
+  const { stores, seams } = engineHarness(dataRoot, project);
+  const bindings = { pm: subBinding('pm'), builder: subBinding('builder'), qaFallback: subBinding('qa') };
+  const out = await advanceLane(lane(), stores, seams, bindings, new LaneScheduler({ maxActiveBuilders: 2, maxActiveQa: 1 }), {
+    storeRoot: store, correlationId: 'eng-fb2', projectId: project, turnTimeoutMs: 15000,
+  });
+  assert.equal(out.outcome, 'ACCEPT_AND_ADVANCE');
+  assert.ok(out.laneRun.qaMode?.startsWith('fallback:'), `qaMode records fallback hop (got ${out.laneRun.qaMode})`);
+});
+
+test('exhausted QA chain ends BLOCKED_RUNTIME, Task/Result preserved, Builder untouched', async () => {
+  const { dataRoot, project, taskId } = await seedScope();
+  const store = tmp();
+  const { stores, seams } = engineHarness(dataRoot, project);
+  const bindings = { pm: subBinding('pm'), builder: subBinding('builder'), qa: subBinding('qa-unavailable') };
+  const out = await advanceLane({ ...lane(), qaFallback: { runtime: 'cursor', model: 'default' } }, stores, seams, bindings, new LaneScheduler({ maxActiveBuilders: 2, maxActiveQa: 1 }), {
+    storeRoot: store, correlationId: 'eng-fb3', projectId: project, turnTimeoutMs: 15000,
+  });
+  assert.equal(out.outcome, 'BLOCKED_RUNTIME');
+  assert.match(out.laneRun.reason ?? '', /QA_RUNTIME_UNAVAILABLE/);
+  const turns = (await import('../dist/server/runner/turn-store.js')).listTurns(store);
+  assert.equal(turns.filter((t) => t.role === 'builder' && t.state === 'VERIFIED').length, 1);
+  assert.equal(gt.getTask(dataRoot, project, taskId).executionState, 'DISPATCHED');
+});
+
+test('quarantine exiles frozen sessions after repeated failures, resets on success', async () => {
+  const mod = await import('../dist/server/runner/session-health.js');
+  const store = tmp();
+  const sid = '%6:16363';
+  assert.equal(mod.readQuarantine(store).isQuarantined(sid), false);
+  mod.recordSessionFailure(store, sid, 'TRANSPORT_LOST: x');
+  mod.recordSessionFailure(store, sid, 'TURN_TIMEOUT: y');
+  assert.equal(mod.readQuarantine(store).isQuarantined(sid), false);
+  const h = mod.recordSessionFailure(store, sid, 'NOT_IDLE: z');
+  assert.equal(h.quarantined, true);
+  assert.equal(mod.readQuarantine(store).isQuarantined(sid), true);
+  mod.resetSessionHealth(store, sid);
+  assert.equal(mod.readQuarantine(store).isQuarantined(sid), false);
+});
+
+test('holds park matching proposals as HUMAN_GATE without creating Tasks', async () => {
+  const engine = await import('../dist/server/runner/lane-engine.js');
+  const inbox = tmp();
+  const store = tmp();
+  const { recordOwnerGo } = await import('../dist/server/runner/owner-go.js');
+  recordOwnerGo(store, { cycleId: 'hold-1', lanes: ['actl'] });
+  const base = defaultWorkspaceConfigV2().lanes.find((l) => l.id === 'actl');
+  // The propose responder emits a fixed regression proposal; hold on its wording.
+  const lane = { ...base, holds: ['regression'] };
+  let created = 0;
+  const seams = {
+    validateProposal: async () => {},
+    createTask: async () => { created += 1; return { taskId: 'T', executionState: 'PLANNED', pmState: 'PENDING' }; },
+    markReady: async (_l, id) => ({ taskId: id, executionState: 'READY', pmState: 'PENDING' }),
+  };
+  const pm = {
+    transport: new SubprocessTransport(),
+    session: { kind: 'subprocess', target: process.execPath, args: [RESPONDER], env: { RR_ROLE: 'propose' } },
+    sessionId: 'sub:propose-hold',
+  };
+  const out = await engine.intakeNextTask(lane, pm, seams, {
+    storeRoot: store, correlationId: 'hold-1', projectId: 'IN', goalBrief: 'actl remote',
+  });
+  assert.equal(out, null);
+  assert.equal(created, 0);
+  const rec = engine.readLaneRun(store, 'actl');
+  assert.equal(rec, null);
+  void inbox;
+});
+
+test('BLOCKED_CONTEXT parks intake without authoritative basis', async () => {
+  const engine = await import('../dist/server/runner/lane-engine.js');
+  const store = tmp();
+  const { recordOwnerGo } = await import('../dist/server/runner/owner-go.js');
+  recordOwnerGo(store, { cycleId: 'ctx-1', lanes: ['actl'] });
+  const pm = {
+    transport: new SubprocessTransport(),
+    session: { kind: 'subprocess', target: process.execPath, args: [RESPONDER], env: { RR_ROLE: 'propose' } },
+    sessionId: 'sub:propose-ctx',
+  };
+  const out = await engine.intakeNextTask(lane(), pm, {
+    validateProposal: async () => {},
+    createTask: async () => { throw new Error('must not create without basis'); },
+    markReady: async () => { throw new Error('must not ready without basis'); },
+  }, {
+    storeRoot: store, correlationId: 'ctx-1', projectId: 'IN', goalBrief: 'vague',
+    authoritative: async () => ({ ok: false, reason: 'no git, no docs, no goals' }),
+  });
+  assert.equal(out, null);
+});
+
+test('supersede cancels stale READY tasks, never the kept one', async () => {
+  const { supersedeStaleReady } = await import('../dist/server/runner/serve-cli.js');
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-sup-'));
+  const project = 'SUP';
+  const goal = await gt.createGoal(dataRoot, project, { title: 'g', goalStatement: 'x' });
+  const mk = async () => {
+    const c = await gt.createTask(dataRoot, project, { goalId: goal.goalId, title: 't', goal: 'g', reason: 'r', scope: 's' });
+    return rt.transitionTaskExecution(dataRoot, project, c.taskId, { expectedExecutionState: 'PLANNED', to: 'READY', reason: 'seed' });
+  };
+  const keep = await mk();
+  const stale = await mk();
+  const dropped = await supersedeStaleReady(dataRoot, project, keep.taskId);
+  assert.deepEqual(dropped, [stale.taskId]);
+  assert.equal(gt.getTask(dataRoot, project, stale.taskId).executionState, 'CANCELLED');
+  assert.equal(gt.getTask(dataRoot, project, keep.taskId).executionState, 'READY');
+});
+
+test('frozen SHA pin fails closed, unpinned runs only attest', async () => {
+  const { attestRunnerCode } = await import('../dist/server/runner/frozen-sha.js');
+  // Wrong pin always refuses, whatever the tree looks like.
+  assert.throws(
+    () => attestRunnerCode('.', '0'.repeat(40)),
+    /FROZEN_SHA_MISMATCH/,
+  );
+  // Hermetic repo: clean attest passes pinned; dirty tree refuses pinned.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-frozen-'));
+  const git = (args, extra = {}) => spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 15000, ...extra });
+  assert.equal(git(['init']).status, 0);
+  fs.writeFileSync(path.join(repo, 'f.txt'), 'v1\n');
+  assert.equal(git(['add', '.']).status, 0);
+  assert.equal(git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'c1']).status, 0);
+  const head = git(['rev-parse', 'HEAD']).stdout.trim();
+  assert.match(head, /^[0-9a-f]{40}$/);
+  const clean = attestRunnerCode(repo, head);
+  assert.equal(clean.sha, head);
+  assert.equal(clean.dirty, false);
+  assert.equal(clean.pinned, true);
+  fs.writeFileSync(path.join(repo, 'f.txt'), 'v2-dirty\n');
+  assert.throws(() => attestRunnerCode(repo, head), /FROZEN_SHA_DIRTY/);
+  const reported = attestRunnerCode(repo, null);
+  assert.equal(reported.sha, head);
+  assert.equal(reported.dirty, true);
+  assert.equal(reported.pinned, false);
+});

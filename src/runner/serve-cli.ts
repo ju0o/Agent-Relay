@@ -16,7 +16,9 @@ import * as path from 'node:path';
 import { LaneScheduler } from '../workspace/scheduler.js';
 import { loadEffectiveConfig } from '../workspace/config-v2.js';
 import { serve, serveOnce, stopRunner, readRunnerStatus } from './daemon.js';
-import { bindLaneSessions } from './session-bind.js';
+import { bindLaneSessions, resolveRuntimeSession } from './session-bind.js';
+import { readQuarantine } from './session-health.js';
+import { detectCursorRuntime as detectCursorRuntimeCli } from '../workspace/qa-fallback.js';
 import { dispatchV1OwnerApproved } from '../backend/v1-dispatch.js';
 import * as goalTask from '../backend/goal-task.js';
 import { transitionTaskExecution } from '../backend/goal-task-runtime.js';
@@ -35,11 +37,40 @@ export interface RunnerCmdOptions {
   turnTimeoutMs?: number;
   turnMaxAttempts?: number;
   goalBriefDir?: string;
+  autoContinue?: boolean;
+  nightCycleId?: string;
+  nightStartedAt?: string;
+  /** Frozen certified Runner SHA pin (CLI --expected-sha or AGENT_RELAY_RUNNER_SHA). */
+  expectedSha?: string;
   json?: boolean;
 }
 
 export function defaultRunnerStore(cwd: string): string {
   return path.join(path.resolve(cwd), '.agent-relay', 'runner');
+}
+
+/**
+ * Cancel other READY tasks in scope after a successful intake: the newest
+ * Founder direction wins and stale queued work must never redispatch.
+ * Returns dropped task ids (audited by the caller).
+ */
+export async function supersedeStaleReady(
+  dataRoot: string,
+  project: string,
+  keepTaskId: string,
+): Promise<string[]> {
+  const dropped: string[] = [];
+  for (const t of goalTask.listTasks(dataRoot, project)) {
+    if (t.taskId !== keepTaskId && t.executionState === 'READY') {
+      await transitionTaskExecution(dataRoot, project, t.taskId, {
+        expectedExecutionState: 'READY',
+        to: 'CANCELLED',
+        reason: `superseded by ${keepTaskId} (latest Founder direction wins; stale queue never redispatches)`,
+      });
+      dropped.push(t.taskId);
+    }
+  }
+  return dropped;
 }
 
 function resolveDataRoot(cwd: string, override?: string): string {
@@ -264,13 +295,31 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
   const resolveBindings = async (lane: (typeof lanes)[number]) => {
     const bound = bindLaneSessions(lane, {
       ioDir: storeRoot,
+      quarantine: readQuarantine(storeRoot),
       ...(transportOverrides[lane.id] ? { subprocessCommands: transportOverrides[lane.id] as never } : {}),
     });
     if (!bound.bindings) throw new Error(bound.deferred ?? 'unbound lane');
     if (bound.missing.length) {
       audit({ laneId: lane.id, step: 'bind_partial', missing: bound.missing, bound: bound.boundPanes });
     }
-    return bound.bindings;
+    const bindings = bound.bindings;
+    // Dynamic QA fallback resolution (ordered chain): find a healthy session
+    // matching each candidate runtime under the lane root (quarantine-aware).
+    // Cursor-family runtimes resolve through real CLI detection instead.
+    return {
+      ...bindings,
+      detectQaRuntime: (runtime: string) => {
+        if (runtime === 'cursor' || runtime === 'cursor-agent') return detectCursorRuntimeCli();
+        return { installed: true };
+      },
+      resolveSession: (runtime: string) => {
+        if (runtime === 'cursor' || runtime === 'cursor-agent') return null;
+        return resolveRuntimeSession(lane, runtime, {
+          ioDir: storeRoot,
+          quarantine: readQuarantine(storeRoot),
+        });
+      },
+    };
   };
 
   const projectCurrentFor = async (lane: (typeof lanes)[number]): Promise<string> => {
@@ -290,6 +339,33 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
       },
     });
     return renderProjectCurrentPacket(cur);
+  };
+  const authoritativeFor = async (lane: (typeof lanes)[number]): Promise<{ ok: boolean; reason?: string }> => {
+    try {
+      const { resolveProjectCurrent } = await import('./project-current.js');
+      const cur = await resolveProjectCurrent(lane.id, lane.root, {
+        laneRoots: config.lanes.map((l) => l.root),
+        dataRoot,
+        project: projectDefault ?? lane.id,
+        listOpenTasks: (dr, project) => {
+          try {
+            return goalTask.listTasks(dr, project).map((t) => ({
+              taskId: t.taskId, executionState: t.executionState, pmState: t.pmState,
+            }));
+          } catch {
+            return [];
+          }
+        },
+      });
+      const grounded = Boolean(
+        cur.git.headSha || cur.readmeGoal || cur.docIndex.length > 0 || (cur.canonical && cur.canonical.open.length + cur.canonical.acceptedRecent.length > 0),
+      );
+      return grounded
+        ? { ok: true }
+        : { ok: false, reason: `no git HEAD, no README/docs, and no canonical goals under ${lane.root}` };
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message.slice(0, 160) : String(err) };
+    }
   };
   const intakeSeams = {
     validateProposal: async (lane: (typeof lanes)[number], proposal: { goal: string; bounded_scope: string; acceptance_criteria: Array<{ id: string; description: string }> }, fileScope: string[]) => {
@@ -336,6 +412,18 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
       return { taskId: ready.taskId, executionState: ready.executionState, pmState: ready.pmState };
     },
   };
+  // Frozen certified Runner SHA (item 11): attest BEFORE any lane work.
+  // Pinned runs fail closed on mismatch/dirty tree; unpinned dev runs only
+  // report. Env fallback lets the systemd unit pin without CLI flags.
+  const { attestRunnerCode } = await import('./frozen-sha.js');
+  const attestation = attestRunnerCode(
+    cwd,
+    o.expectedSha ?? process.env.AGENT_RELAY_RUNNER_SHA ?? null,
+  );
+  audit({
+    step: 'runner_attest', sha: attestation.sha, dirty: attestation.dirty,
+    pinned: attestation.pinned, correlationId,
+  });
   const serveOpts = {
     storeRoot,
     lanes,
@@ -354,11 +442,23 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
       enabled: true,
       goalBriefFor: (l: { id: string; goal: string }) => briefFor(l.id, l.goal),
       projectCurrentFor,
+      authoritativeFor,
       seams: intakeSeams,
     },
+    supersedeStaleReady: async (lane: (typeof lanes)[number], keepTaskId: string) => {
+      const project = projectDefault ?? lane.id;
+      try {
+        return await supersedeStaleReady(dataRoot, project, keepTaskId);
+      } catch (err) {
+        audit({ laneId: lane.id, step: 'supersede_error', error: err instanceof Error ? err.message : String(err) });
+        return [];
+      }
+    },
+    autoContinue: o.autoContinue ?? false,
     // The durable live path never performs live effects without a covering
     // Owner GO (fail-closed); tests drive advanceLane directly instead.
     ownerGoRequired: true,
+    ...(o.nightCycleId ? { night: { cycleId: o.nightCycleId, startedAt: o.nightStartedAt ?? new Date().toISOString() } } : {}),
     audit,
   };
   if (o.once) {

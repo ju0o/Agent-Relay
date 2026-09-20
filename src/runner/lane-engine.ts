@@ -32,6 +32,7 @@ import { DeliveryDeferredError, type CollectResult, type TurnSession, type TurnT
 import { parseBuilderTurn, parseBuilderTurnLenient, parsePmTurn, parseQaTurn, parseTaskProposal, routeForTaskType, assertExecutableContract, type ExecutableEnvelope, type TaskProposal, type TaskType } from './result-parse.js';
 import { gitHeadSha } from './project-current.js';
 import { requireOwnerGo } from './owner-go.js';
+import { recordSessionFailure, resetSessionHealth } from './session-health.js';
 import { assertQaIndependent, buildVerificationPacket } from '../workspace/verification-packet.js';
 import { assertLaneBinding } from '../workspace/lane-runner.js';
 
@@ -46,9 +47,14 @@ export type LaneEngineOutcome =
   | 'ACCEPT_AND_ADVANCE'
   | 'CHANGES_REWORK_EXHAUSTED'
   | 'BLOCKED'
+  | 'BLOCKED_RUNTIME'
+  | 'BLOCKED_CONTEXT'
   | 'HUMAN_GATE_PARKED'
+  | 'MILESTONE_COMPLETE'
   | 'MILESTONE_REPORTED'
   | 'NO_DISPATCHABLE_TASK'
+  | 'WAITING_FOR_SLOT'
+  | 'PM_TURN_DEFERRED'
   | 'IN_PROGRESS';
 
 export interface LaneRunRecord {
@@ -119,6 +125,10 @@ export interface EngineBindings {
    *  verified results wait for QA instead of self-certifying. */
   qa: BoundTransport | null;
   qaFallback?: BoundTransport;
+  /** Health check for a fallback runtime label (default: installed). */
+  detectQaRuntime?: (runtime: string) => { installed: boolean };
+  /** Resolve a live session for a fallback runtime label (or null). */
+  resolveSession?: (runtime: string) => BoundTransport | null;
 }
 
 export interface EngineOptions {
@@ -268,6 +278,7 @@ export async function executeTurn(
           throw new Error('TURN_EMPTY_RESULT');
         }
         turn = transitionTurn(storeRoot, turn.turnId, 'VERIFIED', { expected: 'RESULT_RECEIVED' });
+        try { resetSessionHealth(storeRoot, bound.sessionId); } catch { /* best-effort */ }
         return { turn, text: turn.resultBody! };
       }
       // A VERIFIED turn with usable body (resumed path).
@@ -281,6 +292,15 @@ export async function executeTurn(
       const code = (err as { code?: string } | null)?.code;
       if (code === 'DELIVERY_DEFERRED' || code === 'SHUTDOWN_ABORT') throw err;
       const msg = err instanceof Error ? err.message : String(err);
+      // Endpoint-attributable failures feed quarantine (frozen/dead panes
+      // stop counting as ACTIVE after repeated failures); a later VERIFIED
+      // turn resets the session. Parse/content errors do not (agent spoke).
+      if (/TRANSPORT_LOST|TURN_TIMEOUT|NOT_IDLE|TURN_NO_BOUNDARY/.test(msg)) {
+        try {
+          const h = recordSessionFailure(storeRoot, bound.sessionId, msg);
+          log('session_health', { session: bound.sessionId, failures: h.failures, quarantined: h.quarantined });
+        } catch { /* health best-effort */ }
+      }
       const retryable = /TURN_TIMEOUT|TURN_NO_BOUNDARY|TURN_EMPTY_RESULT|TRANSPORT_LOST/.test(msg);
       try {
         turn = transitionTurn(storeRoot, turn.turnId, 'FAILED', { error: msg, transient: retryable });
@@ -629,13 +649,40 @@ export async function advanceLane(
         save({ outcome: 'BLOCKED', reason: `task left dispatchable state (${task?.executionState ?? 'missing'}); QA refused`, phase: 'DONE' });
         return { outcome: 'BLOCKED', laneRun: rec! };
       }
-      if (!bindings.qa) {
-        // QA role unbound: the verified result waits durably. Never
-        // self-certify, never reroute to a wrong session.
-        log('slot_wait', { outcome: 'WAITING_FOR_SLOT', slot: 'qa-unbound' });
-        return { outcome: 'IN_PROGRESS', laneRun: rec! };
+      // QA binding resolution: primary first; when unbound, walk the ordered
+      // fallback chain and USE the first resolvable candidate immediately
+      // (same Task/Result, qaMode recorded). An exhausted chain is terminal
+      // truth, not an endless wait.
+      let qBound: BoundTransport | null = bindings.qa;
+      if (!qBound) {
+        const chain = lane.fallbackChain?.length ? [...lane.fallbackChain] : [lane.qaFallback.runtime];
+        for (const runtime of chain) {
+          const binding = runtime === lane.qaFallback.runtime
+            ? (bindings.qaFallback ?? null)
+            : (bindings.resolveSession ? bindings.resolveSession(runtime) : null);
+          if (!binding) {
+            log('qa_fallback_skip', { runtime, reason: 'no binding' });
+            continue;
+          }
+          const det = bindings.detectQaRuntime ? bindings.detectQaRuntime(runtime) : { installed: true };
+          if (!det.installed) {
+            log('qa_fallback_skip', { runtime, reason: 'runtime unavailable' });
+            continue;
+          }
+          qBound = binding;
+          save({ qaMode: `fallback:${runtime}` });
+          log('qa_fallback', { to: runtime, direct: true });
+          break;
+        }
+        if (!qBound) {
+          save({
+            outcome: 'BLOCKED_RUNTIME', phase: 'DONE',
+            reason: `BLOCKED_RUNTIME: no QA endpoint (primary ${lane.qa.runtime} unbound; chain [${chain.join(',')}] unresolvable); Task/Result preserved`,
+          });
+          log('blocked_runtime', { reason: 'qa chain unresolvable' });
+          return { outcome: 'BLOCKED_RUNTIME', laneRun: rec! };
+        }
       }
-      const qBound: BoundTransport = bindings.qa;
       // Review routes verify the task target directly (no Builder turn).
       let verifyText: string;
       let verifyCommands: string[];
@@ -682,7 +729,7 @@ export async function advanceLane(
         knownRisks: verifyRisks,
         ...(verifyHead ? { headSha: verifyHead } : {}),
         builderSessionId: verifyBuilderSession,
-        qaSessionId: bindings.qa.sessionId,
+        qaSessionId: qBound.sessionId,
       });
       assertQaIndependent(packet);
       assertLaneBinding(packet, lane);
@@ -703,30 +750,78 @@ export async function advanceLane(
         `End your reply with exactly this line: REF:${runId}`,
       ].join('\n');
         let verdict: ReturnType<typeof parseQaTurn>;
+        let qaFirstTurn: TurnRecord;
         try {
           countTurn();
           const qaFirst = await collectParsed(storeRoot,
             () => executeTurn(storeRoot, ident(runId, taskId), 'qa', qaBody, asQa(qBound), execOpts),
             parseQaTurn, log, countTurn);
           verdict = qaFirst.value;
+          qaFirstTurn = qaFirst.turn;
         } catch (err) {
           throw err;
         }
         log('qa_verdict', { verdict: verdict.verdict });
         if (verdict.verdict === 'QA_UNAVAILABLE') {
-          if (!bindings.qaFallback) throw new Error(`QA_RUNTIME_UNAVAILABLE: ${verdict.cause}; no fallback configured`);
-          const fb = bindings.qaFallback;
-          save({ qaMode: 'fallback' });
-          log('qa_fallback', { cause: verdict.cause });
-          packet = buildVerificationPacket({ ...packet, qaSessionId: `${fb.sessionId}:fallback` });
+          // Ordered fallback chain (§3): same Task, same Result, same target
+          // preserved across every hop; the Builder is never re-run. Each
+          // candidate is resolved + health-checked before routing; the first
+          // healthy one wins. Exhaustion is explicit QA_RUNTIME_UNAVAILABLE.
+          //
+          // The exhausted primary turn is FAILED (transient service failure),
+          // never VERIFIED: otherwise turn-reuse would serve the same
+          // QA_UNAVAILABLE text to the fallback hop instead of asking the
+          // next runtime. The failure also feeds session quarantine.
+          try {
+            transitionTurn(storeRoot, qaFirstTurn.turnId, 'FAILED', {
+              error: `QA_UNAVAILABLE: ${verdict.cause}`.slice(0, 300),
+              transient: true,
+            });
+          } catch { /* already terminal; fallback still proceeds */ }
+          try {
+            recordSessionFailure(storeRoot, qBound.sessionId, `QA_UNAVAILABLE: ${verdict.cause}`);
+          } catch { /* quarantine is best-effort */ }
+          const chain = lane.fallbackChain?.length ? [...lane.fallbackChain] : [lane.qaFallback.runtime];
+          let routed: { runtime: string; binding: BoundTransport } | null = null;
+          for (const runtime of chain) {
+            const binding = runtime === lane.qaFallback.runtime
+              ? (bindings.qaFallback ?? null)
+              : (bindings.resolveSession ? bindings.resolveSession(runtime) : null);
+            if (!binding) {
+              log('qa_fallback_skip', { runtime, reason: 'no binding' });
+              continue;
+            }
+            const det = bindings.detectQaRuntime
+              ? bindings.detectQaRuntime(runtime)
+              : { installed: true };
+            if (!det.installed) {
+              log('qa_fallback_skip', { runtime, reason: 'runtime unavailable' });
+              continue;
+            }
+            routed = { runtime, binding };
+            break;
+          }
+          if (!routed) {
+            save({
+              outcome: 'BLOCKED_RUNTIME', phase: 'DONE',
+              reason: `BLOCKED_RUNTIME: QA_RUNTIME_UNAVAILABLE (primary ${lane.qa.runtime}: ${verdict.cause}; chain [${chain.join(',')}] exhausted); Task/Result preserved, no Builder re-run`,
+            });
+            log('blocked_runtime', { reason: 'qa chain exhausted after QA_UNAVAILABLE' });
+            return { outcome: 'BLOCKED_RUNTIME', laneRun: rec! };
+          }
+          const qaMode = `fallback:${routed.runtime}`;
+          save({ qaMode });
+          log('qa_fallback', { cause: verdict.cause, to: routed.runtime });
+          packet = buildVerificationPacket({ ...packet, qaSessionId: `${routed.binding.sessionId}:fallback` });
           assertQaIndependent(packet);
           assertLaneBinding(packet, lane);
           countTurn();
+          const fb = routed.binding;
           const qaFb = await collectParsed(storeRoot,
             () => executeTurn(storeRoot, ident(runId, taskId), 'qa', qaBody, asQa(fb), execOpts),
             parseQaTurn, log, countTurn);
           verdict = qaFb.value;
-          log('qa_verdict', { verdict: verdict.verdict, via: 'fallback' });
+          log('qa_verdict', { verdict: verdict.verdict, via: qaMode });
         }
         if (verdict.verdict === 'QA_CHANGES') {
           if (rec!.attempt > (opts.maxReworks ?? 2)) {
@@ -851,9 +946,11 @@ export async function intakeNextTask(
     maxAttempts?: number;
     /** Bounded PROJECT_CURRENT evidence for grounding proposals (tool-less PM). */
     projectCurrent?: () => Promise<string>;
+    /** Authoritative-basis check; a negative parks BLOCKED_CONTEXT. */
+    authoritative?: () => Promise<{ ok: boolean; reason?: string }>;
     audit?: EngineOptions['audit'];
   },
-): Promise<TaskView> {
+): Promise<TaskView | null> {
   const { storeRoot, correlationId, projectId } = opts;
   requireOwnerGo(storeRoot, lane.id, 'intake');
   if (pm.transport.kind === 'tmux') requireOwnerGo(storeRoot, lane.id, 'tmux-send');
@@ -861,6 +958,20 @@ export async function intakeNextTask(
     opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, correlationId, step, ...extra });
   if (!pm.sessionId.trim() || !pm.session.target.trim()) {
     throw new Error('STALE_SESSION_BLOCKED: PM session unbound for intake');
+  }
+  // Authoritative-context gate (§4): no intake from thin air. When neither
+  // git, README/docs, nor canonical goals ground the lane, park the
+  // decision as BLOCKED_CONTEXT instead of inventing Product work.
+  if (opts.authoritative) {
+    const auth = await opts.authoritative();
+    if (!auth.ok) {
+      patchLaneRun(storeRoot, lane.id, {
+        outcome: 'BLOCKED_CONTEXT', phase: 'DONE',
+        reason: `BLOCKED_CONTEXT: ${auth.reason ?? 'no authoritative current available'}`,
+      });
+      log('blocked_context', { reason: auth.reason ?? '' });
+      return null;
+    }
   }
   let marker = readIntakeMarker(storeRoot, lane.id);
   // §4 executable gate BEFORE canonical intake: incomplete contracts never
@@ -936,6 +1047,18 @@ export async function intakeNextTask(
     }
     const envelope = gateEnvelope(proposal);
     await seams.validateProposal(lane, proposal, envelope.fileScope);
+    // Founder-owned holds: a proposal matching a hold parks the lane as
+    // HUMAN_GATE instead of creating work (e.g. unapproved implementation).
+    const haystack = `${proposal.goal} ${proposal.bounded_scope}`.toLowerCase();
+    const hold = (lane.holds ?? []).find((h) => h.trim() && haystack.includes(h.trim().toLowerCase()));
+    if (hold) {
+      patchLaneRun(storeRoot, lane.id, {
+        outcome: 'HUMAN_GATE_PARKED', phase: 'DONE',
+        reason: `HUMAN_GATE: proposal matches lane hold '${hold.trim()}'`,
+      });
+      log('held', { hold: hold.trim(), goal: proposal.goal.slice(0, 120) });
+      return null;
+    }
     marker = { proposal, taskId: null, readyMarked: false, rounds: rounds + 1, updatedAt: new Date().toISOString() };
     writeIntakeMarker(storeRoot, lane.id, marker);
     log('proposal', { goal: proposal.goal.slice(0, 160) });

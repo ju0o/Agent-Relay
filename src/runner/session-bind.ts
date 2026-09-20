@@ -23,6 +23,8 @@ export interface BindOptions {
   captureTail?: (paneId: string) => string;
   /** Pre-probed pane pool (injectable for tests; defaults to live probe). */
   candidates?: LivePane[];
+  /** Quarantine reader: quarantined sessions are never bound. */
+  quarantine?: { isQuarantined(sessionId: string): boolean };
 }
 
 /**
@@ -122,7 +124,8 @@ export function bindLaneSessions(lane: LaneConfigV2, opts: BindOptions = {}): La
       boundPanes.push(s.sessionId);
       return s;
     }
-    const idx = pool.findIndex((p) => matchConfiguredRuntime(configured, p.tokens));
+    const idx = pool.findIndex((p) => matchConfiguredRuntime(configured, p.tokens)
+      && !(opts.quarantine?.isQuarantined(`${p.paneId}:${p.pid}`) ?? false));
     if (idx < 0) {
       missing.push(`${role}: no healthy ${configured} session under ${lane.root}`);
       return null;
@@ -159,4 +162,38 @@ export function bindLaneSessions(lane: LaneConfigV2, opts: BindOptions = {}): La
     missing,
     deferred: missing.length ? `lane ${lane.id} partial: ${missing.join('; ')}` : null,
   };
+}
+
+export interface RuntimeResolveOptions {
+  ioDir?: string;
+  quarantine?: { isQuarantined(sessionId: string): boolean };
+  captureTail?: (paneId: string) => string;
+  candidates?: LivePane[];
+}
+
+/**
+ * Resolve ONE live session for an arbitrary runtime label under the lane
+ * root (QA fallback routing). Same evidence rules as role binding: cwd +
+ * health + runtime signature + quarantine. Returns null when nothing
+ * qualifies — callers then report BLOCKED_RUNTIME instead of improvising.
+ */
+export function resolveRuntimeSession(
+  lane: LaneConfigV2,
+  runtime: string,
+  opts: RuntimeResolveOptions = {},
+): BoundTransport | null {
+  const capture = opts.captureTail ?? defaultCapture;
+  const all = opts.candidates ?? probeAllPanes();
+  const pool = all
+    .filter((p) => {
+      const root = lane.root.endsWith('/') ? lane.root : `${lane.root}/`;
+      return (p.cwd === lane.root || p.cwd.startsWith(root))
+        && (p.health === 'HEALTHY' || p.health === 'BUSY' || p.health === 'STALE');
+    })
+    .map((p) => ({ paneId: p.paneId, pid: p.pid, tokens: classifyPaneRuntime(capture(p.paneId)) }));
+  const hit = pool.find((p) => matchConfiguredRuntime(runtime, p.tokens)
+    && !(opts.quarantine?.isQuarantined(`${p.paneId}:${p.pid}`) ?? false));
+  if (!hit) return null;
+  const session: TurnSession = { kind: 'tmux', target: hit.paneId };
+  return { transport: new TmuxTransport(), session, sessionId: `${hit.paneId}:${hit.pid}` };
 }

@@ -133,6 +133,28 @@ export class SubprocessTransport implements TurnTransport {
     return path.join(path.resolve(this.ioDir), `${turnId}.out`);
   }
 
+  private pidFile(turnId: string): string | null {
+    const out = this.outFile(turnId);
+    return out ? `${out}.pid` : null;
+  }
+
+  private writePid(turnId: string, pid: number | undefined): void {
+    const file = this.pidFile(turnId);
+    if (!file || pid === undefined) return;
+    try {
+      fs.writeFileSync(file, `${pid}\n`, 'utf8');
+    } catch { /* best-effort */ }
+  }
+
+  private clearPid(turnId: string): void {
+    const file = this.pidFile(turnId);
+    if (!file) return;
+    try {
+      fs.unlinkSync(file);
+    } catch { /* gone */ }
+    this.children.delete(turnId);
+  }
+
   async sendTurn(turn: TurnRecord, session: TurnSession): Promise<void> {
     const wire = `${beginMarker(turn.requestId)}\n${turn.requestBody}\n${endMarker(turn.requestId)}\n`;
     const file = this.outFile(turn.turnId);
@@ -150,17 +172,19 @@ export class SubprocessTransport implements TurnTransport {
     });
     fs.closeSync(fd);
     child.unref();
-    child.on('error', () => { this.children.delete(turn.turnId); });
-    child.on('exit', () => { this.children.delete(turn.turnId); });
+    child.on('error', () => { this.clearPid(turn.turnId); });
+    child.on('exit', () => { this.clearPid(turn.turnId); });
     this.children.set(turn.turnId, child);
+    this.writePid(turn.turnId, child.pid);
     child.stdin!.end(wire);
   }
 
   private killBestEffort(turnId: string): void {
     const child = this.children.get(turnId);
-    if (!child) return;
-    try { child.kill('SIGKILL'); } catch { /* gone */ }
-    this.children.delete(turnId);
+    if (child) {
+      try { child.kill('SIGKILL'); } catch { /* gone */ }
+    }
+    this.clearPid(turnId);
   }
 
   private readOut(file: string): string {

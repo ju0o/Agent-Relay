@@ -11,6 +11,10 @@ Restart=always
 RestartSec=10
 # The runner holds no state in memory worth keeping: all progress lives in
 # the turn store, so restarts resume instead of replaying.
+# Frozen certified Runner: pin the certified SHA so the service fails closed
+# when the checkout drifts. Development MUST use a separate checkout that
+# runs unpinned. Set the pin at install time, e.g.:
+#Environment=AGENT_RELAY_RUNNER_SHA=<certified-sha>
 KillSignal=SIGTERM
 TimeoutStopSec=30
 
