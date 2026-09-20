@@ -25,6 +25,7 @@ Commands:
   workspace status    Show workspace lanes + concurrency (AUTOMATION_STARTED view)
   workspace configure Save a workspace preset (fixtures|current, no manual prompts)
   workspace run       Run ONE project lane (dry-run default, --live is bounded)
+  workspace cert      Write the complete Builder Result artifact for a cycle
   history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
   resume-scan         Scan stuck/interrupted work (V2 R1, read-only report)
   resume act          Run one guided recovery action (V2 R2, Owner confirm required)
@@ -69,7 +70,7 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; testsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -85,6 +86,10 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let script: string | null = null;
   let project: string | null = null;
   let cycle: string | null = null;
+  let testsFile: string | null = null;
+  let risksFile: string | null = null;
+  let base: string | null = null;
+  let ready: string | null = null;
   let maxTurns: number | null = null;
   let live = false;
   let dryRun = false;
@@ -110,7 +115,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--once') once = true;
     else if (a === '--live') live = true;
     else if (a === '--dry-run') dryRun = true;
-    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--max-turns') {
+    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--tests' || a === '--risks-file' || a === '--base' || a === '--ready' || a === '--max-turns') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) { unknown = a; break; }
       if (a === '--poll-ms') {
@@ -133,6 +138,14 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
         project = next;
       } else if (a === '--cycle') {
         cycle = next;
+      } else if (a === '--tests') {
+        testsFile = next;
+      } else if (a === '--risks-file') {
+        risksFile = next;
+      } else if (a === '--base') {
+        base = next;
+      } else if (a === '--ready') {
+        ready = next;
       } else if (a === '--pattern') {
         pattern = next;
       } else if (a === '--run') {
@@ -162,7 +175,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function promptOwnerConfirm(question: string): Promise<boolean> {
@@ -177,7 +190,7 @@ async function promptOwnerConfirm(question: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -399,8 +412,8 @@ async function main(): Promise<void> {
   }
 
   if (command === 'workspace') {
-    if (sub !== 'start' && sub !== 'status' && sub !== 'configure' && sub !== 'run') {
-      const msg = 'Usage: agent-relay workspace <start|status|configure|run> [--json]';
+    if (sub !== 'start' && sub !== 'status' && sub !== 'configure' && sub !== 'run' && sub !== 'cert') {
+      const msg = 'Usage: agent-relay workspace <start|status|configure|run|cert> [--json]';
       if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace.v1', ok: false, error: msg }, null, 2));
       else console.error(msg);
       process.exit(1);
@@ -440,6 +453,7 @@ async function main(): Promise<void> {
       }
     }
     // sub === 'run': ONE project lane. Dry-run default; --live is bounded.
+    if (sub === 'run') {
     if (!lane) {
       const msg = 'Usage: agent-relay workspace run --lane <id> [--dry-run|--live] [--script accept|changes] [--project <name>] [--cycle <id>] [--max-turns N] [--json]';
       if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-run.v1', ok: false, error: msg }, null, 2));
@@ -489,6 +503,40 @@ async function main(): Promise<void> {
       if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-run.v1', ok: false, error: msg }, null, 2));
       else console.error(msg);
       process.exit(1);
+    }
+    } // end sub === 'run'
+
+    if (sub === 'cert') {
+      if (!cycle) {
+        const msg = 'Usage: agent-relay workspace cert --cycle <id> [--task <text>] [--tests <summary.json>] [--commands-file <f>] [--risks-file <f>] [--base <sha>] [--ready YES|NO] [--json]';
+        if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-cert.v1', ok: false, error: msg }, null, 2));
+        else console.error(msg);
+        process.exit(1);
+      }
+      const { runWorkspaceCert } = await import('../workspace/cert-cli.js');
+      try {
+        const res = await runWorkspaceCert(cwd, {
+          cycle,
+          ...(task !== null ? { task } : {}),
+          ...(testsFile !== null ? { testsFile } : {}),
+          ...(risksFile !== null ? { risksFile } : {}),
+          ...(base !== null ? { base } : {}),
+          ...(ready !== null ? { ready } : {}),
+        });
+        if (json) {
+          console.log(JSON.stringify({ schemaVersion: 'cli.workspace-cert.v1', ok: true, ...res }, null, 2));
+        } else {
+          console.log(`Builder Result Artifact: ${res.artifactPath}`);
+          console.log(`artifact: ${res.artifact.artifactId} status=${res.artifact.status}`);
+          console.log(`overallTestStatus: ${res.artifact.overallTestStatus} readyForIndependentQA: ${res.artifact.readyForIndependentQA}`);
+        }
+        process.exit(0);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace-cert.v1', ok: false, error: msg }, null, 2));
+        else console.error(msg);
+        process.exit(1);
+      }
     }
   }
 

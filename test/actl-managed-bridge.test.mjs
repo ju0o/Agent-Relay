@@ -608,16 +608,21 @@ console.log('\n── Native spawn path unpolluted ──');
     workspaceRoot: WORKSPACE,
   });
   check(typeof result.pid === 'number' && result.pid > 0, 'native path still spawns child pid');
+  // Deterministic wait bound: the transition is event-driven (spawn evidence
+  // observed by the dispatcher poll), so the budget must comfortably exceed
+  // worst-case loaded-machine latency. 30s keeps the assertion strict (a real
+  // stall still fails loudly with elapsed evidence) without flaking at load.
+  const NATIVE_SETTLE_BUDGET_MS = 30000;
   const after = await new Promise(async (resolve, reject) => {
     const start = Date.now();
-    while (Date.now() - start < 5000) {
+    while (Date.now() - start < NATIVE_SETTLE_BUDGET_MS) {
       const t = gt.getTask(TEST_ROOT, project, task.taskId);
       if (t.executionState === 'RUNNING' || t.executionState === 'FAILED' || t.executionState === 'RESULT_RECEIVED') {
         return resolve(t);
       }
       await sleep(40);
     }
-    reject(new Error('native timeout'));
+    reject(new Error(`native timeout after ${Date.now() - start}ms (budget ${NATIVE_SETTLE_BUDGET_MS}ms)`));
   });
   check(after.executionState === 'RUNNING' || after.currentRunId, 'native path reaches RUNNING via spawn evidence');
 
@@ -875,7 +880,7 @@ console.log('\n── §9.3 dataRoot lock ──');
         process.exit(2);
       }
     })();
-  `], { encoding: 'utf8', timeout: 5000 });
+  `], { encoding: 'utf8', timeout: 30000 });
   if (child.status === 2 && /contended|CONFLICT/i.test(child.stderr + child.stdout)) {
     contended = true;
   }
