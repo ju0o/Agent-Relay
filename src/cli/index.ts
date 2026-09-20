@@ -21,6 +21,8 @@ Usage:
 Commands:
   status              Show project status snapshot
   doctor              Run infrastructure health checks
+  workspace start     Auto bootstrap multi-project lanes (REUSE FIRST, no dispatch)
+  workspace status    Show workspace lanes + concurrency (AUTOMATION_STARTED view)
   history <taskId>    Show read-only Task timeline (V2 H1, no state changes)
   resume-scan         Scan stuck/interrupted work (V2 R1, read-only report)
   resume act          Run one guided recovery action (V2 R2, Owner confirm required)
@@ -44,6 +46,10 @@ Examples:
   agent-relay status --json
   agent-relay doctor
   agent-relay doctor --json
+  agent-relay workspace start
+  agent-relay workspace start --json
+  agent-relay workspace status
+  agent-relay workspace status --json
   agent-relay history TASK-0001
   agent-relay history TASK-0001 --json
   agent-relay resume-scan
@@ -115,9 +121,9 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     } else if (a.startsWith('--')) {
       unknown = a;
       break;
-    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host')) {
+    } else if (!command && (a === 'status' || a === 'doctor' || a === 'history' || a === 'resume-scan' || a === 'resume' || a === 'init' || a === 'connect' || a === 'host' || a === 'workspace')) {
       command = a;
-    } else if ((command === 'connect' || command === 'host' || command === 'resume') && !sub) {
+    } else if ((command === 'connect' || command === 'host' || command === 'resume' || command === 'workspace') && !sub) {
       sub = a;
     } else if (command === 'history' && !taskId) {
       taskId = a;
@@ -361,6 +367,26 @@ async function main(): Promise<void> {
       ...(hostConfig !== null ? { hostConfigDir: hostConfig } : {}),
     });
     process.exit(code);
+  }
+
+  if (command === 'workspace') {
+    if (sub !== 'start' && sub !== 'status') {
+      const msg = 'Usage: agent-relay workspace <start|status> [--json]';
+      if (json) console.log(JSON.stringify({ schemaVersion: 'cli.workspace.v1', ok: false, error: msg }, null, 2));
+      else console.error(msg);
+      process.exit(1);
+    }
+    const { runWorkspaceStart, runWorkspaceStatus, renderWorkspaceStartHuman, renderWorkspaceStatusHuman } = await import('../workspace/bootstrap.js');
+    if (sub === 'start') {
+      const res = runWorkspaceStart(cwd);
+      if (json) console.log(JSON.stringify(res, null, 2));
+      else console.log(renderWorkspaceStartHuman(res));
+      process.exit(res.ok ? 0 : 1);
+    }
+    const st = runWorkspaceStatus(cwd);
+    if (json) console.log(JSON.stringify(st, null, 2));
+    else console.log(renderWorkspaceStatusHuman(st));
+    process.exit(st.ok ? 0 : 1);
   }
 
   // Bare agent-relay (no command)

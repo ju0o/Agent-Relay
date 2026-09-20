@@ -780,8 +780,41 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
 
   const decision = parsed.value;
   if (decision.action === 'DISPATCH') {
-    const task = decision.taskId ? getTask(cfg.dataRoot, cfg.project, decision.taskId) : null;
-    if (!task || task.executionState !== 'READY') return { outcome: 'BLOCKED', reason: 'DISPATCH requires an existing READY Task' };
+    // Canonical reconciliation (BOOTSTRAP integrity fix, 2026-09-20):
+    // - getTask() throws on unknown/malformed ids (TASK_ID_RE is
+    //   /^TASK-(\d+)$/, so non-canonical synthetic ids such as
+    //   BOOTSTRAP-LIVE-001 can never resolve). A throw here must fail
+    //   closed to BLOCKED (audited), never propagate out of the cycle.
+    // - pmState ACCEPTED is terminal: re-dispatch of an ACCEPTED Task is
+    //   refused to preserve canonical ACCEPT finality.
+    // - Only executionState READY + non-terminal pmState may dispatch; the
+    //   duplicate protection itself stays canonical: dispatchHook owns the
+    //   READY CAS (dispatchV1OwnerApproved raises INVALID_STATE on stale,
+    //   dispatcher raises CONFLICT on an already-active dispatch).
+    // - Reachability note: runOnce() runs processBootstrap() only when
+    //   hasOpenTask() is false, and every READY/PENDING Task counts as open
+    //   (fresh Tasks default to PLANNED/PENDING). Ordinary READY reuse is
+    //   therefore owned by the `dispatch-existing-ready` adoption loop and
+    //   the retry reconciler above — this branch never creates a Task, so
+    //   "reuse existing READY / no duplicate" holds by construction.
+    let task: TaskRecord | null = null;
+    try {
+      task = decision.taskId ? getTask(cfg.dataRoot, cfg.project, decision.taskId) : null;
+    } catch (err) {
+      const reason = `DISPATCH target unreadable: ${err instanceof Error ? err.message : String(err)}`;
+      audit(cfg.auditDir, { step: 'bootstrap', outcome: 'BLOCKED', reason });
+      return { outcome: 'BLOCKED', reason };
+    }
+    if (!task || task.executionState !== 'READY') {
+      const reason = 'DISPATCH requires an existing READY Task';
+      audit(cfg.auditDir, { step: 'bootstrap', outcome: 'BLOCKED', reason, ...(decision.taskId ? { taskId: decision.taskId } : {}) });
+      return { outcome: 'BLOCKED', reason };
+    }
+    if (task.pmState === 'ACCEPTED') {
+      const reason = `DISPATCH refused: Task ${task.taskId} is ACCEPTED-terminal (canonical ACCEPT finality; re-dispatch forbidden)`;
+      audit(cfg.auditDir, { step: 'bootstrap', outcome: 'BLOCKED', reason, taskId: task.taskId });
+      return { outcome: 'BLOCKED', reason };
+    }
     const dispatch = await cfg.dispatchHook(cfg.dataRoot, cfg.project, task);
     audit(cfg.auditDir, { step: 'bootstrap', outcome: 'DISPATCH', taskId: task.taskId, runId: dispatch?.runId });
     return { outcome: 'DISPATCH', taskId: task.taskId, runId: dispatch?.runId };

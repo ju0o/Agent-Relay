@@ -133,3 +133,31 @@ again unless PM returns `REQUEST_CHANGES` for a new concrete reason.
 ASUS local result was preserved at this path. MainPC delivery was not attempted
 without a configured, verified remote target; the existing OS fallback shutdown
 timers were not modified or cancelled.
+
+## Addendum — Independent QA REQUEST_CHANGES reconciliation (2026-09-20, Builder)
+
+The text above is preserved verbatim as history. The following corrections
+apply; see `docs/BOOTSTRAP-LIVE-001-TRUTH.md` for the full durable record.
+
+- `BOOTSTRAP-LIVE-001` has **no canonical Task/Run/Delivery/Judgment record**
+  (project `ws` holds TASK-0001…0014 only; `TASK_ID_RE = /^TASK-(\d+)$/` rejects
+  the id; zero `*bootstrap*` deliveries/judgments). It was a live
+  tmux-external loop probe, never a canonical Task. No canonical ACCEPT or
+  state advancement is claimed from it — zero canonical records were
+  synthesized to reconcile this.
+- "Supporting local captures" (`/tmp/ar-pm-final-pane.txt`,
+  `/tmp/ar-builder-final-pane.txt`,
+  `/tmp/ar-builder-rework-result-extracted.json`,
+  `/tmp/ar-live-pm-review-final.json`): **all four verified MISSING on
+  2026-09-20**. Claims depending on them are UNPROVEN by artifact, not
+  re-asserted here.
+- Session identities `%3:604753` / `%8:663844` are **STALE** (tmux session
+  recreated 2026-09-20 08:38:51 KST; those PIDs absent). Current live
+  identities were re-discovered via pane_id+pid+cwd+health and recorded in
+  `docs/BOOTSTRAP-LIVE-001-TRUTH.md` §5; stale identities are rejected by
+  the adapter (`STALE_OR_BUSY_SESSION`) and never reused as live proof.
+- The "resume PM final review … using `%3:604753`" next-start-point above is
+  superseded: that session no longer exists. Forward path is the truthful
+  certification in `docs/BOOTSTRAP-LIVE-001-TRUTH.md` §6 (deterministic
+  workspace-bootstrap suite in `npm test`, canonical-state duplicate
+  evidence, frozen revision for QA). Multi-project dispatch stays BLOCKED.
