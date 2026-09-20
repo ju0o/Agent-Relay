@@ -44,6 +44,9 @@ test('artifact has explicit beginning and completion identity on one cycle', () 
   assert.equal(done.cycleId, 'runner-fix-1789871385');
   assert.equal(done.identity.correlationId, 'runner-fix-1789871385');
   assert.ok(done.finishedAt >= done.startedAt);
+  assert.deepEqual(done.untrackedOther, []);
+  const withStray = completeCertArtifact(starter, evidence({ untrackedOther: ['.g6-dogfood/'] }));
+  assert.deepEqual(withStray.untrackedOther, ['.g6-dogfood/']);
 });
 
 test('artifact validation fails closed on missing evidence', () => {

@@ -70,7 +70,7 @@ Examples:
 `);
 }
 
-function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; testsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
+function parseArgs(argv: string[]): { command: string | null; sub: string | null; taskId: string | null; task: string | null; pattern: string | null; run: string | null; prep: string | null; orphanAction: string | null; reason: string | null; lane: string | null; preset: string | null; script: string | null; project: string | null; cycle: string | null; testsFile: string | null; commandsFile: string | null; risksFile: string | null; base: string | null; ready: string | null; maxTurns: number | null; live: boolean; dryRun: boolean; json: boolean; noTui: boolean; help: boolean; version: boolean; yes: boolean; force: boolean; once: boolean; pollMs: number | null; hostConfig: string | null; unknown: string | null } {
   const args = argv.slice(2);
   let command: string | null = null;
   let sub: string | null = null;
@@ -87,6 +87,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
   let project: string | null = null;
   let cycle: string | null = null;
   let testsFile: string | null = null;
+  let commandsFile: string | null = null;
   let risksFile: string | null = null;
   let base: string | null = null;
   let ready: string | null = null;
@@ -115,7 +116,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     else if (a === '--once') once = true;
     else if (a === '--live') live = true;
     else if (a === '--dry-run') dryRun = true;
-    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--tests' || a === '--risks-file' || a === '--base' || a === '--ready' || a === '--max-turns') {
+    else if (a === '--poll-ms' || a === '--host-config' || a === '--task' || a === '--pattern' || a === '--run' || a === '--prep' || a === '--orphan-action' || a === '--reason' || a === '--lane' || a === '--preset' || a === '--script' || a === '--project' || a === '--cycle' || a === '--tests' || a === '--commands-file' || a === '--risks-file' || a === '--base' || a === '--ready' || a === '--max-turns') {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('--')) { unknown = a; break; }
       if (a === '--poll-ms') {
@@ -140,6 +141,8 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
         cycle = next;
       } else if (a === '--tests') {
         testsFile = next;
+      } else if (a === '--commands-file') {
+        commandsFile = next;
       } else if (a === '--risks-file') {
         risksFile = next;
       } else if (a === '--base') {
@@ -175,7 +178,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
     }
   }
 
-  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
+  return { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, commandsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown };
 }
 
 async function promptOwnerConfirm(question: string): Promise<boolean> {
@@ -190,7 +193,7 @@ async function promptOwnerConfirm(question: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
+  const { command, sub, taskId, task, pattern, run, prep, orphanAction, reason, lane, preset, script, project, cycle, testsFile, commandsFile, risksFile, base, ready, maxTurns, live, dryRun, json, noTui, help, version, yes, force, once, pollMs, hostConfig, unknown } = parseArgs(process.argv);
   const cwd = process.cwd();
 
   if (help) {
@@ -519,6 +522,7 @@ async function main(): Promise<void> {
           cycle,
           ...(task !== null ? { task } : {}),
           ...(testsFile !== null ? { testsFile } : {}),
+          ...(commandsFile !== null ? { commandsFile } : {}),
           ...(risksFile !== null ? { risksFile } : {}),
           ...(base !== null ? { base } : {}),
           ...(ready !== null ? { ready } : {}),

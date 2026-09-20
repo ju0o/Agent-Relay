@@ -72,7 +72,9 @@ export interface BuilderResultArtifact {
   finalHeadSha: string;
   changedFiles: string[];
   diffStat: string;
-  commands: string[];
+  /** Pre-existing untracked paths present at cert time but NOT part of this
+   *  cycle (listed for completeness, excluded from review scope). */
+  untrackedOther: string[];  commands: string[];
   tests: CertTestRecord[];
   overallTestStatus: 'PASS' | 'FAIL';
   identity: { correlationId: string; refs: string[]; note: string };
@@ -88,6 +90,7 @@ export interface CertEvidence {
   finalHeadSha: string;
   changedFiles: string[];
   diffStat?: string;
+  untrackedOther?: string[];
   commands: string[];
   tests: CertTestRecord[];
   overallTestStatus: 'PASS' | 'FAIL';
@@ -153,6 +156,7 @@ export function completeCertArtifact(starter: CertStarter, evidence: CertEvidenc
     finalHeadSha: evidence.finalHeadSha,
     changedFiles: evidence.changedFiles.map((f) => cut(f)),
     diffStat: cut(evidence.diffStat ?? ''),
+    untrackedOther: (evidence.untrackedOther ?? []).map((f) => cut(f)),
     commands: evidence.commands.map((c) => cut(c)),
     tests: evidence.tests.map((t) => ({
       suite: cut(t.suite),

@@ -90,7 +90,13 @@ export async function runWorkspaceCert(hostRoot: string, opts: CertCliOptions): 
   const untracked = git(root, ['status', '--porcelain', '--untracked-files=normal'])
     .split('\n').map((l) => l.trim()).filter((l) => l.startsWith('??'))
     .map((l) => l.slice(2).trim()).filter(Boolean);
-  const changedFiles = [...new Set([...changedTracked, ...untracked])].sort();
+  // Review scope: tracked diff vs base + cycle-created files under product
+  // dirs. Pre-existing stray roots are listed separately (not hidden).
+  const isProductPath = (p: string): boolean =>
+    /^(src|scripts|test)\//.test(p) || /^docs\/BOOTSTRAP/.test(p);
+  const productUntracked = untracked.filter(isProductPath);
+  const untrackedOther = untracked.filter((p) => !isProductPath(p));
+  const changedFiles = [...new Set([...changedTracked, ...productUntracked])].sort();
   const diffStat = git(root, ['diff', '--stat', base, 'HEAD']);
   const worktreeClean = git(root, ['status', '--porcelain', '--untracked-files=no']).length === 0;
   let tag: string | null = null;
@@ -108,6 +114,7 @@ export async function runWorkspaceCert(hostRoot: string, opts: CertCliOptions): 
     finalHeadSha,
     changedFiles: changedFiles.length ? changedFiles : ['(no changes vs base)'],
     diffStat,
+    untrackedOther,
     commands,
     tests,
     overallTestStatus: overall as 'PASS' | 'FAIL',
