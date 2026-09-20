@@ -176,6 +176,10 @@ export class SubprocessTransport implements TurnTransport {
     if (!file) return this.collectPipe(turn, session, timeoutMs);
     const deadline = Date.now() + timeoutMs;
     for (;;) {
+      if (isTransportShutdown()) {
+        this.killBestEffort(turn.turnId);
+        throw new ShutdownAbortError('shutdown requested during subprocess collect');
+      }
       const body = extractBoundary(this.readOut(file), turn.requestId);
       if (body !== null) {
         this.killBestEffort(turn.turnId);
@@ -257,7 +261,8 @@ export class SubprocessTransport implements TurnTransport {
  * TUI prefixes are outside the tag itself) between every marker char.
  * RequestIds stay unique, so only this turn's tag can match.
  */
-function anchorRe(requestId: string): RegExp {
+/** Exported for tests: wrap-tolerant per-request anchor. */
+export function anchorRe(requestId: string): RegExp {
   const tag = endMarker(requestId);
   const pat = [...tag].map((c) => c.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')).join('\\s*');
   return new RegExp(pat);
@@ -266,6 +271,35 @@ function anchorRe(requestId: string): RegExp {
 function idleTail(text: string): boolean {
   const tail = stripAnsi(text).slice(-2000);
   return !/Working \(|esc to interrupt|Press enter to continue|Do you trust/i.test(tail);
+}
+
+export class DeliveryDeferredError extends Error {
+  readonly code = 'DELIVERY_DEFERRED';
+}
+
+/**
+ * Process-wide shutdown latch for graceful daemon stop. SIGTERM sets it;
+ * every collect loop polls it alongside its deadline and aborts promptly,
+ * so `systemctl stop` completes WITHOUT SIGKILL even mid-turn. Aborted
+ * turns keep their durable state (no FAILED record here) and resume on
+ * the next start. Tests set/clear it directly.
+ */
+let shutdownLatched = false;
+
+export function requestTransportShutdown(): void {
+  shutdownLatched = true;
+}
+
+export function clearTransportShutdown(): void {
+  shutdownLatched = false;
+}
+
+export function isTransportShutdown(): boolean {
+  return shutdownLatched;
+}
+
+export class ShutdownAbortError extends Error {
+  readonly code = 'SHUTDOWN_ABORT';
 }
 
 /**
@@ -290,6 +324,15 @@ export class TmuxTransport implements TurnTransport {
     return tmux(['capture-pane', '-J', '-p', '-t', paneId, '-S', `-${lines}`]);
   }
 
+  /** Full scrollback history (for anchor search; verbose agents scroll far). */
+  private async fullHistory(paneId: string): Promise<string> {
+    try {
+      return await tmux(['capture-pane', '-J', '-p', '-t', paneId, '-S', '-']);
+    } catch {
+      return this.snapshot(paneId);
+    }
+  }
+
   async sendTurn(turn: TurnRecord, session: TurnSession): Promise<void> {
     const cur = await this.inspect(session.target);
     try {
@@ -297,12 +340,40 @@ export class TmuxTransport implements TurnTransport {
     } catch {
       throw new Error('TRANSPORT_LOST: pane pid not alive');
     }
-    const before = stripAnsi(await this.snapshot(cur.paneId, 30));
-    if (!idleTail(before)) throw new Error('NOT_IDLE: pane is busy; turn deferred, nothing sent');
+    const idleSnap = stripAnsi(await this.snapshot(cur.paneId, 120));
+    if (!idleTail(idleSnap)) throw new Error('NOT_IDLE: pane is busy; turn deferred, nothing sent');
     const wire = `${beginMarker(turn.requestId)}\n${turn.requestBody}\n${endMarker(turn.requestId)}`;
-    await tmux(['load-buffer', '-'], wire);
-    await tmux(['paste-buffer', '-p', '-t', cur.paneId]);
+    // Per-turn NAMED buffer: tmux's unnamed buffer is process-global, so
+    // concurrent lanes would cross-paste each other's wires into wrong panes
+    // (observed live). Named per-request buffers, deleted after paste, make
+    // concurrent sends safe — shared mutable transport state namespaced.
+    const buf = `ar-${turn.requestId}`.slice(0, 64);
+    // Single paste (no blind re-paste bursts: each poll retries the same
+    // REQUESTED turn gently). Landing is verified below; a miss defers.
+    await tmux(['load-buffer', '-b', buf, '-'], wire);
+    await tmux(['paste-buffer', '-d', '-b', buf, '-p', '-t', cur.paneId]);
     await tmux(['send-keys', '-t', cur.paneId, 'C-m']);
+    // Submit verification: some TUIs hold a multiline paste as staged
+    // composition (`[...+NL]`). Nudge with Enter until the staged marker
+    // clears (submitted or consumed). Afterwards the send is DONE from the
+    // transport's view: the app took the wire (collection decides on the
+    // reply from here). A wire STILL staged after bounded nudges means the
+    // pane never took it: fail fast (DeliveryDeferred upstream) instead of
+    // stranding a RUNNING turn on an unsubmitted packet.
+    for (let nudge = 0; nudge < 4; nudge += 1) {
+      await new Promise((r) => setTimeout(r, nudge === 0 ? 3000 : 5000));
+      let snap = '';
+      try {
+        snap = await this.snapshot(cur.paneId, 40);
+      } catch {
+        break;
+      }
+      if (!/\[[^\]\n]*\+\d+L\]/.test(stripAnsi(snap))) break;
+      if (nudge === 3) {
+        throw new Error('TRANSPORT_LOST: pasted wire still staged after bounded submits — pane never took it');
+      }
+      await tmux(['send-keys', '-t', cur.paneId, 'C-m']);
+    }
   }
 
   async collectTurn(turn: TurnRecord, session: TurnSession, timeoutMs: number): Promise<CollectResult> {
@@ -312,20 +383,53 @@ export class TmuxTransport implements TurnTransport {
     let prev = '';
     let stable = 0;
     for (;;) {
+      if (isTransportShutdown()) throw new ShutdownAbortError('shutdown requested during tmux collect');
       const snap = await this.snapshot(cur.paneId);
       const h = hash(snap);
       stable = h === prev ? stable + 1 : 0;
       prev = h;
-      const clean = stripAnsi(snap).replace(/\r/g, '');
-      const hit = anchor.exec(clean);
-      // anchorRe tolerates TUI reflow (wraps/prefixes) inside the marker.
+      // Anchor over FULL history (verbose agents scroll the wire out of the
+      // tail window); settle/idle over the recent tail below.
+      const history = stripAnsi(await this.fullHistory(cur.paneId)).replace(/\r/g, '');
+      let hit = anchor.exec(history);
+      let windowText: string | null = null;
       if (hit) {
-        const after = clean.slice((hit.index ?? 0) + hit[0].length);
+        windowText = history;
+      } else {
+        // REF fallback: consuming agents purge the wire, but a compliant
+        // reply ends with REF:<requestId> (or REF:<runId>, which the packet
+        // also names). Our own instruction line ("End your reply with
+        // exactly this line: REF:..") must not self-match: skip REF hits on
+        // lines containing that instruction. Window = text around the REF.
+        const refId = (turn.requestId.replace(/[^A-Za-z0-9._-]/g, '') + '|' + turn.runId.replace(/[^A-Za-z0-9._-]/g, ''));
+        const refRe = new RegExp(`REF:(?:${refId})`, 'g');
+        let refHit: RegExpExecArray | null = null;
+        let m: RegExpExecArray | null;
+        while ((m = refRe.exec(history)) !== null) {
+          const lineStart = history.lastIndexOf('\n', m.index) + 1;
+          const line = history.slice(lineStart, m.index + m[0].length + 40);
+          if (!/End your reply/i.test(line)) {
+            refHit = m;
+            break;
+          }
+        }
+        if (refHit) {
+          const idx = refHit.index ?? 0;
+          windowText = history.slice(Math.max(0, idx - 12000), idx + refHit[0].length);
+          hit = { index: 0, '0': '' } as unknown as RegExpExecArray;
+        }
+      }
+      // Quiet-period: even with matching content, demand a sustained
+      // settle (slow-streaming agents pause mid-reply). Premature slices
+      // are the main source of truncated parses; bounded wait is cheaper
+      // than a re-ask round-trip.
+      if (hit && windowText !== null && stable >= 4) {
+        const after = windowText.slice((hit.index ?? 0) + hit[0].length);
         // Drop trailing TUI prompt lines (›/❯); response content never uses them.
         const lines = after.split('\n');
         while (lines.length && /^[›❯]/.test(lines[lines.length - 1]!.trim())) lines.pop();
         const trimmed = lines.join('\n').trim();
-        if (stable >= 2 && idleTail(snap) && (!session.expect || session.expect.test(trimmed))) {
+        if (idleTail(snap) && (!session.expect || session.expect.test(trimmed))) {
           return { text: trimmed, requestId: turn.requestId, stable: true };
         }
       }

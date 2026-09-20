@@ -32,7 +32,10 @@ const LEGAL: Record<TurnState, TurnState[]> = {
   SENT: ['RUNNING', 'FAILED'],
   RUNNING: ['RESULT_RECEIVED', 'FAILED'],
   RESULT_RECEIVED: ['VERIFIED', 'FAILED'],
-  VERIFIED: [],
+  // VERIFIED -> FAILED exists ONLY for stale-partial recovery: a turn
+  // collected mid-stream (truncated body) is preserved but superseded so a
+  // fresh attempt can collect the now-complete reply. Audited every time.
+  VERIFIED: ['FAILED'],
   FAILED: [],
 };
 

@@ -55,8 +55,18 @@ function respond(requestId, seg) {
   if (role === 'propose') {
     out(`\`\`\`json TASK_PROPOSAL v1 ${JSON.stringify({
       goal: 'Run the dependency-free regression subset and report structured evidence',
-      bounded_scope: 'Execute only the approved read-only regression commands; modify no product files; create no tmux sessions',
+      taskType: process.env.RR_PROPOSE_TYPE || 'IMPLEMENTATION',
+      whyNow: 'next approved verification step',
+      bounded_scope: 'Execute only scripts/qa.sh and other approved read-only regression commands; modify no product files; create no tmux sessions',
+      inScope: ['run regression commands'],
+      outOfScope: ['product edits', 'tmux changes'],
       acceptance_criteria: [{ id: 'AC-1', description: 'regression output captured with exit codes' }],
+      requiredTests: ['regression suite'],
+      requiredEvidence: ['exit codes', 'output'],
+      knownRisks: ['none'],
+      sourceReferences: ['docs/TESTER.md'],
+      rolePlan: 'PM → Builder → QA → PM',
+      fileScope: process.env.RR_PROPOSE_TYPE === 'REVIEW_ONLY' ? [] : ['scripts/qa.sh'],
     })}\`\`\``);
     return;
   }

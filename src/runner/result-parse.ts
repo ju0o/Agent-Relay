@@ -133,11 +133,24 @@ export function parseQaTurn(text: string): QaTurnVerdict {
   return { verdict: 'QA_UNAVAILABLE', reason: cause, cause };
 }
 
+export type TaskType = 'IMPLEMENTATION' | 'FIX' | 'REVIEW_ONLY' | 'VERIFICATION' | 'PLANNING';
+
 export interface TaskProposal {
   goal: string;
   bounded_scope: string;
   acceptance_criteria: Array<{ id: string; description: string }>;
   qa_notes?: string;
+  // §4 executable-contract fields (optional at parse; enforced by gate).
+  taskType?: TaskType;
+  whyNow?: string;
+  inScope?: string[];
+  outOfScope?: string[];
+  requiredTests?: string[];
+  requiredEvidence?: string[];
+  knownRisks?: string[];
+  sourceReferences?: string[];
+  rolePlan?: string;
+  fileScope?: string[];
 }
 
 /**
@@ -260,6 +273,14 @@ function checkProposal(raw: unknown): TaskProposal {
       throw new Error(`PROPOSAL_AMBIGUOUS: acceptance_criteria[${i}] needs id + description`);
     }
   }
+  const strArr = (v: unknown): string[] | undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const out = v.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean);
+    return out.length ? out : undefined;
+  };
+  const rawType = typeof p.taskType === 'string' ? p.taskType.trim().toUpperCase() : undefined;
+  const taskType = (['IMPLEMENTATION', 'FIX', 'REVIEW_ONLY', 'VERIFICATION', 'PLANNING'] as const)
+    .find((t) => t === rawType);
   return {
     goal: (p.goal as string).trim(),
     bounded_scope: (p.bounded_scope as string).trim(),
@@ -268,5 +289,151 @@ function checkProposal(raw: unknown): TaskProposal {
       description: ac.description.trim(),
     })),
     ...(typeof p.qa_notes === 'string' && p.qa_notes.trim() ? { qa_notes: p.qa_notes.trim() } : {}),
+    ...(taskType ? { taskType } : {}),
+    ...(typeof p.whyNow === 'string' && p.whyNow.trim() ? { whyNow: p.whyNow.trim() } : {}),
+    ...(strArr(p.inScope) ? { inScope: strArr(p.inScope)! } : {}),
+    ...(strArr(p.outOfScope) ? { outOfScope: strArr(p.outOfScope)! } : {}),
+    ...(strArr(p.requiredTests) ? { requiredTests: strArr(p.requiredTests)! } : {}),
+    ...(strArr(p.requiredEvidence) ? { requiredEvidence: strArr(p.requiredEvidence)! } : {}),
+    ...(strArr(p.knownRisks) ? { knownRisks: strArr(p.knownRisks)! } : {}),
+    ...(strArr(p.sourceReferences) ? { sourceReferences: strArr(p.sourceReferences)! } : {}),
+    ...(typeof p.rolePlan === 'string' && p.rolePlan.trim() ? { rolePlan: p.rolePlan.trim() } : {}),
+    ...(strArr(p.fileScope) ? { fileScope: strArr(p.fileScope)! } : {}),
   };
+}
+
+export interface ExecutableEnvelope {
+  taskType: TaskType;
+  whyNow: string;
+  inScope: string[];
+  outOfScope: string[];
+  currentBaseSha: string;
+  acceptanceCriteria: Array<{ id: string; description: string }>;
+  requiredTests: string[];
+  requiredEvidence: string[];
+  knownRisks: string[];
+  sourceReferences: string[];
+  rolePlan: string;
+  fileScope: string[];
+}
+
+/** Route implied by task type (§5). REVIEW_ONLY/VERIFICATION skip Builder. */
+export function routeForTaskType(t: TaskType): 'full' | 'review' {
+  return t === 'IMPLEMENTATION' || t === 'FIX' || t === 'PLANNING' ? 'full' : 'review';
+}
+
+/**
+ * Executable-contract gate (§4): a Task MUST NOT dispatch unless complete.
+ * Returns the envelope (with rolePlan defaulted per task type) or throws
+ * TASK_NOT_EXECUTABLE naming every missing field. fileScope entries for
+ * implementation work must already be named in bounded_scope (diffScope
+ * rule: QA cannot silently broaden scope).
+ */
+export function assertExecutableContract(
+  proposal: TaskProposal,
+  current: { baseSha: string | null },
+): ExecutableEnvelope {
+  const missing: string[] = [];
+  const taskType = proposal.taskType ?? 'IMPLEMENTATION';
+  if (!proposal.whyNow?.trim()) missing.push('whyNow');
+  if (!proposal.inScope?.length) missing.push('inScope');
+  if (!proposal.outOfScope?.length) missing.push('outOfScope');
+  if (!current.baseSha) missing.push('currentBaseSha');
+  if (!proposal.requiredTests?.length) missing.push('requiredTests');
+  if (!proposal.requiredEvidence?.length) missing.push('requiredEvidence');
+  if (!proposal.sourceReferences?.length) missing.push('sourceReferences');
+  const needsFiles = taskType === 'IMPLEMENTATION' || taskType === 'FIX';
+  if (needsFiles && !proposal.fileScope?.length) missing.push('fileScope');
+  if (missing.length) {
+    throw new Error(`TASK_NOT_EXECUTABLE: missing ${missing.join(', ')} (taskType ${taskType})`);
+  }
+  const defaultRolePlan: Record<TaskType, string> = {
+    IMPLEMENTATION: 'PM → Builder → QA → PM',
+    FIX: 'PM → Builder → QA → PM',
+    REVIEW_ONLY: 'PM → Independent Reviewer/QA → PM (no Builder)',
+    VERIFICATION: 'PM → QA → PM (no Builder)',
+    PLANNING: 'PM → planning Agent → review',
+  };
+  if (needsFiles) {
+    const scopeFlat = proposal.bounded_scope.replace(/\s+/g, '');
+    const cleanScope: string[] = [];
+    for (const f of proposal.fileScope!) {
+      // TUI reflow may wrap long paths with whitespace; paths never contain
+      // significant whitespace, so compare/store the collapsed form.
+      const flat = f.replace(/\s+/g, '');
+      if (!flat) continue;
+      if (!scopeFlat.includes(flat)) {
+        throw new Error(`TASK_NOT_EXECUTABLE: fileScope '${f}' not declared in bounded_scope`);
+      }
+      cleanScope.push(flat);
+    }
+    if (cleanScope.length === 0) {
+      throw new Error('TASK_NOT_EXECUTABLE: missing fileScope (taskType IMPLEMENTATION|FIX)');
+    }
+    return {
+      taskType,
+      whyNow: proposal.whyNow!.trim(),
+      inScope: proposal.inScope!,
+      outOfScope: proposal.outOfScope!,
+      currentBaseSha: current.baseSha!,
+      acceptanceCriteria: proposal.acceptance_criteria,
+      requiredTests: proposal.requiredTests!,
+      requiredEvidence: proposal.requiredEvidence!,
+      knownRisks: proposal.knownRisks ?? [],
+      sourceReferences: proposal.sourceReferences!,
+      rolePlan: proposal.rolePlan?.trim() || defaultRolePlan[taskType],
+      fileScope: cleanScope,
+    };
+  }
+  return {
+    taskType,
+    whyNow: proposal.whyNow!.trim(),
+    inScope: proposal.inScope!,
+    outOfScope: proposal.outOfScope!,
+    currentBaseSha: current.baseSha!,
+    acceptanceCriteria: proposal.acceptance_criteria,
+    requiredTests: proposal.requiredTests!,
+    requiredEvidence: proposal.requiredEvidence!,
+    knownRisks: proposal.knownRisks ?? [],
+    sourceReferences: proposal.sourceReferences!,
+    rolePlan: proposal.rolePlan?.trim() || defaultRolePlan[taskType],
+    fileScope: proposal.fileScope ?? [],
+  };
+}
+
+/**
+ * Lenient builder-result acceptance: agents often return rich CORRECT
+ * content without the RESULT_PACKET wrapper (proven live three times).
+ * Strict envelope first; fallback binds identity from the TURN (same
+ * task/run by construction) when the body is substantive evidence.
+ * Refusals and chatter fail the substance floor and stay BLOCKED.
+ * QA + PM review downstream still judge content — framing tolerance here
+ * never certifies quality.
+ */
+export function looksSubstantiveResult(text: string): boolean {
+  const t = text.trim();
+  return t.length >= 200
+    && /(exit\s*0|passed|\bPASS\b|FAIL|created|wrote|modified|\.(ts|py|md|json|sh)\b|AC-\d|Task:|Run:)/i.test(t);
+}
+
+export function parseBuilderTurnLenient(
+  text: string,
+  taskId: string,
+  runId: string,
+  note?: (msg: string) => void,
+): BuilderTurnResult {
+  try {
+    return parseBuilderTurn(text);
+  } catch (err) {
+    if (!looksSubstantiveResult(text)) throw err;
+    note?.('accepted without RESULT_PACKET envelope: identity turn-bound, content judged downstream');
+    return {
+      taskId,
+      runId,
+      resultPacket: text.trim(),
+      commands: [],
+      tests: [],
+      knownRisks: ['result accepted without agent-echoed envelope; verify content at QA/PM'],
+    };
+  }
 }

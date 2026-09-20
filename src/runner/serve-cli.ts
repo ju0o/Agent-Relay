@@ -183,8 +183,72 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
       audit({ laneId: lane.id, step: 'dispatch', mode: 'cas-only', runId, taskId: task.taskId });
       return { runId };
     },
-    accept: async (lane: (typeof lanes)[number], task: { taskId: string }, runId: string) => {
-      audit({ laneId: lane.id, step: 'accept', taskId: task.taskId, runId, note: 'record-only; canonical acceptResult covered by orchestrator suites' });
+    accept: async (
+      lane: (typeof lanes)[number],
+      task: { taskId: string },
+      runId: string,
+      ctx?: { envelope?: { taskType: string; fileScope: string[] } | null; route?: string },
+    ) => {
+      // §8 accepted-work delivery: commit ONLY the task's fileScope on the
+      // project's current branch, then push (no merges, ever). Without a
+      // fileScope there is nothing the Builder was allowed to touch.
+      const fileScope = ctx?.envelope?.fileScope ?? [];
+      const route = ctx?.route ?? 'full';
+      const needsDelivery = route === 'full' && fileScope.length > 0;
+      if (!needsDelivery) {
+        audit({
+          laneId: lane.id, step: 'accept', taskId: task.taskId, runId, route,
+          note: fileScope.length === 0
+            ? 'record-only accept (no fileScope: Builder touched nothing committable)'
+            : 'record-only accept (review route: no build output to commit)',
+        });
+        return;
+      }
+      try {
+        const { execFileSync } = await import('node:child_process');
+        const run = (args: string[]): string =>
+          execFileSync('git', ['-C', lane.root, ...args], { encoding: 'utf8', timeout: 30000 }).trim();
+        const existing = new Set<string>();
+        for (const f of fileScope) {
+          try {
+            const st = fs.statSync(path.join(lane.root, f));
+            if (st.isFile() || st.isDirectory()) existing.add(f);
+          } catch { /* absent: not committable */ }
+        }
+        if (existing.size === 0) {
+          audit({ laneId: lane.id, step: 'deliver', taskId: task.taskId, outcome: 'nothing-to-commit' });
+          return;
+        }
+        const before = run(['status', '--porcelain=v1', '--untracked-files=no']);
+        const touched = before.split('\n').filter(Boolean)
+          .map((l) => l.slice(3).trim().replace(/^"(.*)"$/, '$1'));
+        const inScope = touched.filter((t) => [...existing].some((f) => t === f || t.startsWith(`${f}/`)));
+        if (inScope.length === 0) {
+          audit({ laneId: lane.id, step: 'deliver', taskId: task.taskId, outcome: 'tree-clean' });
+          return;
+        }
+        run(['add', '--', ...inScope]);
+        const branch = run(['rev-parse', '--abbrev-ref', 'HEAD']);
+        const msg = `cert(${task.taskId}): ${task.taskId} accepted (QA PASS, PM ACCEPT, run ${runId})`;
+        run(['commit', '-m', msg]);
+        const sha = run(['rev-parse', 'HEAD']);
+        let pushed: string | null = null;
+        try {
+          run(['push', 'origin', branch]);
+          pushed = `origin/${branch}`;
+        } catch (err) {
+          audit({
+            laneId: lane.id, step: 'deliver_push_failed', taskId: task.taskId, sha,
+            error: err instanceof Error ? err.message.slice(0, 300) : String(err),
+          });
+        }
+        audit({ laneId: lane.id, step: 'deliver', taskId: task.taskId, sha, branch, pushed, files: inScope });
+      } catch (err) {
+        audit({
+          laneId: lane.id, step: 'deliver_blocked', taskId: task.taskId,
+          error: err instanceof Error ? err.message.slice(0, 300) : String(err),
+        });
+      }
     },
     nextTask: async (lane: (typeof lanes)[number], task: { taskId: string }) => {
       const project = projectDefault ?? lane.id;
@@ -209,23 +273,40 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
     return bound.bindings;
   };
 
+  const projectCurrentFor = async (lane: (typeof lanes)[number]): Promise<string> => {
+    const { resolveProjectCurrent, renderProjectCurrentPacket } = await import('./project-current.js');
+    const cur = await resolveProjectCurrent(lane.id, lane.root, {
+      laneRoots: config.lanes.map((l) => l.root),
+      dataRoot,
+      project: projectDefault ?? lane.id,
+      listOpenTasks: (dr, project) => {
+        try {
+          return goalTask.listTasks(dr, project).map((t) => ({
+            taskId: t.taskId, executionState: t.executionState, pmState: t.pmState,
+          }));
+        } catch {
+          return [];
+        }
+      },
+    });
+    return renderProjectCurrentPacket(cur);
+  };
   const intakeSeams = {
-    validateProposal: async (lane: (typeof lanes)[number], proposal: { goal: string; bounded_scope: string; acceptance_criteria: Array<{ id: string; description: string }> }) => {
+    validateProposal: async (lane: (typeof lanes)[number], proposal: { goal: string; bounded_scope: string; acceptance_criteria: Array<{ id: string; description: string }> }, fileScope: string[]) => {
       const { validateTaskQaContractFields } = await import('../backend/qa-contract.js');
       // Canonical QA gate for intake: SEMANTIC criteria (verified by the
-      // independent QA agent) + an EMPTY diffScope deterministic guard
-      // (read-only tasks permit zero file changes — evaluable by the
-      // canonical gate later, enforced now by task scope + QA review).
+      // independent QA agent) + diffScope guard pinned to the task's own
+      // fileScope (read-only tasks: [] — zero file changes permitted).
       validateTaskQaContractFields({
         scope: proposal.bounded_scope,
         acceptanceCriteria: proposal.acceptance_criteria.map((ac) => ({ id: ac.id, description: ac.description, validationMode: 'SEMANTIC' })),
         qaContract: {
-          deterministic: [{ kind: 'diffScope', allowedPaths: [] as string[] }],
+          deterministic: [{ kind: 'diffScope', allowedPaths: [...fileScope] }],
           semantic: { qaWorkerId: `${lane.qa.runtime}-live` },
         },
       });
     },
-    createTask: async (lane: (typeof lanes)[number], proposal: { goal: string; bounded_scope: string; acceptance_criteria: Array<{ id: string; description: string }> }) => {
+    createTask: async (lane: (typeof lanes)[number], proposal: { goal: string; bounded_scope: string; acceptance_criteria: Array<{ id: string; description: string }> }, fileScope: string[]) => {
       const project = projectDefault ?? lane.id;
       const goals = goalTask.listGoals(dataRoot, project);
       if (goals.length === 0) throw new Error(`intake refused: no approved Goal in scope project ${project}`);
@@ -239,7 +320,7 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
         scope: proposal.bounded_scope,
         acceptanceCriteria: acs,
         qaContract: {
-          deterministic: [{ kind: 'diffScope', allowedPaths: [] as string[] }],
+          deterministic: [{ kind: 'diffScope', allowedPaths: [...fileScope] }],
           semantic: { qaWorkerId: `${lane.qa.runtime}-live` },
         },
       });
@@ -272,6 +353,7 @@ export async function runRunnerCommand(cwd: string, verb: string, o: RunnerCmdOp
     intake: {
       enabled: true,
       goalBriefFor: (l: { id: string; goal: string }) => briefFor(l.id, l.goal),
+      projectCurrentFor,
       seams: intakeSeams,
     },
     // The durable live path never performs live effects without a covering

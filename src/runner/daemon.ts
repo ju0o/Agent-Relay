@@ -17,6 +17,7 @@ import { LaneScheduler } from '../workspace/scheduler.js';
 import type { LaneConfigV2 } from '../workspace/config-v2.js';
 import { advanceLane, intakeNextTask, readLaneRun, type EngineBindings, type EngineSeams, type EngineStores, type IntakeSeams } from './lane-engine.js';
 import type { BoundTransport } from './lane-engine.js';
+import { clearTransportShutdown, requestTransportShutdown } from './transport.js';
 import { requireOwnerGo } from './owner-go.js';
 
 export interface DaemonOptions {
@@ -45,6 +46,7 @@ export interface DaemonOptions {
     enabled: boolean;
     goalBrief?: string;
     goalBriefFor?: (lane: LaneConfigV2) => string;
+    projectCurrentFor?: (lane: LaneConfigV2) => Promise<string>;
     seams: IntakeSeams;
   };
   audit?: (event: Record<string, unknown>) => void;
@@ -119,6 +121,10 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export async function serveOnce(opts: DaemonOptions): Promise<RunnerStatusSnapshot> {
   const scheduler = opts.scheduler ?? new LaneScheduler({ maxActiveBuilders: 2, maxActiveQa: 1 });
   const laneIds = opts.lanes.map((l) => l.id);
+  // Pass heartbeat FIRST: a pass blocked in long bounded collects still
+  // proves liveness (consumers distinguish stuck-with-no-heartbeat from
+  // waiting-inside-bounds).
+  opts.audit?.({ ts: new Date().toISOString(), step: 'pass_start', lanes: laneIds });
   // Lanes advance CONCURRENTLY (shared scheduler): one lane's long-bounded
   // collect must never starve the others. Turn/store files are per-lane and
   // audit appends are atomic; the scheduler caps hold across lanes.
@@ -169,6 +175,9 @@ export async function serveOnce(opts: DaemonOptions): Promise<RunnerStatusSnapsh
             correlationId: opts.correlationId,
             projectId: opts.projectId,
             goalBrief: opts.intake.goalBriefFor ? opts.intake.goalBriefFor(lane) : (opts.intake.goalBrief ?? lane.goal),
+            ...(opts.intake.projectCurrentFor ? { projectCurrent: () => opts.intake!.projectCurrentFor!(lane) } : {}),
+            timeoutMs: opts.turnTimeoutMs,
+            maxAttempts: opts.turnMaxAttempts,
             audit: opts.audit,
           });
           opts.audit?.({ ts: new Date().toISOString(), laneId: lane.id, step: 'intake', taskId: ready.taskId });
@@ -191,9 +200,18 @@ export async function serveOnce(opts: DaemonOptions): Promise<RunnerStatusSnapsh
         }
       }
     } catch (err) {
+      // Shutdown aborts the whole pass immediately (no per-lane continue).
+      if ((err as { code?: string } | null)?.code === 'SHUTDOWN_ABORT') throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      // Delivery-deferred lanes (busy pane, lost wire) simply wait for the
+      // next poll with the same REQUESTED turn — no failure recorded.
+      const waiting = /DELIVERY_DEFERRED|NOT_IDLE|TRANSPORT_LOST|STALE_SESSION/.test(msg);
       opts.audit?.({
-        ts: new Date().toISOString(), laneId: lane.id, step: 'advance_error',
-        error: err instanceof Error ? err.message : String(err),
+        ts: new Date().toISOString(), laneId: lane.id,
+        step: waiting ? 'session_wait' : 'advance_error',
+        ...(waiting ? { outcome: 'IN_PROGRESS' } : {}),
+        error: waiting ? undefined : msg,
+        ...(waiting ? { reason: msg.slice(0, 160) } : {}),
       });
     }
   }));
@@ -206,8 +224,14 @@ export async function serve(opts: DaemonOptions): Promise<void> {
   const existing = readPid(opts.storeRoot);
   if (existing !== null) throw new Error(`runner already running (pid ${existing})`);
   writePid(opts.storeRoot);
+  clearTransportShutdown();
   let stop = false;
-  const onSignal = (): void => { stop = true; };
+  const onSignal = (): void => {
+    stop = true;
+    // Unblock in-flight collects at once: SIGTERM must complete WITHOUT
+    // SIGKILL even mid-turn. Turns keep durable state and resume cleanly.
+    requestTransportShutdown();
+  };
   process.on('SIGTERM', onSignal);
   process.on('SIGINT', onSignal);
   try {
