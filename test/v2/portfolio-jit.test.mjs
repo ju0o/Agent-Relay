@@ -1,0 +1,112 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  FAILURE_CLASS,
+  MAX_ACTIVE_RUNTIMES,
+  PortfolioJitScheduler,
+  ProjectRegistry,
+  RuntimeAllocator,
+  WorkQueue,
+  classifyFailure,
+  isFailoverFailure,
+} from "../../src/v2/portfolio-jit/index.mjs";
+
+test("classifyFailure maps 429/quota/capacity/crash to failover classes", () => {
+  assert.equal(classifyFailure(new Error("HTTP 429 rate limit")), FAILURE_CLASS.PROVIDER_429);
+  assert.equal(classifyFailure("quota exceeded"), FAILURE_CLASS.QUOTA);
+  assert.equal(classifyFailure("capacity: no slot"), FAILURE_CLASS.CAPACITY);
+  assert.equal(classifyFailure("process died exit code 139"), FAILURE_CLASS.RUNTIME_CRASH);
+  assert.equal(isFailoverFailure(FAILURE_CLASS.PROVIDER_429), true);
+  assert.equal(isFailoverFailure(FAILURE_CLASS.PRODUCT), false);
+});
+
+test("work queue is priority ordered and one-task scheduler is serial", async () => {
+  const registry = new ProjectRegistry();
+  registry.upsert({ id: "juactl", name: "JuActl", priority: 0, stableSha: "7f1d6c4" });
+  registry.upsert({ id: "juplan", name: "JuPlan", priority: 3 });
+  const queue = new WorkQueue();
+  queue.enqueue({ projectId: "juplan", goal: "later", priority: 30 });
+  queue.enqueue({ projectId: "juactl", goal: "first", priority: 1 });
+  assert.equal(queue.peek().projectId, "juactl");
+
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const allocator = new RuntimeAllocator({
+    maxActive: MAX_ACTIVE_RUNTIMES,
+    startRuntime: async (need) => ({ id: `rt-${need.projectId}`, provider: "mock", state: "READY", projectId: need.projectId }),
+    sendTask: async (_rt, task) => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((r) => setTimeout(r, 20));
+      concurrent -= 1;
+      return { ok: true, resultText: `ACK:${task.id}`, sendAck: true, resultAck: true };
+    },
+  });
+  const sched = new PortfolioJitScheduler({ registry, queue, allocator });
+  const a = sched.tick();
+  const b = sched.tick();
+  const ra = await a;
+  const rb = await b;
+  assert.equal(ra.ok, true);
+  assert.equal(rb.skipped, true);
+  assert.equal(maxConcurrent, 1);
+  const status = sched.status();
+  assert.equal(status.schema, "agent-relay.v2.portfolio-jit.status.v1");
+  assert.match(status.human, /완료/);
+  assert.equal(status.result.sendAck, true);
+  assert.equal(status.qaState, "PENDING");
+});
+
+test("429 triggers failover and does not mark product task failed", async () => {
+  const registry = new ProjectRegistry();
+  registry.upsert({ id: "juactl", name: "JuActl", priority: 0 });
+  const queue = new WorkQueue();
+  queue.enqueue({ projectId: "juactl", goal: "harmless", priority: 1 });
+  let attempts = 0;
+  const allocator = new RuntimeAllocator({
+    startRuntime: async (need) => ({ id: `rt-${attempts}-${need.projectId}`, provider: "mock", state: "READY", projectId: need.projectId }),
+    sendTask: async (_rt, task) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("429 too many requests");
+      return { ok: true, resultText: `OK:${task.id}`, sendAck: true, resultAck: true };
+    },
+  });
+  const sched = new PortfolioJitScheduler({ registry, queue, allocator });
+  const result = await sched.tick({ maxFailovers: 2 });
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+  assert.equal(queue.list()[0].state, "DONE");
+  assert.notEqual(result.status.result.failureClass, FAILURE_CLASS.PRODUCT);
+});
+
+test("runtime capacity respects max 2 active", async () => {
+  const allocator = new RuntimeAllocator({ maxActive: 2 });
+  const a = await allocator.allocate({ projectId: "p1" });
+  const b = await allocator.allocate({ projectId: "p2" });
+  assert.equal(allocator.activeCount(), 2);
+  await assert.rejects(() => allocator.allocate({ projectId: "p3" }), /capacity/);
+  await allocator.release(a);
+  await allocator.release(b);
+  assert.equal(allocator.activeCount(), 0);
+});
+
+test("JSON status exposes Founder Gate fields for JuControler", async () => {
+  const registry = new ProjectRegistry();
+  registry.upsert({
+    id: "juactl",
+    name: "JuActl",
+    priority: 0,
+    stableSha: "7f1d6c4",
+    candidateSha: "7bbdbb0",
+  });
+  const queue = new WorkQueue();
+  queue.enqueue({ projectId: "juactl", goal: "status-dogfood", priority: 1 });
+  const sched = new PortfolioJitScheduler({ registry, queue });
+  await sched.tick();
+  const json = JSON.stringify(sched.status());
+  const parsed = JSON.parse(json);
+  assert.equal(parsed.projects[0].stableSha, "7f1d6c4");
+  assert.equal(parsed.projects[0].candidateSha, "7bbdbb0");
+  assert.equal(parsed.founderGate, "CANDIDATE_READY");
+  assert.ok(parsed.human);
+});
