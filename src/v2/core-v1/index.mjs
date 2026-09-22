@@ -34,7 +34,8 @@ function nextDefinition(project, state) {
         (task) =>
           task.projectId === project.id &&
           task.taskId === definition.taskId &&
-          task.state === "VERIFIED_DONE",
+          task.state === "VERIFIED_DONE" &&
+          (!task.coreV1Managed || task.promotion),
       ),
   );
 }
@@ -177,7 +178,9 @@ export class CoreV1Team {
       const completedTaskIds = (state.tasks || [])
         .filter(
           (task) =>
-            task.projectId === project.id && task.state === "VERIFIED_DONE",
+            task.projectId === project.id &&
+            task.state === "VERIFIED_DONE" &&
+            (!task.coreV1Managed || task.promotion),
         )
         .map((task) => task.taskId);
 
@@ -206,16 +209,27 @@ export class CoreV1Team {
       if (
         task.coreV1Managed !== true ||
         task.state !== "VERIFIED_DONE" ||
-        task.promotion ||
-        !task.result?.commitSha
+        task.promotion
       ) {
+        continue;
+      }
+
+      if (!task.result?.commitSha) {
+        task.state = "HOLD";
+        task.error = "CORE_V1_PROMOTION_MISSING_COMMIT_SHA";
+        changed = true;
         continue;
       }
 
       const project = this.manifest.projects.find((item) => item.id === task.projectId);
       if (!project) continue;
 
-      task.promotion = await this.promote(project, task.result.commitSha);
+      try {
+        task.promotion = await this.promote(project, task.result.commitSha);
+      } catch (error) {
+        task.state = "HOLD";
+        task.error = `CORE_V1_PROMOTION_FAILED: ${String(error.message || error)}`;
+      }
       changed = true;
     }
 
