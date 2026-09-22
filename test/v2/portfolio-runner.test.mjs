@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
-import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
+import { CommandRuntimeAdapter, RuntimeAdapter, createRuntimeAdapters } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
   assert.equal(parseResultPacket('RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"T","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"ok"}').status, "IMPLEMENTED");
@@ -110,6 +110,13 @@ test("runtime adapters fail closed on ownership and unavailable execution", asyn
 test("Codex discovery prefers an absolute configured or known login-shell path", () => {
   assert.equal(discoverCodexCommand({ CODEX_BIN: "/tmp/missing-codex" }) !== "/tmp/missing-codex", true);
   assert.equal(discoverCodexCommand({ CODEX_BIN: "/home/skkse12/.local/bin/codex" }), "/home/skkse12/.local/bin/codex");
+});
+
+test("installed Cursor and Claude runtimes are discoverable as non-interactive adapters", async () => {
+  const adapters = createRuntimeAdapters({ codex: { command: "/bin/true" } });
+  assert.equal((await adapters.cursor.availability()).ok, true);
+  assert.equal((await adapters.claude.availability()).ok, true);
+  assert.equal((await adapters["claude-team"].availability()).ok, true);
 });
 
 test("runtime launch failures reconcile back to the same authorized task", async () => {

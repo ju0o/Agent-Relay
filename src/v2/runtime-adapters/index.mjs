@@ -2,6 +2,9 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+
+const known = (name) => process.env[`${name.toUpperCase()}_BIN`] || `${homedir()}/.local/bin/${name}`;
 
 function probe(command, args = ["--version"]) {
   return new Promise((resolve) => {
@@ -60,8 +63,8 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
 export function createRuntimeAdapters({ codex, commands = {} } = {}) {
   return {
     codex: new CodexRuntimeAdapter(codex),
-    cursor: new CommandRuntimeAdapter({ id: "cursor", owner: "cursor", runtime: "cursor", command: commands.cursor || process.env.CURSOR_BIN || "cursor", probeArgs: ["agent", "--help"], safeNonInteractive: true, buildArgs: ({ prompt }) => ["agent", "--trust", prompt] }),
-    claude: new CommandRuntimeAdapter({ id: "claude-code", owner: "claude", runtime: "claude", command: commands.claude || process.env.CLAUDE_BIN || "claude", probeArgs: ["--help"], reason: "Claude Code authentication probe failed: OAuth session expired and could not be refreshed" }),
-    "claude-team": new CommandRuntimeAdapter({ id: "claude-team", owner: "claude-team", runtime: "claude-team", command: commands.claudeTeam || process.env.CLAUDE_TEAM_BIN || "", reason: "Claude Team runtime adapter is not configured" }),
+    cursor: new CommandRuntimeAdapter({ id: "cursor", owner: "cursor", runtime: "cursor", command: commands.cursor || process.env.CURSOR_BIN || known("agent"), probeArgs: ["agent", "--help"], safeNonInteractive: true, buildArgs: ({ prompt }) => ["agent", "--trust", prompt] }),
+    claude: new CommandRuntimeAdapter({ id: "claude-code", owner: "claude", runtime: "claude", command: commands.claude || process.env.CLAUDE_BIN || known("claude"), probeArgs: ["--help"], safeNonInteractive: true, reason: "Claude Code authentication probe failed" }),
+    "claude-team": new CommandRuntimeAdapter({ id: "claude-team", owner: "claude-team", runtime: "claude-team", command: commands.claudeTeam || process.env.CLAUDE_TEAM_BIN || commands.claude || process.env.CLAUDE_BIN || known("claude"), probeArgs: ["--help"], safeNonInteractive: true, reason: "Claude Team runtime adapter is not configured" }),
   };
 }
