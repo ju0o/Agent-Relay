@@ -110,3 +110,25 @@ test("JSON status exposes Founder Gate fields for JuControler", async () => {
   assert.equal(parsed.founderGate, "CANDIDATE_READY");
   assert.ok(parsed.human);
 });
+
+test("real adapter lifecycle is start-ready-dispatch-collect-stop and fail-closed", async () => {
+  const events = [];
+  const marker = "REAL_JIT_TEST_MARKER";
+  const adapter = {
+    async start() { events.push("start"); return { id: "codex-test", provider: "codex", state: "STARTING" }; },
+    async ready(runtime) { events.push("ready"); runtime.state = "READY"; return true; },
+    async dispatch(_runtime, task) { events.push(`dispatch:${task.goal}`); },
+    async collect() { events.push("collect"); return { resultText: marker, sendAck: true, resultAck: true }; },
+    async stop() { events.push("stop"); },
+  };
+  const registry = new ProjectRegistry();
+  registry.upsert({ id: "p", name: "p", provider: "codex" });
+  const queue = new WorkQueue();
+  queue.enqueue({ projectId: "p", goal: marker });
+  const allocator = new RuntimeAllocator({ maxActive: 99, adapter });
+  const result = await new PortfolioJitScheduler({ registry, queue, allocator }).tick({ maxFailovers: 0 });
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, ["start", "ready", `dispatch:${marker}`, "collect", "stop"]);
+  assert.equal(allocator.activeCount(), 0);
+  assert.equal(allocator.maxActive, MAX_ACTIVE_RUNTIMES);
+});
