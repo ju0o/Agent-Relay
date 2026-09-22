@@ -4,6 +4,7 @@ import {
   FAILURE_CLASS,
   MAX_ACTIVE_RUNTIMES,
   PortfolioJitScheduler,
+  PortfolioAutopilot,
   ProjectRegistry,
   RuntimeAllocator,
   WorkQueue,
@@ -131,4 +132,38 @@ test("real adapter lifecycle is start-ready-dispatch-collect-stop and fail-close
   assert.deepEqual(events, ["start", "ready", `dispatch:${marker}`, "collect", "stop"]);
   assert.equal(allocator.activeCount(), 0);
   assert.equal(allocator.maxActive, MAX_ACTIVE_RUNTIMES);
+});
+
+test("portfolio autopilot overlaps two builders, rolls a slot, and retries the same task", async () => {
+  let sequence = 0;
+  const adapter = {
+    async start() { sequence += 1; return { id: `rt-${sequence}`, provider: "codex", state: "STARTING" }; },
+    async ready(runtime) { runtime.state = "READY"; return true; },
+    async dispatch() { await new Promise((resolve) => setTimeout(resolve, 5)); },
+    async collect(runtime, task) { return { resultText: task.goal, sendAck: true, resultAck: true, runtime }; },
+    async stop() {},
+  };
+  const builderAllocator = new RuntimeAllocator({ maxActive: 2, adapter });
+  const qaAllocator = new RuntimeAllocator({ maxActive: 1, adapter });
+  const tasks = [
+    { lane: "A", projectId: "juactl", goal: "A_MARKER", requiresQa: true },
+    { lane: "B", projectId: "agent-relay", goal: "B_MARKER", requiresQa: true },
+    { lane: "C", projectId: "juplan", goal: "C_MARKER", requiresQa: true, qaPlan: ["REQUEST_CHANGES", "ACCEPT"] },
+  ];
+  const autopilot = new PortfolioAutopilot({
+    tasks,
+    builderAllocator,
+    qaAllocator,
+    qaRunner: async (task, result, attempt) => {
+      assert.equal(result.resultText, task.goal);
+      return task.qaPlan?.[attempt - 1] || "ACCEPT";
+    },
+  });
+  const state = await autopilot.run();
+  assert.deepEqual(state.tasks.map((task) => task.state), ["DONE", "DONE", "DONE"]);
+  assert.equal(state.maxConcurrentBuilders, 2);
+  assert.equal(state.maxConcurrentQa, 1);
+  assert.equal(state.events.filter((event) => event.type === "REQUEST_CHANGES").length, 1);
+  assert.equal(builderAllocator.activeCount(), 0);
+  assert.equal(qaAllocator.activeCount(), 0);
 });

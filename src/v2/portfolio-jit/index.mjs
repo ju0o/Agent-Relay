@@ -11,11 +11,11 @@
  */
 "use strict";
 
-import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 export const RUNTIME_STATES = Object.freeze([
   "OFF",
@@ -32,10 +32,27 @@ const CODEX_MARKER = /^[A-Z0-9_:-]+$/;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function commandVersion(executable) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve(stdout.trim()) : reject(new Error(stderr.trim() || `version probe exit ${code}`)));
+  });
+}
+
 function resolveCommand(command) {
   if (command.includes("/")) return realpathSync(command);
-  const path = execFileSync("which", [command], { encoding: "utf8" }).trim();
-  return realpathSync(path);
+  for (const directory of (process.env.PATH || "").split(delimiter)) {
+    const candidate = join(directory, command);
+    if (existsSync(candidate)) return realpathSync(candidate);
+  }
+  throw new Error(`runtime identity uncertain: ${command} not found on PATH`);
 }
 
 /** Real, disposable Codex CLI runtime. It never dispatches before identity and readiness pass. */
@@ -48,7 +65,7 @@ export class CodexRuntimeAdapter {
 
   async start(need) {
     const executable = resolveCommand(this.command);
-    const version = execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 10_000 }).trim();
+    const version = await commandVersion(executable);
     if (!/^codex-cli\s+\S+$/i.test(version)) throw new Error("runtime identity uncertain: Codex CLI version missing");
     const workspace = await mkdtemp(join(tmpdir(), "agent-relay-codex-"));
     const outputFile = join(workspace, "result.txt");
@@ -86,6 +103,10 @@ export class CodexRuntimeAdapter {
     const procExe = `/proc/${runtime.pid}/exe`;
     if (!existsSync(procExe) || (await realpath(procExe)) !== runtime.executable) {
       throw new Error("runtime identity uncertain: process executable mismatch");
+    }
+    const procCwd = `/proc/${runtime.pid}/cwd`;
+    if (!existsSync(procCwd) || (await realpath(procCwd)) !== runtime.workspace) {
+      throw new Error("runtime cwd uncertain: process workspace mismatch");
     }
     runtime.state = "READY";
     return true;
@@ -544,5 +565,159 @@ export class PortfolioJitScheduler {
     } finally {
       this._busy = false;
     }
+  }
+}
+
+export class AutopilotStateStore {
+  constructor(path) {
+    this.path = path;
+  }
+
+  async save(state) {
+    await writeFile(`${this.path}.tmp`, JSON.stringify(state, null, 2));
+    await rm(this.path, { force: true });
+    await writeFile(this.path, JSON.stringify(state, null, 2));
+  }
+
+  async load() {
+    return JSON.parse(await readFile(this.path, "utf8"));
+  }
+
+  static reconcile(state) {
+    return {
+      ...state,
+      tasks: state.tasks.map((task) => task.state === "RUNNING" ? { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" } : task),
+    };
+  }
+}
+
+/** Bounded real-lane orchestration: two Builder runtimes, one QA runtime. */
+export class PortfolioAutopilot {
+  /** @param {{tasks?: object[], builderAllocator: RuntimeAllocator, qaAllocator?: RuntimeAllocator, stateStore?: AutopilotStateStore, maxBuilders?: number, maxQa?: number, qaRunner?: Function}} opts */
+  constructor(opts) {
+    this.tasks = (opts.tasks || []).map((task) => ({ ...task, state: task.state || "QUEUED", attempts: task.attempts || 0, qaAttempts: task.qaAttempts || 0 }));
+    this.builderAllocator = opts.builderAllocator;
+    this.qaAllocator = opts.qaAllocator || null;
+    this.stateStore = opts.stateStore || null;
+    this.maxBuilders = Math.min(opts.maxBuilders ?? 2, 2);
+    this.maxQa = Math.min(opts.maxQa ?? 1, 1);
+    this.qaRunner = opts.qaRunner || null;
+    this.activeBuilders = new Map();
+    this.qaActive = 0;
+    this.qaWaiters = [];
+    this.events = [];
+    this.maxConcurrentBuilders = 0;
+    this.maxConcurrentQa = 0;
+  }
+
+  snapshot() {
+    return {
+      schema: "agent-relay.v2.portfolio-autopilot.state.v1",
+      tasks: this.tasks.map((task) => ({ ...task })),
+      activeBuilders: this.activeBuilders.size,
+      activeQa: this.qaActive,
+      maxConcurrentBuilders: this.maxConcurrentBuilders,
+      maxConcurrentQa: this.maxConcurrentQa,
+      events: [...this.events],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  async persist() {
+    if (this.stateStore) await this.stateStore.save(this.snapshot());
+  }
+
+  async _acquireQa() {
+    if (this.qaActive >= this.maxQa) await new Promise((resolve) => this.qaWaiters.push(resolve));
+    this.qaActive += 1;
+    this.maxConcurrentQa = Math.max(this.maxConcurrentQa, this.qaActive);
+    await this.persist();
+  }
+
+  async _releaseQa() {
+    this.qaActive -= 1;
+    this.qaWaiters.shift()?.();
+    await this.persist();
+  }
+
+  async _runQa(task, result) {
+    if (!task.requiresQa) return "ACCEPT";
+    await this._acquireQa();
+    try {
+      task.qaAttempts += 1;
+      const verdict = this.qaRunner
+        ? await this.qaRunner(task, result, task.qaAttempts)
+        : "ACCEPT";
+      this.events.push({ type: "QA", lane: task.lane, attempt: task.qaAttempts, verdict });
+      await this.persist();
+      return verdict;
+    } finally {
+      await this._releaseQa();
+    }
+  }
+
+  async _runTask(task) {
+    task.state = "RUNNING";
+    this.events.push({ type: "TASK_RUNNING", lane: task.lane });
+    await this.persist();
+    while (true) {
+      task.attempts += 1;
+      const runtime = await this.builderAllocator.allocate({ projectId: task.projectId, provider: task.provider || "codex" });
+      task.builder = { id: runtime.id, pid: runtime.pid, workspace: runtime.workspace, startedAt: Date.now() };
+      this.events.push({ type: "BUILDER_STARTED", lane: task.lane, pid: runtime.pid, at: task.builder.startedAt });
+      await this.persist();
+      try {
+        const startedAt = Date.now();
+        const result = await this.builderAllocator.send(runtime, task);
+        task.result = { text: result.resultText, sendAck: result.sendAck, resultAck: result.resultAck, at: Date.now() };
+        task.overlap = { dispatchAt: startedAt, resultAt: task.result.at };
+        this.events.push({ type: "RESULT", lane: task.lane, pid: runtime.pid, text: result.resultText, at: task.result.at });
+        await this.builderAllocator.release(runtime);
+        this.events.push({ type: "BUILDER_STOPPED", lane: task.lane, pid: runtime.pid, at: Date.now() });
+        task.builder.stoppedAt = Date.now();
+        await this.persist();
+        const verdict = await this._runQa(task, result);
+        if (verdict === "REQUEST_CHANGES" && task.attempts < (task.maxAttempts || 2)) {
+          task.state = "QUEUED";
+          task.retry = "SAME_TASK";
+          this.events.push({ type: "REQUEST_CHANGES", lane: task.lane, attempt: task.attempts });
+          await this.persist();
+          continue;
+        }
+        if (verdict !== "ACCEPT") throw new Error(`QA did not accept ${task.lane}: ${verdict}`);
+        task.state = "DONE";
+        task.acceptance = "ACCEPT";
+        await this.persist();
+        return task;
+      } catch (error) {
+        try { await this.builderAllocator.release(runtime); } catch { /* cleanup remains fail-closed */ }
+        task.state = "FAILED";
+        task.error = String(error?.message || error);
+        await this.persist();
+        throw error;
+      }
+    }
+  }
+
+  async run() {
+    await this.persist();
+    while (true) {
+      while (this.activeBuilders.size < this.maxBuilders) {
+        const task = this.tasks.find((item) => item.state === "QUEUED");
+        if (!task) break;
+        const promise = this._runTask(task);
+        this.activeBuilders.set(task.lane, promise);
+        this.maxConcurrentBuilders = Math.max(this.maxConcurrentBuilders, this.activeBuilders.size);
+        await this.persist();
+        promise.finally(async () => {
+          this.activeBuilders.delete(task.lane);
+          await this.persist();
+        }).catch(() => {});
+      }
+      if (!this.activeBuilders.size) break;
+      await Promise.race(this.activeBuilders.values());
+    }
+    await this.persist();
+    return this.snapshot();
   }
 }
