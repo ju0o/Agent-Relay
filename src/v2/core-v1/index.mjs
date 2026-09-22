@@ -140,7 +140,11 @@ export class CoreV1Team {
     );
   }
 
-  async _recordPmDecision(state, decision) {
+  async _recordPmDecision(decision) {
+    // PM decisions for multiple lanes are recorded sequentially. Always reload the
+    // latest durable state before writing so a later HOLD/COMPLETE decision cannot
+    // overwrite a task that an earlier lane just enqueued.
+    const state = await this.runner.load();
     state.pmDecisions = [
       ...(state.pmDecisions || []).filter(
         (item) => item.projectId !== decision.projectId,
@@ -148,6 +152,7 @@ export class CoreV1Team {
       { ...decision, decidedAt: new Date().toISOString() },
     ];
     await this.runner.save(state);
+    return state;
   }
 
   async _markManagedTask(projectId, taskId) {
@@ -162,11 +167,14 @@ export class CoreV1Team {
   }
 
   async prepare() {
-    const state = await this.runner.reconcile();
+    await this.runner.reconcile();
 
     for (const project of this.coreProjects()) {
       if (!project.pmManaged) continue;
 
+      // Every lane works from the latest durable state. A previous lane may have
+      // enqueued or promoted a task during this same prepare pass.
+      const state = await this.runner.load();
       const reconciled = projectState(state, project);
       if (["FOUNDER_GATE", "HOLD", "INTEGRATION_TARGET"].includes(reconciled.state)) {
         continue;
@@ -195,7 +203,7 @@ export class CoreV1Team {
         completedTaskIds,
       });
 
-      await this._recordPmDecision(state, decision);
+      await this._recordPmDecision(decision);
 
       if (decision.decision === "DISPATCH") {
         const task = await this.runner.enqueue(project.id);
