@@ -13,7 +13,7 @@ export const DEFAULT_TIMEZONE = "Asia/Seoul";
 export const DEFAULT_DEADLINE = "03:00";
 export const DEFAULT_SEND_TO_MAINPC = "/home/skkse12/.agents/skills/send-to-mainpc/scripts/send-to-mainpc.sh";
 const TERMINAL = new Set(["COMPLETE", "V1_COMPLETE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
-const COMPLETE_REASONS = new Set(["WBS_EXHAUSTED", "DEADLINE_COMPLETE"]);
+const COMPLETE_REASONS = new Set(["WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT"]);
 
 export function deadlineAt(now, value = DEFAULT_DEADLINE, timezone = DEFAULT_TIMEZONE) {
   if (timezone !== DEFAULT_TIMEZONE || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error(`invalid deadline/timezone: ${value}/${timezone}`);

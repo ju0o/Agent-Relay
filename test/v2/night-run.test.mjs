@@ -112,9 +112,9 @@ test("report transport verifies the destination hash and shutdown uses the exact
   let args; await requestMainPcShutdown({ target: "mainpc", execFileImpl: async (_command, received) => { args = received; return { stdout: "", stderr: "" }; } }); assert.deepEqual(args, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "mainpc", "shutdown.exe /s /t 30"]);
 });
 
-test("MainPC wrapper is fail-closed and lets ASUS own the final shutdown", () => {
+test("MainPC wrapper pulls from ASUS and fails closed before destructive commands", () => {
   const wrapper = readFileSync(new URL("../../scripts/core-night.ps1", import.meta.url), "utf8");
-  assert.match(wrapper, /night-run up --deadline/); assert.doesNotMatch(wrapper, /night-run shutdown/);
-  assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/);
-  assert.match(wrapper, /REPORT_TRANSFER_FAILED/); assert.match(wrapper, /mainPcShutdownRequested/); assert.doesNotMatch(wrapper, /Stop-Computer/);
+  assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--no-poweroff/); assert.match(wrapper, /scp @transportArgs/);
+  assert.match(wrapper, /sha256sum/); assert.match(wrapper, /Get-FileHash/); assert.match(wrapper, /shutdown\.exe \/s \/t 30/); assert.match(wrapper, /sudo -n \/usr\/sbin\/poweroff/); assert.match(wrapper, /shutdown\.exe \/a/);
+  assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/); assert.match(wrapper, /DEADLINE_FORCED_CHECKPOINT/); assert.doesNotMatch(wrapper, /shutdown"/);
 });

@@ -1,21 +1,63 @@
 param(
   [string]$AsusHost = "asus",
   [string]$Deadline = "03:00",
-  [int]$DisconnectTimeoutSeconds = 30
+  [int]$PollSeconds = 15,
+  [int]$PollTimeoutSeconds = 90000,
+  [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
-$statusJson = ssh -o BatchMode=yes -o ConnectTimeout=5 $AsusHost "agent-relay night-run up --deadline $Deadline" 2>&1
-$rawStatus = $statusJson -join "`n"
-$start = $rawStatus.IndexOf("{")
-$end = $rawStatus.LastIndexOf("}")
-if ($start -lt 0 -or $end -le $start) { throw "Refusing shutdown: NIGHT_RUN_COMPLETE is missing." }
-$status = $rawStatus.Substring($start, $end - $start + 1) | ConvertFrom-Json
-if ($status.schema -ne "agent-relay.last-night-run.v1" -or
-    ($status.endReason -ne "WBS_EXHAUSTED" -and $status.endReason -ne "DEADLINE_COMPLETE") -or
-    [string]::IsNullOrWhiteSpace($status.endedAt) -or
-    $status.reportTransferState -notin @("DELIVERED", "REPORT_TRANSFER_FAILED") -or
-    $status.mainPcShutdownRequested -ne $true) {
-  throw "Refusing shutdown: NIGHT_RUN_COMPLETE is unknown or corrupt."
+$transportArgs = @("-o", "BatchMode=yes", "-o", "ConnectTimeout=5")
+$sshArgs = @($transportArgs + $AsusHost)
+
+function Invoke-Asus([string]$Command) {
+  $output = & ssh @sshArgs $Command 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "ASUS SSH command failed: $Command" }
+  return $output
 }
-Write-Output $statusJson
+
+function Read-Status($Output) {
+  $raw = $Output -join "`n"
+  $start = $raw.IndexOf("{"); $end = $raw.LastIndexOf("}")
+  if ($start -lt 0 -or $end -le $start) { return $null }
+  try { return ($raw.Substring($start, $end - $start + 1) | ConvertFrom-Json) } catch { return $null }
+}
+
+$launch = Invoke-Asus "nohup agent-relay night-run up --deadline $Deadline --no-poweroff > ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED"
+if (-not (($launch -join "`n") -match "NIGHT_RUN_STARTED")) { throw "Refusing activation: detached Night Run was not acknowledged." }
+
+$status = $null; $started = Get-Date
+while (((Get-Date) - $started).TotalSeconds -lt $PollTimeoutSeconds) {
+  $status = Read-Status (Invoke-Asus "agent-relay night-run status")
+  if ($null -ne $status -and $status.endReason -in @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT") -and -not [string]::IsNullOrWhiteSpace($status.endedAt)) { break }
+  Start-Sleep -Seconds $PollSeconds
+}
+if ($null -eq $status -or $status.endReason -notin @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT")) { throw "Refusing shutdown: NIGHT_RUN_COMPLETE is unknown, corrupt, or timed out." }
+
+$remoteReport = [string]$status.reportPathAsus
+if ($remoteReport -notmatch '^/[A-Za-z0-9_./-]+$') { throw "Refusing report pull: unsafe ASUS path." }
+$reportName = Split-Path -Leaf $remoteReport
+$localReport = Join-Path (Join-Path $env:USERPROFILE "Desktop") $reportName
+if ($DryRun) { $reportPulled = $true } else { & scp @transportArgs "${AsusHost}:$remoteReport" $localReport; if ($LASTEXITCODE -ne 0) { throw "REPORT_PULL_FAILED" }; $reportPulled = Test-Path -LiteralPath $localReport }
+if (-not $reportPulled -or (Test-Path -LiteralPath $localReport -PathType Leaf -and (Get-Item -LiteralPath $localReport).Length -le 0)) { throw "REPORT_PULL_FAILED: destination missing or empty." }
+
+$remoteHash = if ($DryRun) { "DRY_RUN" } else { ((Invoke-Asus "sha256sum -- '$remoteReport'") -join "`n") -match '([0-9a-fA-F]{64})'; $Matches[1].ToLowerInvariant() }
+$localHash = if ($DryRun) { "DRY_RUN" } else { (Get-FileHash -LiteralPath $localReport -Algorithm SHA256).Hash.ToLowerInvariant() }
+if ($remoteHash -ne $localHash) { throw "HASH_VERIFY_FAILED: ASUS=$remoteHash MainPC=$localHash" }
+
+$mainPcScheduled = $false
+try {
+  if (-not $DryRun) { & shutdown.exe /s /t 30; if ($LASTEXITCODE -ne 0) { throw "MAINPC_SHUTDOWN_FAILED" } }
+  $mainPcScheduled = $true
+  $asusPoweroff = "nohup sh -c 'sleep 5; exec sudo -n /usr/sbin/poweroff' >/dev/null 2>&1 </dev/null &"
+  if (-not $DryRun) { Invoke-Asus $asusPoweroff | Out-Null }
+} catch {
+  if ($mainPcScheduled -and -not $DryRun) { & shutdown.exe /a | Out-Null }
+  throw
+}
+
+Write-Output "NIGHT_RUN_COMPLETE: $($status.endReason)"
+Write-Output "REPORT: $localReport"
+Write-Output "HASH: $localHash"
+Write-Output "MAINPC_SHUTDOWN: $(if ($DryRun) { 'MOCKED' } else { 'SCHEDULED_30S' })"
+Write-Output "ASUS_POWEROFF: $(if ($DryRun) { 'MOCKED' } else { 'SCHEDULED' })"

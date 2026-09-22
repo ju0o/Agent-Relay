@@ -22,13 +22,13 @@ allowed, the run remains recorded and reports `SHUTDOWN_PERMISSION_REQUIRED`.
 .\scripts\core-night.ps1
 ```
 
-The existing SSH alias `mainpc` is used for the MainPC transport unless
-`MAINPC_SSH_TARGET` overrides it. The ASUS supervisor performs the bounded sequence: `NIGHT_REPORT_YYYY-MM-DD.md`
-→ Send-to-MainPC with destination SHA verification → `shutdown.exe /s /t 30`
-→ `sudo -n /usr/sbin/poweroff`. The MainPC wrapper only accepts a valid durable
-`WBS_EXHAUSTED` or `DEADLINE_COMPLETE` result; it never issues a guessed local
-shutdown command. A missing report transfer or shutdown result remains recorded
-and does not wait for a password.
+MainPC uses the existing `ssh asus` transport. It launches a detached ASUS
+Night Run, polls with bounded reconnects, pulls
+`NIGHT_REPORT_YYYY-MM-DD.md`, and verifies the ASUS source SHA256 against the
+MainPC copy. Only after that succeeds does it schedule
+`shutdown.exe /s /t 30`, then asks ASUS over `ssh asus` to run a delayed
+detached `sudo -n /usr/sbin/poweroff`. There is no ASUS→MainPC SSH or push
+dependency.
 
 The report and `LAST_NIGHT_RUN.json` are written before the final ASUS command.
 Unfinished worktrees remain available for the next reconcile/resume.

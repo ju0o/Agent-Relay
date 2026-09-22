@@ -32,6 +32,7 @@ if (area === "night-run" && command === "once") {
 if (area === "night-run" && command === "up") {
   const deadlineIndex = process.argv.indexOf("--deadline");
   const deadline = deadlineIndex >= 0 ? process.argv[deadlineIndex + 1] : DEFAULT_DEADLINE;
+  const noPoweroff = process.argv.includes("--no-poweroff");
   try { const oldPid = Number(await readFile(nightPidPath, "utf8")); if (oldPid && oldPid !== process.pid) { process.kill(oldPid, 0); throw new Error(`night run already active: ${oldPid}`); } } catch (error) { if (String(error.message).includes("already active")) throw error; }
   await mkdir(root, { recursive: true }); await writeFile(nightPidPath, String(process.pid));
   const controller = new AbortController(); const shutdown = async () => { controller.abort(); await instance.stop(); await rm(nightPidPath, { force: true }); process.exit(0); };
@@ -40,7 +41,7 @@ if (area === "night-run" && command === "up") {
     const supervisor = night({ deferPoweroff: true });
     const result = await supervisor.run({ deadline, signal: controller.signal });
     console.log(JSON.stringify(result, null, 2));
-    if (result.shutdownState === "READY_FOR_ASUS_POWEROFF") {
+    if (!noPoweroff && result.shutdownState === "READY_FOR_ASUS_POWEROFF") {
       const checkpoint = { ...result, asusShutdownRequested: true, shutdownState: "ASUS_POWEROFF_REQUESTED" };
       await supervisor.persist(checkpoint);
       const power = await runPoweroff({ checkpoint });
