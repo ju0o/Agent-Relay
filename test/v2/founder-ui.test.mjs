@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { FounderGateUiServer, parseFounderPacket } from "../../src/v2/founder-ui/index.mjs";
 
 const roots = [];
+const exec = promisify(execFile);
 test.after(async () => Promise.all(roots.map((path) => rm(path, { recursive: true, force: true }))));
 
 async function fixture() {
@@ -17,8 +20,9 @@ test("Founder UI lists read-only gate details and emits uploaded response", asyn
   const root = await fixture(); const uploaded = []; const bridge = { async uploadResponses() { uploaded.push(true); return [{ gateId: "FG-ui" }]; } };
   const parsed = parseFounderPacket(await readFile(join(root, "JuActl/FG-ui.md"), "utf8"), join(root, "JuActl/FG-ui.md")); assert.equal(parsed.summary, "검증 완료"); assert.equal(parsed.reason, "Windows E2E 필요"); assert.equal(parsed.checklist.length, 5);
   const server = new FounderGateUiServer({ localInbox: root, bridge, port: 0 }); const port = await server.start();
-  const list = await (await fetch(`http://127.0.0.1:${port}/api/gates`)).json(); assert.equal(list[0].gateId, "FG-ui"); assert.equal(list[0].raw.sha.length, 40);
+  const api = await fetch(`http://127.0.0.1:${port}/api/gates`); assert.equal(api.headers.get("content-type"), "application/json; charset=utf-8"); const list = await api.json(); assert.equal(list[0].gateId, "FG-ui"); assert.equal(list[0].raw.sha.length, 40); assert.match(list[0].summary, /검증/);
   const detail = await (await fetch(`http://127.0.0.1:${port}/api/gates/FG-ui`)).json(); assert.match(detail.reason, /Windows/); const home = await (await fetch(`http://127.0.0.1:${port}/`)).text(); assert.match(home, /Founder gates/);
+  const scriptPath = join(root, "generated-script.js"); await writeFile(scriptPath, server._page().match(/<script>([\s\S]*)<\/script>/)[1]); await exec(process.execPath, ["--check", scriptPath]);
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/gates/FG-ui/respond`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ gateId: "FG-ui", decision: "APPROVE", answers: { sendSuccess: "true" }, founderNote: "확인" }) });
     assert.deepEqual(await response.json(), { state: "SUBMITTED", gateId: "FG-ui" }); assert.equal(uploaded.length, 1);
