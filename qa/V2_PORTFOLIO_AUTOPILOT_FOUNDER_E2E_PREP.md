@@ -19,7 +19,7 @@ QA_MAX_OBSERVED=1
 JUACTL_QA_VERDICT=QA_CHANGES
 - Independent read-only QA actually ran in Codex PID `52911`.
 - Exact target `5ffaeb4d2be97521421256378786fe08eab5da9d` and implementation `dd3f9b3448e7b45d422855d874e4e524b7ba5520` were unavailable locally and on the JuActl remote.
-- QA therefore failed closed; no JuActl files were modified.
+- QA therefore failed closed; this run modified no JuActl files. A pre-existing unrelated modification was observed in `actl-v0.1.1-managed/.commandcode/taste/taste.md` and was left untouched.
 
 AGENT_RELAY_SELF_QA_VERDICT=QA_PASS
 - Real Builder/QA runtime identity and cwd checks passed.
