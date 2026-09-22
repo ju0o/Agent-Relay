@@ -20,7 +20,14 @@ function Read-Status($Output) {
   $raw = $Output -join "`n"
   $start = $raw.IndexOf("{"); $end = $raw.LastIndexOf("}")
   if ($start -lt 0 -or $end -le $start) { return $null }
-  try { return ($raw.Substring($start, $end - $start + 1) | ConvertFrom-Json) } catch { return $null }
+  try { $status = $raw.Substring($start, $end - $start + 1) | ConvertFrom-Json } catch { return $null }
+  $required = @("runId", "startedAt", "deadline", "freezeAt", "checkpointAt", "endedAt", "endReason", "shutdownState")
+  $missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace([string]$status.$_) })
+  if ($status.schema -ne "agent-relay.last-night-run.v1" -or
+      $missing.Count -gt 0 -or
+      $status.lanes -isnot [array] -or
+      $status.endReason -notin @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT")) { return $null }
+  return $status
 }
 
 $launch = Invoke-Asus "nohup agent-relay night-run up --deadline $Deadline --no-poweroff > ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED"

@@ -116,5 +116,6 @@ test("MainPC wrapper pulls from ASUS and fails closed before destructive command
   const wrapper = readFileSync(new URL("../../scripts/core-night.ps1", import.meta.url), "utf8");
   assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--no-poweroff/); assert.match(wrapper, /scp @transportArgs/);
   assert.match(wrapper, /sha256sum/); assert.match(wrapper, /Get-FileHash/); assert.match(wrapper, /shutdown\.exe \/s \/t 30/); assert.match(wrapper, /sudo -n \/usr\/sbin\/poweroff/); assert.match(wrapper, /shutdown\.exe \/a/);
+  assert.match(wrapper, /agent-relay\.last-night-run\.v1/); assert.match(wrapper, /required = @\("runId"/); assert.match(wrapper, /status\.lanes -isnot \[array\]/);
   assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/); assert.match(wrapper, /DEADLINE_FORCED_CHECKPOINT/); assert.doesNotMatch(wrapper, /shutdown"/);
 });
