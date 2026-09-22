@@ -141,21 +141,43 @@ export class CodexRuntimeAdapter extends RuntimeAdapter {
   }
 
   async availability() {
-    const result = await shellProbe(this.runtimeImpl.command, ["--version"]);
-    return result.ok
-      ? { id: this.id, owner: this.owner, runtime: this.runtime, ok: true, command: this.runtimeImpl.command, identity: result.output }
-      : { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, command: this.runtimeImpl.command, reason: result.reason || result.output || "Codex runtime unavailable" };
+    if (!this.runtimeImpl || typeof this.runtimeImpl.run !== "function") {
+      return {
+        id: this.id,
+        owner: this.owner,
+        runtime: this.runtime,
+        ok: false,
+        reason: "Codex runtime implementation is missing",
+      };
+    }
+
+    // Production wrappers opt into a real login-shell readiness probe. Injected
+    // runtimes used by tests/dogfood remain first-class and must not be replaced
+    // by a process-spawn fallback, otherwise runtime injection stops being deterministic.
+    if (this.runtimeImpl.managedLoginShell === true) {
+      const result = await shellProbe(this.runtimeImpl.command, ["--version"]);
+      return result.ok
+        ? { id: this.id, owner: this.owner, runtime: this.runtime, ok: true, command: this.runtimeImpl.command, identity: result.output }
+        : { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, command: this.runtimeImpl.command, reason: result.reason || result.output || "Codex runtime unavailable" };
+    }
+
+    return {
+      id: this.id,
+      owner: this.owner,
+      runtime: this.runtime,
+      ok: true,
+      command: this.runtimeImpl.command || "injected",
+      injected: true,
+    };
   }
 
   async run(request) {
-    return runCodexViaLoginShell({
-      command: this.runtimeImpl.command,
-      timeoutMs: this.runtimeImpl.timeoutMs,
-      ...request,
-    });
+    return this.runtimeImpl.run(request);
   }
 
-  async stop() {}
+  async stop() {
+    await this.runtimeImpl?.stop?.();
+  }
 }
 
 export class CommandRuntimeAdapter extends RuntimeAdapter {
