@@ -1,0 +1,15 @@
+{
+  "schema": "agent-relay.portfolio.v1",
+  "maxBuilders": 2,
+  "maxQa": 1,
+  "projects": [
+    { "id": "jucontroler", "path": "/home/skkse12/Desktop/Projects/Core/JuControler", "owner": "claude-team", "state": "BLOCKED_EXTERNAL" },
+    { "id": "juplan", "path": "/home/skkse12/Desktop/Projects/Team/JuPlan", "owner": "codex", "state": "BLOCKED_SCOPE" },
+    { "id": "juqode", "path": "/home/skkse12/Desktop/Projects/Team/JuQode", "owner": "codex", "ref": "dev/mvp-autonomous-v01", "task": { "taskId": "JUQODE-PHASE-A-R0-P0-1", "scope": "R-0 e2e assertion impact map and P0-1 screen-to-Canon matrix", "files": ["docs/dev-evidence/readability-assertion-map.md", "docs/dev-evidence/screen-canon-matrix.md"], "tests": ["npm run test:unit"] } },
+    { "id": "juceipt", "path": "/home/skkse12/Desktop/Projects/Team/JuCeipt", "owner": "codex", "state": "BLOCKED_WORKTREE" },
+    { "id": "jumembers", "path": "/home/skkse12/Desktop/Projects/Core/JuMembers", "owner": "codex", "state": "BLOCKED_TARGET" },
+    { "id": "juagenteconomy", "path": "/home/skkse12/Desktop/Projects/Core/JuAgentEconomy/code", "owner": "codex", "state": "BLOCKED_SCOPE" },
+    { "id": "juactl", "path": "/home/skkse12/Desktop/Projects/Core/JuActl", "owner": "cursor", "state": "BLOCKED_EXTERNAL" },
+    { "id": "judoctor", "path": "/home/skkse12/Desktop/Projects/Team/JuDoctor", "owner": "codex", "state": "BLOCKED_TARGET" }
+  ]
+}
