@@ -118,7 +118,7 @@ export class PortfolioRunner {
       const adapter = this.runtimeAdapters[project.runtime || project.owner];
       const adapterStatus = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
       const blockers = [...(project.blockers || [])];
-      if (adapter && !adapterStatus.ok && project.state !== "BLOCKED_TARGET" && project.state !== "FOUNDER_GATE") blockers.push(adapterStatus.reason);
+      if (adapter && !adapterStatus.ok && project.state !== "BLOCKED_TARGET" && project.state !== "FOUNDER_GATE" && adapterStatus.reason && !blockers.includes(adapterStatus.reason)) blockers.push(adapterStatus.reason);
       projects.push({ ...project, task: authorizedTask || project.task, state: gate ? "FOUNDER_GATE" : (taskState || project.state || "BLOCKED_SCOPE"), blockers, founderRequired: Boolean(project.founderRequired), gateId: gate?.gateId || null, gatePacket: gate?.packet || null, deliveryState: gate?.deliveryState || null, runtimeStatus: adapterStatus });
     }
     state.projects = projects; state.founderGates = founderGates; return state;
