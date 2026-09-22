@@ -11,7 +11,8 @@ const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), 
 const manifestPath = process.env.AGENT_RELAY_PORTFOLIO_MANIFEST || new URL("../config/portfolio.json", import.meta.url).pathname;
 const selfRepoPath = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
 const portfolioPidPath = join(root, "runner.pid");
-const coreV1PidPath = join(root, "core-v1-runner.pid");
+const coreV1Root = join(root, "core-v1");
+const coreV1PidPath = join(coreV1Root, "runner.pid");
 
 const createRunner = async ({ coreV1 = false } = {}) => {
   const manifest = await loadManifest(manifestPath);
@@ -19,12 +20,16 @@ const createRunner = async ({ coreV1 = false } = {}) => {
     ...project,
     path: project.path === "$AGENT_RELAY_REPO" ? selfRepoPath : project.path,
   }));
-  const worktreeRoot = join(root, "worktrees");
+
+  const stateRoot = coreV1 ? coreV1Root : root;
+  const worktreeRoot = join(stateRoot, "worktrees");
+  const gateRoot = coreV1 ? join(founderOutbox, "core-v1") : founderOutbox;
+
   const runner = new PortfolioRunner({
     manifest,
-    statePath: join(root, "state.json"),
+    statePath: join(stateRoot, "state.json"),
     worktreeRoot,
-    gateRoot: founderOutbox,
+    gateRoot,
     worktrees: coreV1 ? new CoreV1WorktreeManager(worktreeRoot) : undefined,
   });
   return { manifest, runner };
@@ -35,7 +40,7 @@ const createCoreV1 = async () => {
   const team = new CoreV1Team({
     runner,
     manifest,
-    snapshotPath: join(root, "core-v1", "latest.json"),
+    snapshotPath: join(coreV1Root, "latest.json"),
   });
   return { manifest, runner, team };
 };
@@ -51,7 +56,9 @@ async function ensureSingleRunner(pidPath, label) {
     if (String(error.message).includes("already active")) throw error;
   }
 
-  await mkdir(root, { recursive: true });
+  await mkdir(new URL(`file://${pidPath}`).pathname.replace(/\/[^/]+$/, ""), { recursive: true }).catch(async () => {
+    await mkdir(root, { recursive: true });
+  });
   await writeFile(pidPath, String(process.pid));
 }
 
