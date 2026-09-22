@@ -17,9 +17,10 @@ BUILDER_OVERLAP_EVIDENCE=
 QA_MAX_OBSERVED=1
 
 JUACTL_QA_VERDICT=QA_CHANGES
-- Independent read-only QA actually ran in Codex PID `52911`.
-- Exact target `5ffaeb4d2be97521421256378786fe08eab5da9d` and implementation `dd3f9b3448e7b45d422855d874e4e524b7ba5520` were unavailable locally and on the JuActl remote.
-- QA therefore failed closed; this run modified no JuActl files. A pre-existing unrelated modification was observed in `actl-v0.1.1-managed/.commandcode/taste/taste.md` and was left untouched.
+- Cross-project target resolution now materialized the authoritative target in temporary workspace `/tmp/agent-relay-juactl-qa-Mw1GCr` and resolved SHA `5ffaeb4d2be97521421256378786fe08eab5da9d`.
+- Independent read-only QA ran in Codex PID `68247`; target pre/post status was clean and the temporary workspace was removed.
+- QA still returned `QA_CHANGES` because JuActl regression evidence was incomplete in the read-only environment and live SEND→RESULT→COPY E2E was not proven.
+- This run modified no JuActl files. A pre-existing unrelated modification was observed in `actl-v0.1.1-managed/.commandcode/taste/taste.md` and was left untouched.
 
 AGENT_RELAY_SELF_QA_VERDICT=QA_PASS
 - Real Builder/QA runtime identity and cwd checks passed.
