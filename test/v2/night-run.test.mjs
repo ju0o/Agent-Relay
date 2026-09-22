@@ -76,6 +76,16 @@ test("hung Worker is cancelled and its worktree is retained", async () => {
   assert.equal(result.endReason, "DEADLINE_COMPLETE"); assert.equal(result.resumeRequired, true); assert.ok(stopped >= 1); assert.equal(result.worktree, "/preserve/me");
 });
 
+test("reconciles the prior checkpoint and records every unfinished worktree", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-"));
+  await import("node:fs/promises").then(({ writeFile }) => writeFile(join(dir, "LAST_NIGHT_RUN.json"), JSON.stringify({ schema: "agent-relay.last-night-run.v1", runId: "old-night", resumeRequired: true, unfinishedTasks: [{ project: "agent-relay", taskId: "old", worktree: "/retain/old" }] })));
+  const state = lanes([["agent-relay", "RUNNING"]]); state.tasks.push({ projectId: "agent-relay", taskId: "new", state: "RUNNING", builderEvidence: { workspace: "/retain/new" } });
+  const s = new NightRunSupervisor({ runner: { ...runner(state), runOnce: async () => state }, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-24T18:00:00.000Z"), runId: "new-night" });
+  const result = await s.once();
+  assert.equal(result.resumedFrom, "old-night");
+  assert.deepEqual(result.unfinishedTasks.map(({ taskId, worktree }) => ({ taskId, worktree })), [{ taskId: "new", worktree: "/retain/new" }, { taskId: "old", worktree: "/retain/old" }]);
+});
+
 test("Founder Gate exhausts one lane while another lane continues", async () => {
   const state = lanes([["actl", "FOUNDER_GATE"], ["agent-relay", "RUNNING"]]); let calls = 0;
   const done = lanes([["actl", "FOUNDER_GATE"], ["agent-relay", "V1_COMPLETE"]]);

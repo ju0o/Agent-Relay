@@ -109,7 +109,18 @@ function currentTask(state) {
   return (state.tasks || []).find((task) => !["VERIFIED_DONE"].includes(task.state)) || (state.tasks || []).at(-1) || null;
 }
 
-function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = null, endReason, shutdownState = "NOT_REQUESTED", state, resumeRequired }) {
+function unfinishedTasks(state, previous = null) {
+  const tasks = (state.tasks || []).filter((task) => task.state !== "VERIFIED_DONE").map((task) => ({
+    project: task.projectId, taskId: task.taskId, workerState: task.state, qaState: task.qa?.verdict || null,
+    worktree: task.builderEvidence?.workspace || null, resumeRequired: true,
+  }));
+  for (const task of previous?.unfinishedTasks || []) {
+    if (!tasks.some((current) => current.project === task.project && current.taskId === task.taskId)) tasks.push(task);
+  }
+  return tasks;
+}
+
+function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = null, endReason, shutdownState = "NOT_REQUESTED", state, resumeRequired, previous = null }) {
   const task = currentTask(state);
   return {
     schema: "agent-relay.last-night-run.v1", runId, startedAt, deadline, freezeAt, checkpointAt, endedAt, endReason, shutdownState,
@@ -119,7 +130,8 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
     workerState: task?.state || null, qaState: task?.qa?.verdict || null,
     attempts: task?.attempts || 0, worktree: task?.builderEvidence?.workspace || null,
     commitSha: task?.result?.commitSha || null, promotionRef: task?.promotionRef || null,
-    blocker: task?.error || task?.blocker || null, resumeRequired,
+    blocker: task?.error || task?.blocker || null, resumeRequired, unfinishedTasks: unfinishedTasks(state, previous),
+    resumedFrom: previous?.resumeRequired ? previous.runId || null : null,
     lanes: state.projects || [], updatedAt: new Date().toISOString(),
   };
 }
@@ -139,16 +151,22 @@ export class NightRunSupervisor {
 
   async status() { try { return JSON.parse(await readFile(this.checkpointPath, "utf8")); } catch { return null; } }
 
+  async resumeCheckpoint() {
+    const checkpoint = await this.status();
+    return checkpoint?.schema === "agent-relay.last-night-run.v1" && checkpoint.resumeRequired ? checkpoint : null;
+  }
+
   async once({ deadline = DEFAULT_DEADLINE } = {}) {
     const started = this.clock();
+    const previous = await this.resumeCheckpoint();
     let state = await this.runner.reconcile();
     const cutoff = deadlineAt(started, deadline);
     const times = { deadline: cutoff.toISOString(), freezeAt: new Date(cutoff - 5 * 60_000).toISOString(), checkpointAt: new Date(cutoff - 2 * 60_000).toISOString() };
-    if (started >= cutoff) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "DEADLINE_COMPLETE", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: true }));
-    if (evaluateExhaustion(this.runner.manifest, state).complete) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "WBS_EXHAUSTED", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: false }));
+    if (started >= cutoff) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "DEADLINE_COMPLETE", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: true, previous }));
+    if (evaluateExhaustion(this.runner.manifest, state).complete) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "WBS_EXHAUSTED", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: false, previous }));
     state = await this.runner.runOnce();
     const complete = evaluateExhaustion(this.runner.manifest, state).complete;
-    return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: complete ? this.clock().toISOString() : null, endReason: complete ? "WBS_EXHAUSTED" : "RUNNING", shutdownState: complete ? "DRAIN_REQUIRED" : "NOT_REQUESTED", state, resumeRequired: !complete }));
+    return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: complete ? this.clock().toISOString() : null, endReason: complete ? "WBS_EXHAUSTED" : "RUNNING", shutdownState: complete ? "DRAIN_REQUIRED" : "NOT_REQUESTED", state, resumeRequired: !complete, previous }));
   }
 
   async run({ deadline = DEFAULT_DEADLINE, intervalMs = 15_000, signal } = {}) {
@@ -157,8 +175,9 @@ export class NightRunSupervisor {
     const freezeAt = new Date(cutoff - 5 * 60_000);
     const checkpointAt = new Date(cutoff - 2 * 60_000);
     const drainAt = new Date(cutoff - 60_000);
+    const previous = await this.resumeCheckpoint();
     let state = await this.runner.reconcile();
-    const write = (endReason, endedAt = null, shutdownState = "NOT_REQUESTED", resumeRequired = true) => this.persist(record({ runId: this.runId, startedAt: started.toISOString(), deadline: cutoff.toISOString(), freezeAt: freezeAt.toISOString(), checkpointAt: checkpointAt.toISOString(), endedAt, endReason, shutdownState, state, resumeRequired }));
+    const write = (endReason, endedAt = null, shutdownState = "NOT_REQUESTED", resumeRequired = true) => this.persist(record({ runId: this.runId, startedAt: started.toISOString(), deadline: cutoff.toISOString(), freezeAt: freezeAt.toISOString(), checkpointAt: checkpointAt.toISOString(), endedAt, endReason, shutdownState, state, resumeRequired, previous }));
     const finish = async (reason, resumeRequired) => { await this.runner.stop?.(); state = await this.runner.load(); const result = await write(reason, this.clock().toISOString(), "FINALIZING", resumeRequired); return this.finalize ? this.finalize(result) : result; };
     const drain = async () => { await this.runner.stop?.(); while (this.clock() < drainAt && !signal?.aborted) await this.sleep(Math.max(1, drainAt - this.clock())); };
     if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
