@@ -9,11 +9,12 @@ const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), 
 const manifestPath = process.env.AGENT_RELAY_PORTFOLIO_MANIFEST || new URL("../config/portfolio.json", import.meta.url).pathname;
 const runner = () => loadManifest(manifestPath).then((manifest) => new PortfolioRunner({ manifest, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), gateRoot: founderOutbox }));
 const pidPath = join(root, "runner.pid");
-const [area, command, project] = process.argv.slice(2);
+const [area, command, project, decision] = process.argv.slice(2);
 if (area !== "portfolio" && area !== "project") { console.error("usage: agent-relay portfolio up|status|reconcile|stop | project run <projectId>"); process.exit(2); }
 const instance = await runner();
 if (area === "portfolio" && command === "status") { console.log(JSON.stringify(await instance.load(), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "reconcile") { console.log(JSON.stringify(await instance.reconcile(), null, 2)); process.exit(0); }
+if (area === "portfolio" && command === "founder-response" && project && decision) { console.log(JSON.stringify(await instance.resolveFounderGate(project, decision), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "stop") { try { const pid = Number(await readFile(pidPath, "utf8")); if (pid && pid !== process.pid) process.kill(pid, "SIGTERM"); } catch { /* already stopped */ } const state = await instance.load(); state.service = "STOPPED"; await instance.save(state); await rm(pidPath, { force: true }); console.log("STOPPED"); process.exit(0); }
 if (area === "project" && command === "run" && project) { console.log(JSON.stringify(await instance.enqueue(project), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "up") {

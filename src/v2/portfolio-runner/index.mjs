@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { realpath } from "node:fs/promises";
 import { FounderGateManager } from "../portfolio-jit/index.mjs";
+import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 
 export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
@@ -79,7 +80,8 @@ export class CodexDevelopmentRuntime {
 }
 
 export function builderPrompt(task) {
-  return `You are the Agent Relay Builder. Execute ONLY this repository-backed authorized task. Do not widen scope, ask the Founder routine questions, touch other repositories, or push.\nTASK_PACKET: ${JSON.stringify({ schema: "agent-relay.task.v1", taskId: task.taskId, projectId: task.projectId, scope: task.scope, files: task.files, tests: task.tests })}\nRead the repository SSOT first. Implement the bounded task in this isolated writable worktree. Run the listed tests. Commit the implementation locally. End with exactly one line: RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: task.taskId, status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "<git-sha>", summary: "<summary>" })}`;
+  const mode = task.verificationOnly ? "Do not modify files or commit; verify the existing implementation only." : "Implement the bounded task and commit locally.";
+  return `You are the Agent Relay Builder. Execute ONLY this repository-backed authorized task. Do not widen scope, ask the Founder routine questions, touch other repositories, or push.\nTASK_PACKET: ${JSON.stringify({ schema: "agent-relay.task.v1", taskId: task.taskId, projectId: task.projectId, scope: task.scope, files: task.files, tests: task.tests, verificationOnly: Boolean(task.verificationOnly) })}\nRead the repository SSOT first. ${mode} Run the listed tests. End with exactly one line: RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: task.taskId, status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "<git-sha>", summary: "<summary>" })}`;
 }
 
 export function qaPrompt(task, base) {
@@ -87,8 +89,8 @@ export function qaPrompt(task, base) {
 }
 
 export class PortfolioRunner {
-  constructor({ manifest, statePath, worktreeRoot, gateRoot, runtime = new CodexDevelopmentRuntime(), worktrees = new WorktreeManager(worktreeRoot), gateManager }) {
-    this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
+  constructor({ manifest, statePath, worktreeRoot, gateRoot, runtime = new CodexDevelopmentRuntime(), runtimeAdapters, worktrees = new WorktreeManager(worktreeRoot), gateManager }) {
+    this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.runtimeAdapters = runtimeAdapters || createRuntimeAdapters({ codex: runtime }); this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
   }
 
   async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
@@ -98,14 +100,23 @@ export class PortfolioRunner {
     const projects = []; const founderGates = [];
     for (const project of this.manifest.projects) {
       const task = state.tasks.find((item) => item.projectId === project.id && item.state === "VERIFIED_DONE");
-      if (task) { projects.push({ ...project, state: "VERIFIED_DONE", taskId: task.taskId, qa: task.qa?.verdict || "ACCEPT", blockers: [] }); continue; }
+      if (task) { projects.push({ ...project, state: "VERIFIED_DONE", founderRequired: false, gateStatus: state.founderDecisions?.some((item) => item.projectId === project.id) ? "RESOLVED" : undefined, taskId: task.taskId, qa: task.qa?.verdict || "ACCEPT", blockers: [] }); continue; }
+      const decision = state.founderDecisions?.find((item) => item.projectId === project.id);
+      if (decision?.decision === "PAUSE") { projects.push({ ...project, state: "HOLD", founderRequired: false, blockers: [decision.scope], gateId: decision.gateId, gateStatus: "RESOLVED", deliveryState: null }); continue; }
+      const authorizedTask = decision?.decision === "APPROVE" ? project.task : null;
+      const taskState = authorizedTask && state.tasks.find((item) => item.taskId === authorizedTask.taskId)?.state;
+      if (taskState === "VERIFIED_DONE") { projects.push({ ...project, state: "VERIFIED_DONE", founderRequired: false, gateStatus: "RESOLVED", taskId: authorizedTask.taskId, qa: "ACCEPT", blockers: [] }); continue; }
       let gate = null;
-      if (project.founderRequired && project.founderGate) {
+      if (project.founderRequired && project.founderGate && !decision) {
         const gateManager = new FounderGateManager({ root: join(this.gateRoot, project.id) });
         gate = await gateManager.create({ project: project.id, runId: `portfolio-${project.id}`, ...project.founderGate });
         founderGates.push({ gateId: gate.gateId, project: project.id, type: gate.type, packet: gate.packet, deliveryState: gate.deliveryState, status: gate.status });
       }
-      projects.push({ ...project, state: gate ? "FOUNDER_GATE" : (project.state || "BLOCKED_SCOPE"), blockers: project.blockers || [], founderRequired: Boolean(project.founderRequired), gateId: gate?.gateId || null, gatePacket: gate?.packet || null, deliveryState: gate?.deliveryState || null });
+      const adapter = this.runtimeAdapters[project.runtime || project.owner];
+      const adapterStatus = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
+      const blockers = [...(project.blockers || [])];
+      if (adapter && !adapterStatus.ok && project.state !== "BLOCKED_TARGET" && project.state !== "FOUNDER_GATE") blockers.push(adapterStatus.reason);
+      projects.push({ ...project, task: authorizedTask || project.task, state: gate ? "FOUNDER_GATE" : (taskState || project.state || "BLOCKED_SCOPE"), blockers, founderRequired: Boolean(project.founderRequired), gateId: gate?.gateId || null, gatePacket: gate?.packet || null, deliveryState: gate?.deliveryState || null, runtimeStatus: adapterStatus });
     }
     state.projects = projects; state.founderGates = founderGates; return state;
   }
@@ -120,7 +131,8 @@ export class PortfolioRunner {
   async enqueue(projectId) {
     const project = this.manifest.projects.find((item) => item.id === projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
-    const task = project.task ? { ...project.task, projectId, state: "QUEUED", attempts: 0, qaAttempts: 0 } : { taskId: `${projectId.toUpperCase()}-DISCOVERY`, projectId, state: project.state || "BLOCKED_SCOPE", scope: "repository SSOT discovery only" };
+    const approved = (await this.load()).founderDecisions?.some((item) => item.projectId === projectId && item.decision === "APPROVE");
+    const task = project.task ? { ...project.task, projectId, state: "QUEUED", attempts: 0, qaAttempts: 0, verificationOnly: approved && projectId === "juagenteconomy" } : { taskId: `${projectId.toUpperCase()}-DISCOVERY`, projectId, state: project.state || "BLOCKED_SCOPE", scope: "repository SSOT discovery only" };
     const state = await this.load(); state.tasks = state.tasks.filter((item) => item.projectId !== projectId || item.state === "VERIFIED_DONE"); state.tasks.push(task); await this.save(state); return task;
   }
 
@@ -129,16 +141,20 @@ export class PortfolioRunner {
 
   async runOne(task, state) {
     const project = this.manifest.projects.find((item) => item.id === task.projectId);
-    if (!project?.task || project.owner !== "codex") { task.state = project?.state || "BLOCKED_SCOPE"; return; }
+    const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
+    const availability = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
+    if (!project?.task) { task.state = project?.state || "BLOCKED_SCOPE"; return; }
+    if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; return; }
+    try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; return; }
     const builder = await this.worktrees.create(project, task.taskId); state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path }); task.state = "RUNNING"; task.attempts += 1; await this.save(state);
     try {
       for (;;) {
-      const builderRun = await this.runtime.run({ workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }) });
+      const builderRun = await adapter.run({ workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }) });
       task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, startedAt: builderRun.startedAt, exitCode: builderRun.code };
       task.result = parseResultPacket(builderRun.text); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path }); await this.save(state);
       await this._acquireQa();
       let qaRun;
-      try { task.qaAttempts += 1; qaRun = await this.runtime.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, task.result.commitSha) }); }
+      try { task.qaAttempts += 1; qaRun = await adapter.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, task.result.commitSha) }); }
       finally { this._releaseQa(); }
       task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
       if (task.qa.verdict === "ACCEPT") { task.state = "VERIFIED_DONE"; break; }
@@ -147,6 +163,23 @@ export class PortfolioRunner {
       }
     } catch (error) { task.state = "HOLD"; task.error = String(error.message || error); state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); }
     await builder.cleanup(); await this.save(state);
+  }
+
+  async resolveFounderGate(gateId, decision) {
+    const state = await this.reconcile();
+    const project = state.projects?.find((item) => item.gateId === gateId);
+    if (!project) throw new Error(`unknown Founder Gate: ${gateId}`);
+    const gate = await new FounderGateManager({ root: join(this.gateRoot, project.id) }).respond({ GATE_ID: gateId, DECISION: decision, timestamp: new Date().toISOString() });
+    state.founderDecisions = (state.founderDecisions || []).filter((item) => item.projectId !== project.id);
+    if (project.id === "juagenteconomy" && decision === "APPROVE") {
+      state.founderDecisions.push({ projectId: project.id, gateId, decision, scope: "P2.1 Double-Entry Ledger Engine only", forbidden: ["P2.2+", "production spending", "real external money movement", "OAuth", "secrets", "payment credentials", "new Product scope"], resolvedAt: gate.response.timestamp });
+      const task = this.manifest.projects.find((item) => item.id === project.id)?.task;
+      if (task) state.tasks = [...state.tasks.filter((item) => item.projectId !== project.id || item.state === "VERIFIED_DONE"), { ...task, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0, verificationOnly: true }];
+    } else if (project.id === "juplan" && decision === "PAUSE") {
+      state.founderDecisions.push({ projectId: project.id, gateId, decision, scope: "JuPlan V1 stable; V1.1 HOLD / PORTFOLIO BACKLOG", resolvedAt: gate.response.timestamp });
+    } else throw new Error(`unsupported Founder decision: ${project.id}/${decision}`);
+    state.resolvedFounderGates = [...(state.resolvedFounderGates || []), { gateId, projectId: project.id, decision, resolvedAt: gate.response.timestamp }];
+    await this.save(state); return { gate, state };
   }
 
   async runOnce() {

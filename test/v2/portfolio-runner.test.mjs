@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { parseQaPacket, parseResultPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
   assert.equal(parseResultPacket('RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"T","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"ok"}').status, "IMPLEMENTED");
@@ -68,5 +69,22 @@ test("reconcile creates one Founder Gate packet and preserves blocker arrays", a
   assert.equal(first.founderGates[0].gateId, second.founderGates[0].gateId);
   assert.match(await readFile(first.founderGates[0].packet, "utf8"), /STATUS: BLOCKED_FOR_FOUNDER/);
   assert.deepEqual(second.projects.find((p) => p.id === "controler").blockers, ["Claude adapter missing", "Codex forbidden"]);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("runtime adapters fail closed on ownership and unavailable execution", async () => {
+  const adapter = new RuntimeAdapter({ id: "claude-team", owner: "claude-team", runtime: "claude-team" });
+  assert.throws(() => adapter.assertOwnership({ id: "juactl", owner: "cursor", runtime: "cursor" }), /ownership mismatch/);
+  const unavailable = new CommandRuntimeAdapter({ id: "missing", owner: "codex", runtime: "missing", command: "/tmp/agent-relay-missing-runtime" });
+  assert.equal((await unavailable.availability()).ok, false);
+  await assert.rejects(() => unavailable.run({ workspace: "/tmp", prompt: "no-op" }), /cannot execute/);
+});
+
+test("authorized verification task uses the common Codex adapter without fallback", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-adapter-test-");
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-VERIFY", scope: "verify", files: [], tests: [] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtime: { command: "codex", async run({ sandbox }) { return { pid: 7, code: 0, startedAt: new Date().toISOString(), text: sandbox === "workspace-write" ? 'RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"P-VERIFY","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"verified"}' : 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"P-VERIFY","verdict":"ACCEPT","tests":[],"findings":[],"summary":"accepted"}' }; } } });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  assert.equal(state.tasks[0].state, "VERIFIED_DONE");
   await rm(root, { recursive: true, force: true });
 });
