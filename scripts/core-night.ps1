@@ -1,6 +1,6 @@
 param(
   [string]$AsusHost = "asus",
-  [string]$Deadline = "03:00",
+  [string]$Deadline = "04:30",
   [int]$PollSeconds = 15,
   [int]$PollTimeoutSeconds = 90000,
   [switch]$DryRun
@@ -24,8 +24,16 @@ function Read-Status($Output) {
   try { return ($raw.Substring($start, $end - $start + 1) | ConvertFrom-Json) } catch { return $null }
 }
 
-$launch = Invoke-Asus "nohup $relay night-run up --deadline $Deadline --mainpc-pull > ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED"
-if (-not (($launch -join "`n") -match "NIGHT_RUN_STARTED")) { throw "Refusing activation: detached Night Run was not acknowledged." }
+$pidFile = "~/.local/share/AgentRelay/data/portfolio-execution/night-run.pid"
+if ($DryRun) {
+  # DryRun validates transport + status only: never launches, pulls, or shuts down.
+  Write-Output "ASUS_SSH: $((Invoke-Asus 'printf MAINPC_TO_ASUS_OK') -join '')"
+  Write-Output "NIGHT_RUN_PID: $((Invoke-Asus "cat $pidFile 2>/dev/null || echo none") -join '')"
+  Write-Output "STATUS: $((Invoke-Asus "$relay night-run status") -join "`n")"
+  exit 0
+}
+$launch = Invoke-Asus "if kill -0 `$(cat $pidFile 2>/dev/null) 2>/dev/null; then echo NIGHT_RUN_ATTACHED; else nohup $relay night-run up --deadline $Deadline --mainpc-pull >> ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED; fi"
+if (-not (($launch -join "`n") -match "NIGHT_RUN_(STARTED|ATTACHED)")) { throw "Refusing activation: detached Night Run was not acknowledged." }
 
 $status = $null; $started = Get-Date
 while (((Get-Date) - $started).TotalSeconds -lt $PollTimeoutSeconds) {
