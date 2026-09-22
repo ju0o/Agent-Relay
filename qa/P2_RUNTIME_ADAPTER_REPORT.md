@@ -80,7 +80,7 @@ focused tests: `node --test test/v2/portfolio-runner.test.mjs` — 7/7 PASS
 full npm test: PASS (`test:fs`, `test:vnext`, `test:v03`)
 typecheck: PASS (`npm run typecheck`)
 git diff --check: PASS
-Founder-required items: none pending; no new Founder Gate created.
+Founder-required items: the existing JuActl `FOUNDER_E2E_REQUIRED` lane remains separate and untouched; no new P2 Founder Gate was created.
 NEW_FAILURES=[]
 
 Final status: `P2_PARTIAL_BLOCKED`
