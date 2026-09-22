@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { loadManifest, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
 import { CoreV1Team } from "../src/v2/core-v1/index.mjs";
 import { CoreV1WorktreeManager } from "../src/v2/core-v1/worktrees.mjs";
+import { runCodexViaLoginShell } from "../src/v2/runtime-adapters/index.mjs";
 
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
 const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), ".local", "share", "AgentRelay", "data", "founder-outbox");
@@ -13,6 +14,22 @@ const selfRepoPath = new URL("../", import.meta.url).pathname.replace(/\/$/, "")
 const portfolioPidPath = join(root, "runner.pid");
 const coreV1Root = join(root, "core-v1");
 const coreV1PidPath = join(coreV1Root, "runner.pid");
+
+function createProductionCodexRuntime() {
+  const runtime = {
+    command: process.env.CODEX_BIN || "codex",
+    timeoutMs: 30 * 60_000,
+    managedLoginShell: true,
+    async run(request) {
+      return runCodexViaLoginShell({
+        command: runtime.command,
+        timeoutMs: runtime.timeoutMs,
+        ...request,
+      });
+    },
+  };
+  return runtime;
+}
 
 const createRunner = async ({ coreV1 = false } = {}) => {
   const manifest = await loadManifest(manifestPath);
@@ -30,6 +47,7 @@ const createRunner = async ({ coreV1 = false } = {}) => {
     statePath: join(stateRoot, "state.json"),
     worktreeRoot,
     gateRoot,
+    runtime: createProductionCodexRuntime(),
     worktrees: coreV1 ? new CoreV1WorktreeManager(worktreeRoot) : undefined,
   });
   return { manifest, runner };
