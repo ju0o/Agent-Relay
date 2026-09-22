@@ -9,7 +9,7 @@ import { realpath } from "node:fs/promises";
 import { FounderGateManager } from "../portfolio-jit/index.mjs";
 import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 
-export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE"]);
+export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -19,6 +19,8 @@ function packetLine(text, prefix) {
   if (!line) return null;
   try { return JSON.parse(line.trim().slice(prefix.length).trim()); } catch { return null; }
 }
+
+function definitions(project) { return project?.tasks || (project?.task ? [project.task] : []); }
 
 export function parseResultPacket(text) {
   const packet = packetLine(text, "RESULT_PACKET:");
@@ -102,8 +104,10 @@ export class PortfolioRunner {
   async reconcileProjects(state) {
     const projects = []; const founderGates = [];
     for (const project of this.manifest.projects) {
+      const defs = definitions(project);
+      const verified = defs.filter((definition) => state.tasks.some((item) => item.projectId === project.id && item.taskId === definition.taskId && item.state === "VERIFIED_DONE"));
       const task = state.tasks.find((item) => item.projectId === project.id && item.state === "VERIFIED_DONE");
-      if (task) { projects.push({ ...project, state: "VERIFIED_DONE", founderRequired: false, gateStatus: state.founderDecisions?.some((item) => item.projectId === project.id) ? "RESOLVED" : undefined, taskId: task.taskId, qa: task.qa?.verdict || "ACCEPT", blockers: [] }); continue; }
+      if ((defs.length && verified.length === defs.length) || (!defs.length && task)) { projects.push({ ...project, state: defs.length ? "V1_COMPLETE" : "VERIFIED_DONE", founderRequired: false, gateStatus: state.founderDecisions?.some((item) => item.projectId === project.id) ? "RESOLVED" : undefined, taskId: task?.taskId, qa: task?.qa?.verdict || "ACCEPT", blockers: [] }); continue; }
       const decision = state.founderDecisions?.find((item) => item.projectId === project.id);
       if (decision?.decision === "PAUSE") { projects.push({ ...project, state: "HOLD", founderRequired: false, blockers: [decision.scope], gateId: decision.gateId, gateStatus: "RESOLVED", deliveryState: null }); continue; }
       const authorizedTask = decision?.decision === "APPROVE" ? project.task : null;
@@ -128,14 +132,22 @@ export class PortfolioRunner {
     const state = await this.load();
     state.activeBuilders = []; state.activeQa = [];
     state.tasks = state.tasks.map((task) => task.state === "RUNNING" || task.state === "QA" ? { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" } : task);
+    const activeIds = new Set(this.manifest.projects.filter((project) => project.active !== false).map((project) => project.id));
+    for (const project of this.manifest.projects.filter((item) => item.active !== false)) {
+      const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && task.state === "VERIFIED_DONE"));
+      if (next && !state.tasks.some((task) => task.projectId === project.id && task.taskId === next.taskId)) state.tasks.push({ ...next, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 });
+    }
+    if (activeIds.size) state.tasks = state.tasks.map((task) => !activeIds.has(task.projectId) && task.state === "QUEUED" ? { ...task, state: "HOLD", blocker: "OUT_OF_CORE_V1_SCOPE" } : task);
     await this.reconcileProjects(state); state.service = "RECONCILED"; await this.save(state); return state;
   }
 
   async enqueue(projectId) {
     const project = this.manifest.projects.find((item) => item.id === projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
-    const approved = (await this.load()).founderDecisions?.some((item) => item.projectId === projectId && item.decision === "APPROVE");
-    const task = project.task ? { ...project.task, projectId, state: "QUEUED", attempts: 0, qaAttempts: 0, verificationOnly: approved && projectId === "juagenteconomy" } : { taskId: `${projectId.toUpperCase()}-DISCOVERY`, projectId, state: project.state || "BLOCKED_SCOPE", scope: "repository SSOT discovery only" };
+    const current = await this.load();
+    const approved = current.founderDecisions?.some((item) => item.projectId === projectId && item.decision === "APPROVE");
+    const definition = definitions(project).find((candidate) => !current.tasks.some((item) => item.taskId === candidate.taskId && item.state === "VERIFIED_DONE"));
+    const task = definition ? { ...definition, projectId, state: "QUEUED", attempts: 0, qaAttempts: 0, verificationOnly: approved && projectId === "juagenteconomy" } : { taskId: `${projectId.toUpperCase()}-DISCOVERY`, projectId, state: project.state || "BLOCKED_SCOPE", scope: "repository SSOT discovery only" };
     const state = await this.load(); state.tasks = state.tasks.filter((item) => item.projectId !== projectId || item.state === "VERIFIED_DONE"); state.tasks.push(task); await this.save(state); return task;
   }
 
@@ -146,7 +158,7 @@ export class PortfolioRunner {
     const project = this.manifest.projects.find((item) => item.id === task.projectId);
     const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
     const availability = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
-    if (!project?.task) { task.state = project?.state || "BLOCKED_SCOPE"; return; }
+    if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; return; }
     if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; return; }
     try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; return; }
     const builder = await this.worktrees.create(project, task.taskId); state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path }); task.state = "RUNNING"; task.attempts += 1; await this.save(state);
