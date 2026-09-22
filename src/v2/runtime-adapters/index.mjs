@@ -1,36 +1,34 @@
 "use strict";
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { basename } from "node:path";
 
-function probe(command, args = ["--version"]) {
+function safeCommand(command) {
+  if (!command || typeof command !== "string") return null;
+  if (command.includes("/")) return `'${command.replace(/'/g, `'\\''`)}'`;
+  return /^[a-zA-Z0-9_.-]+$/.test(command) ? command : null;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function shellProbe(command, args = ["--version"]) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const executable = safeCommand(command);
+    if (!executable) {
+      resolve({ ok: false, reason: `invalid runtime command: ${command}` });
+      return;
+    }
+
+    const argv = args.map(shellQuote).join(" ");
+    const script = `command -v ${executable} >/dev/null 2>&1 || exit 127; ${executable}${argv ? ` ${argv}` : ""}`;
+    const child = spawn("bash", ["-lic", script], { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     child.stdout?.on("data", (chunk) => { output += chunk; });
     child.stderr?.on("data", (chunk) => { output += chunk; });
     child.once("error", (error) => resolve({ ok: false, reason: error.message }));
     child.once("close", (code) => resolve({ ok: code === 0, output: output.trim(), code }));
-  });
-}
-
-function shellResolve(command) {
-  return new Promise((resolve) => {
-    if (!command) return resolve(null);
-    if (command.includes("/")) return resolve(existsSync(command) ? command : null);
-
-    const safe = command.replace(/[^a-zA-Z0-9_.-]/g, "");
-    if (!safe) return resolve(null);
-
-    const child = spawn("bash", ["-lic", `type -P ${safe} 2>/dev/null || true`], {
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { output += chunk; });
-    child.once("error", () => resolve(null));
-    child.once("close", () => resolve(output.trim().split(/\r?\n/).filter(Boolean).pop() || null));
   });
 }
 
@@ -42,18 +40,28 @@ export class RuntimeAdapter {
     this.available = available;
     this.reason = reason;
   }
+
   async availability() {
-    return { id: this.id, owner: this.owner, runtime: this.runtime, ok: this.available, reason: this.available ? undefined : this.reason };
+    return {
+      id: this.id,
+      owner: this.owner,
+      runtime: this.runtime,
+      ok: this.available,
+      reason: this.available ? undefined : this.reason,
+    };
   }
+
   assertOwnership(project) {
     if (!project || project.owner !== this.owner || (project.runtime && project.runtime !== this.runtime)) {
       throw new Error(`runtime ownership mismatch: ${project?.id || "unknown"} -> ${this.id}`);
     }
   }
+
   async bindWorkspace(project, workspace) {
     this.assertOwnership(project);
     return { workspace, projectId: project.id };
   }
+
   async run() { throw new Error(`${this.id} cannot execute: ${this.reason}`); }
   async stop() {}
 }
@@ -63,9 +71,14 @@ export class CodexRuntimeAdapter extends RuntimeAdapter {
     super({ id: "codex", owner: "codex", runtime: "codex", available: true });
     this.runtimeImpl = runtime;
   }
+
   async availability() {
-    return { id: this.id, owner: this.owner, runtime: this.runtime, ok: true, command: this.runtimeImpl.command };
+    const result = await shellProbe(this.runtimeImpl.command, ["--version"]);
+    return result.ok
+      ? { id: this.id, owner: this.owner, runtime: this.runtime, ok: true, command: this.runtimeImpl.command, identity: result.output }
+      : { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, command: this.runtimeImpl.command, reason: result.reason || result.output || "Codex runtime unavailable" };
   }
+
   async run(request) { return this.runtimeImpl.run(request); }
   async stop() {}
 }
@@ -80,52 +93,46 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
     probeArgs = ["--version"],
     safeNonInteractive = false,
     reason,
-    buildArgs,
+    buildShell,
     timeoutMs = 30 * 60_000,
   }) {
     super({ id, owner, runtime, available: false, reason });
     this.commands = [...new Set([command, ...(commands || [])].filter(Boolean))];
     this.probeArgs = probeArgs;
     this.safeNonInteractive = safeNonInteractive;
-    this.buildArgs = buildArgs || (({ prompt, workspace }) => ["-p", prompt, "--add-dir", workspace, "--output-format", "text"]);
+    this.buildShell = buildShell;
     this.timeoutMs = timeoutMs;
     this.children = new Set();
     this.resolvedCommand = null;
   }
 
   async resolveCommand() {
-    if (this.resolvedCommand && existsSync(this.resolvedCommand)) return this.resolvedCommand;
+    if (this.resolvedCommand) {
+      const cached = await shellProbe(this.resolvedCommand, this.probeArgs);
+      if (cached.ok) return { command: this.resolvedCommand, probe: cached };
+      this.resolvedCommand = null;
+    }
+
     for (const candidate of this.commands) {
-      const resolved = await shellResolve(candidate);
-      if (resolved) {
-        this.resolvedCommand = resolved;
-        return resolved;
+      const result = await shellProbe(candidate, this.probeArgs);
+      if (result.ok) {
+        this.resolvedCommand = candidate;
+        return { command: candidate, probe: result };
       }
     }
+
     return null;
   }
 
   async availability() {
-    const command = await this.resolveCommand();
-    if (!command) {
+    const resolved = await this.resolveCommand();
+    if (!resolved) {
       return {
         id: this.id,
         owner: this.owner,
         runtime: this.runtime,
         ok: false,
-        reason: this.reason || `runtime command not found: ${this.commands.join(" | ")}`,
-      };
-    }
-
-    const result = await probe(command, this.probeArgs);
-    if (!result.ok) {
-      return {
-        id: this.id,
-        owner: this.owner,
-        runtime: this.runtime,
-        ok: false,
-        command,
-        reason: result.reason || result.output || "runtime readiness probe failed",
+        reason: this.reason || `runtime command not found in login shell: ${this.commands.join(" | ")}`,
       };
     }
 
@@ -135,8 +142,8 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
         owner: this.owner,
         runtime: this.runtime,
         ok: false,
-        command,
-        identity: result.output,
+        command: resolved.command,
+        identity: resolved.probe.output,
         reason: this.reason || "safe non-interactive execution contract is not configured",
       };
     }
@@ -146,8 +153,8 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
       owner: this.owner,
       runtime: this.runtime,
       ok: true,
-      command,
-      identity: result.output,
+      command: resolved.command,
+      identity: resolved.probe.output,
     };
   }
 
@@ -155,15 +162,19 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
     const status = await this.availability();
     if (!status.ok) throw new Error(`${this.id} cannot execute: ${status.reason}`);
 
-    const args = this.buildArgs({
-      prompt,
-      workspace,
-      sandbox,
-      command: status.command,
-      executable: basename(status.command),
-    });
-    const child = spawn(status.command, args, {
+    const executable = basename(status.command);
+    const commandToken = safeCommand(status.command);
+    const script = this.buildShell
+      ? this.buildShell({ command: commandToken, executable, sandbox })
+      : `${commandToken} -p "$AGENT_RELAY_PROMPT" --add-dir "$AGENT_RELAY_WORKSPACE" --output-format text`;
+
+    const child = spawn("bash", ["-lic", script], {
       cwd: workspace,
+      env: {
+        ...process.env,
+        AGENT_RELAY_PROMPT: prompt,
+        AGENT_RELAY_WORKSPACE: workspace,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     this.children.add(child);
@@ -210,10 +221,10 @@ export function createRuntimeAdapters({ codex, commands = {} } = {}) {
       commands: ["agent", "cursor-agent", "cursor"],
       probeArgs: ["--help"],
       safeNonInteractive: true,
-      buildArgs: ({ prompt, executable }) =>
+      buildShell: ({ command, executable }) =>
         executable === "cursor"
-          ? ["agent", "-p", prompt, "--output-format", "text"]
-          : ["-p", prompt, "--output-format", "text"],
+          ? `${command} agent -p "$AGENT_RELAY_PROMPT" --output-format text`
+          : `${command} -p "$AGENT_RELAY_PROMPT" --output-format text`,
     }),
     claude: new CommandRuntimeAdapter({
       id: "claude-code",
@@ -224,6 +235,7 @@ export function createRuntimeAdapters({ codex, commands = {} } = {}) {
       probeArgs: ["--version"],
       safeNonInteractive: true,
       reason: "Claude Code executable/authentication unavailable",
+      buildShell: ({ command }) => `${command} -p "$AGENT_RELAY_PROMPT" --add-dir "$AGENT_RELAY_WORKSPACE" --output-format text`,
     }),
     "claude-team": new CommandRuntimeAdapter({
       id: "claude-team",
@@ -234,6 +246,7 @@ export function createRuntimeAdapters({ codex, commands = {} } = {}) {
       probeArgs: ["--version"],
       safeNonInteractive: true,
       reason: "Claude Code Team executable/authentication unavailable",
+      buildShell: ({ command }) => `${command} -p "$AGENT_RELAY_PROMPT" --add-dir "$AGENT_RELAY_WORKSPACE" --output-format text`,
     }),
   };
 }
