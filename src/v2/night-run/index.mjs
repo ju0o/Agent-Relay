@@ -102,7 +102,7 @@ export async function finalizeNightRun({ record: initial, checkpointPath, persis
   if (dryRun || deferPoweroff) return persist({ ...record, shutdownState: dryRun ? "DRY_RUN_COMPLETE" : "READY_FOR_ASUS_POWEROFF", asusShutdownRequested: false });
   record = { ...record, asusShutdownRequested: true, shutdownState: "ASUS_POWEROFF_REQUESTED" }; await persist(record);
   const asus = await poweroff({ checkpoint: record });
-  return persist({ ...record, asusShutdownState: asus.status, shutdownState: asus.ok ? "POWEROFF_REQUESTED" : asus.status });
+  return persist({ ...record, asusShutdownState: asus.status, asusShutdownRequested: asus.ok, shutdownState: asus.ok ? "POWEROFF_REQUESTED" : asus.status });
 }
 
 function currentTask(state) {

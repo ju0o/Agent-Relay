@@ -51,6 +51,14 @@ test("shutdown uses non-interactive sudo and reports missing permission", async 
   assert.equal(result.status, "SHUTDOWN_PERMISSION_REQUIRED");
 });
 
+test("finalization records missing ASUS permission without claiming shutdown", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-"));
+  const record = { schema: "agent-relay.last-night-run.v1", runId: "permission", startedAt: "2026-09-23T17:00:00.000Z", deadline: "2026-09-23T18:00:00.000Z", freezeAt: "2026-09-23T17:55:00.000Z", checkpointAt: "2026-09-23T17:58:00.000Z", endedAt: "2026-09-23T18:00:00.000Z", endReason: "DEADLINE_COMPLETE", shutdownState: "FINALIZING", lanes: [] };
+  const result = await finalizeNightRun({ record, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), persist: async (value) => value, send: async () => ({ state: "DELIVERED", path: "MainPC/Desktop/NIGHT_REPORT.md", remoteSha: "sha" }), requestShutdown: async () => ({ state: "REQUESTED", at: "2026-09-23T18:00:01.000Z" }), poweroff: async () => ({ ok: false, status: "SHUTDOWN_PERMISSION_REQUIRED" }) });
+  assert.equal(result.asusShutdownRequested, false);
+  assert.equal(result.shutdownState, "SHUTDOWN_PERMISSION_REQUIRED");
+});
+
 test("run loops through multiple NEXT iterations and exits on exhaustion", async () => {
   const state = lanes([["agent-relay", "RUNNING"]]);
   const done = lanes([["agent-relay", "V1_COMPLETE"]]);
