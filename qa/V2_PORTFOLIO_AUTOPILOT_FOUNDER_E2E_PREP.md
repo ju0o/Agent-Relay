@@ -1,8 +1,8 @@
 # Portfolio Autopilot — Founder E2E Preparation
 
 REMOTE_BRANCH=feat/v2-portfolio-autopilot-dogfood-03
-REMOTE_HEAD=14076909742cacccf0439d3db9251c5ed4f89ddf
-LOCAL_HEAD=14076909742cacccf0439d3db9251c5ed4f89ddf
+REMOTE_HEAD=6936872d46d998adfead8b9cf961368e6a549687
+LOCAL_HEAD=6936872d46d998adfead8b9cf961368e6a549687
 REMOTE_MATCH=true
 
 BUILDER_A=JuActl lane real Codex Builder; exact target QA workspace `/tmp/agent-relay-juactl-qa-87WlZW`; Builder runtime stopped by allocator
