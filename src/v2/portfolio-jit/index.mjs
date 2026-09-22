@@ -46,7 +46,7 @@ export class FounderGateManager {
   _paths(id) { return { state: join(this.root, "states", `${id}.json`), packet: join(this.root, "packets", `${id}.md`) }; }
   async _write(path, value) { await writeFile(`${path}.tmp`, value); await rm(path, { force: true }); await writeFile(path, value); }
   _packet(g) {
-    return ["# Founder Gate", `GATE_ID: ${g.gateId}`, `PROJECT: ${g.project}`, `TYPE: ${g.type}`, "STATUS: BLOCKED_FOR_FOUNDER", `CREATED_AT: ${g.createdAt}`, `TASK_ID: ${g.taskId}`, `RUN_ID: ${g.runId}`, "", "## 지금 어디까지 됐나", "", g.summary, "", "## 왜 사람 확인이 필요한가", "", g.reason, "", "## 이미 Agent가 확인한 것", "", ...g.evidence.map((x) => `- ${x}`), "", "## Founder가 해야 할 것", "", g.founderAction, "", "## 필요한 입력", "", g.expectedInput, "", "## 결정 후 자동으로 할 일", "", g.resumeAction, "", "## 관련 증거", "", ...g.relatedEvidence.map((x) => `- ${x}`), "", "## Raw machine payload", "", "```json", JSON.stringify({ gateId: g.gateId, project: g.project, taskId: g.taskId, runId: g.runId, type: g.type, status: g.status }, null, 2), "```", ""].join("\n");
+    return ["# Founder Gate", `GATE_ID: ${g.gateId}`, `PROJECT: ${g.project}`, `TYPE: ${g.type}`, "STATUS: BLOCKED_FOR_FOUNDER", `CREATED_AT: ${g.createdAt}`, `TASK_ID: ${g.taskId}`, `RUN_ID: ${g.runId}`, "", "## 지금 어디까지 됐나", "", g.summary, "", "## 왜 사람 확인이 필요한가", "", g.reason, "", "## 이미 Agent가 확인한 것", "", ...g.evidence.map((x) => `- ${x}`), "", "## Founder가 해야 할 것", "", g.founderAction, "", "## 필요한 입력", "", String(g.expectedInput).replaceAll("\\n", "\n"), "", "## 결정 후 자동으로 할 일", "", g.resumeAction, "", "## 관련 증거", "", ...g.relatedEvidence.map((x) => `- ${x}`), "", "## Raw machine payload", "", "```json", JSON.stringify({ gateId: g.gateId, project: g.project, taskId: g.taskId, runId: g.runId, type: g.type, status: g.status }, null, 2), "```", ""].join("\n");
   }
   async create(input) {
     if (!isFounderGateType(input.type)) throw new Error("invalid Founder Gate type");
@@ -63,13 +63,41 @@ export class FounderGateManager {
     return { ...gate, packet: paths.packet };
   }
   async respond(response) {
-    if (!response?.GATE_ID || !response?.DECISION || !response?.timestamp || !["APPROVE", "REJECT", "INPUT"].includes(response.DECISION)) throw new Error("invalid Founder response");
-    const paths = this._paths(response.GATE_ID); const gate = JSON.parse(await readFile(paths.state, "utf8"));
+    const normalized = { GATE_ID: response?.GATE_ID || response?.gateId, DECISION: response?.DECISION || response?.decision, timestamp: response?.timestamp };
+    if (!normalized.GATE_ID || !normalized.DECISION || !normalized.timestamp || typeof normalized.DECISION !== "string") throw new Error("invalid Founder response");
+    const paths = this._paths(normalized.GATE_ID); const gate = JSON.parse(await readFile(paths.state, "utf8"));
     if (gate.status !== "BLOCKED_FOR_FOUNDER") throw new Error("Founder Gate is not blocked");
     const { mkdir } = await import("node:fs/promises"); await mkdir(join(this.root, "responses"), { recursive: true });
-    await this._write(join(this.root, "responses", `${gate.gateId}.json`), JSON.stringify(response, null, 2));
-    gate.status = "RESOLVED"; gate.decision = response.DECISION; gate.response = response;
+    await this._write(join(this.root, "responses", `${gate.gateId}.json`), JSON.stringify(normalized, null, 2));
+    gate.status = "RESOLVED"; gate.decision = normalized.DECISION; gate.response = normalized;
     await this._write(paths.state, JSON.stringify(gate, null, 2)); return gate;
+  }
+
+  async reconcileDeliveryReceipts() {
+    const { mkdir } = await import("node:fs/promises");
+    const receipts = join(this.root, "receipts"); await mkdir(receipts, { recursive: true });
+    const changed = [];
+    for (const name of await readdir(receipts)) {
+      if (!name.endsWith(".json")) continue;
+      let receipt; try { receipt = JSON.parse(await readFile(join(receipts, name), "utf8")); } catch { continue; }
+      if (!receipt.gateId || !receipt.contentHash) continue;
+      const paths = this._paths(receipt.gateId); let gate;
+      try { gate = JSON.parse(await readFile(paths.state, "utf8")); } catch { continue; }
+      const hash = createHash("sha256").update(await readFile(paths.packet)).digest("hex");
+      if (hash !== receipt.contentHash || gate.deliveryState === "DELIVERED") continue;
+      gate.deliveryState = "DELIVERED"; gate.deliveryReceipt = receipt; await this._write(paths.state, JSON.stringify(gate, null, 2)); changed.push(gate.gateId);
+    }
+    return changed;
+  }
+
+  async consumeResponses() {
+    const responseDir = join(this.root, "responses"); await (await import("node:fs/promises")).mkdir(responseDir, { recursive: true });
+    const resolved = [];
+    for (const name of await readdir(responseDir)) {
+      if (!name.endsWith(".json") || name.endsWith(".consumed.json")) continue;
+      try { const gate = await this.respond(JSON.parse(await readFile(join(responseDir, name), "utf8"))); await this._write(`${join(responseDir, name)}.consumed.json`, JSON.stringify(gate.response, null, 2)); resolved.push(gate.gateId); } catch { /* malformed/stale responses remain for evidence */ }
+    }
+    return resolved;
   }
 }
 
