@@ -1,5 +1,7 @@
 "use strict";
 
+import { runCodexViaLoginShell } from "../runtime-adapters/index.mjs";
+
 export const PM_DECISIONS = Object.freeze(["DISPATCH", "HOLD", "COMPLETE", "FOUNDER_GATE"]);
 
 function packetLine(text, prefix) {
@@ -101,11 +103,19 @@ export class CodexPmAdapter {
       };
     }
 
-    const run = await this.runtime.run({
+    const request = {
       workspace: project.path,
       sandbox: "read-only",
       prompt: pmPrompt({ project, candidate, completedTaskIds }),
-    });
+    };
+
+    const run = this.runtime?.command
+      ? await runCodexViaLoginShell({
+          command: this.runtime.command,
+          timeoutMs: this.runtime.timeoutMs,
+          ...request,
+        })
+      : await this.runtime.run(request);
 
     const packet = parsePmPacket(run.text);
 
