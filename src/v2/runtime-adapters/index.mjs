@@ -1,7 +1,9 @@
 "use strict";
 
 import { spawn } from "node:child_process";
-import { basename } from "node:path";
+import { existsSync } from "node:fs";
+import { readFile, unlink } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 function safeCommand(command) {
   if (!command || typeof command !== "string") return null;
@@ -30,6 +32,68 @@ function shellProbe(command, args = ["--version"]) {
     child.once("error", (error) => resolve({ ok: false, reason: error.message }));
     child.once("close", (code) => resolve({ ok: code === 0, output: output.trim(), code }));
   });
+}
+
+export async function runCodexViaLoginShell({
+  command = process.env.CODEX_BIN || "codex",
+  workspace,
+  prompt,
+  sandbox,
+  timeoutMs = 30 * 60_000,
+}) {
+  const commandToken = safeCommand(command);
+  if (!commandToken) throw new Error(`invalid Codex command: ${command}`);
+
+  const probe = await shellProbe(command, ["--version"]);
+  if (!probe.ok) {
+    throw new Error(`Codex runtime unavailable: ${probe.reason || probe.output || command}`);
+  }
+
+  const output = join(workspace, `.agent-relay-${sandbox}-output.txt`);
+  const args = [
+    "exec",
+    "--ephemeral",
+    ...(sandbox === "workspace-write" ? ["--approve-for-me"] : ["--sandbox", sandbox]),
+    "--skip-git-repo-check",
+    "--cd",
+    workspace,
+    "--json",
+    "-o",
+    output,
+    "-",
+  ];
+  const script = `${commandToken} ${args.map(shellQuote).join(" ")}`;
+  const child = spawn("bash", ["-lic", script], {
+    cwd: workspace,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const startedAt = new Date().toISOString();
+  child.stdin.end(prompt);
+
+  const result = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+  });
+
+  const text = existsSync(output) ? await readFile(output, "utf8") : "";
+  await unlink(output).catch(() => {});
+
+  if (result.code !== 0) {
+    throw new Error(`Codex ${sandbox} exit ${result.code}: ${stderr.trim() || stdout.trim()}`);
+  }
+  if (!text.trim()) throw new Error(`Codex ${sandbox} produced no packet`);
+  return { pid: child.pid, startedAt, ...result, text };
 }
 
 export class RuntimeAdapter {
@@ -79,7 +143,14 @@ export class CodexRuntimeAdapter extends RuntimeAdapter {
       : { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, command: this.runtimeImpl.command, reason: result.reason || result.output || "Codex runtime unavailable" };
   }
 
-  async run(request) { return this.runtimeImpl.run(request); }
+  async run(request) {
+    return runCodexViaLoginShell({
+      command: this.runtimeImpl.command,
+      timeoutMs: this.runtimeImpl.timeoutMs,
+      ...request,
+    });
+  }
+
   async stop() {}
 }
 
