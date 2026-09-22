@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadManifest, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
 import { CoreV1Team } from "../src/v2/core-v1/index.mjs";
+import { CoreV1WorktreeManager } from "../src/v2/core-v1/worktrees.mjs";
 
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
 const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), ".local", "share", "AgentRelay", "data", "founder-outbox");
@@ -12,23 +13,25 @@ const selfRepoPath = new URL("../", import.meta.url).pathname.replace(/\/$/, "")
 const portfolioPidPath = join(root, "runner.pid");
 const coreV1PidPath = join(root, "core-v1-runner.pid");
 
-const createRunner = async () => {
+const createRunner = async ({ coreV1 = false } = {}) => {
   const manifest = await loadManifest(manifestPath);
   manifest.projects = manifest.projects.map((project) => ({
     ...project,
     path: project.path === "$AGENT_RELAY_REPO" ? selfRepoPath : project.path,
   }));
+  const worktreeRoot = join(root, "worktrees");
   const runner = new PortfolioRunner({
     manifest,
     statePath: join(root, "state.json"),
-    worktreeRoot: join(root, "worktrees"),
+    worktreeRoot,
     gateRoot: founderOutbox,
+    worktrees: coreV1 ? new CoreV1WorktreeManager(worktreeRoot) : undefined,
   });
   return { manifest, runner };
 };
 
 const createCoreV1 = async () => {
-  const { manifest, runner } = await createRunner();
+  const { manifest, runner } = await createRunner({ coreV1: true });
   const team = new CoreV1Team({
     runner,
     manifest,
