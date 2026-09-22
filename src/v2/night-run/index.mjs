@@ -145,6 +145,7 @@ export class NightRunSupervisor {
     const cutoff = deadlineAt(started, deadline);
     const times = { deadline: cutoff.toISOString(), freezeAt: new Date(cutoff - 5 * 60_000).toISOString(), checkpointAt: new Date(cutoff - 2 * 60_000).toISOString() };
     if (started >= cutoff) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "DEADLINE_COMPLETE", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: true }));
+    if (started >= new Date(times.checkpointAt)) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "DEADLINE_FORCED_CHECKPOINT", shutdownState: "CHECKPOINT_REQUIRED", state, resumeRequired: true }));
     if (evaluateExhaustion(this.runner.manifest, state).complete) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "WBS_EXHAUSTED", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: false }));
     state = await this.runner.runOnce();
     const complete = evaluateExhaustion(this.runner.manifest, state).complete;

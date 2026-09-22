@@ -40,6 +40,13 @@ test("deadline boundary checkpoints without dispatch", async () => {
   assert.equal(calls, 0); assert.equal(result.endReason, "DEADLINE_COMPLETE"); assert.equal(result.resumeRequired, true);
 });
 
+test("checkpoint boundary refuses one-shot dispatch", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-")); const state = lanes([["agent-relay", "RUNNING"]]); let calls = 0;
+  const s = new NightRunSupervisor({ runner: { ...runner(state), runOnce: async () => { calls += 1; return state; } }, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-24T17:58:00.000Z"), runId: "checkpoint-test" });
+  const result = await s.once();
+  assert.equal(calls, 0); assert.equal(result.endReason, "DEADLINE_FORCED_CHECKPOINT"); assert.equal(result.resumeRequired, true);
+});
+
 test("shutdown gate refuses missing or corrupt completion", async () => {
   assert.deepEqual(readCompletion(null), { ok: false, reason: "UNKNOWN_NIGHT_RUN" });
   assert.deepEqual(await runPoweroff({ checkpoint: null, command: "sh", args: ["-c", "exit 0"] }), { ok: false, status: "REFUSED", reason: "UNKNOWN_NIGHT_RUN" });
