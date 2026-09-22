@@ -3,6 +3,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { CodexPmAdapter } from "./pm.mjs";
+import { promoteAcceptedCommit } from "./worktrees.mjs";
 
 export const CORE_V1_PROJECTS = Object.freeze(["agent-relay", "juactl", "juplan", "juceipt"]);
 
@@ -79,6 +80,7 @@ export function buildCoreV1Snapshot({ manifest, state }) {
         attempts: latest?.attempts || 0,
         qaAttempts: latest?.qaAttempts || 0,
         nextTask: next?.taskId || null,
+        promotion: latest?.promotion || null,
         blockers: reconciled.blockers || [],
         founderRequired:
           reconciled.state === "FOUNDER_GATE" || Boolean(reconciled.founderRequired),
@@ -113,6 +115,7 @@ export function formatCoreV1Results(snapshot) {
     lines.push(`QA: ${lane.qa.runtime || "none"} / ${lane.qa.verdict || "waiting"}`);
     lines.push(`NEXT: ${lane.nextTask || "none"}`);
     if (lane.result?.summary) lines.push(`RESULT: ${lane.result.summary}`);
+    if (lane.promotion?.ref) lines.push(`PROMOTED: ${lane.promotion.ref} @ ${lane.promotion.commitSha}`);
     if (lane.blockers.length) lines.push(`BLOCKERS: ${lane.blockers.join(" | ")}`);
     if (lane.founderRequired) lines.push(`FOUNDER_GATE: ${lane.founderGateId || "required"}`);
     lines.push("");
@@ -122,11 +125,12 @@ export function formatCoreV1Results(snapshot) {
 }
 
 export class CoreV1Team {
-  constructor({ runner, manifest, pmAdapter, snapshotPath }) {
+  constructor({ runner, manifest, pmAdapter, snapshotPath, promote = promoteAcceptedCommit }) {
     this.runner = runner;
     this.manifest = manifest;
     this.pmAdapter = pmAdapter || new CodexPmAdapter({ runtime: runner.runtime });
     this.snapshotPath = snapshotPath;
+    this.promote = promote;
   }
 
   coreProjects() {
@@ -143,6 +147,17 @@ export class CoreV1Team {
       { ...decision, decidedAt: new Date().toISOString() },
     ];
     await this.runner.save(state);
+  }
+
+  async _markManagedTask(projectId, taskId) {
+    const state = await this.runner.load();
+    const task = state.tasks?.find(
+      (item) => item.projectId === projectId && item.taskId === taskId,
+    );
+    if (task) {
+      task.coreV1Managed = true;
+      await this.runner.save(state);
+    }
   }
 
   async prepare() {
@@ -175,16 +190,43 @@ export class CoreV1Team {
       await this._recordPmDecision(state, decision);
 
       if (decision.decision === "DISPATCH") {
-        await this.runner.enqueue(project.id);
+        const task = await this.runner.enqueue(project.id);
+        await this._markManagedTask(project.id, task.taskId);
       }
     }
 
     return this.runner.load();
   }
 
+  async promoteAccepted() {
+    const state = await this.runner.load();
+    let changed = false;
+
+    for (const task of state.tasks || []) {
+      if (
+        task.coreV1Managed !== true ||
+        task.state !== "VERIFIED_DONE" ||
+        task.promotion ||
+        !task.result?.commitSha
+      ) {
+        continue;
+      }
+
+      const project = this.manifest.projects.find((item) => item.id === task.projectId);
+      if (!project) continue;
+
+      task.promotion = await this.promote(project, task.result.commitSha);
+      changed = true;
+    }
+
+    if (changed) await this.runner.save(state);
+    return state;
+  }
+
   async runOnce() {
     await this.prepare();
     await this.runner.runOnce();
+    await this.promoteAccepted();
     await this.prepare();
     return this.status();
   }
