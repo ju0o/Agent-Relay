@@ -63,7 +63,7 @@ if ((area === "portfolio" && command === "up") || (area === "core-v1" && ["start
   await mkdir(root, { recursive: true }); await writeFile(pidPath, String(process.pid));
   const controller = new AbortController(); const shutdown = async () => { controller.abort(); await rm(pidPath, { force: true }); process.exit(0); };
   process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
-  try { await instance.runLoop({ signal: controller.signal }); } finally { await rm(pidPath, { force: true }); }
+  try { await instance.start({ signal: controller.signal }); } finally { await rm(pidPath, { force: true }); }
   process.exit(0);
 }
 if (area === "project" && command === "retry" && project) { await instance.enqueue(project); console.log(JSON.stringify(await instance.runOnce(), null, 2)); process.exit(0); }

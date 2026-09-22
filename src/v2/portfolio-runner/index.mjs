@@ -27,7 +27,7 @@ function nextDefinition(project, state) {
 }
 
 export function buildCoreV1Snapshot(manifest, state) {
-  const lanes = manifest.projects.filter((project) => project.coreV1 !== false).map((project) => {
+  const lanes = manifest.projects.filter((project) => project.coreV1Lane === true).map((project) => {
     const tasks = state.tasks.filter((task) => task.projectId === project.id);
     const task = tasks.at(-1) || null;
     const next = nextDefinition(project, state);
@@ -288,6 +288,7 @@ export class PortfolioRunner {
   }
 
   async runLoop({ intervalMs = 15_000, signal } = {}) { while (!signal?.aborted) { await this.runOnce({ signal }); await sleep(intervalMs); } return this.load(); }
+  async start(options = {}) { return this.runLoop(options); }
 }
 
 export async function loadManifest(path) { return JSON.parse(await readFile(path, "utf8")); }

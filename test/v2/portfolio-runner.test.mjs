@@ -27,10 +27,24 @@ test("repository TASK_PACKET intake is exact and rejects unauthorized scope", as
 });
 
 test("CORE V1 Result Inbox keeps lane fields machine-readable and pipeable", () => {
-  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }, { service: "IDLE", updatedAt: "now", tasks: [{ projectId: "p", taskId: "P-1", state: "VERIFIED_DONE", attempts: 2, result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } }] });
+  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1Lane: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }, { service: "IDLE", updatedAt: "now", tasks: [{ projectId: "p", taskId: "P-1", state: "VERIFIED_DONE", attempts: 2, result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } }] });
   assert.equal(snapshot.lanes[0].next, null);
   assert.match(formatCoreV1Text(snapshot), /p \| PM=READY pm\/p/);
   assert.equal(JSON.parse(formatCoreV1Results(snapshot, true)).schema, "agent-relay.core-v1.inbox.v1");
+});
+
+test("CORE V1 uses exactly the manifest's four lane markers and one start operation", async () => {
+  const snapshot = buildCoreV1Snapshot({ projects: [
+    { id: "agent-relay", coreV1Lane: true }, { id: "juactl", coreV1Lane: true },
+    { id: "juplan", coreV1Lane: true }, { id: "juceipt", coreV1Lane: true }, { id: "jucontroler", coreV1: true },
+  ] }, { tasks: [] });
+  assert.deepEqual(snapshot.lanes.map((lane) => lane.project), ["agent-relay", "juactl", "juplan", "juceipt"]);
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath: "/tmp/unused-state.json", worktreeRoot: "/tmp/unused-worktrees" });
+  let options;
+  runner.runLoop = async (value) => { options = value; return "started"; };
+  const signal = new AbortController().signal;
+  assert.equal(await runner.start({ signal }), "started");
+  assert.equal(options.signal, signal);
 });
 
 test("runner blocks external/no-scope projects without launching a Builder", async () => {

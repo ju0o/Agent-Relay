@@ -7,6 +7,7 @@
     {
       "id": "agent-relay",
       "coreV1": true,
+      "coreV1Lane": true,
       "active": true,
       "pmChannel": "pm/agent-relay",
       "pmTransport": "repository-file",
@@ -33,6 +34,7 @@
     {
       "id": "juactl",
       "coreV1": true,
+      "coreV1Lane": true,
       "active": true,
       "pmChannel": "pm/actl",
       "pmTransport": "codex-chatgpt-web",
@@ -52,6 +54,7 @@
     {
       "id": "juplan",
       "coreV1": true,
+      "coreV1Lane": true,
       "active": true,
       "pmChannel": "pm/juplan",
       "pmTransport": "codex-chatgpt-web",
@@ -66,6 +69,7 @@
     {
       "id": "juceipt",
       "coreV1": true,
+      "coreV1Lane": true,
       "active": true,
       "pmChannel": "pm/juceipt",
       "pmTransport": "codex-chatgpt-web",
@@ -80,6 +84,7 @@
     {
       "id": "jucontroler",
       "coreV1": false,
+      "coreV1Lane": false,
       "active": false,
       "pmChannel": null,
       "path": "/home/skkse12/Desktop/Projects/Core/JuControler",
