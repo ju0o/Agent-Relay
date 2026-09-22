@@ -60,6 +60,30 @@ test("run loops through multiple NEXT iterations and exits on exhaustion", async
   assert.equal(calls, 2); assert.equal(result.endReason, "WBS_EXHAUSTED");
 });
 
+test("retry keeps the same task and records the successful attempt", async () => {
+  const initial = lanes([["agent-relay", "RUNNING"]]);
+  initial.tasks.push({ projectId: "agent-relay", taskId: "NR-08", state: "REQUEST_CHANGES", attempts: 1 });
+  const retried = lanes([["agent-relay", "V1_COMPLETE"]]);
+  retried.tasks.push({ projectId: "agent-relay", taskId: "NR-08", state: "VERIFIED_DONE", attempts: 2, result: { commitSha: "retry-sha" } });
+  let calls = 0;
+  const runner = { manifest: { projects: initial.projects }, reconcile: async () => initial, load: async () => retried, stop: async () => {}, runOnce: async () => { calls += 1; return retried; } };
+  const s = new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-23T10:00:00.000Z"), sleep: async () => {}, runId: "retry-test" });
+  const result = await s.run();
+  assert.equal(calls, 1); assert.equal(result.endReason, "WBS_EXHAUSTED"); assert.equal(result.taskId, "NR-08"); assert.equal(result.attempts, 2); assert.equal(result.commitSha, "retry-sha");
+});
+
+test("a restarted supervisor reads the durable completion checkpoint", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-"));
+  const state = lanes([["agent-relay", "V1_COMPLETE"]]);
+  const checkpointPath = join(dir, "LAST_NIGHT_RUN.json");
+  const runner = { manifest: { projects: state.projects }, reconcile: async () => state, runOnce: async () => { throw new Error("restart must not dispatch"); } };
+  const first = new NightRunSupervisor({ runner, checkpointPath, clock: () => new Date("2026-09-23T10:00:00.000Z"), runId: "restart-test" });
+  await first.once();
+  const second = new NightRunSupervisor({ runner, checkpointPath, clock: () => new Date("2026-09-23T11:00:00.000Z"), runId: "new-process" });
+  assert.deepEqual(await second.status(), JSON.parse(await readFile(checkpointPath, "utf8")));
+  assert.equal((await second.once()).endReason, "WBS_EXHAUSTED");
+});
+
 test("freeze blocks dispatch, checkpoints at 02:58, then drains", async () => {
   let now = Date.parse("2026-09-23T17:55:00.000Z"); const state = lanes([["agent-relay", "RUNNING"]]); let calls = 0; let stopped = 0;
   const runner = { manifest: { projects: state.projects }, reconcile: async () => state, load: async () => state, stop: async () => { stopped += 1; }, runOnce: async () => { calls += 1; return state; } };
