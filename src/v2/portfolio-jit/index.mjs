@@ -12,7 +12,7 @@
 "use strict";
 
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -31,6 +31,141 @@ export const MAX_ACTIVE_RUNTIMES = 2;
 const CODEX_MARKER = /^[A-Z0-9_:-]+$/;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function runProcess(command, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      const result = { code, stdout: stdout.trim(), stderr: stderr.trim() };
+      if (code === 0) resolve(result);
+      else reject(Object.assign(new Error(result.stderr || `${command} exit ${code}`), result));
+    });
+  });
+}
+
+function normalizeRepository(repository) {
+  const value = String(repository).replace(/\/$/, "");
+  return /^(https?:\/\/|ssh:\/\/|git@)/.test(value) ? value.replace(/\.git$/, "") : value;
+}
+
+export function normalizeTarget(target) {
+  if (!target || target.workspaceMode !== "READ_ONLY_QA") throw new Error("unsupported workspace mode");
+  for (const field of ["projectId", "repository", "ref", "expectedHeadSha"]) {
+    if (!String(target[field] || "").trim()) throw new Error(`target missing ${field}`);
+  }
+  if (!/^[0-9a-f]{40}$/i.test(target.expectedHeadSha)) throw new Error("target expectedHeadSha invalid");
+  if (target.implementationSha && !/^[0-9a-f]{40}$/i.test(target.implementationSha)) throw new Error("target implementationSha invalid");
+  return { ...target, repository: normalizeRepository(target.repository), workspaceMode: "READ_ONLY_QA" };
+}
+
+async function walkDirectories(roots, depth = 2) {
+  const found = [];
+  async function visit(path, remaining) {
+    if (remaining < 0) return;
+    try {
+      const entries = await readdir(path, { withFileTypes: true });
+      if (entries.some((entry) => entry.name === ".git")) found.push(path);
+      if (remaining === 0) return;
+      await Promise.all(entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+        .map((entry) => visit(join(path, entry.name), remaining - 1)));
+    } catch {
+      /* inaccessible candidates are not safe candidates */
+    }
+  }
+  await Promise.all(roots.map((root) => visit(root, depth)));
+  return found;
+}
+
+export class TargetResolver {
+  /** @param {{roots?: string[], tempRoot?: string, git?: Function}} [opts] */
+  constructor(opts = {}) {
+    this.roots = opts.roots || [];
+    this.tempRoot = opts.tempRoot || tmpdir();
+    this.git = opts.git || ((cwd, args) => runProcess("git", ["-C", cwd, ...args]));
+  }
+
+  async _inspect(path) {
+    try {
+      const remote = await this.git(path, ["remote", "get-url", "origin"]);
+      const status = await this.git(path, ["status", "--porcelain"]);
+      const branch = await this.git(path, ["branch", "--show-current"]);
+      const head = await this.git(path, ["rev-parse", "HEAD"]);
+      return {
+        path,
+        repository: normalizeRepository(remote.stdout),
+        status: status.stdout,
+        ref: branch.stdout,
+        head: head.stdout,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async _verify(path, target) {
+    const inspection = await this._inspect(path);
+    let refMatches = inspection?.ref === target.ref;
+    if (inspection && !refMatches && !inspection.ref) {
+      try { refMatches = (await this.git(path, ["rev-parse", `refs/remotes/origin/${target.ref}`])).stdout === target.expectedHeadSha; }
+      catch { refMatches = false; }
+    }
+    if (!inspection || inspection.repository !== target.repository || !refMatches || inspection.head !== target.expectedHeadSha || inspection.status) return null;
+    if (target.implementationSha) {
+      try { await this.git(path, ["merge-base", "--is-ancestor", target.implementationSha, target.expectedHeadSha]); }
+      catch { return null; }
+    }
+    return { ...inspection, temporary: false, workspaceMode: target.workspaceMode };
+  }
+
+  async resolve(rawTarget) {
+    const target = normalizeTarget(rawTarget);
+    const candidates = await walkDirectories(this.roots);
+    for (const candidate of candidates) {
+      const verified = await this._verify(candidate, target);
+      if (verified) return { target, ...verified, cleanup: async () => {} };
+    }
+
+    const workspace = await mkdtemp(join(this.tempRoot, `agent-relay-${target.projectId}-qa-`));
+    let keep = false;
+    try {
+      await runProcess("git", ["clone", "--no-checkout", "--branch", target.ref, target.repository, workspace]);
+      await this.git(workspace, ["checkout", "--detach", target.expectedHeadSha]);
+      const verified = await this._verify(workspace, target);
+      if (!verified) throw new Error("target identity/ref/SHA/clean baseline verification failed");
+      keep = true;
+      return { target, ...verified, ref: target.ref, path: workspace, temporary: true, cleanup: async () => rm(workspace, { recursive: true, force: true }) };
+    } finally {
+      if (!keep) await rm(workspace, { recursive: true, force: true });
+    }
+  }
+
+  async runReadOnlyQa(rawTarget, qa) {
+    const resolved = await this.resolve(rawTarget);
+    const before = (await this.git(resolved.path, ["status", "--porcelain"])).stdout;
+    let result;
+    let qaError;
+    try {
+      result = await qa(resolved);
+    } catch (error) {
+      qaError = error;
+    }
+    try {
+      const after = (await this.git(resolved.path, ["status", "--porcelain"])).stdout;
+      if (after || after !== before) throw new Error("READ_ONLY_QA target production modification detected");
+      if (qaError) throw qaError;
+      return { ...result, beforeStatus: before, afterStatus: after, targetProductionDiff: "" };
+    } finally {
+      await resolved.cleanup();
+    }
+  }
+}
 
 function commandVersion(executable) {
   return new Promise((resolve, reject) => {

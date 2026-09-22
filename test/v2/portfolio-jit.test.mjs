@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   FAILURE_CLASS,
@@ -7,10 +11,38 @@ import {
   PortfolioAutopilot,
   ProjectRegistry,
   RuntimeAllocator,
+  TargetResolver,
   WorkQueue,
   classifyFailure,
   isFailoverFailure,
 } from "../../src/v2/portfolio-jit/index.mjs";
+
+const exec = promisify(execFile);
+const git = async (cwd, ...args) => (await exec("git", ["-C", cwd, ...args])).stdout.trim();
+const fixtures = [];
+
+async function gitFixture() {
+  const root = await mkdtemp("/tmp/agent-relay-target-");
+  fixtures.push(root);
+  const remote = join(root, "remote.git");
+  const source = join(root, "source");
+  await exec("git", ["init", "--bare", remote]);
+  await exec("git", ["init", "-b", "main", source]);
+  await git(source, "config", "user.email", "qa@example.invalid");
+  await git(source, "config", "user.name", "QA");
+  await writeFile(join(source, "README.md"), "safe\n");
+  await git(source, "add", "README.md");
+  await git(source, "commit", "-m", "candidate");
+  await git(source, "branch", "feature");
+  await git(source, "remote", "add", "origin", remote);
+  await git(source, "push", "origin", "main", "feature");
+  const head = await git(source, "rev-parse", "feature");
+  return { root, remote, source, head };
+}
+
+test.after(async () => {
+  await Promise.all(fixtures.map((path) => rm(path, { recursive: true, force: true })));
+});
 
 test("classifyFailure maps 429/quota/capacity/crash to failover classes", () => {
   assert.equal(classifyFailure(new Error("HTTP 429 rate limit")), FAILURE_CLASS.PROVIDER_429);
@@ -166,4 +198,55 @@ test("portfolio autopilot overlaps two builders, rolls a slot, and retries the s
   assert.equal(state.events.filter((event) => event.type === "REQUEST_CHANGES").length, 1);
   assert.equal(builderAllocator.activeCount(), 0);
   assert.equal(qaAllocator.activeCount(), 0);
+});
+
+test("target resolver validates repository/ref/SHA and reuses a clean checkout", async () => {
+  const f = await gitFixture();
+  const checkout = join(f.root, "checkout");
+  await exec("git", ["clone", "--branch", "feature", f.remote, checkout]);
+  const target = { projectId: "juactl", repository: f.remote, ref: "feature", expectedHeadSha: f.head, workspaceMode: "READ_ONLY_QA" };
+  const resolved = await new TargetResolver({ roots: [f.root] }).resolve(target);
+  assert.equal(resolved.path, checkout);
+  assert.equal(resolved.temporary, false);
+  await resolved.cleanup();
+});
+
+test("target resolver fails closed on wrong SHA, wrong repository, and default-branch substitution", async () => {
+  const f = await gitFixture();
+  const base = { projectId: "juactl", repository: f.remote, workspaceMode: "READ_ONLY_QA" };
+  await assert.rejects(() => new TargetResolver().resolve({ ...base, ref: "feature", expectedHeadSha: "0".repeat(40) }), /exit|failed|not found|verification|unable|tree/i);
+  await assert.rejects(() => new TargetResolver().resolve({ ...base, repository: join(f.root, "missing.git"), ref: "feature", expectedHeadSha: f.head }), /exit|failed|not found|does not exist/i);
+  await assert.rejects(() => new TargetResolver().resolve({ ...base, ref: "main-only", expectedHeadSha: f.head }), /exit|failed|not found/i);
+});
+
+test("target resolver creates and cleans a temporary READ_ONLY_QA checkout", async () => {
+  const f = await gitFixture();
+  const target = { projectId: "juactl", repository: f.remote, ref: "feature", expectedHeadSha: f.head, workspaceMode: "READ_ONLY_QA" };
+  const resolved = await new TargetResolver({ roots: [], tempRoot: f.root }).resolve(target);
+  assert.equal(resolved.temporary, true);
+  assert.equal(resolved.ref, "feature");
+  assert.equal(await git(resolved.path, "rev-parse", "HEAD"), f.head);
+  const workspace = resolved.path;
+  await resolved.cleanup();
+  await assert.rejects(() => readFile(join(workspace, "README.md")));
+});
+
+test("READ_ONLY_QA detects target modification and leaves unrelated dirty checkout untouched", async () => {
+  const f = await gitFixture();
+  const target = { projectId: "juactl", repository: f.remote, ref: "feature", expectedHeadSha: f.head, workspaceMode: "READ_ONLY_QA" };
+  const resolver = new TargetResolver({ roots: [], tempRoot: f.root });
+  let modifiedPath = "";
+  await assert.rejects(() => resolver.runReadOnlyQa(target, async (resolved) => {
+    modifiedPath = resolved.path;
+    await writeFile(join(resolved.path, "forbidden.txt"), "nope\n");
+  }), /modification detected/i);
+  await assert.rejects(() => readFile(join(modifiedPath, "forbidden.txt")));
+
+  const dirty = join(f.root, "dirty");
+  await exec("git", ["clone", "--branch", "main", f.remote, dirty]);
+  await writeFile(join(dirty, "unrelated.txt"), "preserve\n");
+  const resolved = await resolver.resolve(target);
+  assert.notEqual(resolved.path, dirty);
+  assert.equal(await readFile(join(dirty, "unrelated.txt"), "utf8"), "preserve\n");
+  await resolved.cleanup();
 });
