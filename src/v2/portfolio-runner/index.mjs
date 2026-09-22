@@ -6,6 +6,7 @@ import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { realpath } from "node:fs/promises";
+import { FounderGateManager } from "../portfolio-jit/index.mjs";
 
 export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
@@ -86,18 +87,34 @@ export function qaPrompt(task, base) {
 }
 
 export class PortfolioRunner {
-  constructor({ manifest, statePath, worktreeRoot, runtime = new CodexDevelopmentRuntime(), worktrees = new WorktreeManager(worktreeRoot) }) {
-    this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.worktreeRoot = worktreeRoot; this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
+  constructor({ manifest, statePath, worktreeRoot, gateRoot, runtime = new CodexDevelopmentRuntime(), worktrees = new WorktreeManager(worktreeRoot), gateManager }) {
+    this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
   }
 
   async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
   async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => { await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
 
+  async reconcileProjects(state) {
+    const projects = []; const founderGates = [];
+    for (const project of this.manifest.projects) {
+      const task = state.tasks.find((item) => item.projectId === project.id && item.state === "VERIFIED_DONE");
+      if (task) { projects.push({ ...project, state: "VERIFIED_DONE", taskId: task.taskId, qa: task.qa?.verdict || "ACCEPT", blockers: [] }); continue; }
+      let gate = null;
+      if (project.founderRequired && project.founderGate) {
+        const gateManager = new FounderGateManager({ root: join(this.gateRoot, project.id) });
+        gate = await gateManager.create({ project: project.id, runId: `portfolio-${project.id}`, ...project.founderGate });
+        founderGates.push({ gateId: gate.gateId, project: project.id, type: gate.type, packet: gate.packet, deliveryState: gate.deliveryState, status: gate.status });
+      }
+      projects.push({ ...project, state: gate ? "FOUNDER_GATE" : (project.state || "BLOCKED_SCOPE"), blockers: project.blockers || [], founderRequired: Boolean(project.founderRequired), gateId: gate?.gateId || null, gatePacket: gate?.packet || null, deliveryState: gate?.deliveryState || null });
+    }
+    state.projects = projects; state.founderGates = founderGates; return state;
+  }
+
   async reconcile() {
     const state = await this.load();
     state.activeBuilders = []; state.activeQa = [];
     state.tasks = state.tasks.map((task) => task.state === "RUNNING" || task.state === "QA" ? { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" } : task);
-    state.service = "RECONCILED"; await this.save(state); return state;
+    await this.reconcileProjects(state); state.service = "RECONCILED"; await this.save(state); return state;
   }
 
   async enqueue(projectId) {

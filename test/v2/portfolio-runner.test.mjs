@@ -52,3 +52,20 @@ test("runner requires independent QA and never exceeds one QA slot", async () =>
   assert.deepEqual(state.tasks.map((task) => task.state), ["VERIFIED_DONE", "VERIFIED_DONE"]);
   await rm(root, { recursive: true, force: true });
 });
+
+test("reconcile creates one Founder Gate packet and preserves blocker arrays", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-founder-reconcile-");
+  const runner = new PortfolioRunner({
+    manifest: { projects: [
+      { id: "juplan", state: "FOUNDER_GATE", founderRequired: true, founderGate: { type: "FOUNDER_DECISION", taskId: "JUPLAN-REVIEW", summary: "review", reason: "gate", evidence: ["ssot"], founderAction: "review", expectedInput: "DECISION: APPROVE|PAUSE", resumeAction: "resume lane", relatedEvidence: [] } },
+      { id: "controler", state: "BLOCKED_RUNTIME_ADAPTER", blockers: ["Claude adapter missing", "Codex forbidden"] },
+    ] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), gateRoot: join(root, "founder-outbox"),
+  });
+  const first = await runner.reconcile(); const second = await runner.reconcile();
+  assert.equal(first.projects.find((p) => p.id === "juplan").state, "FOUNDER_GATE");
+  assert.equal(first.founderGates.length, 1); assert.equal(first.founderGates[0].deliveryState, "DELIVERY_PENDING");
+  assert.equal(first.founderGates[0].gateId, second.founderGates[0].gateId);
+  assert.match(await readFile(first.founderGates[0].packet, "utf8"), /STATUS: BLOCKED_FOR_FOUNDER/);
+  assert.deepEqual(second.projects.find((p) => p.id === "controler").blockers, ["Claude adapter missing", "Codex forbidden"]);
+  await rm(root, { recursive: true, force: true });
+});
