@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 $transportArgs = @("-o", "BatchMode=yes", "-o", "ConnectTimeout=5")
 $sshArgs = @($transportArgs + $AsusHost)
+$relay = "/home/skkse12/.local/bin/agent-relay"
 
 function Invoke-Asus([string]$Command) {
   $output = & ssh @sshArgs $Command 2>&1
@@ -23,12 +24,12 @@ function Read-Status($Output) {
   try { return ($raw.Substring($start, $end - $start + 1) | ConvertFrom-Json) } catch { return $null }
 }
 
-$launch = Invoke-Asus "nohup agent-relay night-run up --deadline $Deadline --mainpc-pull > ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED"
+$launch = Invoke-Asus "nohup $relay night-run up --deadline $Deadline --mainpc-pull > ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED"
 if (-not (($launch -join "`n") -match "NIGHT_RUN_STARTED")) { throw "Refusing activation: detached Night Run was not acknowledged." }
 
 $status = $null; $started = Get-Date
 while (((Get-Date) - $started).TotalSeconds -lt $PollTimeoutSeconds) {
-  $status = Read-Status (Invoke-Asus "agent-relay night-run status")
+  $status = Read-Status (Invoke-Asus "$relay night-run status")
   if ($null -ne $status -and $status.endReason -in @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT") -and -not [string]::IsNullOrWhiteSpace($status.endedAt)) { break }
   Start-Sleep -Seconds $PollSeconds
 }
