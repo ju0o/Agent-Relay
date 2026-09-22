@@ -1,9 +1,11 @@
 "use strict";
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { tmpdir } from "node:os";
 
 function safeCommand(command) {
   if (!command || typeof command !== "string") return null;
@@ -49,7 +51,9 @@ export async function runCodexViaLoginShell({
     throw new Error(`Codex runtime unavailable: ${probe.reason || probe.output || command}`);
   }
 
-  const output = join(workspace, `.agent-relay-${sandbox}-output.txt`);
+  // Keep transient CLI output outside the managed Git worktree. A crashed/killed
+  // runtime must never make the parent project checkout appear dirty.
+  const output = join(tmpdir(), `agent-relay-${sandbox}-${randomUUID()}.txt`);
   const args = [
     "exec",
     "--ephemeral",
