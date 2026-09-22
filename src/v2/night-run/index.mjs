@@ -143,10 +143,14 @@ export class NightRunSupervisor {
     const started = this.clock();
     let state = await this.runner.reconcile();
     const cutoff = deadlineAt(started, deadline);
-    const times = { deadline: cutoff.toISOString(), freezeAt: new Date(cutoff - 5 * 60_000).toISOString(), checkpointAt: new Date(cutoff - 2 * 60_000).toISOString() };
+    const freeze = new Date(cutoff - 5 * 60_000);
+    const checkpoint = new Date(cutoff - 2 * 60_000);
+    const times = { deadline: cutoff.toISOString(), freezeAt: freeze.toISOString(), checkpointAt: checkpoint.toISOString() };
     if (started >= cutoff) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "DEADLINE_COMPLETE", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: true }));
+    if (started >= checkpoint || started >= freeze) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "DEADLINE_FORCED_CHECKPOINT", shutdownState: "CHECKPOINT_REQUIRED", state, resumeRequired: true }));
     if (evaluateExhaustion(this.runner.manifest, state).complete) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: started.toISOString(), endReason: "WBS_EXHAUSTED", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: false }));
     state = await this.runner.runOnce();
+    if (this.clock() >= cutoff) return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: this.clock().toISOString(), endReason: "DEADLINE_COMPLETE", shutdownState: "DRAIN_REQUIRED", state, resumeRequired: true }));
     const complete = evaluateExhaustion(this.runner.manifest, state).complete;
     return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: complete ? this.clock().toISOString() : null, endReason: complete ? "WBS_EXHAUSTED" : "RUNNING", shutdownState: complete ? "DRAIN_REQUIRED" : "NOT_REQUESTED", state, resumeRequired: !complete }));
   }
