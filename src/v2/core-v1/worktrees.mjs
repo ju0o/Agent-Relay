@@ -41,6 +41,41 @@ async function revParse(repo, ref) {
   }
 }
 
+export function managedRefFor(projectId) {
+  return `refs/heads/agent-relay/core-v1/${projectId}`;
+}
+
+async function sourceBase(project) {
+  let base = await revParse(project.path, project.ref || "HEAD");
+  if (!base && project.ref) {
+    base = await revParse(project.path, `refs/remotes/origin/${project.ref}`);
+  }
+  return base;
+}
+
+export async function promoteAcceptedCommit(project, commitSha) {
+  if (!project?.path || !existsSync(project.path)) {
+    throw new Error(`target unavailable: ${project?.id || "unknown"}`);
+  }
+
+  const managedRef = managedRefFor(project.id);
+  await exec("git", ["-C", project.path, "cat-file", "-e", `${commitSha}^{commit}`]);
+
+  const current = await revParse(project.path, managedRef);
+  const base = current || (await sourceBase(project));
+  if (!base) throw new Error(`cannot resolve promotion base for ${project.id}`);
+
+  await exec("git", ["-C", project.path, "merge-base", "--is-ancestor", base, commitSha]);
+
+  if (current) {
+    await exec("git", ["-C", project.path, "update-ref", managedRef, commitSha, current]);
+  } else {
+    await exec("git", ["-C", project.path, "update-ref", managedRef, commitSha]);
+  }
+
+  return { ref: managedRef, base, commitSha };
+}
+
 export class CoreV1WorktreeManager {
   constructor(root) {
     this.root = root;
@@ -61,19 +96,13 @@ export class CoreV1WorktreeManager {
       }
     }
 
-    const managedRef = `refs/heads/agent-relay/core-v1/${project.id}`;
-    let base = await revParse(project.path, managedRef);
-
-    if (!base) {
-      base = await revParse(project.path, project.ref || "HEAD");
-      if (!base && project.ref) {
-        base = await revParse(project.path, `refs/remotes/origin/${project.ref}`);
-      }
-    }
+    const managedRef = managedRefFor(project.id);
+    const existingManagedHead = await revParse(project.path, managedRef);
+    const base = existingManagedHead || (await sourceBase(project));
 
     if (!base) throw new Error(`cannot resolve base for ${project.id}`);
 
-    if (project.expectedHeadSha && !(await revParse(project.path, managedRef)) && base !== project.expectedHeadSha) {
+    if (project.expectedHeadSha && !existingManagedHead && base !== project.expectedHeadSha) {
       throw new Error(`target SHA mismatch: ${project.id}`);
     }
 
@@ -87,25 +116,6 @@ export class CoreV1WorktreeManager {
       base,
       projectId: project.id,
       managedRef,
-      async promote(commitSha) {
-        await exec("git", ["-C", project.path, "cat-file", "-e", `${commitSha}^{commit}`]);
-        await exec("git", ["-C", project.path, "merge-base", "--is-ancestor", base, commitSha]);
-
-        const current = await revParse(project.path, managedRef);
-        if (current && current !== base) {
-          throw new Error(
-            `managed ref moved concurrently: ${managedRef} expected ${base} actual ${current}`,
-          );
-        }
-
-        if (current) {
-          await exec("git", ["-C", project.path, "update-ref", managedRef, commitSha, base]);
-        } else {
-          await exec("git", ["-C", project.path, "update-ref", managedRef, commitSha]);
-        }
-
-        return { ref: managedRef, base, commitSha };
-      },
       async cleanup() {
         await exec("git", ["-C", project.path, "worktree", "remove", "--force", path]).catch(() => {});
         await rm(path, { recursive: true, force: true });
