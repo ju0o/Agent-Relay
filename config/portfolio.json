@@ -1,16 +1,93 @@
 {
   "schema": "agent-relay.portfolio.v1",
+  "program": "CORE_V1",
   "maxBuilders": 2,
   "maxQa": 1,
-  "program": "CORE_V1",
   "projects": [
-    { "id": "agent-relay", "active": true, "path": "/home/skkse12/Desktop/Projects/Core/Agent-Relay-v2-portfolio-autopilot-dogfood-03", "ssot": "repository:BACKLOG.md + config/portfolio.json", "owner": "codex", "runtime": "codex", "state": "QUEUED", "tasks": [
-      { "taskId": "AGENTRELAY-V1-MOVE-RUN-RECURSIVE", "scope": "V1 backlog: make moveRun preserve nested run files", "files": ["src/backend/fs.ts", "test/fs.test.mjs"], "tests": ["npm run build:server", "node test/fs.test.mjs"] },
-      { "taskId": "AGENTRELAY-V1-EXPORT-NESTED-PATH", "scope": "V1 backlog: harden exportRunMarkdown for nested run paths", "files": ["src/backend/fs.ts", "test/vnext.test.mjs"], "tests": ["npm run build:server", "node test/vnext.test.mjs"] }
-    ] },
-    { "id": "juactl", "active": true, "path": "/home/skkse12/Desktop/Projects/Core/actl-v0.1.1-managed", "repository": "https://github.com/ju0o/JuActl", "ref": "feat/v2-founder-ux-closeout-dogfood-06", "expectedHeadSha": "5ffaeb4d2be97521421256378786fe08eab5da9d", "ssot": "external:ju0o/JuActl-private", "owner": "cursor", "runtime": "cursor", "state": "BLOCKED_SCOPE", "blockers": ["No bounded Agent Relay-owned actl V1 task is authorized yet", "Cursor routing is available; primary checkout remains dirty and isolated worktree is required"] },
-    { "id": "juplan", "active": true, "path": "/home/skkse12/Desktop/Projects/Team/JuPlan", "ssot": "/home/skkse12/Desktop/Projects/Team/JuPlan-Private/CONTROL_TOWER.md", "owner": "claude-team", "runtime": "claude-team", "state": "V1_COMPLETE", "blockers": ["Founder GO required for public visibility/release; no V1.1 implementation authorized"] },
-    { "id": "juceipt", "active": true, "path": "/home/skkse12/Desktop/Projects/Team/JuCeipt", "ssot": "/home/skkse12/Desktop/Projects/Team/JuCeipt-Private/docs/operations/PM_STATUS_BOARD.md", "owner": "claude", "runtime": "claude", "state": "BLOCKED_SCOPE", "blockers": ["M2_RECEIPT_VALUE_PROOF_PM_REVIEW", "CLAUDE_RUNTIME_AUTH_UNAVAILABLE", "PRIMARY_CHECKOUT_DIRTY_PRESERVED: 48 changes; use isolated workspace"] },
-    { "id": "jucontroler", "active": false, "path": "/home/skkse12/Desktop/Projects/Core/JuControler", "ssot": "/home/skkse12/Desktop/Projects/Core/JuControler-Private", "owner": "claude-team", "runtime": "claude-team", "state": "INTEGRATION_TARGET", "blockers": ["CORE V1 integration hold until Agent Relay, actl, JuPlan, and JuCeipt are operational"] }
+    {
+      "id": "agent-relay",
+      "coreV1": true,
+      "active": true,
+      "pmChannel": "pm/agent-relay",
+      "pmTransport": "repository-file",
+      "pmState": "LOCAL_MANIFEST_PM",
+      "path": "/home/skkse12/Desktop/Projects/Core/Agent-Relay-v2-portfolio-autopilot-dogfood-03",
+      "ssot": "repository:BACKLOG.md + config/portfolio.json",
+      "owner": "codex",
+      "runtime": "codex",
+      "state": "QUEUED",
+      "tasks": [
+        { "taskId": "AGENTRELAY-V1-MOVE-RUN-RECURSIVE", "scope": "V1 backlog: make moveRun preserve nested run files", "files": ["src/backend/fs.ts", "test/fs.test.mjs"], "tests": ["npm run build:server", "node test/fs.test.mjs"] },
+        { "taskId": "AGENTRELAY-V1-EXPORT-NESTED-PATH", "scope": "V1 backlog: harden exportRunMarkdown for nested run paths", "files": ["src/backend/fs.ts", "test/vnext.test.mjs"], "tests": ["npm run build:server", "node test/vnext.test.mjs"] },
+        { "taskId": "AGENTRELAY-CORE-V1-RESULT-INBOX", "scope": "CORE V1: expose the canonical four-lane Result Inbox and one start/resume operation on the existing runner", "files": ["src/v2/portfolio-runner/index.mjs", "bridge/agent-relay.mjs", "config/portfolio.json", "test/v2/portfolio-runner.test.mjs"], "tests": ["node --test test/v2/portfolio-runner.test.mjs", "npm test", "npm run typecheck"] },
+        { "taskId": "AGENTRELAY-NR-01-SUPERVISOR", "scope": "CORE V1 authorized Auto Night Run: supervise existing runOnce, evaluate WBS exhaustion, enforce the first deadline/checkpoint boundary, and persist LAST_NIGHT_RUN.json", "files": ["src/v2/night-run/index.mjs", "bridge/agent-relay.mjs", "config/portfolio.json", "BACKLOG.md", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs", "node --test test/v2/portfolio-runner.test.mjs", "npm run typecheck"] },
+        { "taskId": "AGENTRELAY-NR-02-LOOP", "scope": "CORE V1 authorized Auto Night Run: loop the existing runner through NEXT, retry, and per-lane exhaustion", "files": ["src/v2/night-run/index.mjs", "bridge/agent-relay.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
+        { "taskId": "AGENTRELAY-NR-03-DRAIN", "scope": "CORE V1 authorized Auto Night Run: drain only Agent Relay managed workers, QA, monitors, and panes", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
+        { "taskId": "AGENTRELAY-NR-04-RESUME", "scope": "CORE V1 authorized Auto Night Run: reconcile LAST_NIGHT_RUN.json and preserve unfinished worktrees for resume", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
+        { "taskId": "AGENTRELAY-NR-05-DEADLINE", "scope": "CORE V1 authorized Auto Night Run: complete injectable freeze, checkpoint, and hard deadline enforcement", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
+        { "taskId": "AGENTRELAY-NR-06-ASUS-SHUTDOWN", "scope": "CORE V1 authorized Auto Night Run: non-interactive ASUS shutdown handoff with missing-permission fail-closed status", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
+        { "taskId": "AGENTRELAY-NR-07-MAINPC-WRAPPER", "scope": "CORE V1 authorized Auto Night Run: MainPC core-night wrapper refuses unknown or corrupt completion", "files": ["scripts/core-night.ps1", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
+        { "taskId": "AGENTRELAY-NR-08-SAFETY-QA", "scope": "CORE V1 authorized Auto Night Run: independent safety evidence for multiple lanes, retry, hung runtime, restart, and unrelated panes", "files": ["test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] }
+      ]
+    },
+    {
+      "id": "juactl",
+      "coreV1": true,
+      "active": true,
+      "pmChannel": "pm/actl",
+      "pmTransport": "codex-chatgpt-web",
+      "pmState": "NOT_CONNECTED",
+      "path": "/home/skkse12/Desktop/Projects/Core/actl-v0.1.1-managed",
+      "repository": "https://github.com/ju0o/JuActl",
+      "ref": "feat/v2-founder-ux-closeout-dogfood-06",
+      "expectedHeadSha": "5ffaeb4d2be97521421256378786fe08eab5da9d",
+      "ssot": "external:ju0o/JuActl-private",
+      "owner": "cursor",
+      "runtime": "cursor",
+      "state": "FOUNDER_GATE",
+      "founderRequired": true,
+      "founderGate": { "type": "FOUNDER_E2E_REQUIRED", "taskId": "ACTL-V1-WINDOWS-E2E", "summary": "ACTL V1 implementation and QA are complete; the final Windows Board E2E remains Founder-owned.", "reason": "Only the live SEND -> RESULT -> COPY proof can close this lane.", "evidence": ["candidate 5ffaeb4", "repository QA PASS", "implementation BLOCKED_SCOPE"], "founderAction": "Run the Windows Board E2E and verify SEND -> RESULT -> COPY.", "expectedInput": "DECISION: APPROVE|PAUSE\ntimestamp: <ISO>", "resumeAction": "On APPROVE, mark the existing ACTL V1 gate resolved; do not create Product work. On PAUSE, retain HOLD.", "relatedEvidence": ["Founder Windows Board E2E"] },
+      "blockers": ["Founder Windows Board E2E required: SEND -> RESULT -> COPY", "No additional actl Product task is authorized"]
+    },
+    {
+      "id": "juplan",
+      "coreV1": true,
+      "active": true,
+      "pmChannel": "pm/juplan",
+      "pmTransport": "codex-chatgpt-web",
+      "pmState": "NOT_CONNECTED",
+      "path": "/home/skkse12/Desktop/Projects/Team/JuPlan",
+      "ssot": "/home/skkse12/Desktop/Projects/Team/JuPlan-Private/CONTROL_TOWER.md",
+      "owner": "claude-team",
+      "runtime": "claude-team",
+      "state": "HOLD",
+      "blockers": ["CORE V1 integration phase is authorized in JuPlan-Private; PM transport is not connected, so the lane is held without inventing a Product task"]
+    },
+    {
+      "id": "juceipt",
+      "coreV1": true,
+      "active": true,
+      "pmChannel": "pm/juceipt",
+      "pmTransport": "codex-chatgpt-web",
+      "pmState": "NOT_CONNECTED",
+      "path": "/home/skkse12/Desktop/Projects/Team/JuCeipt",
+      "ssot": "/home/skkse12/Desktop/Projects/Team/JuCeipt-Private/docs/operations/PM_STATUS_BOARD.md",
+      "owner": "claude",
+      "runtime": "claude",
+      "state": "BLOCKED_SCOPE",
+      "blockers": ["M2 Retry 01 exact patch requires isolated worktree and independent QA", "Primary checkout dirty; preserve all user changes", "M2 PM REVIEW remains open"]
+    },
+    {
+      "id": "jucontroler",
+      "coreV1": false,
+      "active": false,
+      "pmChannel": null,
+      "path": "/home/skkse12/Desktop/Projects/Core/JuControler",
+      "ssot": "/home/skkse12/Desktop/Projects/Core/JuControler-Private",
+      "owner": "claude-team",
+      "runtime": "claude-team",
+      "state": "FOUNDER_ACCEPTANCE",
+      "blockers": ["INTEGRATION_TARGET", "Founder acceptance and D-08 visual decision required"]
+    }
   ]
 }

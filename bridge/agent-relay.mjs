@@ -2,22 +2,48 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadManifest, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, loadManifest, parseTaskPacket, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
+import { DEFAULT_DEADLINE, NightRunSupervisor, runPoweroff } from "../src/v2/night-run/index.mjs";
 
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
 const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), ".local", "share", "AgentRelay", "data", "founder-outbox");
 const manifestPath = process.env.AGENT_RELAY_PORTFOLIO_MANIFEST || new URL("../config/portfolio.json", import.meta.url).pathname;
 const runner = () => loadManifest(manifestPath).then((manifest) => new PortfolioRunner({ manifest, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), gateRoot: founderOutbox }));
 const pidPath = join(root, "runner.pid");
+const nightPath = join(root, "LAST_NIGHT_RUN.json");
+const nightPidPath = join(root, "night-run.pid");
 const [area, command, project, decision] = process.argv.slice(2);
-if (area !== "portfolio" && area !== "project") { console.error("usage: agent-relay portfolio up|status|reconcile|stop | project run <projectId>"); process.exit(2); }
+if (!["portfolio", "project", "core-v1", "night-run"].includes(area)) { console.error("usage: agent-relay core-v1 status|results [--json]|start|resume | night-run once|up|status|stop | portfolio ... | project ..."); process.exit(2); }
 const instance = await runner();
+const night = () => new NightRunSupervisor({ runner: instance, checkpointPath: nightPath });
+if (area === "core-v1" && command === "status") { const state = await instance.load(); console.log(formatCoreV1Text(buildCoreV1Snapshot(instance.manifest, state))); process.exit(0); }
+if (area === "core-v1" && command === "results") { const state = await instance.load(); console.log(formatCoreV1Results(buildCoreV1Snapshot(instance.manifest, state), process.argv.includes("--json"))); process.exit(0); }
+if (area === "night-run" && command === "status") { console.log(JSON.stringify(await night().status(), null, 2)); process.exit(0); }
+if (area === "night-run" && command === "shutdown") { const supervisor = night(); const result = await runPoweroff({ checkpoint: await supervisor.status() }); const checkpoint = await supervisor.status(); if (checkpoint) { checkpoint.shutdownState = result.status; checkpoint.shutdownError = result.reason || null; await supervisor.persist(checkpoint); } console.log(JSON.stringify(result, null, 2)); process.exit(0); }
+if (area === "night-run" && command === "once") {
+  const deadlineIndex = process.argv.indexOf("--deadline");
+  const deadline = deadlineIndex >= 0 ? process.argv[deadlineIndex + 1] : DEFAULT_DEADLINE;
+  console.log(JSON.stringify(await night().once({ deadline }), null, 2)); process.exit(0);
+}
+if (area === "night-run" && command === "up") {
+  const deadlineIndex = process.argv.indexOf("--deadline");
+  const deadline = deadlineIndex >= 0 ? process.argv[deadlineIndex + 1] : DEFAULT_DEADLINE;
+  try { const oldPid = Number(await readFile(nightPidPath, "utf8")); if (oldPid && oldPid !== process.pid) { process.kill(oldPid, 0); throw new Error(`night run already active: ${oldPid}`); } } catch (error) { if (String(error.message).includes("already active")) throw error; }
+  await mkdir(root, { recursive: true }); await writeFile(nightPidPath, String(process.pid));
+  const controller = new AbortController(); const shutdown = async () => { controller.abort(); await instance.stop(); await rm(nightPidPath, { force: true }); process.exit(0); };
+  process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
+  try { console.log(JSON.stringify(await night().run({ deadline, signal: controller.signal }), null, 2)); } finally { await rm(nightPidPath, { force: true }); }
+  process.exit(0);
+}
+if (area === "night-run" && command === "stop") { try { const pid = Number(await readFile(nightPidPath, "utf8")); if (pid && pid !== process.pid) process.kill(pid, "SIGTERM"); } catch {} console.log(JSON.stringify(await night().status(), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "status") { console.log(JSON.stringify(await instance.load(), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "reconcile") { console.log(JSON.stringify(await instance.reconcile(), null, 2)); process.exit(0); }
+if (area === "portfolio" && command === "intake" && project) { const packet = parseTaskPacket(await readFile(project, "utf8")); console.log(JSON.stringify(await instance.acceptTaskPacket(packet), null, 2)); process.exit(0); }
+if (area === "portfolio" && command === "result" && project) { console.log(await readFile(join(instance.resultRoot, `${project}.json`), "utf8")); process.exit(0); }
 if (area === "portfolio" && command === "founder-response" && project && decision) { console.log(JSON.stringify(await instance.resolveFounderGate(project, decision), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "stop") { try { const pid = Number(await readFile(pidPath, "utf8")); if (pid && pid !== process.pid) process.kill(pid, "SIGTERM"); } catch { /* already stopped */ } const state = await instance.load(); state.service = "STOPPED"; await instance.save(state); await rm(pidPath, { force: true }); console.log("STOPPED"); process.exit(0); }
 if (area === "project" && command === "run" && project) { console.log(JSON.stringify(await instance.enqueue(project), null, 2)); process.exit(0); }
-if (area === "portfolio" && command === "up") {
+if ((area === "portfolio" && command === "up") || (area === "core-v1" && ["start", "resume"].includes(command))) {
   try { const oldPid = Number(await readFile(pidPath, "utf8")); if (oldPid && oldPid !== process.pid) { process.kill(oldPid, 0); throw new Error(`portfolio runner already active: ${oldPid}`); } } catch (error) { if (String(error.message).includes("already active")) throw error; }
   await mkdir(root, { recursive: true }); await writeFile(pidPath, String(process.pid));
   const controller = new AbortController(); const shutdown = async () => { controller.abort(); await rm(pidPath, { force: true }); process.exit(0); };

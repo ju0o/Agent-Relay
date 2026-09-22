@@ -1,0 +1,107 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { NightRunSupervisor, deadlineAt, drainManaged, evaluateExhaustion, readCompletion, runPoweroff } from "../../src/v2/night-run/index.mjs";
+
+const lanes = (states) => ({ projects: states.map(([id, state]) => ({ id, coreV1: true, active: true, state })), tasks: [] });
+const runner = (state, after = state) => ({ manifest: { projects: state.projects }, reconcile: async () => state, runOnce: async () => after });
+
+test("uses Asia/Seoul default and rolls a passed deadline to the next night", () => {
+  const now = new Date("2026-09-23T17:00:00.000Z");
+  assert.equal(deadlineAt(now).toISOString(), "2026-09-23T18:00:00.000Z");
+});
+
+test("exhaustion requires every active CORE lane to be terminal", () => {
+  assert.equal(evaluateExhaustion({ projects: lanes([["agent-relay", "V1_COMPLETE"], ["actl", "FOUNDER_GATE"]]).projects }, lanes([["agent-relay", "V1_COMPLETE"], ["actl", "FOUNDER_GATE"]])).complete, true);
+  const open = lanes([["agent-relay", "V1_COMPLETE"], ["actl", "FOUNDER_GATE"]]); open.tasks.push({ projectId: "agent-relay", taskId: "T", state: "REQUEST_CHANGES" });
+  assert.equal(evaluateExhaustion({ projects: open.projects }, open).complete, false);
+});
+
+test("once delegates to existing runOnce and persists the required checkpoint", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-"));
+  const state = lanes([["agent-relay", "RUNNING"]]);
+  const next = lanes([["agent-relay", "V1_COMPLETE"]]);
+  next.tasks.push({ projectId: "agent-relay", taskId: "NR-01", state: "VERIFIED_DONE", attempts: 1, result: { commitSha: "abc" } });
+  let calls = 0;
+  const s = new NightRunSupervisor({ runner: { ...runner(state, next), runOnce: async () => { calls += 1; return next; } }, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-23T10:00:00.000Z"), runId: "night-test" });
+  const result = await s.once();
+  assert.equal(calls, 1); assert.equal(result.runId, "night-test"); assert.equal(result.endReason, "WBS_EXHAUSTED");
+  assert.equal(JSON.parse(await readFile(join(dir, "LAST_NIGHT_RUN.json"))).commitSha, "abc");
+});
+
+test("deadline boundary checkpoints without dispatch", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-"));
+  const state = lanes([["agent-relay", "RUNNING"]]); let calls = 0;
+  const s = new NightRunSupervisor({ runner: { ...runner(state), runOnce: async () => { calls += 1; return state; } }, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-24T18:00:00.000Z"), runId: "deadline-test" });
+  const result = await s.once();
+  assert.equal(calls, 0); assert.equal(result.endReason, "DEADLINE_COMPLETE"); assert.equal(result.resumeRequired, true);
+});
+
+test("shutdown gate refuses missing or corrupt completion", async () => {
+  assert.deepEqual(readCompletion(null), { ok: false, reason: "UNKNOWN_NIGHT_RUN" });
+  assert.deepEqual(await runPoweroff({ checkpoint: null, command: "sh", args: ["-c", "exit 0"] }), { ok: false, status: "REFUSED", reason: "UNKNOWN_NIGHT_RUN" });
+});
+
+test("shutdown uses non-interactive sudo and reports missing permission", async () => {
+  const checkpoint = { schema: "agent-relay.last-night-run.v1", runId: "r", startedAt: "2026-09-23T17:00:00.000Z", deadline: "2026-09-23T18:00:00.000Z", freezeAt: "2026-09-23T17:55:00.000Z", checkpointAt: "2026-09-23T17:58:00.000Z", endedAt: "2026-09-23T18:00:00.000Z", endReason: "DEADLINE_COMPLETE", shutdownState: "DRAINED", lanes: [], resumeRequired: true };
+  const result = await runPoweroff({ checkpoint, command: "sh", args: ["-c", "echo permission denied >&2; exit 1"] });
+  assert.equal(result.status, "SHUTDOWN_PERMISSION_REQUIRED");
+});
+
+test("run loops through multiple NEXT iterations and exits on exhaustion", async () => {
+  const state = lanes([["agent-relay", "RUNNING"]]);
+  const done = lanes([["agent-relay", "V1_COMPLETE"]]);
+  let calls = 0; const runner = { manifest: { projects: state.projects }, reconcile: async () => state, load: async () => done, stop: async () => {}, runOnce: async () => { calls += 1; return calls === 1 ? state : done; } };
+  const s = new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-23T10:00:00.000Z"), sleep: async () => {}, runId: "loop-test" });
+  const result = await s.run({ intervalMs: 1 });
+  assert.equal(calls, 2); assert.equal(result.endReason, "WBS_EXHAUSTED");
+});
+
+test("freeze blocks dispatch, checkpoints at 02:58, then drains", async () => {
+  let now = Date.parse("2026-09-23T17:55:00.000Z"); const state = lanes([["agent-relay", "RUNNING"]]); let calls = 0; let stopped = 0;
+  const runner = { manifest: { projects: state.projects }, reconcile: async () => state, load: async () => state, stop: async () => { stopped += 1; }, runOnce: async () => { calls += 1; return state; } };
+  const s = new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => new Date(now), sleep: async (ms) => { now += Math.max(1, Math.min(ms, 60_000)); }, runId: "freeze-test" });
+  const result = await s.run({ intervalMs: 15_000 });
+  assert.equal(calls, 0); assert.equal(result.endReason, "DEADLINE_COMPLETE"); assert.ok(stopped >= 1); assert.equal(result.resumeRequired, true);
+});
+
+test("hung Worker is cancelled and its worktree is retained", async () => {
+  let now = Date.parse("2026-09-23T17:00:00.000Z"); const state = lanes([["agent-relay", "RUNNING"]]); state.tasks.push({ projectId: "agent-relay", taskId: "T", state: "RUNNING", attempts: 1, builderEvidence: { workspace: "/preserve/me", base: "base" } }); let stopped = 0;
+  const runner = { manifest: { projects: state.projects }, reconcile: async () => state, load: async () => state, stop: async () => { stopped += 1; }, runOnce: async () => new Promise(() => {}) };
+  const s = new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => new Date(now), sleep: async (ms) => { now += ms; }, runId: "hung-test" });
+  const result = await s.run({ intervalMs: 1 });
+  assert.equal(result.endReason, "DEADLINE_COMPLETE"); assert.equal(result.resumeRequired, true); assert.ok(stopped >= 1); assert.equal(result.worktree, "/preserve/me");
+});
+
+test("Founder Gate exhausts one lane while another lane continues", async () => {
+  const state = lanes([["actl", "FOUNDER_GATE"], ["agent-relay", "RUNNING"]]); let calls = 0;
+  const done = lanes([["actl", "FOUNDER_GATE"], ["agent-relay", "V1_COMPLETE"]]);
+  const runner = { manifest: { projects: state.projects }, reconcile: async () => state, load: async () => done, stop: async () => {}, runOnce: async () => { calls += 1; return done; } };
+  const s = new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-23T10:00:00.000Z"), sleep: async () => {}, runId: "gate-lane-test" });
+  assert.equal((await s.run()).endReason, "WBS_EXHAUSTED"); assert.equal(calls, 1);
+});
+
+test("managed drain ignores unowned processes", async () => {
+  const events = []; const entries = [
+    { id: "owned", owner: "agent-relay", managed: true, stop: async () => events.push("stop-owned"), kill: async () => events.push("kill-owned") },
+    { id: "user", owner: "user", managed: false, stop: async () => events.push("stop-user"), kill: async () => events.push("kill-user") },
+  ];
+  assert.deepEqual(await drainManaged(entries, { graceMs: 0, sleep: async () => {} }), ["owned"]); assert.deepEqual(events, ["stop-owned", "kill-owned"]);
+});
+
+test("completion allowlist rejects incomplete and unknown states", () => {
+  const valid = { schema: "agent-relay.last-night-run.v1", runId: "r", startedAt: "s", deadline: "d", freezeAt: "f", checkpointAt: "c", endedAt: "x", shutdownState: "DRAINED", lanes: [] };
+  assert.equal(readCompletion({ ...valid, endReason: "RUNNING" }).ok, false);
+  assert.equal(readCompletion({ ...valid, endReason: "DEADLINE_COMPLETE" }).ok, true);
+});
+
+test("MainPC wrapper is fail-closed and orders poweroff before local shutdown", () => {
+  const wrapper = readFileSync(new URL("../../scripts/core-night.ps1", import.meta.url), "utf8");
+  assert.match(wrapper, /night-run up --deadline/); assert.match(wrapper, /night-run shutdown/);
+  assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/);
+  assert.ok(wrapper.indexOf("POWEROFF_REQUESTED") < wrapper.indexOf("Stop-Computer"));
+  assert.match(wrapper, /SSH did not disconnect/);
+});

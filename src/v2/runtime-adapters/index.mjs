@@ -27,7 +27,7 @@ export class CodexRuntimeAdapter extends RuntimeAdapter {
   constructor(runtime) { super({ id: "codex", owner: "codex", runtime: "codex", available: true }); this.runtimeImpl = runtime; }
   async availability() { return { id: this.id, owner: this.owner, runtime: this.runtime, ok: true, command: this.runtimeImpl.command }; }
   async run(request) { return this.runtimeImpl.run(request); }
-  async stop() {}
+  async stop() { await this.runtimeImpl.stop?.(); }
 }
 
 export class CommandRuntimeAdapter extends RuntimeAdapter {
@@ -40,7 +40,7 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
     if (!this.safeNonInteractive) return { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, command: this.command, identity: result.output, reason: this.reason || "safe non-interactive execution contract is not configured" };
     return { id: this.id, owner: this.owner, runtime: this.runtime, ok: true, command: this.command, identity: result.output };
   }
-  async run({ workspace, prompt }) {
+  async run({ workspace, prompt, signal }) {
     const status = await this.availability();
     if (!status.ok) throw new Error(`${this.id} cannot execute: ${status.reason}`);
     const child = spawn(this.command, this.buildArgs({ prompt, workspace }), { cwd: workspace, stdio: ["ignore", "pipe", "pipe"] });
@@ -48,12 +48,13 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
     let text = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8"); child.stdout.on("data", (chunk) => { text += chunk; }); child.stderr.on("data", (chunk) => { stderr += chunk; });
     const startedAt = new Date().toISOString();
-    const result = await new Promise((resolve, reject) => { const timer = setTimeout(() => child.kill("SIGTERM"), this.timeoutMs); child.once("error", reject); child.once("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal }); }); });
+    const abort = () => child.kill("SIGTERM"); signal?.addEventListener("abort", abort, { once: true });
+    const result = await new Promise((resolve, reject) => { const timer = setTimeout(() => child.kill("SIGTERM"), this.timeoutMs); child.once("error", reject); child.once("close", (code, exitSignal) => { clearTimeout(timer); signal?.removeEventListener("abort", abort); resolve({ code, signal: exitSignal }); }); });
     this.children.delete(child);
     if (result.code !== 0) throw new Error(`${this.id} exit ${result.code}: ${stderr.trim() || text.trim()}`);
     return { pid: child.pid, startedAt, ...result, text };
   }
-  async stop() { for (const child of this.children) child.kill("SIGTERM"); this.children.clear(); }
+  async stop({ graceMs = 1_000 } = {}) { const children = [...this.children]; for (const child of children) child.kill("SIGTERM"); await new Promise((resolve) => setTimeout(resolve, graceMs)); for (const child of children) { try { child.kill("SIGKILL"); } catch {} } this.children.clear(); }
 }
 
 export function createRuntimeAdapters({ codex, commands = {} } = {}) {

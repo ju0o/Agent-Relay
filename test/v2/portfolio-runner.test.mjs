@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { parseQaPacket, parseResultPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
@@ -13,6 +13,24 @@ test("packet parsers are strict and exit-zero without a packet is not completion
   assert.deepEqual(QA_VERDICTS, ["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
   assert.throws(() => parseResultPacket("completed successfully"), /invalid RESULT_PACKET/);
   assert.throws(() => parseQaPacket("exit 0"), /invalid QA_PACKET/);
+  assert.equal(parseTaskPacket('TASK_PACKET: {"schema":"agent-relay.task.v1","taskId":"T","projectId":"p","scope":"bounded","files":[],"tests":[]}').taskId, "T");
+  assert.throws(() => parseTaskPacket("TASK_PACKET: {}"), /invalid TASK_PACKET/);
+});
+
+test("repository TASK_PACKET intake is exact and rejects unauthorized scope", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-intake-test-");
+  const runner = new PortfolioRunner({ manifest: { projects: [{ id: "p", active: true, task: { taskId: "P-1", scope: "bounded", files: ["a"], tests: ["test"] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees") });
+  await runner.acceptTaskPacket({ schema: "agent-relay.task.v1", taskId: "P-1", projectId: "p", scope: "bounded", files: ["a"], tests: ["test"] });
+  assert.equal((await runner.load()).tasks[0].state, "QUEUED");
+  await assert.rejects(() => runner.acceptTaskPacket({ schema: "agent-relay.task.v1", taskId: "P-1", projectId: "p", scope: "bounded", files: ["b"], tests: ["test"] }), /scope mismatch/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("CORE V1 Result Inbox keeps lane fields machine-readable and pipeable", () => {
+  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }, { service: "IDLE", updatedAt: "now", tasks: [{ projectId: "p", taskId: "P-1", state: "VERIFIED_DONE", attempts: 2, result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } }] });
+  assert.equal(snapshot.lanes[0].next, null);
+  assert.match(formatCoreV1Text(snapshot), /p \| PM=READY pm\/p/);
+  assert.equal(JSON.parse(formatCoreV1Results(snapshot, true)).schema, "agent-relay.core-v1.inbox.v1");
 });
 
 test("runner blocks external/no-scope projects without launching a Builder", async () => {
@@ -72,6 +90,15 @@ test("reconcile creates one Founder Gate packet and preserves blocker arrays", a
   await rm(root, { recursive: true, force: true });
 });
 
+test("reconcile ignores historical Founder decisions for non-gated integration lanes", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-stale-decision-test-");
+  const runner = new PortfolioRunner({ manifest: { projects: [{ id: "juplan", coreV1: true, state: "INTEGRATION_TARGET", founderRequired: false }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees") });
+  await writeFile(join(root, "state.json"), JSON.stringify({ founderDecisions: [{ projectId: "juplan", decision: "PAUSE", scope: "old V1.1 hold" }], tasks: [] }));
+  const state = await runner.reconcile();
+  assert.equal(state.projects[0].state, "INTEGRATION_TARGET");
+  await rm(root, { recursive: true, force: true });
+});
+
 test("runtime adapters fail closed on ownership and unavailable execution", async () => {
   const adapter = new RuntimeAdapter({ id: "claude-team", owner: "claude-team", runtime: "claude-team" });
   assert.throws(() => adapter.assertOwnership({ id: "juactl", owner: "cursor", runtime: "cursor" }), /ownership mismatch/);
@@ -86,5 +113,24 @@ test("authorized verification task uses the common Codex adapter without fallbac
   await runner.enqueue("p");
   const state = await runner.runOnce();
   assert.equal(state.tasks[0].state, "VERIFIED_DONE");
+  const returned = JSON.parse(await readFile(join(root, "result-outbox", "P-VERIFY.json"), "utf8"));
+  assert.equal(returned.result.taskId, "P-VERIFY");
+  assert.equal(returned.qa.verdict, "ACCEPT");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("QA ACCEPT requires and records durable promotion when available", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-promotion-test-"); let promoted = null;
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-PROMOTE", scope: "verify", files: [], tests: [] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; }, async promote(_project, taskId, sha) { promoted = { taskId, sha }; return `refs/agent-relay/promotions/${taskId}`; } }, runtime: { command: "codex", async run({ sandbox }) { return { pid: 7, code: 0, startedAt: new Date().toISOString(), text: sandbox === "workspace-write" ? `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-PROMOTE", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "a".repeat(40), summary: "verified" })}` : 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"P-PROMOTE","verdict":"ACCEPT","tests":[],"findings":[],"summary":"accepted"}' }; } } });
+  await runner.enqueue("p"); const state = await runner.runOnce();
+  assert.equal(state.tasks[0].state, "VERIFIED_DONE"); assert.deepEqual(promoted, { taskId: "P-PROMOTE", sha: "a".repeat(40) }); assert.match(state.tasks[0].promotionRef, /refs\/agent-relay\/promotions/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("REQUEST_CHANGES retries the same task, then promotion precedes NEXT", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-retry-test-"); let builds = 0; let qas = 0;
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", state: "QUEUED", tasks: [{ taskId: "P-RETRY", scope: "retry", files: [], tests: [] }, { taskId: "P-NEXT", scope: "next", files: [], tests: [] }] }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtime: { command: "codex", async run({ sandbox }) { if (sandbox === "workspace-write") { builds += 1; return { pid: builds, code: 0, startedAt: new Date().toISOString(), text: `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-RETRY", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "b".repeat(40), summary: "retry" })}` }; } qas += 1; return { pid: qas, code: 0, startedAt: new Date().toISOString(), text: qas === 1 ? 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"P-RETRY","verdict":"REQUEST_CHANGES","tests":[],"findings":["retry"],"summary":"retry"}' : 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"P-RETRY","verdict":"ACCEPT","tests":[],"findings":[],"summary":"accept"}' }; } } });
+  await runner.enqueue("p"); const state = await runner.runOnce();
+  assert.equal(builds, 2); assert.equal(qas, 2); assert.equal(state.tasks[0].state, "VERIFIED_DONE"); assert.equal(state.tasks[0].taskId, "P-RETRY");
   await rm(root, { recursive: true, force: true });
 });
