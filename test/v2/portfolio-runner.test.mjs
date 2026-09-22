@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
@@ -48,7 +48,7 @@ test("runner blocks external/no-scope projects without launching a Builder", asy
 test("runner requeues interrupted execution on reconcile", async () => {
   const root = await mkdtemp("/tmp/agent-relay-reconcile-test-");
   const statePath = join(root, "state.json");
-  await writeFile(statePath, JSON.stringify({ tasks: [{ taskId: "T", projectId: "p", state: "RUNNING" }], activeBuilders: [{ taskId: "T", pid: 1 }], activeQa: [] }));
+  await writeFile(statePath, JSON.stringify({ tasks: [{ taskId: "T", projectId: "p", state: "RUNNING" }], activeBuilders: [{ taskId: "T", pid: 999999 }], activeQa: [] }));
   const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
   const state = await runner.reconcile();
   assert.equal(state.tasks[0].state, "QUEUED");
@@ -105,6 +105,20 @@ test("runtime adapters fail closed on ownership and unavailable execution", asyn
   const unavailable = new CommandRuntimeAdapter({ id: "missing", owner: "codex", runtime: "missing", command: "/tmp/agent-relay-missing-runtime" });
   assert.equal((await unavailable.availability()).ok, false);
   await assert.rejects(() => unavailable.run({ workspace: "/tmp", prompt: "no-op" }), /cannot execute/);
+});
+
+test("Codex discovery prefers an absolute configured or known login-shell path", () => {
+  assert.equal(discoverCodexCommand({ CODEX_BIN: "/tmp/missing-codex" }) !== "/tmp/missing-codex", true);
+  assert.equal(discoverCodexCommand({ CODEX_BIN: "/home/skkse12/.local/bin/codex" }), "/home/skkse12/.local/bin/codex");
+});
+
+test("runtime launch failures reconcile back to the same authorized task", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-runtime-recovery-"); const statePath = join(root, "state.json");
+  const manifest = { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] };
+  const runner = new PortfolioRunner({ manifest, statePath, worktreeRoot: join(root, "worktrees"), runtime: { command: "codex", async run() { throw new Error("spawn codex ENOENT"); } }, worktrees: { async create() { return { path: root, base: "base", async cleanup() {} }; } } });
+  await runner.enqueue("p"); const failed = await runner.runOnce(); assert.equal(failed.tasks[0].state, "HOLD"); assert.match(failed.tasks[0].error, /^RUNTIME_LAUNCH:/);
+  const recovered = await runner.reconcile(); assert.equal(recovered.tasks[0].state, "QUEUED"); assert.equal(recovered.tasks[0].attempts, failed.tasks[0].attempts);
+  await rm(root, { recursive: true, force: true });
 });
 
 test("authorized verification task uses the common Codex adapter without fallback", async () => {

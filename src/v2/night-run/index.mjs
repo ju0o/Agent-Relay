@@ -89,10 +89,11 @@ export async function requestMainPcShutdown({ target = mainPcTarget(), execFileI
   return { state: "REQUESTED", target, command: "shutdown.exe /s /t 30", at: new Date().toISOString(), output: String(result.stdout || "").trim() };
 }
 
-export async function finalizeNightRun({ record: initial, checkpointPath, persist, send = sendReportToMainPc, requestShutdown = requestMainPcShutdown, poweroff = runPoweroff, reportPath, dryRun = false, deferPoweroff = false }) {
+export async function finalizeNightRun({ record: initial, checkpointPath, persist, send = sendReportToMainPc, requestShutdown = requestMainPcShutdown, poweroff = runPoweroff, reportPath, dryRun = false, deferPoweroff = false, transport = "push" }) {
   let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [] };
   await mkdir(dirname(record.reportPathAsus), { recursive: true });
   await writeFile(record.reportPathAsus, buildNightReport(record));
+  if (transport === "mainpc-pull") return persist({ ...record, shutdownState: "READY_FOR_MAINPC_PULL", reportState: "LOCAL_READY", reportTransferState: "LOCAL_ONLY", asusShutdownRequested: false });
   try { const transfer = dryRun ? { state: "DRY_RUN", path: `MainPC/Desktop/${record.reportPathAsus.split("/").pop()}`, remoteSha: createHash("sha256").update(await readFile(record.reportPathAsus)).digest("hex") } : await send({ reportPath: record.reportPathAsus }); record = { ...record, reportTransferState: transfer.state, reportPathMainPC: transfer.path || null, reportTransferSha256: transfer.remoteSha || null }; }
   catch (error) { record = { ...record, reportTransferState: "REPORT_TRANSFER_FAILED", reportTransferError: String(error.message || error) }; }
   await persist(record);
@@ -111,8 +112,10 @@ function currentTask(state) {
 
 function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = null, endReason, shutdownState = "NOT_REQUESTED", state, resumeRequired }) {
   const task = currentTask(state);
+  const completedTaskCount = (state.tasks || []).filter((item) => item.state === "VERIFIED_DONE").length;
   return {
     schema: "agent-relay.last-night-run.v1", runId, startedAt, deadline, freezeAt, checkpointAt, endedAt, endReason, shutdownState,
+    service: state.service || "NIGHT_RUN", currentProject: task?.projectId || null, currentTask: task?.taskId || null, completedTaskCount, lastTransition: state.lastTransition || null,
     project: task?.projectId || null, taskId: task?.taskId || null,
     pmState: state.projects?.find((project) => project.id === task?.projectId)?.state || null,
     runtime: state.projects?.find((project) => project.id === task?.projectId)?.runtime || null,
@@ -120,12 +123,12 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
     attempts: task?.attempts || 0, worktree: task?.builderEvidence?.workspace || null,
     commitSha: task?.result?.commitSha || null, promotionRef: task?.promotionRef || null,
     blocker: task?.error || task?.blocker || null, resumeRequired,
-    lanes: state.projects || [], updatedAt: new Date().toISOString(),
+    lanes: state.projects || [], reportPathAsus: state.reportPathAsus || null, reportState: state.reportState || null, updatedAt: new Date().toISOString(),
   };
 }
 
 export class NightRunSupervisor {
-  constructor({ runner, checkpointPath, clock = () => new Date(), sleep = (ms) => new Promise((resolvePromise) => { const timer = setTimeout(resolvePromise, ms); timer.unref?.(); }), runId = `night-${Date.now()}`, finalize = null }) {
+  constructor({ runner, checkpointPath, clock = () => new Date(), sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)), runId = `night-${Date.now()}`, finalize = null }) {
     this.runner = runner; this.checkpointPath = checkpointPath; this.clock = clock; this.sleep = sleep; this.runId = runId; this.finalize = finalize;
   }
 
@@ -158,12 +161,13 @@ export class NightRunSupervisor {
     const checkpointAt = new Date(cutoff - 2 * 60_000);
     const drainAt = new Date(cutoff - 60_000);
     let state = await this.runner.reconcile();
-    const write = (endReason, endedAt = null, shutdownState = "NOT_REQUESTED", resumeRequired = true) => this.persist(record({ runId: this.runId, startedAt: started.toISOString(), deadline: cutoff.toISOString(), freezeAt: freezeAt.toISOString(), checkpointAt: checkpointAt.toISOString(), endedAt, endReason, shutdownState, state, resumeRequired }));
-    const finish = async (reason, resumeRequired) => { await this.runner.stop?.(); state = await this.runner.load(); const result = await write(reason, this.clock().toISOString(), "FINALIZING", resumeRequired); return this.finalize ? this.finalize(result) : result; };
+    const write = (endReason, endedAt = null, shutdownState = "NOT_REQUESTED", resumeRequired = true) => this.persist({ ...record({ runId: this.runId, startedAt: started.toISOString(), deadline: cutoff.toISOString(), freezeAt: freezeAt.toISOString(), checkpointAt: checkpointAt.toISOString(), endedAt, endReason, shutdownState, state, resumeRequired }), checkpointPath: this.checkpointPath });
+    const finish = async (reason, resumeRequired) => { await this.runner.stop?.(); const result = await write(reason, this.clock().toISOString(), "FINALIZING", resumeRequired); return this.finalize ? this.finalize(result) : result; };
     const drain = async () => { await this.runner.stop?.(); while (this.clock() < drainAt && !signal?.aborted) await this.sleep(Math.max(1, drainAt - this.clock())); };
+    state.service = "NIGHT_RUN_ACTIVE"; state.lastTransition = "NIGHT_RUN_STARTED"; await write("RUNNING", null, "ACTIVE", true);
     if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
     while (!signal?.aborted) {
-      const now = this.clock();
+      const now = this.clock(); state.lastTransition = now >= freezeAt ? "DISPATCH_FREEZE" : "RUN_ONCE";
       if (now >= cutoff) return finish("DEADLINE_COMPLETE", true);
       if (now >= checkpointAt) {
         state = await this.runner.load(); await write("CHECKPOINTED_DEADLINE", null, "CHECKPOINT_REQUIRED", true);

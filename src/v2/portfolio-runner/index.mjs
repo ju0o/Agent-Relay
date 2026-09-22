@@ -1,16 +1,28 @@
 "use strict";
 
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { realpath } from "node:fs/promises";
 import { FounderGateManager } from "../portfolio-jit/index.mjs";
 import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 
 export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
+
+export function discoverCodexCommand(env = process.env) {
+  const candidates = [env.CODEX_BIN, join(homedir(), ".local", "bin", "codex"), "/usr/local/bin/codex", "/usr/bin/codex"];
+  for (const candidate of candidates) if (candidate && (candidate.includes("/") ? existsSync(candidate) : true)) return candidate;
+  try { const found = execFileSync("sh", ["-lc", "command -v codex"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); if (found) return found; } catch {}
+  return null;
+}
+
+function processAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
+
+function runtimeLaunchFailure(error) { return /(?:spawn|ENOENT|runtime command missing|cannot execute)/i.test(String(error?.message || error)); }
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -114,11 +126,12 @@ export class WorktreeManager {
 }
 
 export class CodexDevelopmentRuntime {
-  constructor({ command = process.env.CODEX_BIN || "codex", timeoutMs = 30 * 60_000 } = {}) { this.command = command; this.timeoutMs = timeoutMs; this.children = new Set(); }
+  constructor({ command = discoverCodexCommand(), timeoutMs = 30 * 60_000 } = {}) { this.command = command; this.timeoutMs = timeoutMs; this.children = new Set(); }
 
   async run({ workspace, prompt, sandbox, signal }) {
     const output = join(workspace, `.agent-relay-${sandbox}-output.txt`);
     const args = ["exec", "--ephemeral", ...(sandbox === "workspace-write" ? ["--approve-for-me"] : ["--sandbox", sandbox]), "--skip-git-repo-check", "--cd", workspace, "--json", "-o", output, "-"];
+    if (!this.command) throw new Error("CODEX_RUNTIME_UNAVAILABLE: set CODEX_BIN or install codex in a known runtime location");
     const child = spawn(this.command, args, { cwd: workspace, stdio: ["pipe", "pipe", "pipe"] });
     this.children.add(child);
     let stdout = ""; let stderr = "";
@@ -192,14 +205,26 @@ export class PortfolioRunner {
   async reconcile() {
     const state = await this.load();
     state.activeBuilders = []; state.activeQa = [];
-    state.tasks = state.tasks.map((task) => task.state === "RUNNING" || task.state === "QA" ? { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" } : task);
+    state.tasks = state.tasks.map((task) => {
+      if (task.state === "HOLD" && String(task.error || "").startsWith("RUNTIME_LAUNCH:")) return { ...task, state: "QUEUED", error: null, reconcile: "REQUEUED_AFTER_RUNTIME_RECOVERY" };
+      if (task.state === "RUNNING" || task.state === "QA") {
+        const pid = task.state === "QA" ? task.qaEvidence?.pid : task.builderEvidence?.pid;
+        return pid && processAlive(pid) ? { ...task, reconcile: "ACTIVE_PROCESS_PRESERVED" } : { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" };
+      }
+      return task;
+    });
     const activeIds = new Set(this.manifest.projects.filter((project) => project.active !== false).map((project) => project.id));
     for (const project of this.manifest.projects.filter((item) => item.active !== false)) {
       const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && task.state === "VERIFIED_DONE"));
       if (next && !state.tasks.some((task) => task.projectId === project.id && task.taskId === next.taskId)) state.tasks.push({ ...next, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 });
     }
     if (activeIds.size) state.tasks = state.tasks.map((task) => !activeIds.has(task.projectId) && task.state === "QUEUED" ? { ...task, state: "HOLD", blocker: "OUT_OF_CORE_V1_SCOPE" } : task);
-    await this.reconcileProjects(state); state.service = "RECONCILED"; await this.save(state); return state;
+    await this.reconcileProjects(state);
+    for (const task of state.tasks.filter((item) => item.state === "BLOCKED_RUNTIME_ADAPTER")) {
+      const project = this.manifest.projects.find((item) => item.id === task.projectId); const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
+      if (adapter && (await adapter.availability()).ok) { task.state = "QUEUED"; task.error = null; task.reconcile = "REQUEUED_AFTER_RUNTIME_RECOVERY"; }
+    }
+    state.service = "RECONCILED"; await this.save(state); return state;
   }
 
   async enqueue(projectId) {
@@ -257,7 +282,7 @@ export class PortfolioRunner {
       if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
       if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; await this.publishResult(task); break;
       }
-    } catch (error) { if (signal?.aborted) { preserveWorktree = true; task.state = "RUNNING"; task.error = "CHECKPOINTED_DEADLINE"; } else { task.state = "HOLD"; task.error = String(error.message || error); } state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); }
+    } catch (error) { if (signal?.aborted) { preserveWorktree = true; task.state = "RUNNING"; task.error = "CHECKPOINTED_DEADLINE"; } else if (runtimeLaunchFailure(error)) { task.state = "HOLD"; task.error = `RUNTIME_LAUNCH:${String(error.message || error)}`; } else { task.state = "HOLD"; task.error = String(error.message || error); } state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); }
     if (!preserveWorktree) await builder.cleanup(); await this.save(state);
   }
 

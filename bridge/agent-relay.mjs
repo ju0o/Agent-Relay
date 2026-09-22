@@ -15,9 +15,9 @@ const nightPidPath = join(root, "night-run.pid");
 const [area, command, project, decision] = process.argv.slice(2);
 if (!["portfolio", "project", "core-v1", "night-run"].includes(area)) { console.error("usage: agent-relay core-v1 status|results [--json]|start|resume | night-run once|up|status|stop | portfolio ... | project ..."); process.exit(2); }
 const instance = await runner();
-const night = ({ deferPoweroff = false } = {}) => {
+const night = ({ deferPoweroff = false, mainPcPull = false } = {}) => {
   const supervisor = new NightRunSupervisor({ runner: instance, checkpointPath: nightPath });
-  if (deferPoweroff) supervisor.finalize = (record) => finalizeNightRun({ record, checkpointPath: nightPath, persist: (value) => supervisor.persist(value), deferPoweroff: true });
+  if (deferPoweroff || mainPcPull) supervisor.finalize = (record) => finalizeNightRun({ record, checkpointPath: nightPath, persist: (value) => supervisor.persist(value), deferPoweroff: true, transport: mainPcPull ? "mainpc-pull" : "push" });
   return supervisor;
 };
 if (area === "core-v1" && command === "status") { const state = await instance.load(); console.log(formatCoreV1Text(buildCoreV1Snapshot(instance.manifest, state))); process.exit(0); }
@@ -32,13 +32,14 @@ if (area === "night-run" && command === "once") {
 if (area === "night-run" && command === "up") {
   const deadlineIndex = process.argv.indexOf("--deadline");
   const deadline = deadlineIndex >= 0 ? process.argv[deadlineIndex + 1] : DEFAULT_DEADLINE;
-  const noPoweroff = process.argv.includes("--no-poweroff");
+  const mainPcPull = process.argv.includes("--mainpc-pull");
+  const noPoweroff = process.argv.includes("--no-poweroff") || mainPcPull;
   try { const oldPid = Number(await readFile(nightPidPath, "utf8")); if (oldPid && oldPid !== process.pid) { process.kill(oldPid, 0); throw new Error(`night run already active: ${oldPid}`); } } catch (error) { if (String(error.message).includes("already active")) throw error; }
   await mkdir(root, { recursive: true }); await writeFile(nightPidPath, String(process.pid));
   const controller = new AbortController(); const shutdown = async () => { controller.abort(); await instance.stop(); await rm(nightPidPath, { force: true }); process.exit(0); };
   process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
   try {
-    const supervisor = night({ deferPoweroff: true });
+    const supervisor = night({ deferPoweroff: !mainPcPull, mainPcPull });
     const result = await supervisor.run({ deadline, signal: controller.signal });
     console.log(JSON.stringify(result, null, 2));
     if (!noPoweroff && result.shutdownState === "READY_FOR_ASUS_POWEROFF") {

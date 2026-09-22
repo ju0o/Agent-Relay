@@ -3,6 +3,12 @@
 Founder authorization recorded in `BACKLOG.md`. Runtime default timezone is
 `Asia/Seoul`; default deadline is `03:00`.
 
+Routine non-financial feature, quality/reliability, UI/UX, and integration
+WBS may be selected by each PM after reading its authoritative SSOT. The
+existing independent QA and promotion gates remain mandatory. Financial,
+credential, account/OAuth, and irreversible external actions remain Founder
+gates; this policy does not create Product tasks without SSOT-backed PM scope.
+
 ## ASUS one-time setup
 
 Run this once on ASUS as the configured user (`skkse12`):

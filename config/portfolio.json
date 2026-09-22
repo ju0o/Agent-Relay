@@ -1,6 +1,14 @@
 {
   "schema": "agent-relay.portfolio.v1",
   "program": "CORE_V1",
+  "founderPolicy": {
+    "routineNonFinancialAutonomy": true,
+    "allowedWork": ["feature-improvement", "quality-reliability", "ui-ux", "integration"],
+    "projects": ["agent-relay", "juactl", "juplan", "juceipt", "jucontroler"],
+    "founderGateRequiredFor": ["money-movement", "payment", "secrets", "credentials", "new-account", "oauth", "irreversible-external-action"],
+    "qaRequired": true,
+    "ssotRequired": true
+  },
   "maxBuilders": 2,
   "maxQa": 1,
   "projects": [

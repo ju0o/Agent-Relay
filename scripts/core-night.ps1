@@ -23,7 +23,7 @@ function Read-Status($Output) {
   try { return ($raw.Substring($start, $end - $start + 1) | ConvertFrom-Json) } catch { return $null }
 }
 
-$launch = Invoke-Asus "nohup agent-relay night-run up --deadline $Deadline --no-poweroff > ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED"
+$launch = Invoke-Asus "nohup agent-relay night-run up --deadline $Deadline --mainpc-pull > ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED"
 if (-not (($launch -join "`n") -match "NIGHT_RUN_STARTED")) { throw "Refusing activation: detached Night Run was not acknowledged." }
 
 $status = $null; $started = Get-Date
@@ -32,14 +32,16 @@ while (((Get-Date) - $started).TotalSeconds -lt $PollTimeoutSeconds) {
   if ($null -ne $status -and $status.endReason -in @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT") -and -not [string]::IsNullOrWhiteSpace($status.endedAt)) { break }
   Start-Sleep -Seconds $PollSeconds
 }
-if ($null -eq $status -or $status.endReason -notin @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT")) { throw "Refusing shutdown: NIGHT_RUN_COMPLETE is unknown, corrupt, or timed out." }
+if ($null -eq $status -or $status.endReason -notin @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT") -or $status.shutdownState -ne "READY_FOR_MAINPC_PULL") { throw "Refusing shutdown: NIGHT_RUN_COMPLETE is unknown, corrupt, or timed out." }
 
 $remoteReport = [string]$status.reportPathAsus
 if ($remoteReport -notmatch '^/[A-Za-z0-9_./-]+$') { throw "Refusing report pull: unsafe ASUS path." }
 $reportName = Split-Path -Leaf $remoteReport
 $localReport = Join-Path (Join-Path $env:USERPROFILE "Desktop") $reportName
+$localState = Join-Path (Join-Path $env:USERPROFILE "Desktop") "LAST_NIGHT_RUN.json"
 if ($DryRun) { $reportPulled = $true } else { & scp @transportArgs "${AsusHost}:$remoteReport" $localReport; if ($LASTEXITCODE -ne 0) { throw "REPORT_PULL_FAILED" }; $reportPulled = Test-Path -LiteralPath $localReport }
 if (-not $reportPulled -or (Test-Path -LiteralPath $localReport -PathType Leaf -and (Get-Item -LiteralPath $localReport).Length -le 0)) { throw "REPORT_PULL_FAILED: destination missing or empty." }
+if (-not $DryRun) { $remoteState = [string]$status.checkpointPath; if ($remoteState -notmatch '^/[A-Za-z0-9_./-]+$') { throw "Refusing state pull: unsafe ASUS path." }; & scp @transportArgs "${AsusHost}:$remoteState" $localState; if ($LASTEXITCODE -ne 0) { throw "STATE_PULL_FAILED" }; if (-not (Test-Path -LiteralPath $localState -PathType Leaf) -or (Get-Item -LiteralPath $localState).Length -le 0) { throw "STATE_PULL_FAILED: destination missing or empty." } }
 
 $remoteHash = if ($DryRun) { "DRY_RUN" } else { ((Invoke-Asus "sha256sum -- '$remoteReport'") -join "`n") -match '([0-9a-fA-F]{64})'; $Matches[1].ToLowerInvariant() }
 $localHash = if ($DryRun) { "DRY_RUN" } else { (Get-FileHash -LiteralPath $localReport -Algorithm SHA256).Hash.ToLowerInvariant() }

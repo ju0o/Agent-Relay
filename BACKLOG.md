@@ -7,6 +7,21 @@ existing CORE V1 PM → Worker → RESULT_PACKET → independent QA → ACCEPT/N
 runner remains the only execution engine. Active lanes are Agent Relay, actl,
 JuPlan, and JuCeipt. JuControler is not active.
 
+## Founder policy update — autonomous non-financial improvement scope
+
+Founder approval is now standing for PM-selected, repository-backed work in
+Agent Relay, actl, JuPlan, JuCeipt, and the JuControler integration target:
+feature improvements, reliability/quality work, and UI/UX work may be proposed
+as bounded WBS items and advanced automatically through the existing
+PM → Worker → RESULT_PACKET → independent QA → retry/ACCEPT → promotion → NEXT
+loop. A PM must still read the project SSOT and keep each task bounded; this
+policy does not authorize invented Product scope or bypass QA.
+
+Routine Founder Gate/HOLD escalation is not required for that non-financial
+scope. Founder escalation remains mandatory for money movement or payment,
+secrets/credentials, new accounts or OAuth, and other irreversible external
+actions. Actual machine shutdown remains a separate explicit operational path.
+
 - [x] NR-01 supervisor: existing `runOnce`, WBS exhaustion, deadline boundary, `LAST_NIGHT_RUN.json`
 - [x] NR-02 loop: retry/ACCEPT/NEXT through the existing runner
 - [x] NR-03 drain: Agent Relay-managed processes and panes only

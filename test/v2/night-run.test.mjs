@@ -112,9 +112,16 @@ test("report transport verifies the destination hash and shutdown uses the exact
   let args; await requestMainPcShutdown({ target: "mainpc", execFileImpl: async (_command, received) => { args = received; return { stdout: "", stderr: "" }; } }); assert.deepEqual(args, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "mainpc", "shutdown.exe /s /t 30"]);
 });
 
+test("MainPC-pull finalization writes local report without reverse transport", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-")); const saved = [];
+  const record = { schema: "agent-relay.last-night-run.v1", runId: "pull", startedAt: "2026-09-23T17:00:00.000Z", deadline: "2026-09-23T18:00:00.000Z", freezeAt: "2026-09-23T17:55:00.000Z", checkpointAt: "2026-09-23T17:58:00.000Z", endedAt: "2026-09-23T18:00:00.000Z", endReason: "WBS_EXHAUSTED", shutdownState: "FINALIZING", lanes: [] };
+  const result = await finalizeNightRun({ record, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), persist: async (value) => { saved.push(value); return value; }, transport: "mainpc-pull", send: async () => { throw new Error("reverse transport must not run"); }, requestShutdown: async () => { throw new Error("reverse transport must not run"); }, poweroff: async () => { throw new Error("poweroff must not run"); } });
+  assert.equal(result.shutdownState, "READY_FOR_MAINPC_PULL"); assert.equal(result.reportTransferState, "LOCAL_ONLY"); assert.equal(result.asusShutdownRequested, false); assert.ok(saved.length >= 1);
+});
+
 test("MainPC wrapper pulls from ASUS and fails closed before destructive commands", () => {
   const wrapper = readFileSync(new URL("../../scripts/core-night.ps1", import.meta.url), "utf8");
-  assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--no-poweroff/); assert.match(wrapper, /scp @transportArgs/);
+  assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--mainpc-pull/); assert.match(wrapper, /scp @transportArgs/);
   assert.match(wrapper, /sha256sum/); assert.match(wrapper, /Get-FileHash/); assert.match(wrapper, /shutdown\.exe \/s \/t 30/); assert.match(wrapper, /sudo -n \/usr\/sbin\/poweroff/); assert.match(wrapper, /shutdown\.exe \/a/);
   assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/); assert.match(wrapper, /DEADLINE_FORCED_CHECKPOINT/); assert.doesNotMatch(wrapper, /shutdown"/);
 });
