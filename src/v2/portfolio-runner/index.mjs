@@ -48,9 +48,12 @@ export class WorktreeManager {
 
   async create(project, taskId) {
     if (!project?.path || !existsSync(project.path)) throw new Error(`target unavailable: ${project?.id || "unknown"}`);
-    const status = (await exec("git", ["-C", project.path, "status", "--porcelain"])).stdout.trim();
-    if (status) throw new Error(`worktree dirty: ${project.id}`);
-    const base = (await exec("git", ["-C", project.path, "rev-parse", project.ref || "HEAD"])).stdout.trim();
+    const remote = project.repository ? (await exec("git", ["-C", project.path, "remote", "get-url", "origin"])).stdout.trim().replace(/\.git$/, "") : null;
+    if (project.repository && remote !== project.repository.replace(/\.git$/, "")) throw new Error(`target repository mismatch: ${project.id}`);
+    let base;
+    try { base = (await exec("git", ["-C", project.path, "rev-parse", project.ref || "HEAD"])).stdout.trim(); }
+    catch { base = (await exec("git", ["-C", project.path, "rev-parse", `refs/remotes/origin/${project.ref}`])).stdout.trim(); }
+    if (project.expectedHeadSha && base !== project.expectedHeadSha) throw new Error(`target SHA mismatch: ${project.id}`);
     const name = `${project.id}-${taskId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
     const path = join(this.root, name);
     await mkdir(this.root, { recursive: true });
