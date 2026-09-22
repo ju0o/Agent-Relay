@@ -274,6 +274,9 @@ test("blocked lane releases slots, other lane continues, and valid response resu
   const autopilot = new PortfolioAutopilot({ tasks, gateManager, builderAllocator: new RuntimeAllocator({ maxActive: 2, adapter }), qaAllocator: new RuntimeAllocator({ maxActive: 1, adapter }), qaRunner: async (task) => task.founderDecision ? "ACCEPT" : task.lane === "JuActl" ? { verdict: "QA_CHANGES", founderGate: { type: "FOUNDER_E2E_REQUIRED", summary: "확인 필요", reason: "live E2E", evidence: ["QA_CHANGES"], founderAction: "Run E2E", expectedInput: "APPROVE", resumeAction: "resume JuActl", relatedEvidence: [] } } : "ACCEPT" });
   let state = await autopilot.run();
   assert.equal(state.tasks[0].state, "BLOCKED_FOR_FOUNDER"); assert.equal(state.tasks[1].state, "DONE"); assert.equal(state.activeBuilders, 0); assert.equal(state.activeQa, 0);
+  const durable = JSON.parse(await readFile(join(root, "states", `${state.tasks[0].gateId}.json`)));
+  assert.equal(durable.status, "BLOCKED_FOR_FOUNDER");
+  await assert.rejects(() => gateManager.respond({ GATE_ID: state.tasks[0].gateId, DECISION: "MAYBE", timestamp: new Date().toISOString() }), /invalid Founder response/);
   const before = state.tasks[1].attempts; state = await autopilot.applyFounderResponse({ GATE_ID: state.tasks[0].gateId, DECISION: "APPROVE", timestamp: new Date().toISOString() });
   assert.equal(state.tasks[0].state, "DONE"); assert.equal(state.tasks[1].attempts, before); assert.equal(state.activeBuilders, 0);
 });
