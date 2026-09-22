@@ -144,6 +144,85 @@ test("CORE V1 PM automatically queues NEXT after QA ACCEPT and durable promotion
   assert.equal(state.pmDecisions[0].taskId, "T2");
 });
 
+test("later PM decisions do not clobber a task dispatched earlier in the same prepare pass", async () => {
+  const manifest = {
+    projects: [
+      {
+        id: "agent-relay",
+        active: true,
+        pmManaged: true,
+        runtime: "codex",
+        state: "QUEUED",
+        tasks: [{ taskId: "T1", scope: "one", files: [], tests: [] }],
+      },
+      {
+        id: "juactl",
+        active: true,
+        pmManaged: true,
+        runtime: "cursor",
+        state: "BLOCKED_SCOPE",
+      },
+    ],
+  };
+
+  let store = {
+    service: "IDLE",
+    tasks: [],
+    projects: [
+      { id: "agent-relay", state: "QUEUED", blockers: [] },
+      { id: "juactl", state: "BLOCKED_SCOPE", blockers: ["gate"] },
+    ],
+    activeBuilders: [],
+    activeQa: [],
+    pmDecisions: [],
+  };
+
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const runner = {
+    runtime: {},
+    async reconcile() { return clone(store); },
+    async load() { return clone(store); },
+    async save(next) { store = clone(next); return clone(store); },
+    async enqueue(projectId) {
+      const state = await this.load();
+      const project = manifest.projects.find((item) => item.id === projectId);
+      const next = project.tasks[0];
+      state.tasks.push({ ...next, projectId, state: "QUEUED", attempts: 0, qaAttempts: 0 });
+      await this.save(state);
+      return next;
+    },
+  };
+
+  const pmAdapter = {
+    async decide({ project, candidate }) {
+      if (project.id === "agent-relay") {
+        return {
+          schema: "agent-relay.pm.v1",
+          projectId: project.id,
+          decision: "DISPATCH",
+          taskId: candidate.taskId,
+          reason: "dispatch first lane",
+        };
+      }
+      return {
+        schema: "agent-relay.pm.v1",
+        projectId: project.id,
+        decision: "HOLD",
+        taskId: null,
+        reason: "no authorized candidate",
+      };
+    },
+  };
+
+  const team = new CoreV1Team({ runner, manifest, pmAdapter });
+  await team.prepare();
+
+  assert.equal(store.tasks.length, 1);
+  assert.equal(store.tasks[0].taskId, "T1");
+  assert.equal(store.tasks[0].coreV1Managed, true);
+  assert.equal(store.pmDecisions.length, 2);
+});
+
 test("CORE V1 result inbox exposes PM, Worker, QA, NEXT, promotion and blockers", () => {
   const manifest = {
     projects: [
