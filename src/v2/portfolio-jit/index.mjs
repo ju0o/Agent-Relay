@@ -684,6 +684,12 @@ export class PortfolioAutopilot {
           await this.persist();
           continue;
         }
+        if (verdict === "QA_CHANGES") {
+          task.state = "QA_CHANGES";
+          task.acceptance = "QA_CHANGES";
+          await this.persist();
+          return task;
+        }
         if (verdict !== "ACCEPT") throw new Error(`QA did not accept ${task.lane}: ${verdict}`);
         task.state = "DONE";
         task.acceptance = "ACCEPT";
