@@ -2,10 +2,16 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { execFile as nodeExecFile } from "node:child_process";
 import { dirname } from "node:path";
+import { promisify } from "node:util";
+
+const execFile = promisify(nodeExecFile);
 
 export const DEFAULT_TIMEZONE = "Asia/Seoul";
 export const DEFAULT_DEADLINE = "03:00";
+export const DEFAULT_SEND_TO_MAINPC = "/home/skkse12/.agents/skills/send-to-mainpc/scripts/send-to-mainpc.sh";
 const TERMINAL = new Set(["COMPLETE", "V1_COMPLETE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
 const COMPLETE_REASONS = new Set(["WBS_EXHAUSTED", "DEADLINE_COMPLETE"]);
 
@@ -36,7 +42,7 @@ export function readCompletion(value) {
   return { ok: true, reason: value.endReason, resumeRequired: Boolean(value.resumeRequired) };
 }
 
-export function runPoweroff({ checkpoint, command = "sudo", args = ["-n", "/sbin/poweroff"] }) {
+export function runPoweroff({ checkpoint, command = "sudo", args = ["-n", "/usr/sbin/poweroff"] }) {
   const gate = readCompletion(checkpoint);
   if (!gate.ok) return Promise.resolve({ ok: false, status: "REFUSED", reason: gate.reason });
   return new Promise((resolve) => {
@@ -53,6 +59,50 @@ export async function drainManaged(entries = [], { graceMs = 1_000, sleep = (ms)
   await sleep(graceMs);
   await Promise.all(owned.map((entry) => entry.kill?.()));
   return owned.map((entry) => entry.id);
+}
+
+export function mainPcTarget(env = process.env) {
+  return env.MAINPC_SSH_TARGET || env.MAINPC_SSH_ALIAS || (env.MAINPC_SSH_USER && env.MAINPC_SSH_HOST ? `${env.MAINPC_SSH_USER}@${env.MAINPC_SSH_HOST}` : "mainpc");
+}
+
+export function seoulDate(value = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: DEFAULT_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
+}
+
+export function buildNightReport(record) {
+  const lanes = (record.lanes || []).map((lane) => `- ${lane.id || lane.project}: state=${lane.state || "UNKNOWN"}, blocker=${lane.blockers?.[0] || lane.blocker || "-"}`).join("\n") || "- none";
+  const unfinished = (record.unfinishedTasks || []).map((task) => `- ${task.project}/${task.taskId}: worker=${task.workerState || "-"}, QA=${task.qaState || "-"}, worktree=${task.worktree || "-"}, resume=${task.resumeRequired ? "yes" : "no"}`).join("\n") || "- none";
+  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${record.taskId || "-"}`, `- promotion: ${record.promotionRef || record.commitSha || "-"}`, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
+}
+
+export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), scriptPath = process.env.AGENT_RELAY_SEND_TO_MAINPC || DEFAULT_SEND_TO_MAINPC, execFileImpl = execFile }) {
+  const localSha = createHash("sha256").update(await readFile(reportPath)).digest("hex");
+  const result = await execFileImpl(scriptPath, [reportPath, target], { env: process.env });
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const remoteSha = output.match(/SHA256:\s*([0-9a-f]{64})/i)?.[1]?.toLowerCase();
+  if (!output.includes("SENT:") || remoteSha !== localSha) throw new Error(`REPORT_TRANSFER_FAILED: expected ${localSha}, got ${remoteSha || "none"}`);
+  return { state: "DELIVERED", target, remoteSha, output: output.trim(), path: output.match(/SENT:\s*(\S+)/)?.[1] || null };
+}
+
+export async function requestMainPcShutdown({ target = mainPcTarget(), execFileImpl = execFile }) {
+  const result = await execFileImpl("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "shutdown.exe /s /t 30"], { env: process.env });
+  return { state: "REQUESTED", target, command: "shutdown.exe /s /t 30", at: new Date().toISOString(), output: String(result.stdout || "").trim() };
+}
+
+export async function finalizeNightRun({ record: initial, checkpointPath, persist, send = sendReportToMainPc, requestShutdown = requestMainPcShutdown, poweroff = runPoweroff, reportPath, dryRun = false, deferPoweroff = false }) {
+  let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [] };
+  await mkdir(dirname(record.reportPathAsus), { recursive: true });
+  await writeFile(record.reportPathAsus, buildNightReport(record));
+  try { const transfer = dryRun ? { state: "DRY_RUN", path: `MainPC/Desktop/${record.reportPathAsus.split("/").pop()}`, remoteSha: createHash("sha256").update(await readFile(record.reportPathAsus)).digest("hex") } : await send({ reportPath: record.reportPathAsus }); record = { ...record, reportTransferState: transfer.state, reportPathMainPC: transfer.path || null, reportTransferSha256: transfer.remoteSha || null }; }
+  catch (error) { record = { ...record, reportTransferState: "REPORT_TRANSFER_FAILED", reportTransferError: String(error.message || error) }; }
+  await persist(record);
+  try { const shutdown = dryRun ? { state: "DRY_RUN", command: "shutdown.exe /s /t 30", at: new Date().toISOString() } : await requestShutdown(); record = { ...record, mainPcShutdownRequested: shutdown.state === "REQUESTED" || shutdown.state === "DRY_RUN", mainPcShutdownAt: shutdown.at, mainPcShutdownState: shutdown.state }; }
+  catch (error) { record = { ...record, mainPcShutdownState: "FAILED", mainPcShutdownError: String(error.message || error) }; }
+  await persist(record);
+  if (dryRun || deferPoweroff) return persist({ ...record, shutdownState: dryRun ? "DRY_RUN_COMPLETE" : "READY_FOR_ASUS_POWEROFF", asusShutdownRequested: false });
+  record = { ...record, asusShutdownRequested: true, shutdownState: "ASUS_POWEROFF_REQUESTED" }; await persist(record);
+  const asus = await poweroff({ checkpoint: record });
+  return persist({ ...record, asusShutdownState: asus.status, shutdownState: asus.ok ? "POWEROFF_REQUESTED" : asus.status });
 }
 
 function currentTask(state) {
@@ -75,8 +125,8 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
 }
 
 export class NightRunSupervisor {
-  constructor({ runner, checkpointPath, clock = () => new Date(), sleep = (ms) => new Promise((resolvePromise) => { const timer = setTimeout(resolvePromise, ms); timer.unref?.(); }), runId = `night-${Date.now()}` }) {
-    this.runner = runner; this.checkpointPath = checkpointPath; this.clock = clock; this.sleep = sleep; this.runId = runId;
+  constructor({ runner, checkpointPath, clock = () => new Date(), sleep = (ms) => new Promise((resolvePromise) => { const timer = setTimeout(resolvePromise, ms); timer.unref?.(); }), runId = `night-${Date.now()}`, finalize = null }) {
+    this.runner = runner; this.checkpointPath = checkpointPath; this.clock = clock; this.sleep = sleep; this.runId = runId; this.finalize = finalize;
   }
 
   async persist(value) {
@@ -109,7 +159,7 @@ export class NightRunSupervisor {
     const drainAt = new Date(cutoff - 60_000);
     let state = await this.runner.reconcile();
     const write = (endReason, endedAt = null, shutdownState = "NOT_REQUESTED", resumeRequired = true) => this.persist(record({ runId: this.runId, startedAt: started.toISOString(), deadline: cutoff.toISOString(), freezeAt: freezeAt.toISOString(), checkpointAt: checkpointAt.toISOString(), endedAt, endReason, shutdownState, state, resumeRequired }));
-    const finish = async (reason, resumeRequired) => { await this.runner.stop?.(); state = await this.runner.load(); return write(reason, this.clock().toISOString(), "DRAINED", resumeRequired); };
+    const finish = async (reason, resumeRequired) => { await this.runner.stop?.(); state = await this.runner.load(); const result = await write(reason, this.clock().toISOString(), "FINALIZING", resumeRequired); return this.finalize ? this.finalize(result) : result; };
     const drain = async () => { await this.runner.stop?.(); while (this.clock() < drainAt && !signal?.aborted) await this.sleep(Math.max(1, drainAt - this.clock())); };
     if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
     while (!signal?.aborted) {

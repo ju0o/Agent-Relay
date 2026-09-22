@@ -5,11 +5,11 @@ Founder authorization recorded in `BACKLOG.md`. Runtime default timezone is
 
 ## ASUS one-time setup
 
-Run this manually on ASUS after replacing `YOUR_LINUX_USER`:
+Run this once on ASUS as the configured user (`skkse12`):
 
 ```sh
-printf '%s\n' 'YOUR_LINUX_USER ALL=(root) NOPASSWD: /sbin/poweroff' | sudo visudo -f /etc/sudoers.d/agent-relay-night-run
-sudo -n /sbin/poweroff --help >/dev/null
+printf '%s\n' 'skkse12 ALL=(root) NOPASSWD: /usr/sbin/poweroff' | sudo visudo -f /etc/sudoers.d/agent-relay-night-run
+sudo -n /usr/sbin/poweroff --help >/dev/null
 ```
 
 This grants only `/sbin/poweroff`. Agent Relay never edits `/etc/sudoers`,
@@ -22,5 +22,13 @@ allowed, the run remains recorded and reports `SHUTDOWN_PERMISSION_REQUIRED`.
 .\scripts\core-night.ps1
 ```
 
-The wrapper refuses to power off ASUS or MainPC unless the durable night record
-is a valid `WBS_EXHAUSTED` or `DEADLINE_COMPLETE` record.
+The existing SSH alias `mainpc` is used for the MainPC transport unless
+`MAINPC_SSH_TARGET` overrides it. The ASUS supervisor performs the bounded sequence: `NIGHT_REPORT_YYYY-MM-DD.md`
+→ Send-to-MainPC with destination SHA verification → `shutdown.exe /s /t 30`
+→ `sudo -n /usr/sbin/poweroff`. The MainPC wrapper only accepts a valid durable
+`WBS_EXHAUSTED` or `DEADLINE_COMPLETE` result; it never issues a guessed local
+shutdown command. A missing report transfer or shutdown result remains recorded
+and does not wait for a password.
+
+The report and `LAST_NIGHT_RUN.json` are written before the final ASUS command.
+Unfinished worktrees remain available for the next reconcile/resume.

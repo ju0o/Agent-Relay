@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { NightRunSupervisor, deadlineAt, drainManaged, evaluateExhaustion, readCompletion, runPoweroff } from "../../src/v2/night-run/index.mjs";
+import { buildNightReport, finalizeNightRun, NightRunSupervisor, deadlineAt, drainManaged, evaluateExhaustion, readCompletion, requestMainPcShutdown, runPoweroff, sendReportToMainPc } from "../../src/v2/night-run/index.mjs";
 
 const lanes = (states) => ({ projects: states.map(([id, state]) => ({ id, coreV1: true, active: true, state })), tasks: [] });
 const runner = (state, after = state) => ({ manifest: { projects: state.projects }, reconcile: async () => state, runOnce: async () => after });
@@ -98,10 +98,23 @@ test("completion allowlist rejects incomplete and unknown states", () => {
   assert.equal(readCompletion({ ...valid, endReason: "DEADLINE_COMPLETE" }).ok, true);
 });
 
-test("MainPC wrapper is fail-closed and orders poweroff before local shutdown", () => {
+test("finalization dry-run proves report, transfer, MainPC shutdown, and ASUS poweroff order", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-")); const events = [];
+  const record = { schema: "agent-relay.last-night-run.v1", runId: "dry", startedAt: "2026-09-23T17:00:00.000Z", deadline: "2026-09-23T18:00:00.000Z", freezeAt: "2026-09-23T17:55:00.000Z", checkpointAt: "2026-09-23T17:58:00.000Z", endedAt: "2026-09-23T18:00:00.000Z", endReason: "DEADLINE_COMPLETE", shutdownState: "FINALIZING", lanes: [], taskId: "NR-01", qaState: "ACCEPT", promotionRef: "refs/agent-relay/promotions/NR-01" };
+  const saved = []; const final = await finalizeNightRun({ record, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), reportPath: join(dir, "NIGHT_REPORT_2026-09-24.md"), persist: async (value) => { saved.push(value); return value; }, send: async ({ reportPath }) => { events.push("send"); return { state: "DELIVERED", path: "MainPC/Desktop/NIGHT_REPORT.md", remoteSha: (await import("node:crypto")).createHash("sha256").update(await readFile(reportPath)).digest("hex") }; }, requestShutdown: async () => { events.push("mainpc"); return { state: "REQUESTED", at: "2026-09-23T18:00:01.000Z" }; }, poweroff: async () => { events.push("asus"); return { ok: true, status: "POWEROFF_REQUESTED" }; } });
+  assert.deepEqual(events, ["send", "mainpc", "asus"]); assert.equal(final.reportTransferState, "DELIVERED"); assert.equal(final.mainPcShutdownRequested, true); assert.equal(final.asusShutdownRequested, true); assert.equal(final.shutdownState, "POWEROFF_REQUESTED"); assert.match(await readFile(join(dir, "NIGHT_REPORT_2026-09-24.md"), "utf8"), /NR-01/); assert.ok(saved.length >= 3);
+});
+
+test("report transport verifies the destination hash and shutdown uses the exact command", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-")); const report = join(dir, "NIGHT_REPORT.md"); await import("node:fs/promises").then(({ writeFile }) => writeFile(report, "report\n"));
+  const crypto = await import("node:crypto"); const sha = crypto.createHash("sha256").update("report\n").digest("hex");
+  const sent = await sendReportToMainPc({ reportPath: report, target: "mainpc", scriptPath: "send", execFileImpl: async () => ({ stdout: `SENT: C:/Desktop/NIGHT_REPORT.md\nSHA256: ${sha}\n`, stderr: "" }) }); assert.equal(sent.state, "DELIVERED");
+  let args; await requestMainPcShutdown({ target: "mainpc", execFileImpl: async (_command, received) => { args = received; return { stdout: "", stderr: "" }; } }); assert.deepEqual(args, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "mainpc", "shutdown.exe /s /t 30"]);
+});
+
+test("MainPC wrapper is fail-closed and lets ASUS own the final shutdown", () => {
   const wrapper = readFileSync(new URL("../../scripts/core-night.ps1", import.meta.url), "utf8");
-  assert.match(wrapper, /night-run up --deadline/); assert.match(wrapper, /night-run shutdown/);
+  assert.match(wrapper, /night-run up --deadline/); assert.doesNotMatch(wrapper, /night-run shutdown/);
   assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/);
-  assert.ok(wrapper.indexOf("POWEROFF_REQUESTED") < wrapper.indexOf("Stop-Computer"));
-  assert.match(wrapper, /SSH did not disconnect/);
+  assert.match(wrapper, /REPORT_TRANSFER_FAILED/); assert.match(wrapper, /mainPcShutdownRequested/); assert.doesNotMatch(wrapper, /Stop-Computer/);
 });

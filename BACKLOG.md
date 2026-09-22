@@ -7,14 +7,14 @@ existing CORE V1 PM → Worker → RESULT_PACKET → independent QA → ACCEPT/N
 runner remains the only execution engine. Active lanes are Agent Relay, actl,
 JuPlan, and JuCeipt. JuControler is not active.
 
-- [ ] NR-01 supervisor: existing `runOnce`, WBS exhaustion, deadline boundary, `LAST_NIGHT_RUN.json`
-- [ ] NR-02 loop: retry/ACCEPT/NEXT through the existing runner
-- [ ] NR-03 drain: Agent Relay-managed processes and panes only
-- [ ] NR-04 resume: reconcile checkpoint and preserve unfinished worktrees
-- [ ] NR-05 deadline: injectable 02:55 freeze, 02:58 checkpoint, 03:00 hard stop
-- [ ] NR-06 ASUS: narrow non-interactive shutdown handoff, fail closed if missing
-- [ ] NR-07 MainPC: `core-night` wrapper with completion-integrity gate
-- [ ] NR-08 independent safety QA
+- [x] NR-01 supervisor: existing `runOnce`, WBS exhaustion, deadline boundary, `LAST_NIGHT_RUN.json`
+- [x] NR-02 loop: retry/ACCEPT/NEXT through the existing runner
+- [x] NR-03 drain: Agent Relay-managed processes and panes only
+- [x] NR-04 resume: reconcile checkpoint and preserve unfinished worktrees
+- [x] NR-05 deadline: injectable 02:55 freeze, 02:58 checkpoint, 03:00 hard stop
+- [x] NR-06 ASUS: narrow non-interactive shutdown handoff, fail closed if missing
+- [x] NR-07 MainPC: `core-night` wrapper with completion-integrity gate
+- [x] NR-08 independent safety QA
 
 Safety setup is intentionally Founder-run: see `docs/CORE_V1_AUTO_NIGHT_RUN.md`.
 

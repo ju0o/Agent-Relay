@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, loadManifest, parseTaskPacket, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
-import { DEFAULT_DEADLINE, NightRunSupervisor, runPoweroff } from "../src/v2/night-run/index.mjs";
+import { DEFAULT_DEADLINE, finalizeNightRun, NightRunSupervisor, runPoweroff } from "../src/v2/night-run/index.mjs";
 
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
 const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), ".local", "share", "AgentRelay", "data", "founder-outbox");
@@ -15,7 +15,11 @@ const nightPidPath = join(root, "night-run.pid");
 const [area, command, project, decision] = process.argv.slice(2);
 if (!["portfolio", "project", "core-v1", "night-run"].includes(area)) { console.error("usage: agent-relay core-v1 status|results [--json]|start|resume | night-run once|up|status|stop | portfolio ... | project ..."); process.exit(2); }
 const instance = await runner();
-const night = () => new NightRunSupervisor({ runner: instance, checkpointPath: nightPath });
+const night = ({ deferPoweroff = false } = {}) => {
+  const supervisor = new NightRunSupervisor({ runner: instance, checkpointPath: nightPath });
+  if (deferPoweroff) supervisor.finalize = (record) => finalizeNightRun({ record, checkpointPath: nightPath, persist: (value) => supervisor.persist(value), deferPoweroff: true });
+  return supervisor;
+};
 if (area === "core-v1" && command === "status") { const state = await instance.load(); console.log(formatCoreV1Text(buildCoreV1Snapshot(instance.manifest, state))); process.exit(0); }
 if (area === "core-v1" && command === "results") { const state = await instance.load(); console.log(formatCoreV1Results(buildCoreV1Snapshot(instance.manifest, state), process.argv.includes("--json"))); process.exit(0); }
 if (area === "night-run" && command === "status") { console.log(JSON.stringify(await night().status(), null, 2)); process.exit(0); }
@@ -32,7 +36,17 @@ if (area === "night-run" && command === "up") {
   await mkdir(root, { recursive: true }); await writeFile(nightPidPath, String(process.pid));
   const controller = new AbortController(); const shutdown = async () => { controller.abort(); await instance.stop(); await rm(nightPidPath, { force: true }); process.exit(0); };
   process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
-  try { console.log(JSON.stringify(await night().run({ deadline, signal: controller.signal }), null, 2)); } finally { await rm(nightPidPath, { force: true }); }
+  try {
+    const supervisor = night({ deferPoweroff: true });
+    const result = await supervisor.run({ deadline, signal: controller.signal });
+    console.log(JSON.stringify(result, null, 2));
+    if (result.shutdownState === "READY_FOR_ASUS_POWEROFF") {
+      const checkpoint = { ...result, asusShutdownRequested: true, shutdownState: "ASUS_POWEROFF_REQUESTED" };
+      await supervisor.persist(checkpoint);
+      const power = await runPoweroff({ checkpoint });
+      await supervisor.persist({ ...checkpoint, asusShutdownState: power.status, shutdownState: power.ok ? "POWEROFF_REQUESTED" : power.status, shutdownError: power.reason || null });
+    }
+  } finally { await rm(nightPidPath, { force: true }); }
   process.exit(0);
 }
 if (area === "night-run" && command === "stop") { try { const pid = Number(await readFile(nightPidPath, "utf8")); if (pid && pid !== process.pid) process.kill(pid, "SIGTERM"); } catch {} console.log(JSON.stringify(await night().status(), null, 2)); process.exit(0); }
