@@ -8,6 +8,7 @@ test("packet parsers are strict and exit-zero without a packet is not completion
   assert.equal(parseResultPacket('RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"T","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"ok"}').status, "IMPLEMENTED");
   assert.equal(parseQaPacket('QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"T","verdict":"ACCEPT","tests":[],"findings":[],"summary":"ok"}').verdict, "ACCEPT");
   assert.deepEqual(STATES.includes("VERIFIED_DONE"), true);
+  assert.deepEqual(STATES.includes("BLOCKED_RUNTIME_ADAPTER"), true);
   assert.deepEqual(QA_VERDICTS, ["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
   assert.throws(() => parseResultPacket("completed successfully"), /invalid RESULT_PACKET/);
   assert.throws(() => parseQaPacket("exit 0"), /invalid QA_PACKET/);
