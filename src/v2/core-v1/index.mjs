@@ -174,6 +174,11 @@ export class CoreV1Team {
 
       if (activeTaskFor(state, project.id)) continue;
 
+      const latest = latestTaskFor(state, project.id);
+      if (latest && ["HOLD", "FOUNDER_GATE"].includes(latest.state)) {
+        continue;
+      }
+
       const candidate = nextDefinition(project, state);
       const completedTaskIds = (state.tasks || [])
         .filter(
@@ -242,6 +247,11 @@ export class CoreV1Team {
     await this.runner.runOnce();
     await this.promoteAccepted();
     await this.prepare();
+
+    const state = await this.runner.load();
+    state.service = "IDLE";
+    await this.runner.save(state);
+
     return this.status();
   }
 
