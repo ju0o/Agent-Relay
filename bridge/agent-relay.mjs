@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadManifest, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
 import { CoreV1Team } from "../src/v2/core-v1/index.mjs";
 import { CoreV1WorktreeManager } from "../src/v2/core-v1/worktrees.mjs";
@@ -56,9 +56,7 @@ async function ensureSingleRunner(pidPath, label) {
     if (String(error.message).includes("already active")) throw error;
   }
 
-  await mkdir(new URL(`file://${pidPath}`).pathname.replace(/\/[^/]+$/, ""), { recursive: true }).catch(async () => {
-    await mkdir(root, { recursive: true });
-  });
+  await mkdir(dirname(pidPath), { recursive: true });
   await writeFile(pidPath, String(process.pid));
 }
 
