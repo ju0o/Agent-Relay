@@ -25,7 +25,7 @@ test("PM packet parser rejects invented or malformed responses", () => {
   );
 });
 
-test("CORE V1 PM automatically queues NEXT after QA ACCEPT without Founder relay", async () => {
+test("CORE V1 PM automatically queues NEXT after QA ACCEPT and durable promotion", async () => {
   const manifest = {
     projects: [
       {
@@ -63,10 +63,10 @@ test("CORE V1 PM automatically queues NEXT after QA ACCEPT without Founder relay
         (definition) =>
           !state.tasks.some(
             (task) =>
-              task.taskId === definition.taskId && task.state === "VERIFIED_DONE",
+              task.taskId === definition.taskId && task.state === "VERIFIED_DONE" && task.promotion,
           ),
       );
-      if (!state.tasks.some((task) => task.taskId === next.taskId)) {
+      if (!state.tasks.some((task) => task.taskId === next.taskId && task.state !== "HOLD")) {
         state.tasks.push({ ...next, projectId, state: "QUEUED", attempts: 0, qaAttempts: 0 });
       }
       return next;
@@ -82,6 +82,7 @@ test("CORE V1 PM automatically queues NEXT after QA ACCEPT without Founder relay
         status: "IMPLEMENTED",
         changedFiles: [],
         tests: [],
+        commitSha: "abc123",
         summary: "done",
       };
       queued.qa = {
@@ -116,15 +117,34 @@ test("CORE V1 PM automatically queues NEXT after QA ACCEPT without Founder relay
     },
   };
 
-  const team = new CoreV1Team({ runner, manifest, pmAdapter });
+  const promotions = [];
+  const team = new CoreV1Team({
+    runner,
+    manifest,
+    pmAdapter,
+    async promote(project, commitSha) {
+      const promotion = {
+        ref: `refs/heads/agent-relay/core-v1/${project.id}`,
+        base: "base",
+        commitSha,
+      };
+      promotions.push(promotion);
+      return promotion;
+    },
+  });
+
   await team.runOnce();
 
-  assert.equal(state.tasks.find((task) => task.taskId === "T1").state, "VERIFIED_DONE");
-  assert.equal(state.tasks.find((task) => task.taskId === "T2").state, "QUEUED");
+  const first = state.tasks.find((task) => task.taskId === "T1");
+  const second = state.tasks.find((task) => task.taskId === "T2");
+  assert.equal(first.state, "VERIFIED_DONE");
+  assert.equal(first.promotion.commitSha, "abc123");
+  assert.equal(promotions.length, 1);
+  assert.equal(second.state, "QUEUED");
   assert.equal(state.pmDecisions[0].taskId, "T2");
 });
 
-test("CORE V1 result inbox exposes PM, Worker, QA, NEXT and blockers", () => {
+test("CORE V1 result inbox exposes PM, Worker, QA, NEXT, promotion and blockers", () => {
   const manifest = {
     projects: [
       {
@@ -159,10 +179,15 @@ test("CORE V1 result inbox exposes PM, Worker, QA, NEXT and blockers", () => {
         projectId: "agent-relay",
         taskId: "T1",
         state: "VERIFIED_DONE",
+        coreV1Managed: true,
         attempts: 1,
         qaAttempts: 1,
-        result: { summary: "implemented" },
+        result: { summary: "implemented", commitSha: "abc123" },
         qa: { verdict: "ACCEPT" },
+        promotion: {
+          ref: "refs/heads/agent-relay/core-v1/agent-relay",
+          commitSha: "abc123",
+        },
       },
     ],
   };
@@ -174,5 +199,6 @@ test("CORE V1 result inbox exposes PM, Worker, QA, NEXT and blockers", () => {
   assert.match(text, /WORKER: codex/);
   assert.match(text, /QA: codex \/ ACCEPT/);
   assert.match(text, /NEXT: T2/);
+  assert.match(text, /PROMOTED: refs\/heads\/agent-relay\/core-v1\/agent-relay @ abc123/);
   assert.match(text, /BLOCKERS: example/);
 });
