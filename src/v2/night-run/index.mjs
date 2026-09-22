@@ -54,7 +54,9 @@ export function runPoweroff({ checkpoint, command = "sudo", args = ["-n", "/usr/
 }
 
 export async function drainManaged(entries = [], { graceMs = 1_000, sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)) } = {}) {
-  const owned = entries.filter((entry) => entry?.managed === true && entry.owner === "agent-relay");
+  const candidates = Array.isArray(entries) ? entries : Object.values(entries).flatMap((value) => Array.isArray(value) ? value : []);
+  const owned = candidates.filter((entry) => entry?.managed === true && entry.owner === "agent-relay");
+  if (!owned.length) return [];
   await Promise.all(owned.map((entry) => entry.stop?.()));
   await sleep(graceMs);
   await Promise.all(owned.map((entry) => entry.kill?.()));
@@ -125,8 +127,8 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
 }
 
 export class NightRunSupervisor {
-  constructor({ runner, checkpointPath, clock = () => new Date(), sleep = (ms) => new Promise((resolvePromise) => { const timer = setTimeout(resolvePromise, ms); timer.unref?.(); }), runId = `night-${Date.now()}`, finalize = null }) {
-    this.runner = runner; this.checkpointPath = checkpointPath; this.clock = clock; this.sleep = sleep; this.runId = runId; this.finalize = finalize;
+  constructor({ runner, checkpointPath, clock = () => new Date(), sleep = (ms) => new Promise((resolvePromise) => { const timer = setTimeout(resolvePromise, ms); timer.unref?.(); }), runId = `night-${Date.now()}`, finalize = null, managedEntries = null }) {
+    this.runner = runner; this.checkpointPath = checkpointPath; this.clock = clock; this.sleep = sleep; this.runId = runId; this.finalize = finalize; this.managedEntries = managedEntries;
   }
 
   async persist(value) {
@@ -159,8 +161,10 @@ export class NightRunSupervisor {
     const drainAt = new Date(cutoff - 60_000);
     let state = await this.runner.reconcile();
     const write = (endReason, endedAt = null, shutdownState = "NOT_REQUESTED", resumeRequired = true) => this.persist(record({ runId: this.runId, startedAt: started.toISOString(), deadline: cutoff.toISOString(), freezeAt: freezeAt.toISOString(), checkpointAt: checkpointAt.toISOString(), endedAt, endReason, shutdownState, state, resumeRequired }));
-    const finish = async (reason, resumeRequired) => { await this.runner.stop?.(); state = await this.runner.load(); const result = await write(reason, this.clock().toISOString(), "FINALIZING", resumeRequired); return this.finalize ? this.finalize(result) : result; };
-    const drain = async () => { await this.runner.stop?.(); while (this.clock() < drainAt && !signal?.aborted) await this.sleep(Math.max(1, drainAt - this.clock())); };
+    const drainEntries = async () => this.managedEntries ? this.managedEntries(state) : (this.runner.managedEntries?.(state) || [state.activeBuilders, state.activeQa, state.activeMonitors, state.activePanes]);
+    const stopManaged = async () => { const entries = await drainEntries(); await this.runner.stop?.(); await drainManaged(entries); };
+    const finish = async (reason, resumeRequired) => { await stopManaged(); state = await this.runner.load(); const result = await write(reason, this.clock().toISOString(), "FINALIZING", resumeRequired); return this.finalize ? this.finalize(result) : result; };
+    const drain = async () => { await stopManaged(); while (this.clock() < drainAt && !signal?.aborted) await this.sleep(Math.max(1, drainAt - this.clock())); };
     if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
     while (!signal?.aborted) {
       const now = this.clock();
@@ -187,6 +191,6 @@ export class NightRunSupervisor {
       if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
       await this.sleep(intervalMs);
     }
-    await this.runner.stop?.(); state = await this.runner.load(); return write("STOPPED", this.clock().toISOString(), "DRAINED", true);
+    await stopManaged(); state = await this.runner.load(); return write("STOPPED", this.clock().toISOString(), "DRAINED", true);
   }
 }

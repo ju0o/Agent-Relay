@@ -92,6 +92,17 @@ test("managed drain ignores unowned processes", async () => {
   assert.deepEqual(await drainManaged(entries, { graceMs: 0, sleep: async () => {} }), ["owned"]); assert.deepEqual(events, ["stop-owned", "kill-owned"]);
 });
 
+test("managed drain accepts worker, QA, monitor, and pane groups only for Agent Relay", async () => {
+  const events = []; const groups = {
+    workers: [{ id: "worker", owner: "agent-relay", managed: true, stop: async () => events.push("stop-worker"), kill: async () => events.push("kill-worker") }],
+    qa: [{ id: "qa", owner: "agent-relay", managed: true, stop: async () => events.push("stop-qa"), kill: async () => events.push("kill-qa") }],
+    monitors: [{ id: "monitor", owner: "agent-relay", managed: true, stop: async () => events.push("stop-monitor"), kill: async () => events.push("kill-monitor") }],
+    panes: [{ id: "pane", owner: "other", managed: true, stop: async () => events.push("stop-pane"), kill: async () => events.push("kill-pane") }],
+  };
+  assert.deepEqual(await drainManaged(groups, { graceMs: 0, sleep: async () => {} }), ["worker", "qa", "monitor"]);
+  assert.deepEqual(events, ["stop-worker", "stop-qa", "stop-monitor", "kill-worker", "kill-qa", "kill-monitor"]);
+});
+
 test("completion allowlist rejects incomplete and unknown states", () => {
   const valid = { schema: "agent-relay.last-night-run.v1", runId: "r", startedAt: "s", deadline: "d", freezeAt: "f", checkpointAt: "c", endedAt: "x", shutdownState: "DRAINED", lanes: [] };
   assert.equal(readCompletion({ ...valid, endReason: "RUNNING" }).ok, false);
