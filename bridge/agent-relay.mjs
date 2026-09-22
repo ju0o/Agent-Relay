@@ -8,11 +8,16 @@ import { CoreV1Team } from "../src/v2/core-v1/index.mjs";
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
 const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), ".local", "share", "AgentRelay", "data", "founder-outbox");
 const manifestPath = process.env.AGENT_RELAY_PORTFOLIO_MANIFEST || new URL("../config/portfolio.json", import.meta.url).pathname;
+const selfRepoPath = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
 const portfolioPidPath = join(root, "runner.pid");
 const coreV1PidPath = join(root, "core-v1-runner.pid");
 
 const createRunner = async () => {
   const manifest = await loadManifest(manifestPath);
+  manifest.projects = manifest.projects.map((project) => ({
+    ...project,
+    path: project.path === "$AGENT_RELAY_REPO" ? selfRepoPath : project.path,
+  }));
   const runner = new PortfolioRunner({
     manifest,
     statePath: join(root, "state.json"),
