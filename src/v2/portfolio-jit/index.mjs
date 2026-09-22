@@ -12,6 +12,7 @@
 "use strict";
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +28,50 @@ export const RUNTIME_STATES = Object.freeze([
 ]);
 
 export const MAX_ACTIVE_RUNTIMES = 2;
+
+export const FOUNDER_GATE_TYPES = Object.freeze([
+  "FOUNDER_DECISION", "FOUNDER_E2E_REQUIRED", "PAYMENT_REQUIRED",
+  "ACCOUNT_OR_OAUTH_REQUIRED", "SECRET_REQUIRED", "IRREVERSIBLE_ACTION",
+]);
+
+export function isFounderGateType(type) { return FOUNDER_GATE_TYPES.includes(type); }
+
+export function deterministicGateId({ project, taskId, type, evidenceHash }) {
+  if (!isFounderGateType(type)) throw new Error(`unsupported Founder Gate type: ${type}`);
+  return `FG-${createHash("sha256").update([project, taskId, type, evidenceHash].join("\n")).digest("hex").slice(0, 24)}`;
+}
+
+export class FounderGateManager {
+  constructor({ root, deliver } = {}) { this.root = root; this.deliver = deliver || (async () => false); }
+  _paths(id) { return { state: join(this.root, "states", `${id}.json`), packet: join(this.root, "packets", `${id}.md`) }; }
+  async _write(path, value) { await writeFile(`${path}.tmp`, value); await rm(path, { force: true }); await writeFile(path, value); }
+  _packet(g) {
+    return ["# Founder Gate", `GATE_ID: ${g.gateId}`, `PROJECT: ${g.project}`, `TYPE: ${g.type}`, "STATUS: BLOCKED_FOR_FOUNDER", `CREATED_AT: ${g.createdAt}`, `TASK_ID: ${g.taskId}`, `RUN_ID: ${g.runId}`, "", "## 지금 어디까지 됐나", "", g.summary, "", "## 왜 사람 확인이 필요한가", "", g.reason, "", "## 이미 Agent가 확인한 것", "", ...g.evidence.map((x) => `- ${x}`), "", "## Founder가 해야 할 것", "", g.founderAction, "", "## 필요한 입력", "", g.expectedInput, "", "## 결정 후 자동으로 할 일", "", g.resumeAction, "", "## 관련 증거", "", ...g.relatedEvidence.map((x) => `- ${x}`), "", "## Raw machine payload", "", "```json", JSON.stringify({ gateId: g.gateId, project: g.project, taskId: g.taskId, runId: g.runId, type: g.type, status: g.status }, null, 2), "```", ""].join("\n");
+  }
+  async create(input) {
+    if (!isFounderGateType(input.type)) throw new Error("invalid Founder Gate type");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(this.root, "states"), { recursive: true }); await mkdir(join(this.root, "packets"), { recursive: true });
+    const evidenceHash = input.evidenceHash || createHash("sha256").update(JSON.stringify(input.evidence || [])).digest("hex");
+    const gateId = deterministicGateId({ project: input.project, taskId: input.taskId, type: input.type, evidenceHash });
+    const paths = this._paths(gateId);
+    let gate; try { gate = JSON.parse(await readFile(paths.state, "utf8")); } catch { gate = null; }
+    if (!gate) gate = { gateId, project: input.project, type: input.type, taskId: input.taskId, runId: input.runId || "", evidenceHash, status: "BLOCKED_FOR_FOUNDER", deliveryState: "DELIVERY_PENDING", createdAt: input.createdAt || new Date().toISOString(), summary: input.summary, reason: input.reason, evidence: input.evidence || [], founderAction: input.founderAction, expectedInput: input.expectedInput, resumeAction: input.resumeAction, relatedEvidence: input.relatedEvidence || [] };
+    await this._write(paths.packet, this._packet(gate));
+    if (gate.deliveryState === "DELIVERY_PENDING") { try { if (await this.deliver(paths.packet, gate)) gate.deliveryState = "DELIVERED"; } catch { /* pending is truthful */ } }
+    await this._write(paths.state, JSON.stringify(gate, null, 2));
+    return { ...gate, packet: paths.packet };
+  }
+  async respond(response) {
+    if (!response?.GATE_ID || !response?.DECISION || !response?.timestamp || !["APPROVE", "REJECT", "INPUT"].includes(response.DECISION)) throw new Error("invalid Founder response");
+    const paths = this._paths(response.GATE_ID); const gate = JSON.parse(await readFile(paths.state, "utf8"));
+    if (gate.status !== "BLOCKED_FOR_FOUNDER") throw new Error("Founder Gate is not blocked");
+    const { mkdir } = await import("node:fs/promises"); await mkdir(join(this.root, "responses"), { recursive: true });
+    await this._write(join(this.root, "responses", `${gate.gateId}.json`), JSON.stringify(response, null, 2));
+    gate.status = "RESOLVED"; gate.decision = response.DECISION; gate.response = response;
+    await this._write(paths.state, JSON.stringify(gate, null, 2)); return gate;
+  }
+}
 
 const CODEX_MARKER = /^[A-Z0-9_:-]+$/;
 
@@ -728,7 +773,7 @@ export class AutopilotStateStore {
 
 /** Bounded real-lane orchestration: two Builder runtimes, one QA runtime. */
 export class PortfolioAutopilot {
-  /** @param {{tasks?: object[], builderAllocator: RuntimeAllocator, qaAllocator?: RuntimeAllocator, stateStore?: AutopilotStateStore, maxBuilders?: number, maxQa?: number, qaRunner?: Function}} opts */
+  /** @param {{tasks?: object[], builderAllocator: RuntimeAllocator, qaAllocator?: RuntimeAllocator, stateStore?: AutopilotStateStore, maxBuilders?: number, maxQa?: number, qaRunner?: Function, gateManager?: FounderGateManager}} opts */
   constructor(opts) {
     this.tasks = (opts.tasks || []).map((task) => ({ ...task, state: task.state || "QUEUED", attempts: task.attempts || 0, qaAttempts: task.qaAttempts || 0 }));
     this.builderAllocator = opts.builderAllocator;
@@ -737,6 +782,7 @@ export class PortfolioAutopilot {
     this.maxBuilders = Math.min(opts.maxBuilders ?? 2, 2);
     this.maxQa = Math.min(opts.maxQa ?? 1, 1);
     this.qaRunner = opts.qaRunner || null;
+    this.gateManager = opts.gateManager || null;
     this.activeBuilders = new Map();
     this.qaActive = 0;
     this.qaWaiters = [];
@@ -812,6 +858,17 @@ export class PortfolioAutopilot {
         task.builder.stoppedAt = Date.now();
         await this.persist();
         const verdict = await this._runQa(task, result);
+        if (verdict && typeof verdict === "object" && verdict.founderGate) {
+          if (!this.gateManager || !isFounderGateType(verdict.founderGate.type)) throw new Error("invalid Founder Gate request");
+          const gate = await this.gateManager.create({
+            project: task.projectId, taskId: task.id || task.lane, runId: `${task.lane}-${task.attempts}`,
+            ...verdict.founderGate,
+          });
+          task.state = "BLOCKED_FOR_FOUNDER"; task.gateId = gate.gateId; task.gate = gate;
+          this.events.push({ type: "FOUNDER_GATE", lane: task.lane, gateId: gate.gateId, deliveryState: gate.deliveryState });
+          await this.persist();
+          return task;
+        }
         if (verdict === "REQUEST_CHANGES" && task.attempts < (task.maxAttempts || 2)) {
           task.state = "QUEUED";
           task.retry = "SAME_TASK";
@@ -860,5 +917,16 @@ export class PortfolioAutopilot {
     }
     await this.persist();
     return this.snapshot();
+  }
+
+  async applyFounderResponse(response) {
+    if (!this.gateManager) throw new Error("Founder Gate manager unavailable");
+    const gate = await this.gateManager.respond(response);
+    const task = this.tasks.find((item) => item.gateId === gate.gateId);
+    if (!task) throw new Error("Founder Gate lane not found");
+    task.state = "QUEUED"; task.founderDecision = gate.decision;
+    this.events.push({ type: "FOUNDER_GATE_RESOLVED", lane: task.lane, gateId: gate.gateId, decision: gate.decision });
+    await this.persist();
+    return this.run();
   }
 }

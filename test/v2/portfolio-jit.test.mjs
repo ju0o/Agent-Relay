@@ -6,12 +6,15 @@ import { promisify } from "node:util";
 import test from "node:test";
 import {
   FAILURE_CLASS,
+  FounderGateManager,
   MAX_ACTIVE_RUNTIMES,
   PortfolioJitScheduler,
   PortfolioAutopilot,
   ProjectRegistry,
   RuntimeAllocator,
   TargetResolver,
+  deterministicGateId,
+  isFounderGateType,
   WorkQueue,
   classifyFailure,
   isFailoverFailure,
@@ -249,4 +252,28 @@ test("READ_ONLY_QA detects target modification and leaves unrelated dirty checko
   assert.notEqual(resolved.path, dirty);
   assert.equal(await readFile(join(dirty, "unrelated.txt"), "utf8"), "preserve\n");
   await resolved.cleanup();
+});
+
+test("Founder Gates classify strictly, deduplicate, and preserve pending delivery", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-gate-"); fixtures.push(root);
+  const manager = new FounderGateManager({ root });
+  assert.equal(isFounderGateType("FOUNDER_E2E_REQUIRED"), true);
+  assert.equal(isFounderGateType("QA_CHANGES"), false);
+  const input = { project: "juactl", taskId: "task-a", type: "FOUNDER_E2E_REQUIRED", summary: "확인 필요", reason: "Linux cannot prove Windows E2E", evidence: ["exact SHA"], founderAction: "Run the E2E", expectedInput: "APPROVE", resumeAction: "Resume JuActl only", relatedEvidence: ["report"] };
+  const a = await manager.create(input); const b = await manager.create(input);
+  assert.equal(a.gateId, b.gateId); assert.equal(a.deliveryState, "DELIVERY_PENDING");
+  assert.equal(a.gateId, deterministicGateId({ project: "juactl", taskId: "task-a", type: input.type, evidenceHash: a.evidenceHash }));
+  assert.match(await readFile(a.packet, "utf8"), /STATUS: BLOCKED_FOR_FOUNDER/);
+});
+
+test("blocked lane releases slots, other lane continues, and valid response resumes only it", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-gate-"); fixtures.push(root);
+  const gateManager = new FounderGateManager({ root });
+  const adapter = { async start(need) { return { id: `rt-${need.projectId}-${Date.now()}`, provider: "mock", state: "STARTING" }; }, async ready(rt) { rt.state = "READY"; return true; }, async dispatch() {}, async collect(_rt, task) { return { resultText: task.goal, sendAck: true, resultAck: true }; }, async stop() {} };
+  const tasks = [{ lane: "JuActl", projectId: "juactl", goal: "JUACTL_MARKER", requiresQa: true }, { lane: "JuPlan", projectId: "juplan", goal: "JUPLAN_MARKER", requiresQa: true }];
+  const autopilot = new PortfolioAutopilot({ tasks, gateManager, builderAllocator: new RuntimeAllocator({ maxActive: 2, adapter }), qaAllocator: new RuntimeAllocator({ maxActive: 1, adapter }), qaRunner: async (task) => task.founderDecision ? "ACCEPT" : task.lane === "JuActl" ? { verdict: "QA_CHANGES", founderGate: { type: "FOUNDER_E2E_REQUIRED", summary: "확인 필요", reason: "live E2E", evidence: ["QA_CHANGES"], founderAction: "Run E2E", expectedInput: "APPROVE", resumeAction: "resume JuActl", relatedEvidence: [] } } : "ACCEPT" });
+  let state = await autopilot.run();
+  assert.equal(state.tasks[0].state, "BLOCKED_FOR_FOUNDER"); assert.equal(state.tasks[1].state, "DONE"); assert.equal(state.activeBuilders, 0); assert.equal(state.activeQa, 0);
+  const before = state.tasks[1].attempts; state = await autopilot.applyFounderResponse({ GATE_ID: state.tasks[0].gateId, DECISION: "APPROVE", timestamp: new Date().toISOString() });
+  assert.equal(state.tasks[0].state, "DONE"); assert.equal(state.tasks[1].attempts, before); assert.equal(state.activeBuilders, 0);
 });
