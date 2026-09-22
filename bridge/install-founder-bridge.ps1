@@ -9,6 +9,9 @@ New-Item -ItemType Directory -Force -Path $BridgeRoot | Out-Null
 $node = Join-Path $BridgeRoot "founder-bridge.mjs"
 $source = Join-Path $PSScriptRoot "founder-bridge.mjs"
 if ([IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($node)) { Copy-Item -Force $source $node }
+$moduleDir = Join-Path $BridgeRoot "src\v2\founder-bridge"
+New-Item -ItemType Directory -Force -Path $moduleDir | Out-Null
+Copy-Item -Force (Join-Path $PSScriptRoot "index.mjs") (Join-Path $moduleDir "index.mjs")
 $env:REMOTE_ALIAS = $RemoteAlias
 $env:REMOTE_DATA_ROOT = $RemoteDataRoot
 $env:LOCAL_INBOX = $LocalInbox

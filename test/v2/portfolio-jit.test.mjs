@@ -276,7 +276,7 @@ test("blocked lane releases slots, other lane continues, and valid response resu
   assert.equal(state.tasks[0].state, "BLOCKED_FOR_FOUNDER"); assert.equal(state.tasks[1].state, "DONE"); assert.equal(state.activeBuilders, 0); assert.equal(state.activeQa, 0);
   const durable = JSON.parse(await readFile(join(root, "states", `${state.tasks[0].gateId}.json`)));
   assert.equal(durable.status, "BLOCKED_FOR_FOUNDER");
-  await assert.rejects(() => gateManager.respond({ GATE_ID: state.tasks[0].gateId, DECISION: "MAYBE", timestamp: new Date().toISOString() }), /invalid Founder response/);
+  await assert.rejects(() => gateManager.respond({ GATE_ID: state.tasks[0].gateId, DECISION: "", timestamp: new Date().toISOString() }), /invalid Founder response/);
   const before = state.tasks[1].attempts; state = await autopilot.applyFounderResponse({ GATE_ID: state.tasks[0].gateId, DECISION: "APPROVE", timestamp: new Date().toISOString() });
   assert.equal(state.tasks[0].state, "DONE"); assert.equal(state.tasks[1].attempts, before); assert.equal(state.activeBuilders, 0);
 });
