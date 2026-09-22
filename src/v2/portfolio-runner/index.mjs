@@ -98,7 +98,7 @@ export class PortfolioRunner {
     this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.runtimeAdapters = runtimeAdapters || createRuntimeAdapters({ codex: runtime }); this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
   }
 
-  async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
+  async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], pmDecisions: [], updatedAt: new Date().toISOString() }; } }
   async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => { await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
 
   async reconcileProjects(state) {
@@ -134,6 +134,7 @@ export class PortfolioRunner {
     state.tasks = state.tasks.map((task) => task.state === "RUNNING" || task.state === "QA" ? { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" } : task);
     const activeIds = new Set(this.manifest.projects.filter((project) => project.active !== false).map((project) => project.id));
     for (const project of this.manifest.projects.filter((item) => item.active !== false)) {
+      if (project.pmManaged) continue;
       const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && task.state === "VERIFIED_DONE"));
       if (next && !state.tasks.some((task) => task.projectId === project.id && task.taskId === next.taskId)) state.tasks.push({ ...next, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 });
     }
@@ -157,21 +158,24 @@ export class PortfolioRunner {
   async runOne(task, state) {
     const project = this.manifest.projects.find((item) => item.id === task.projectId);
     const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
+    const qaAdapter = project && this.runtimeAdapters[project.qaRuntime || project.runtime || project.owner];
     const availability = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
+    const qaAvailability = qaAdapter ? await qaAdapter.availability() : { ok: false, reason: "QA runtime adapter not configured" };
     if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; return; }
     if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; return; }
+    if (!qaAdapter || !qaAvailability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = `QA: ${qaAvailability.reason}`; return; }
     try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; return; }
     const builder = await this.worktrees.create(project, task.taskId); state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path }); task.state = "RUNNING"; task.attempts += 1; await this.save(state);
     try {
       for (;;) {
       const builderRun = await adapter.run({ workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }) });
       task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, startedAt: builderRun.startedAt, exitCode: builderRun.code };
-      task.result = parseResultPacket(builderRun.text); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path }); await this.save(state);
+      task.result = parseResultPacket(builderRun.text); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, runtime: project.qaRuntime || project.runtime || project.owner }); await this.save(state);
       await this._acquireQa();
       let qaRun;
-      try { task.qaAttempts += 1; qaRun = await adapter.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, task.result.commitSha) }); }
+      try { task.qaAttempts += 1; qaRun = await qaAdapter.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, task.result.commitSha) }); }
       finally { this._releaseQa(); }
-      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
+      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: project.qaRuntime || project.runtime || project.owner }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
       if (task.qa.verdict === "ACCEPT") { task.state = "VERIFIED_DONE"; break; }
       if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path }); await this.save(state); continue; }
       if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; break;
