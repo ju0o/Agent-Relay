@@ -16,6 +16,7 @@ test("uses Asia/Seoul default and rolls a passed deadline to the next night", ()
 
 test("exhaustion requires every active CORE lane to be terminal", () => {
   assert.equal(evaluateExhaustion({ projects: lanes([["agent-relay", "V1_COMPLETE"], ["actl", "FOUNDER_GATE"]]).projects }, lanes([["agent-relay", "V1_COMPLETE"], ["actl", "FOUNDER_GATE"]])).complete, true);
+  assert.equal(evaluateExhaustion({ projects: lanes([["agent-relay", "VERIFIED_DONE"]]).projects }, lanes([["agent-relay", "VERIFIED_DONE"]])).complete, true);
   const open = lanes([["agent-relay", "V1_COMPLETE"], ["actl", "FOUNDER_GATE"]]); open.tasks.push({ projectId: "agent-relay", taskId: "T", state: "REQUEST_CHANGES" });
   assert.equal(evaluateExhaustion({ projects: open.projects }, open).complete, false);
 });
