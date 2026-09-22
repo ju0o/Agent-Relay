@@ -10,7 +10,7 @@
       "pmManaged": true,
       "pmRuntime": "codex",
       "qaRuntime": "codex",
-      "path": "/home/skkse12/Desktop/Projects/Core/Agent-Relay-v2-portfolio-autopilot-dogfood-03",
+      "path": "$AGENT_RELAY_REPO",
       "ssot": "repository:BACKLOG.md + config/portfolio.json",
       "owner": "codex",
       "runtime": "codex",
