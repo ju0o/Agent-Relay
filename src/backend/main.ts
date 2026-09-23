@@ -411,6 +411,17 @@ function dragIcon(): Electron.NativeImage {
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * Vite HMR URL for development. Set by `node scripts/dev.mjs`
+ * (ELECTRON_DEV_URL=http://localhost:5173). Packaged builds never use it:
+ * app.isPackaged implies loadFile(dist/client/index.html) below.
+ */
+function devServerUrl(): string {
+  if (app.isPackaged) return '';
+  const raw = (process.env.ELECTRON_DEV_URL || '').trim();
+  return /^https?:\/\/.+/.test(raw) ? raw : '';
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -441,11 +452,21 @@ function createWindow(): void {
 
   // ── Detect page-load failure and show a diagnostic dialog ──
   const clientPath = path.join(__dirname, '..', '..', 'client', 'index.html');
+  const devUrl = devServerUrl();
+  let fellBackToFile = false;
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
+    // Offline/dev-server-down fallback: the launcher always runs an initial
+    // tsc build, and `vite build` output may exist — prefer a running app
+    // over an error box when the HMR URL is unreachable.
+    if (devUrl && !fellBackToFile && fs.existsSync(clientPath)) {
+      fellBackToFile = true;
+      void mainWindow?.loadFile(clientPath);
+      return;
+    }
     dialog.showErrorBox(
       'Agent Relay Log — 페이지 로드 실패',
-      `오류 코드: ${code}\n설명: ${desc}\n\n시도한 경로:\n${clientPath}\n\n경로가 존재하는지 확인하세요.`,
+      `오류 코드: ${code}\n설명: ${desc}\n\n시도한 경로:\n${devUrl || clientPath}\n\n경로가 존재하는지 확인하세요.`,
     );
   });
 
@@ -463,6 +484,14 @@ function createWindow(): void {
   });
 
   // ── Load UI ──
+  // Dev (scripts/dev.mjs): load the Vite HMR server for instant feedback.
+  // Everything else (npm start, packaged app, offline fallback): load the
+  // static build output exactly as before.
+  if (devUrl) {
+    void mainWindow.loadURL(devUrl);
+    return;
+  }
+
   if (!fs.existsSync(clientPath)) {
     dialog.showErrorBox(
       'Agent Relay Log — index.html 없음',
