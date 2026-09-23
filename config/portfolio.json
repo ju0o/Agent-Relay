@@ -640,6 +640,19 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23: Agent Relay 고도화 우선, reliability and operator UX"
+        },
+        {
+          "taskId": "AGENTRELAY-CORE-SNAPSHOT-CURRENT-TASK-R2",
+          "scope": "Make the CORE V1 status snapshot select the active or unfinished task before historical completed tasks, and add a discriminating test with manifest tasks [P-CURRENT,P-OLD] and state tasks [{taskId:'P-CURRENT',state:'QA'},{taskId:'P-OLD',state:'VERIFIED_DONE'}] that fails on base 5df37215297adbc5ebf04bb636bf08dede78dbd3 and passes after the fix, asserting currentTask is P-CURRENT and next is null.",
+          "files": [
+            "src/v2/portfolio-runner/index.mjs",
+            "test/v2/portfolio-runner.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/portfolio-runner.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: 'Prefer reliability, observability and operator UX items from BACKLOG.md.'"
         }
       ],
       "qaRuntime": [
