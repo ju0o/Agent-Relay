@@ -14,7 +14,8 @@ export const CLI_ARGS = {
   claude: ({ prompt, workspace, sandbox }) => sandbox === "read-only"
     ? ["-p", prompt, "--add-dir", workspace, "--output-format", "text", "--disallowedTools", "Edit", "Write", "NotebookEdit", "--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)"]
     : ["-p", prompt, "--add-dir", workspace, "--output-format", "text", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(git:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(node:*)", "Bash(pnpm:*)", "Bash(python3:*)"],
-  opencode: ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["run", "--dir", workspace, "-m", OPENCODE_FREE, prompt] : ["run", "--dir", workspace, "--auto", prompt],
+  // QA uses OpenCode's built-in read-only "plan" agent; without --auto a headless run waits forever on a permission ask.
+  opencode: ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["run", "--dir", workspace, "--agent", "plan", "--auto", "-m", OPENCODE_FREE, prompt] : ["run", "--dir", workspace, "--auto", prompt],
   cursor: ({ prompt, sandbox }) => sandbox === "read-only" ? ["-p", "--trust", "--mode", "ask", "--output-format", "text", prompt] : ["-p", "--force", "--trust", "--output-format", "text", prompt],
   cline: ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["--cwd", workspace, "-p", prompt] : ["--cwd", workspace, "--auto-approve", "true", prompt],
   grok: ({ prompt, workspace, sandbox }) => ["--cwd", workspace, "--permission-mode", sandbox === "read-only" ? "plan" : "acceptEdits", "-p", prompt],

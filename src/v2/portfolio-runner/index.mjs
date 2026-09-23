@@ -331,15 +331,20 @@ export class PortfolioRunner {
   _releaseQa() { this._qaActive = Math.max(0, (this._qaActive || 1) - 1); this._qaWaiters.shift()?.(); }
 
   // Run the first available runtime in the chain; a quota/rate-limit error falls through to the next one.
-  async runChain(chain, request) {
+  // A quota error, a hang killed by the timeout ("exit null"), or output without a valid packet means this
+  // runtime can't do the job right now: try the next one. Other failures are real and hold the task.
+  async runChain(chain, request, validate = null) {
     const tried = [];
     for (const id of chain) {
       const adapter = this.runtimeAdapters[id];
       if (!adapter) { tried.push(`${id}: not configured`); continue; }
       const status = await adapter.availability();
       if (!status.ok) { tried.push(`${id}: ${status.reason}`); continue; }
-      try { return { ...(await adapter.run(request)), runtime: id, fallbacks: tried }; }
-      catch (error) { if (request.signal?.aborted || !QUOTA_ERROR.test(String(error.message || error))) throw error; tried.push(`${id}: quota`); }
+      let result;
+      try { result = await adapter.run(request); }
+      catch (error) { const message = String(error.message || error); if (request.signal?.aborted || !(QUOTA_ERROR.test(message) || /exit null/.test(message))) throw error; tried.push(`${id}: ${QUOTA_ERROR.test(message) ? "quota" : "timeout"}`); continue; }
+      if (validate) { try { validate(result.text); } catch { tried.push(`${id}: invalid output`); if (id !== chain.at(-1)) continue; } }
+      return { ...result, runtime: id, fallbacks: tried };
     }
     throw new Error(`NO_RUNTIME_AVAILABLE: ${tried.join("; ")}`);
   }
@@ -358,12 +363,12 @@ export class PortfolioRunner {
     let preserveWorktree = retained;
     try {
       for (;;) {
-      const builderRun = await this.runChain(workerChain, { workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }), signal });
+      const builderRun = await this.runChain(workerChain, { workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }), signal }, parseResultPacket);
       task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, base: builder.base, startedAt: builderRun.startedAt, exitCode: builderRun.code, runtime: builderRun.runtime, fallbacks: builderRun.fallbacks };
       task.result = parseResultPacket(builderRun.text); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
       await this._acquireQa();
       let qaRun;
-      try { task.qaAttempts += 1; qaRun = await this.runChain(qaChain, { workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }); }
+      try { task.qaAttempts += 1; qaRun = await this.runChain(qaChain, { workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }, parseQaPacket); }
       finally { this._releaseQa(); }
       task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: qaRun.runtime, fallbacks: qaRun.fallbacks }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
       if (task.qa.verdict === "ACCEPT" && !task.verificationOnly && this.testGate) {

@@ -265,7 +265,7 @@ test("runtime chains: a non-quota failure holds the task instead of silently swi
 test("CLI adapters build builder vs read-only QA arguments and pin Claude accounts", async () => {
   const { CLI_ARGS, createRuntimeAdapters } = await import("../../src/v2/runtime-adapters/index.mjs");
   const a = { prompt: "P", workspace: "/w" };
-  assert.ok(CLI_ARGS.opencode({ ...a, sandbox: "workspace-write" }).includes("--auto")); assert.ok(!CLI_ARGS.opencode({ ...a, sandbox: "read-only" }).includes("--auto"));
+  assert.ok(CLI_ARGS.opencode({ ...a, sandbox: "workspace-write" }).includes("--auto")); { const qa = CLI_ARGS.opencode({ ...a, sandbox: "read-only" }); assert.equal(qa[qa.indexOf("--agent") + 1], "plan", "OpenCode QA must use the read-only plan agent"); }
   assert.ok(CLI_ARGS.cursor({ ...a, sandbox: "workspace-write" }).includes("--force")); assert.ok(!CLI_ARGS.cursor({ ...a, sandbox: "read-only" }).includes("--force"));
   assert.ok(CLI_ARGS.cline({ ...a, sandbox: "read-only" }).includes("-p"));
   assert.deepEqual(CLI_ARGS.grok({ ...a, sandbox: "read-only" }).slice(2, 4), ["--permission-mode", "plan"]);
@@ -273,4 +273,17 @@ test("CLI adapters build builder vs read-only QA arguments and pin Claude accoun
   const adapters = createRuntimeAdapters({ codex: { command: "codex", async run() {} } });
   assert.match(adapters["claude-team"].env.CLAUDE_CONFIG_DIR, /\.claude-team$/); assert.match(adapters["claude-pro"].env.CLAUDE_CONFIG_DIR, /\.claude-pro$/);
   for (const id of ["opencode", "cline", "grok", "cursor", "claude-team", "claude-pro", "codex"]) assert.ok(adapters[id], id);
+});
+
+test("runtime chains also fall through on a timeout kill and on output without a valid packet", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-chain3-")); const calls = [];
+  const ok = (sandbox) => sandbox === "workspace-write" ? 'RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"T-1","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"s"}' : 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"T-1","verdict":"ACCEPT","tests":[],"findings":[],"summary":"ok"}';
+  const hang = { async availability() { return { ok: true }; }, async run() { calls.push("hang"); throw new Error("opencode exit null: > build"); } };
+  const garbled = { async availability() { return { ok: true }; }, async run() { calls.push("garbled"); return { pid: 1, code: 0, startedAt: "t", text: "sure, done!" }; } };
+  const good = { async availability() { return { ok: true }; }, async run({ sandbox }) { calls.push(`good:${sandbox}`); return { pid: 1, code: 0, startedAt: "t", text: ok(sandbox) }; } };
+  const runner = new PortfolioRunner({ testGate: passGate, runtimeAdapters: { hang, garbled, good }, manifest: { projects: [{ id: "t", runtime: ["hang", "good"], qaRuntime: ["garbled", "good"], tasks: [{ taskId: "T-1", scope: "x", files: [], tests: [] }] }] },
+    statePath: join(root, "state.json"), worktreeRoot: join(root, "w"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; }, async promote(_p, id) { return `refs/agent-relay/promotions/${id}`; } } });
+  await runner.enqueue("t"); const task = (await runner.runOnce()).tasks.find((x) => x.taskId === "T-1");
+  assert.equal(task.state, "VERIFIED_DONE"); assert.deepEqual(calls, ["hang", "good:workspace-write", "garbled", "good:read-only"]);
+  assert.deepEqual(task.builderEvidence.fallbacks, ["hang: timeout"]); assert.deepEqual(task.qaEvidence.fallbacks, ["garbled: invalid output"]);
 });
