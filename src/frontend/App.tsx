@@ -190,6 +190,21 @@ function PlanStudioPanel({ onClose }: { onClose: () => void }): React.ReactEleme
   );
 }
 
+// ── Pointer Reorder fallback (touch) — 순수 헬퍼 (test/v03 검증용 export) ──────
+// HTML5 DnD는 마우스 전용이라 터치에서는 동작하지 않는다.
+// Pointer Events 최소 fallback으로 터치/펜 재정렬을 지원하고,
+// 데스크톱 mouse DnD(draggable + onDragStart/onDrop)는 그대로 유지한다.
+/** 터치/펜 포인터면 pointer fallback을 시작한다 (mouse는 HTML5 DnD 사용). */
+export function shouldStartPointerReorder(pointerType: string): boolean {
+  return pointerType !== 'mouse';
+}
+/** pointer fallback drop 위치를 검증한다. 실제 이동이면 over 인덱스, 아니면 null. */
+export function resolvePointerDropIndex(from: number | null, over: number | null, len: number): number | null {
+  if (from === null || over === null || from === over) return null;
+  if (from < 0 || from >= len || over < 0 || over >= len) return null;
+  return over;
+}
+
 // ── 최상위 App ────────────────────────────────────────────────────────────────
 export function App(): React.ReactElement {
   return <ErrorBoundary><AppInner /></ErrorBoundary>;
@@ -327,6 +342,12 @@ function AppInner(): React.ReactElement {
   const [tabDragOver, setTabDragOver]   = useState<number | null>(null);
   const agentDragFrom = useRef<number | null>(null);
   const [agentDragOver, setAgentDragOver] = useState<number | null>(null);
+  // Pointer fallback (touch/pen) 활성 상태 — mouse DnD와 공유하는 from ref를 재사용한다.
+  const pointerProjActive = useRef(false);
+  const pointerTabActive = useRef(false);
+  const pointerAgentActive = useRef(false);
+  // pointer 재정렬 직후 뒤따르는 click(탭 전환/에이전트 변경) 1회를 삼킨다.
+  const pointerSuppressClick = useRef(false);
 
   /** 세션 탭 순서를 settings.projectOrder에 저장한다 (UI 순서 전용 — 폴더 불변). */
   function persistProjectOrder(sess: ProjectSession[]): void {
@@ -1183,7 +1204,10 @@ function AppInner(): React.ReactElement {
                 <button
                   key={sess.id}
                   className={`proj-tab${isActive ? ' active' : ''}${projDragOver === i ? ' reorder-over' : ''}`}
-                  onClick={() => switchSession(sess.id)}
+                  onClick={() => {
+                    if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
+                    switchSession(sess.id);
+                  }}
                   title={sess.project || '왼쪽 사이드바에서 프로젝트를 선택하세요'}
                   draggable
                   onDragStart={e => {
@@ -1195,6 +1219,30 @@ function AppInner(): React.ReactElement {
                   onDragLeave={() => setProjDragOver(prev => prev === i ? null : prev)}
                   onDrop={e => { e.preventDefault(); e.stopPropagation(); onProjectTabDrop(i); }}
                   onDragEnd={() => { projDragFrom.current = null; setProjDragOver(null); }}
+                  onPointerDown={e => {
+                    if (!shouldStartPointerReorder(e.pointerType)) return;
+                    projDragFrom.current = i;
+                    pointerProjActive.current = true;
+                    setProjDragOver(i);
+                    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
+                  }}
+                  onPointerMove={() => {
+                    if (!pointerProjActive.current || projDragFrom.current === null) return;
+                    setProjDragOver(i);
+                  }}
+                  onPointerUp={() => {
+                    if (!pointerProjActive.current) return;
+                    pointerProjActive.current = false;
+                    const to = resolvePointerDropIndex(projDragFrom.current, i, sessions.length);
+                    if (to !== null) { pointerSuppressClick.current = true; onProjectTabDrop(to); }
+                    else { projDragFrom.current = null; setProjDragOver(null); }
+                  }}
+                  onPointerCancel={() => {
+                    if (!pointerProjActive.current) return;
+                    pointerProjActive.current = false;
+                    projDragFrom.current = null;
+                    setProjDragOver(null);
+                  }}
                 >
                   <span className="proj-tab-icon">
                     {!sess.project ? '🔲' : sess.project === ROOT_PROJECT ? '📂' : '📁'}
@@ -1285,7 +1333,10 @@ function AppInner(): React.ReactElement {
                   <button
                     key={tab.id}
                     className={`tab-btn${tab.id === activeTabId ? ' active' : ''}${tabDragOver === i ? ' reorder-over' : ''}`}
-                    onClick={() => updateActiveSession({ activeTabId: tab.id })}
+                    onClick={() => {
+                      if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
+                      updateActiveSession({ activeTabId: tab.id });
+                    }}
                     title={tab.folder || `${tab.agent} — 아직 저장 안 됨`}
                     draggable
                     onDragStart={e => {
@@ -1297,6 +1348,30 @@ function AppInner(): React.ReactElement {
                     onDragLeave={() => setTabDragOver(prev => prev === i ? null : prev)}
                     onDrop={e => { e.preventDefault(); e.stopPropagation(); onWorkTabDrop(i); }}
                     onDragEnd={() => { tabDragFrom.current = null; setTabDragOver(null); }}
+                    onPointerDown={e => {
+                      if (!shouldStartPointerReorder(e.pointerType)) return;
+                      tabDragFrom.current = i;
+                      pointerTabActive.current = true;
+                      setTabDragOver(i);
+                      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
+                    }}
+                    onPointerMove={() => {
+                      if (!pointerTabActive.current || tabDragFrom.current === null) return;
+                      setTabDragOver(i);
+                    }}
+                    onPointerUp={() => {
+                      if (!pointerTabActive.current) return;
+                      pointerTabActive.current = false;
+                      const to = resolvePointerDropIndex(tabDragFrom.current, i, tabs.length);
+                      if (to !== null) { pointerSuppressClick.current = true; onWorkTabDrop(to); }
+                      else { tabDragFrom.current = null; setTabDragOver(null); }
+                    }}
+                    onPointerCancel={() => {
+                      if (!pointerTabActive.current) return;
+                      pointerTabActive.current = false;
+                      tabDragFrom.current = null;
+                      setTabDragOver(null);
+                    }}
                   >
                     <span className="tab-label">
                       {tab.agent}
@@ -1340,7 +1415,34 @@ function AppInner(): React.ReactElement {
                               onDragLeave={() => setAgentDragOver(prev => prev === i ? null : prev)}
                               onDrop={e => { e.preventDefault(); e.stopPropagation(); onAgentPillDrop(i); }}
                               onDragEnd={() => { agentDragFrom.current = null; setAgentDragOver(null); }}
-                              onClick={() => void changeTabAgent(activeTab.id, a)}
+                              onPointerDown={e => {
+                                if (!shouldStartPointerReorder(e.pointerType)) return;
+                                agentDragFrom.current = i;
+                                pointerAgentActive.current = true;
+                                setAgentDragOver(i);
+                                try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
+                              }}
+                              onPointerMove={() => {
+                                if (!pointerAgentActive.current || agentDragFrom.current === null) return;
+                                setAgentDragOver(i);
+                              }}
+                              onPointerUp={() => {
+                                if (!pointerAgentActive.current) return;
+                                pointerAgentActive.current = false;
+                                const to = resolvePointerDropIndex(agentDragFrom.current, i, agents.length);
+                                if (to !== null) { pointerSuppressClick.current = true; onAgentPillDrop(to); }
+                                else { agentDragFrom.current = null; setAgentDragOver(null); }
+                              }}
+                              onPointerCancel={() => {
+                                if (!pointerAgentActive.current) return;
+                                pointerAgentActive.current = false;
+                                agentDragFrom.current = null;
+                                setAgentDragOver(null);
+                              }}
+                              onClick={() => {
+                                if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
+                                void changeTabAgent(activeTab.id, a);
+                              }}
                             >{a}</button>
                           ))}
                         </div>

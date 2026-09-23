@@ -895,10 +895,16 @@ html, body, #app {
 .tab-btn[draggable="true"],
 .agent-pill[draggable="true"] {
   cursor: grab;
+  /* 터치 pointer fallback이 스크롤과 경합하지 않도록 — mouse DnD에는 영향 없음 */
+  touch-action: none;
 }
 .reorder-over {
   outline: 2px dashed var(--accent) !important;
   outline-offset: -2px;
+}
+/* pointer(터치/펜) 드래그 중 — over 하이라이트와 함께 투명도로 피드백 */
+.reorder-dragging {
+  opacity: 0.6;
 }
 
 /* ── v0.3 Quick Dogfooding Capture ─────────────────────────────────────── */

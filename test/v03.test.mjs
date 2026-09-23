@@ -216,6 +216,61 @@ async function main() {
   if (tokens.every(t => rawQ.includes(t))) PASS('required md tokens present');
   else FAIL(`md missing tokens: ${tokens.filter(t => !rawQ.includes(t)).join(', ')}`);
 
+  // ── T. Touch reorder — pointer-event fallback (desktop HTML5 DnD 유지) ─────
+  console.log('T1) App.tsx에 pointer fallback 순수 헬퍼가 export됨');
+  const appSrc = fs.readFileSync(path.join(process.cwd(), 'src/frontend/App.tsx'), 'utf8');
+  if (/export function shouldStartPointerReorder/.test(appSrc)
+    && /export function resolvePointerDropIndex/.test(appSrc)) {
+    PASS('shouldStartPointerReorder + resolvePointerDropIndex exported');
+  } else FAIL('App.tsx must export shouldStartPointerReorder + resolvePointerDropIndex');
+
+  console.log('T2) 프로젝트 탭·작업 탭·에이전트 pill 모두 pointer 핸들러 + mouse DnD 유지');
+  const needPointer = ['onPointerDown', 'onPointerMove', 'onPointerUp', 'onPointerCancel'];
+  const missingPointer = needPointer.filter(k => {
+    const hits = appSrc.split(k).length - 1;
+    return hits < 3; // 세 영역(프로젝트/작업/에이전트)에 각각 필요
+  });
+  const needMouse = ['draggable', 'onDragStart', 'onDrop', 'onProjectTabDrop', 'onWorkTabDrop', 'onAgentPillDrop'];
+  const missingMouse = needMouse.filter(k => !appSrc.includes(k));
+  if (missingPointer.length === 0 && missingMouse.length === 0) {
+    PASS('pointer handlers x3 areas + desktop HTML5 DnD preserved');
+  } else FAIL(`pointer missing=${missingPointer.join(',')} mouse missing=${missingMouse.join(',')}`);
+
+  console.log('T3) style.css 터치 fallback — touch-action + 드래그 피드백');
+  const cssSrc = fs.readFileSync(path.join(process.cwd(), 'src/frontend/style.css'), 'utf8');
+  if (/touch-action:\s*none/.test(cssSrc) && /\.reorder-(over|dragging)/.test(cssSrc)) {
+    PASS('touch-action:none + reorder visual present');
+  } else FAIL('style.css must contain touch-action:none and .reorder-over/.reorder-dragging');
+
+  console.log('T4) pointer reorder flow — 터치는 이동, mouse는 미시작, 경계는 무시');
+  function extractFn(src, name) {
+    const m = src.match(new RegExp(`export function ${name}[\\s\\S]*?\\n\\}`));
+    if (!m) return null;
+    const ts = m[0].replace(/^export\s+/, '');
+    // App.tsx는 TS이므로 new Function 평가 전에 타입 주석만 최소 제거한다.
+    const js = ts
+      .replace(/:\s*number\s*\|\s*null/g, '')
+      .replace(/:\s*string/g, '')
+      .replace(/:\s*number/g, '')
+      .replace(/:\s*boolean/g, '');
+    return new Function(`${js}; return ${name};`)();
+  }
+  const shouldStart = extractFn(appSrc, 'shouldStartPointerReorder');
+  const resolveDrop = extractFn(appSrc, 'resolvePointerDropIndex');
+  if (typeof shouldStart === 'function' && typeof resolveDrop === 'function'
+    && shouldStart('touch') === true
+    && shouldStart('pen') === true
+    && shouldStart('mouse') === false
+    && resolveDrop(0, 2, 4) === 2
+    && resolveDrop(1, 1, 4) === null
+    && resolveDrop(null, 2, 4) === null
+    && resolveDrop(0, null, 4) === null
+    && resolveDrop(-1, 2, 4) === null
+    && resolveDrop(0, 9, 4) === null
+    && reorderArray(['a', 'b', 'c', 'd'], 0, resolveDrop(0, 2, 4)).join('') === 'bcad') {
+    PASS('touch/pen starts, mouse keeps HTML5 DnD, drop resolves via reorderArray');
+  } else FAIL('pointer reorder flow broken');
+
   // ── R. Regression — 데이터 구조 불변 ────────────────────────────────────────
   console.log('R1) reorder는 폴더 구조를 건드리지 않음');
   const run01 = relay.ensureRunFolder(TEST_ROOT, 'QUICKPROJ', '2026-08-25', 'Claude Code', '01');
