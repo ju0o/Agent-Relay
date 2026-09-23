@@ -28,7 +28,7 @@ export function deadlineAt(now, value = DEFAULT_DEADLINE, timezone = DEFAULT_TIM
 export function laneExhausted(project, state, definitions = []) {
   const tasks = (state.tasks || []).filter((task) => task.projectId === project.id);
   const pending = tasks.some((task) => ["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES"].includes(task.state));
-  const remaining = definitions.some((definition) => !tasks.some((task) => task.taskId === definition.taskId && task.state === "VERIFIED_DONE"));
+  const remaining = definitions.some((definition) => !tasks.some((task) => task.taskId === definition.taskId && ["VERIFIED_DONE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"].includes(task.state)));
   return !pending && (!remaining || ["HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"].includes(project.state)) && TERMINAL.has(project.state || "");
 }
 

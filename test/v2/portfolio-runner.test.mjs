@@ -219,3 +219,12 @@ test("integration branch: next task builds on accepted work; stale candidates ch
   assert.equal(g(repo, "rev-parse", INTEGRATION_REF), tip, "gate failure must not move integration");
   assert.equal(g(repo, "rev-parse", "HEAD"), base, "the user's checkout never moves"); assert.equal(g(repo, "status", "--porcelain"), "");
 });
+
+test("a HOLD task does not block its lane: reconcile queues the next definition", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-hold-")); const statePath = join(root, "state.json");
+  await writeFile(statePath, JSON.stringify({ schema: "agent-relay.portfolio-state.v1", tasks: [{ taskId: "L-1", projectId: "l", state: "HOLD" }], activeBuilders: [], activeQa: [], events: [] }));
+  const runner = new PortfolioRunner({ testGate: passGate, manifest: { projects: [{ id: "l", owner: "codex", runtime: "codex", tasks: [{ taskId: "L-1", scope: "s", files: [], tests: [] }, { taskId: "L-2", scope: "s", files: [], tests: [] }] }] }, statePath, worktreeRoot: join(root, "w") });
+  const state = await runner.reconcile();
+  assert.equal(state.tasks.find((t) => t.taskId === "L-1").state, "HOLD");
+  assert.equal(state.tasks.find((t) => t.taskId === "L-2")?.state, "QUEUED");
+});

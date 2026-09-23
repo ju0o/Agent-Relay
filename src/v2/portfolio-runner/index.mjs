@@ -32,6 +32,8 @@ function packetLine(text, prefix) {
   try { return JSON.parse(line.trim().slice(prefix.length).trim()); } catch { return null; }
 }
 
+const SETTLED = new Set(["VERIFIED_DONE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
+
 function definitions(project) { return project?.tasks || (project?.task ? [project.task] : []); }
 
 function nextDefinition(project, state) {
@@ -226,7 +228,7 @@ export function builderPrompt(task) {
 }
 
 export function qaPrompt(task, base) {
-  return `You are an independent read-only QA Agent. Do not modify files, commit, or push. Verify task ${task.taskId} by inspecting git diff ${base}..HEAD (the supplied base is the parent, not the candidate commit), then run relevant read-only-safe checks. The runner executes the listed tests itself after you, so a test blocked only by the read-only sandbox (EROFS) is not a reason to reject; say so. Any type error, failing check you can run, scope violation or missing test coverage for the change IS a reason: verdict REQUEST_CHANGES with concrete findings. Validate scope. End with exactly one line: QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: task.taskId, verdict: "<ACCEPT|REQUEST_CHANGES|FOUNDER_GATE>", tests: [], findings: [], summary: "<evidence>" })}`;
+  return `You are an independent read-only QA Agent. Do not modify files, commit, or push. Verify task ${task.taskId} by inspecting git diff ${base}..HEAD (the supplied base is the parent, not the candidate commit), then run relevant read-only-safe checks. The runner executes the listed tests itself after you, so a test blocked only by the read-only sandbox (EROFS) is not a reason to reject; say so. Any type error, failing check you can run, scope violation, or missing test coverage when the task's files include a test file and a harness exists, IS a reason (do not demand tests the task's file list cannot contain): verdict REQUEST_CHANGES with concrete findings. Validate scope. End with exactly one line: QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: task.taskId, verdict: "<ACCEPT|REQUEST_CHANGES|FOUNDER_GATE>", tests: [], findings: [], summary: "<evidence>" })}`;
 }
 
 export class PortfolioRunner {
@@ -280,7 +282,8 @@ export class PortfolioRunner {
     });
     const activeIds = new Set(this.manifest.projects.filter((project) => project.active !== false).map((project) => project.id));
     for (const project of this.manifest.projects.filter((item) => item.active !== false)) {
-      const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && task.state === "VERIFIED_DONE"));
+      // A task that ended in HOLD/gate is settled for now: report it, and let the lane continue with the next definition.
+      const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && SETTLED.has(task.state)));
       if (next && !state.tasks.some((task) => task.projectId === project.id && task.taskId === next.taskId)) state.tasks.push({ ...next, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 });
     }
     if (activeIds.size) state.tasks = state.tasks.map((task) => !activeIds.has(task.projectId) && task.state === "QUEUED" ? { ...task, state: "HOLD", blocker: "OUT_OF_CORE_V1_SCOPE" } : task);
