@@ -289,6 +289,8 @@ export class PortfolioRunner {
     for (const project of this.manifest.projects.filter((item) => item.active !== false)) {
       // A task that ended in HOLD/gate is settled for now: report it, and let the lane continue with the next definition.
       const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && SETTLED.has(task.state)));
+      // Plan Studio "stop after each task": a lane paused by the runner waits for `night roadmap resume` (it removes the flag).
+      if (existsSync(join(resolve(this.statePath, ".."), "lane-pause", project.id))) continue;
       if (next && !state.tasks.some((task) => task.projectId === project.id && task.taskId === next.taskId)) state.tasks.push({ ...next, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 });
     }
     if (activeIds.size) state.tasks = state.tasks.map((task) => !activeIds.has(task.projectId) && task.state === "QUEUED" ? { ...task, state: "HOLD", blocker: "OUT_OF_CORE_V1_SCOPE" } : task);
@@ -380,7 +382,7 @@ export class PortfolioRunner {
         const failed = gate.results.find((result) => result.code !== 0);
         if (!task.testGate.ok) task.qa = { ...task.qa, verdict: "REQUEST_CHANGES", findings: [...(task.qa.findings || []), failed ? `TEST_GATE: \`${failed.cmd}\` exit ${failed.code}: ${failed.tail}` : "TEST_GATE: tests changed HEAD"] };
       }
-      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; if (this.worktrees.integrate && !task.verificationOnly) task.integration = await this.worktrees.integrate(project, task).catch((error) => ({ state: "NOT_INTEGRATED", reason: String(error.message || error).slice(0, 500) })); task.state = "VERIFIED_DONE"; await this.publishResult(task); break; }
+      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; if (this.worktrees.integrate && !task.verificationOnly) task.integration = await this.worktrees.integrate(project, task).catch((error) => ({ state: "NOT_INTEGRATED", reason: String(error.message || error).slice(0, 500) })); task.state = "VERIFIED_DONE"; await this.publishResult(task); if (project.autoContinue === false) { const pause = join(resolve(this.statePath, ".."), "lane-pause"); await mkdir(pause, { recursive: true }); await writeFile(join(pause, project.id), `${task.taskId} done ${new Date().toISOString()}\n`); } break; }
       if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
       if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; await this.publishResult(task); break;
       }

@@ -287,3 +287,17 @@ test("runtime chains also fall through on a timeout kill and on output without a
   assert.equal(task.state, "VERIFIED_DONE"); assert.deepEqual(calls, ["hang", "good:workspace-write", "garbled", "good:read-only"]);
   assert.deepEqual(task.builderEvidence.fallbacks, ["hang: timeout"]); assert.deepEqual(task.qaEvidence.fallbacks, ["garbled: invalid output"]);
 });
+
+test("autoContinue=false pauses the lane after a finished task until the pause flag is removed", async () => {
+  const { existsSync } = await import("node:fs"); const { rm: rmf } = await import("node:fs/promises");
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-pause-"));
+  const ok = (sandbox, id) => sandbox === "workspace-write" ? `RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"${id}","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"s"}` : `QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"${id}","verdict":"ACCEPT","tests":[],"findings":[],"summary":"ok"}`;
+  const runner = new PortfolioRunner({ testGate: passGate, runtimeAdapters: { codex: { async availability() { return { ok: true }; }, async run({ sandbox, prompt }) { const id = prompt.match(/"taskId":"(S-\d)"/)[1]; return { pid: 1, code: 0, startedAt: "t", text: ok(sandbox, id) }; } } },
+    manifest: { projects: [{ id: "s", runtime: ["codex"], autoContinue: false, tasks: [{ taskId: "S-1", scope: "a", files: [], tests: [] }, { taskId: "S-2", scope: "b", files: [], tests: [] }] }] },
+    statePath: join(root, "state.json"), worktreeRoot: join(root, "w"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; }, async promote(_p, id) { return `refs/agent-relay/promotions/${id}`; } } });
+  let state = await runner.runOnce();
+  assert.equal(state.tasks.find((t) => t.taskId === "S-1").state, "VERIFIED_DONE"); assert.ok(existsSync(join(root, "lane-pause", "s")));
+  state = await runner.runOnce(); assert.equal(state.tasks.find((t) => t.taskId === "S-2"), undefined, "paused lane must not start S-2");
+  await rmf(join(root, "lane-pause", "s")); state = await runner.runOnce();
+  assert.equal(state.tasks.find((t) => t.taskId === "S-2").state, "VERIFIED_DONE");
+});
