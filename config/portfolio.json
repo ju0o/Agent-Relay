@@ -1664,6 +1664,19 @@
             "node --test tests/create-skill-registry-contract.test.mjs"
           ],
           "ssotEvidence": "README.md:10-17 \"Role is not Runtime\" and target agents; Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUCONTROLER-JUPLAN-STATUS-ADAPTER",
+          "scope": "Add a pure read-only JuPlan status adapter mapping saved JuPlan status JSON to project-status.v1 with fail-closed UNKNOWN handling and documented source fields.",
+          "files": [
+            "src/adapters/juplan.mjs",
+            "tests/juplan-adapter.test.mjs",
+            "docs/integration/PROJECT_STATUS_CONTRACT.md"
+          ],
+          "tests": [
+            "node --test tests/agent-relay-adapter.test.mjs tests/juplan-adapter.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: integrate Agent Relay first, then JuPlan, then JuCeipt through project-status.v1 exports and read-only adapters"
         }
       ],
       "qaRuntime": [
