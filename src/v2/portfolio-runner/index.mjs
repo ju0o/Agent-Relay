@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { appendFile, mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -114,11 +114,17 @@ export class WorktreeManager {
     await mkdir(this.root, { recursive: true });
     await exec("git", ["-C", project.path, "worktree", "add", "--detach", path, base]);
     // Reuse the project's installed deps so Worker and QA can really build/typecheck/test (a fresh worktree has none).
-    const deps = join(project.path, "node_modules");
-    if (existsSync(deps) && !existsSync(join(path, "node_modules"))) {
-      await symlink(deps, join(path, "node_modules"), "dir");
+    // Workspaces (pnpm) keep node_modules per package too, so link every one within 3 levels that the worktree lacks.
+    const linked = [];
+    const walk = async (rel, depth) => {
+      if (existsSync(join(project.path, rel, "node_modules")) && existsSync(join(path, rel)) && !existsSync(join(path, rel, "node_modules"))) { await symlink(join(project.path, rel, "node_modules"), join(path, rel, "node_modules"), "dir"); linked.push(rel); }
+      if (depth >= 2) return;
+      for (const entry of await readdir(join(project.path, rel), { withFileTypes: true }).catch(() => [])) if (entry.isDirectory() && !["node_modules", ".git"].includes(entry.name)) await walk(join(rel, entry.name), depth + 1);
+    };
+    await walk("", 0);
+    if (linked.length) {
       const exclude = resolve(path, (await exec("git", ["-C", path, "rev-parse", "--git-path", "info/exclude"])).stdout.trim());
-      if (!(await readFile(exclude, "utf8").catch(() => "")).split(/\r?\n/).includes("/node_modules")) { await mkdir(resolve(exclude, ".."), { recursive: true }); await appendFile(exclude, "\n/node_modules\n"); }
+      if (!(await readFile(exclude, "utf8").catch(() => "")).split(/\r?\n/).includes("node_modules")) { await mkdir(resolve(exclude, ".."), { recursive: true }); await appendFile(exclude, "\nnode_modules\n"); }
     }
     return { path, base, projectId: project.id, async cleanup() { await exec("git", ["-C", project.path, "worktree", "remove", "--force", path]).catch(() => {}); await rm(path, { recursive: true, force: true }); } };
   }

@@ -164,8 +164,12 @@ test("worktrees reuse project node_modules without making the tree dirty", async
   const repo = await mkdtemp(join(tmpdir(), "ar-wt-repo-")); const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
   git("init", "-q"); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base");
   await mkdir(join(repo, "node_modules", ".bin"), { recursive: true });
+  await mkdir(join(repo, "packages", "a"), { recursive: true }); await writeFile(join(repo, "packages", "a", "package.json"), "{}");
+  git("add", "."); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "pkg");
+  await mkdir(join(repo, "packages", "a", "node_modules"), { recursive: true });
   const wt = await new WorktreeManager(await mkdtemp(join(tmpdir(), "ar-wt-root-"))).create({ id: "p", path: repo }, "T-1");
   assert.ok((await lstat(join(wt.path, "node_modules"))).isSymbolicLink());
+  assert.ok((await lstat(join(wt.path, "packages", "a", "node_modules"))).isSymbolicLink(), "workspace package deps must be linked too");
   assert.equal(execFileSync("git", ["-C", wt.path, "status", "--porcelain"], { encoding: "utf8" }), "");
   await wt.cleanup();
   assert.ok((await lstat(join(repo, "node_modules", ".bin"))).isDirectory(), "cleanup must not delete the project's node_modules");
