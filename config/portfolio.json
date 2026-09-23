@@ -1965,6 +1965,23 @@
           ],
           "ssotEvidence": "Supervisor check 2026-09-24: the fixed export path does not exist; JuPlan writes the export per project in writeProjections (packages/runtime/src/index.ts:249); Founder A-15",
           "title": "lib/juplanStatus.mjs currently reads one fixed export path t"
+        },
+        {
+          "taskId": "JCAPP-APPROVALS-ROUTE-AND-PLAIN-TEXT",
+          "scope": "Two issues found by the supervisor's visual Tester review of 2a3af04 (headless Firefox, staging :8798): (1) clicking the rail item '승인' renders the Tester view (heading 'Tester', its run list) instead of the approvals module — fix the tab→view routing so 승인 renders the approvals module (rules by category from GET /api/relay/approvals plus the gate list). (2) The non-developer rule is broken: the Tester view prints raw codes and epochs ('마지막 테스트 판정: SKIPPED_USER_ACTIVE (1790179130)') and JuCeipt rows print 'unknown' and ISO timestamps; map verdicts to Korean sentences (PASS→통과했어요, CHECK→확인이 필요해요, SKIPPED_USER_ACTIVE→PC 사용 중이라 나중에 다시 해요), format times as local 'M월 D일 HH:mm', and show unknown cost as '비용 모름' in a sentence. Tests: test/approvals-module.test.mjs asserts the 승인 tab id maps to the approvals renderer; test/tester-runs.test.mjs and test/juceipt-receipts.test.mjs assert no raw codes/epochs/'unknown' in rendered text.",
+          "files": [
+            "operator/public/app.js",
+            "test/approvals-module.test.mjs",
+            "test/tester-runs.test.mjs",
+            "test/juceipt-receipts.test.mjs"
+          ],
+          "tests": [
+            "node --test test/approvals-module.test.mjs",
+            "node --test test/tester-runs.test.mjs",
+            "node --test test/juceipt-receipts.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual Tester 2026-09-24 01:06 (~/jc-tester/run-20260924-0106/06-승인.png shows the Tester view); Founder choice 'Tester 자동 확인 후 반영'; A-15",
+          "title": "Two issues found by the supervisor's visual Tester review of"
         }
       ]
     },
