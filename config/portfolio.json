@@ -1400,6 +1400,18 @@
           ],
           "ssotEvidence": "Founder architecture 2026-09-23 (chat): 'JuControler에 Agent-Relay 통합하면 자동으로 actl도 따라오는 구조' — integrate Agent Relay first; approval rule A-01",
           "title": "Read-only adapter src/adapters/agent-relay.mjs that turns on"
+        },
+        {
+          "taskId": "JUCONTROLER-AGENT-RELAY-ADAPTER-DOCS",
+          "scope": "Document the existing read-only Agent Relay board adapter's project-status.v1 mapping and offline usage without adding dispatch, runtime, or source mutation behavior.",
+          "files": [
+            "README.md",
+            "docs/integration/PROJECT_STATUS_CONTRACT.md"
+          ],
+          "tests": [
+            "node --test tests/agent-relay-adapter.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
