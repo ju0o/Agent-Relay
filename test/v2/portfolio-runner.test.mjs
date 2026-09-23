@@ -252,6 +252,21 @@ test("runtime chains: a quota error falls through to the next Worker, and QA use
   assert.equal(task.builderEvidence.runtime, "codex"); assert.deepEqual(task.builderEvidence.fallbacks, ["opencode: quota"]); assert.equal(task.qaEvidence.runtime, "cline");
 });
 
+test("runLoop: a slow lane does not stop another lane from running its next tasks", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-loop-")); let release; const gate = new Promise((r) => { release = r; }); const order = [];
+  const packet = (id, kind) => kind === "workspace-write" ? `RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"${id}","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"s"}` : `QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"${id}","verdict":"ACCEPT","tests":[],"findings":[],"summary":"ok"}`;
+  const adapter = { async availability() { return { ok: true }; }, async run({ sandbox, prompt }) { const id = /S-1/.test(prompt) ? "S-1" : /F-2/.test(prompt) ? "F-2" : "F-1"; if (id === "S-1" && sandbox === "workspace-write") await gate; order.push(`${id}:${sandbox}`); return { pid: 1, code: 0, startedAt: "t", text: packet(id, sandbox) }; } };
+  const runner = new PortfolioRunner({ testGate: passGate, runtimeAdapters: { codex: adapter },
+    manifest: { maxBuilders: 4, maxQa: 4, projects: [{ id: "slow", runtime: ["codex"], tasks: [{ taskId: "S-1", scope: "x", files: [], tests: [] }] }, { id: "fast", runtime: ["codex"], tasks: [{ taskId: "F-1", scope: "x", files: [], tests: [] }, { taskId: "F-2", scope: "x", files: [], tests: [] }] }] },
+    statePath: join(root, "state.json"), worktreeRoot: join(root, "w"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; }, async promote(_p, id) { return `refs/agent-relay/promotions/${id}`; } } });
+  const controller = new AbortController(); const loop = runner.runLoop({ intervalMs: 20, signal: controller.signal });
+  for (let i = 0; i < 200 && !order.includes("F-2:read-only"); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(order.includes("F-2:read-only"), `fast lane stalled behind the slow one: ${order}`); assert.ok(!order.includes("S-1:workspace-write"));
+  release(); for (let i = 0; i < 200 && !order.includes("S-1:read-only"); i++) await new Promise((r) => setTimeout(r, 10));
+  controller.abort(); const state = await loop;
+  assert.deepEqual(state.tasks.map((t) => `${t.taskId}:${t.state}`).sort(), ["F-1:VERIFIED_DONE", "F-2:VERIFIED_DONE", "S-1:VERIFIED_DONE"]);
+});
+
 test("runtime chains: a provider outage (503 overloaded) falls through like a quota hit; a prompt error does not", () => {
   assert.ok(TRANSIENT_ERROR.test('opencode exit 1: Error: {"message":"Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded","type":"server_error"}'));
   assert.ok(!TRANSIENT_ERROR.test("opencode exit 1: syntax error in prompt"));

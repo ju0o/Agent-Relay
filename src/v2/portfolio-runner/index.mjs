@@ -245,7 +245,9 @@ export class PortfolioRunner {
   }
 
   async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
-  async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => { await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
+  async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => {
+    // The continuous loop holds state in memory; a Founder answer written meanwhile by the CLI (founder-response) must not be overwritten.
+    if (this._continuous) { const disk = await this.load(); if ((disk.resolvedFounderGates || []).length > (snapshot.resolvedFounderGates || []).length) for (const key of ["founderDecisions", "resolvedFounderGates"]) { snapshot[key] = disk[key]; state[key] = disk[key]; } } await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
 
   async reconcileProjects(state) {
     const projects = []; const founderGates = [];
@@ -287,6 +289,19 @@ export class PortfolioRunner {
     try { this.manifest = await loadManifest(this.manifestPath); return true; } catch { return false; }  // a half-written file: keep the old manifest, retry next loop
   }
 
+  // Each active lane gets its next unsettled definition queued (one task per lane at a time).
+  queueNext(state) {
+    const activeIds = new Set(this.manifest.projects.filter((project) => project.active !== false).map((project) => project.id));
+    for (const project of this.manifest.projects.filter((item) => item.active !== false)) {
+      // A task that ended in HOLD/gate is settled for now: report it, and let the lane continue with the next definition.
+      const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && SETTLED.has(task.state)));
+      // Plan Studio "stop after each task": a lane paused by the runner waits for `night roadmap resume` (it removes the flag).
+      if (existsSync(join(resolve(this.statePath, ".."), "lane-pause", project.id))) continue;
+      if (next && !state.tasks.some((task) => task.projectId === project.id && task.taskId === next.taskId)) state.tasks.push({ ...next, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 });
+    }
+    if (activeIds.size) state.tasks = state.tasks.map((task) => !activeIds.has(task.projectId) && task.state === "QUEUED" ? { ...task, state: "HOLD", blocker: "OUT_OF_CORE_V1_SCOPE" } : task);
+  }
+
   async reconcile() {
     await this.reloadManifestIfChanged();
     const state = await this.load();
@@ -299,15 +314,7 @@ export class PortfolioRunner {
       }
       return task;
     });
-    const activeIds = new Set(this.manifest.projects.filter((project) => project.active !== false).map((project) => project.id));
-    for (const project of this.manifest.projects.filter((item) => item.active !== false)) {
-      // A task that ended in HOLD/gate is settled for now: report it, and let the lane continue with the next definition.
-      const next = definitions(project).find((definition) => !state.tasks.some((task) => task.taskId === definition.taskId && SETTLED.has(task.state)));
-      // Plan Studio "stop after each task": a lane paused by the runner waits for `night roadmap resume` (it removes the flag).
-      if (existsSync(join(resolve(this.statePath, ".."), "lane-pause", project.id))) continue;
-      if (next && !state.tasks.some((task) => task.projectId === project.id && task.taskId === next.taskId)) state.tasks.push({ ...next, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 });
-    }
-    if (activeIds.size) state.tasks = state.tasks.map((task) => !activeIds.has(task.projectId) && task.state === "QUEUED" ? { ...task, state: "HOLD", blocker: "OUT_OF_CORE_V1_SCOPE" } : task);
+    this.queueNext(state);
     await this.reconcileProjects(state);
     for (const task of state.tasks.filter((item) => item.state === "BLOCKED_RUNTIME_ADAPTER")) {
       const project = this.manifest.projects.find((item) => item.id === task.projectId); const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
@@ -430,7 +437,22 @@ export class PortfolioRunner {
     await Promise.all(queued.map((task) => this.runOne(task, state, { signal }))); state.service = "IDLE"; await this.save(state); return state;
   }
 
-  async runLoop({ intervalMs = 15_000, signal } = {}) { while (!signal?.aborted) { await this.runOnce({ signal }); await sleep(intervalMs); } return this.load(); }
+  // Day runner: schedule continuously, so a lane that finishes starts its next task while slower lanes keep running
+  // (runOnce waits for its whole batch; the Night Run supervisor keeps using it for deadline checkpoints).
+  async runLoop({ intervalMs = 15_000, signal } = {}) {
+    const inflight = new Map(); let state = null; this._continuous = true;
+    while (!signal?.aborted) {
+      if (!inflight.size) state = await this.reconcile(); // full reconcile (requeue after restart, gates) only when nothing is in flight
+      else { await this.reloadManifestIfChanged(); this.queueNext(state); await this.reconcileProjects(state); } // new WBS / plan approvals join mid-flight
+      const slots = Math.max(1, Number(this.manifest.maxBuilders) || 2) - inflight.size;
+      for (const task of state.tasks.filter((item) => item.state === "QUEUED" && !inflight.has(item.taskId)).slice(0, Math.max(0, slots))) {
+        inflight.set(task.taskId, this.runOne(task, state, { signal }).catch((error) => { if (!signal?.aborted) { task.state = "HOLD"; task.error = `RUNNER_ERROR: ${String(error?.message || error)}`; } }).finally(() => inflight.delete(task.taskId)));
+      }
+      state.service = inflight.size ? "RUNNING" : "IDLE"; await this.save(state);
+      await Promise.race([sleep(intervalMs), ...inflight.values()]);
+    }
+    await Promise.allSettled(inflight.values()); return this.load();
+  }
 }
 
 export async function loadManifest(path) { return JSON.parse(await readFile(path, "utf8")); }
