@@ -312,8 +312,14 @@ function AppInner(): React.ReactElement {
     tabDragFrom.current = null;
     setTabDragOver(null);
     if (from === null || from === toIndex || from >= tabs.length) return;
-    // Work Tab 순서는 현재 세션 동안만 유지 (영구 저장은 BACKLOG)
-    updateActiveSession({ tabs: reorderArray(tabs, from, toIndex) });
+    const next = reorderArray(tabs, from, toIndex);
+    updateActiveSession({ tabs: next });
+    persistWorkTabOrder(next);
+  }
+
+  function persistWorkTabOrder(nextTabs: EditorTab[]): void {
+    must<string[]>({ op: 'settings:setWorkTabOrder', order: nextTabs.map(t => t.agent) })
+      .catch(() => undefined);
   }
 
   function onAgentPillDrop(toIndex: number): void {
@@ -359,6 +365,15 @@ function AppInner(): React.ReactElement {
     setSettings(s);
     // 에이전트 순서 — 저장된 agentOrder를 반영해 표시 (신규 항목은 뒤에 추가)
     setAgents(applyOrderByKeys([...DEFAULT_AGENTS, ...(s.customAgents ?? [])], a => a, s.agentOrder ?? []));
+    if (s.workTabOrder?.length) {
+      setSessions(prev => prev.map((session, index) => {
+        if (index !== 0) return session;
+        const tabs = s.workTabOrder!.map((agent, tabIndex) =>
+          tabIndex === 0 ? { ...session.tabs[0]!, agent } : makeTab(agent)
+        );
+        return { ...session, tabs, activeTabId: tabs[0]!.id };
+      }));
+    }
   }
 
   // ── 데이터 로드 ───────────────────────────────────────────────────────────────
@@ -411,11 +426,13 @@ function AppInner(): React.ReactElement {
   async function addTab(agentName?: string): Promise<void> {
     const agent = agentName ?? (activeTab?.agent ?? DEFAULT_AGENTS[0]);
     const tab = makeTab(agent);
+    const nextTabs = [...tabs, tab];
     setSessions(prev => prev.map(s =>
       s.id === activeSessionId
-        ? { ...s, tabs: [...s.tabs, tab], activeTabId: tab.id }
+        ? { ...s, tabs: nextTabs, activeTabId: tab.id }
         : s
     ));
+    persistWorkTabOrder(nextTabs);
     if (project && date) {
       const n = await peekNextRun(project, agent, date);
       if (n !== null) updateTab(tab.id, { run: n });
@@ -429,17 +446,16 @@ function AppInner(): React.ReactElement {
     if (!tab) return;
     const sessId = activeSessionId;
     const doRemove = (): void => {
+      const next = tabs.filter(t => t.id !== id);
+      const restored = next.length === 0 ? [makeTab(tab.agent)] : next;
+      persistWorkTabOrder(restored);
       setSessions(prev => prev.map(s => {
         if (s.id !== sessId) return s;
-        const next = s.tabs.filter(t => t.id !== id);
-        if (next.length === 0) {
-          const fresh = makeTab(tab.agent);
-          return { ...s, tabs: [fresh], activeTabId: fresh.id };
-        }
+        if (next.length === 0) return { ...s, tabs: restored, activeTabId: restored[0]!.id };
         return {
           ...s,
-          tabs: next,
-          activeTabId: s.activeTabId === id ? next[next.length - 1]!.id : s.activeTabId,
+          tabs: restored,
+          activeTabId: s.activeTabId === id ? restored[restored.length - 1]!.id : s.activeTabId,
         };
       }));
     };
@@ -497,6 +513,7 @@ function AppInner(): React.ReactElement {
   async function changeTabAgent(tabId: string, agent: string): Promise<void> {
     try { localStorage.setItem(LAST_AGENT_STORAGE_KEY, agent); } catch { /* 무시 */ }
     updateTab(tabId, { agent, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false });
+    persistWorkTabOrder(tabs.map(t => t.id === tabId ? { ...t, agent } : t));
     const n = await peekNextRun(project, agent, date);
     if (n !== null) updateTab(tabId, { run: n });
   }
@@ -1188,7 +1205,7 @@ function AppInner(): React.ReactElement {
 
             {/* ── 편집 영역 ── */}
             <div className="editor-area">
-              {/* 탭 바 (Drag Reorder — 세션 동안 유지) */}
+              {/* 탭 바 (Drag Reorder — 순서는 settings에 저장, 내용은 저장하지 않음) */}
               <div className="tab-bar">
                 {tabs.map((tab, i) => (
                   <button

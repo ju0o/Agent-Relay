@@ -124,6 +124,14 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       return s.agentOrder;
     }
 
+    case 'settings:setWorkTabOrder': {
+      if (!Array.isArray(req.order)) throw new Error('order 배열이 필요합니다.');
+      const s = currentSettings();
+      s.workTabOrder = req.order.map((x) => String(x));
+      saveSettings(s);
+      return s.workTabOrder;
+    }
+
     case 'settings:setDataRoot': {
       if (!req.path) throw new Error('DATA_ROOT 경로가 비어 있습니다.');
       const resolved = path.resolve(req.path);

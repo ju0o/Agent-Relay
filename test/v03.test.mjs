@@ -35,7 +35,7 @@ async function main() {
   relay.ensureDataRoot(TEST_ROOT);
 
   // ── S. Settings — order persistence ────────────────────────────────────────
-  console.log('S1) settings roundtrip — projectOrder/agentOrder 포함');
+  console.log('S1) settings roundtrip — projectOrder/agentOrder/workTabOrder 포함');
   const settingsDir = path.join(TEST_ROOT, '_settings');
   fs.mkdirSync(settingsDir, { recursive: true });
   relay.saveSettings(settingsDir, {
@@ -44,10 +44,12 @@ async function main() {
     lastProject: 'HERMESS',
     projectOrder: ['JuTell', 'HERMESS', 'GUPITI'],
     agentOrder: ['OpenCode', 'Codex', 'Claude Code'],
+    workTabOrder: ['OpenCode', 'Claude Code', 'OpenCode'],
   });
   const s1 = relay.loadSettings(settingsDir);
   if (s1.projectOrder?.join('|') === 'JuTell|HERMESS|GUPITI'
     && s1.agentOrder?.join('|') === 'OpenCode|Codex|Claude Code'
+    && s1.workTabOrder?.join('|') === 'OpenCode|Claude Code|OpenCode'
     && s1.lastProject === 'HERMESS') {
     PASS('projectOrder + agentOrder + lastProject persist');
   } else FAIL(`orders lost: ${JSON.stringify(s1)}`);

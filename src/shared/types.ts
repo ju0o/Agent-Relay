@@ -27,6 +27,8 @@ export interface AppSettings {
   projectOrder?: string[];
   /** 사용자가 지정한 에이전트 표시 순서 (에이전트 이름 배열). UI 정렬 전용. */
   agentOrder?: string[];
+  /** Work Tab 표시 순서/개수 (에이전트 이름 배열). 편집 내용은 저장하지 않는다. */
+  workTabOrder?: string[];
 }
 
 /** A selectable project (a folder under DATA_ROOT/Projects). */
@@ -93,6 +95,7 @@ export type RelayRequest =
  | { op: 'pdf:read'; dataRoot: string; project: string; id: string }
  | { op: 'settings:setProjectOrder'; order: string[] }
  | { op: 'settings:setAgentOrder'; order: string[] }
+ | { op: 'settings:setWorkTabOrder'; order: string[] }
  | { op: 'update:check' }
  | { op: 'update:download' }
  | { op: 'update:install' };
