@@ -758,6 +758,16 @@ html, body, #app {
   border-color: var(--accent);
   color: #fff;
 }
+.df-search, .df-type-filter {
+  height: 25px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 11px;
+}
+.df-search { width: 150px; padding: 0 8px; }
+.df-type-filter { padding: 0 6px; }
 
 /* ── Feedback 작성 폼 ── */
 .df-form {
