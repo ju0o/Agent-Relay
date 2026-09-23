@@ -1084,10 +1084,8 @@ function AppInner(): React.ReactElement {
   }
 
   // ── 데이터 루트 변경 ──────────────────────────────────────────────────────────
-  async function changeDataRoot(): Promise<void> {
-    const pick = await must<{ selected: string | null }>({ op: 'folder:pick' });
-    if (!pick.selected) return;
-    const s = await must<SettingsView>({ op: 'settings:setDataRoot', path: pick.selected });
+  async function setDataRoot(nextPath: string): Promise<void> {
+    const s = await must<SettingsView>({ op: 'settings:setDataRoot', path: nextPath });
     await applySettings(s);
     setMissingRoot(false);
     setShowSettings(false);
@@ -1106,6 +1104,11 @@ function AppInner(): React.ReactElement {
         notify('ok', `기존 런 ${view.history.length}개를 발견했습니다.`);
       }
     } catch { /* 오류 무시 */ }
+  }
+
+  async function changeDataRoot(): Promise<void> {
+    const pick = await must<{ selected: string | null }>({ op: 'folder:pick' });
+    if (pick.selected) await setDataRoot(pick.selected);
   }
 
   function modalOk(): void {
@@ -1172,12 +1175,17 @@ function AppInner(): React.ReactElement {
             <h1>Agent Relay Log · V0</h1>
             <p>
               GPT → 에이전트 작업 결과를 체계적으로 기록하는 툴입니다.<br /><br />
-              기록을 저장할 <code>데이터 폴더</code>를 먼저 선택하세요.<br />
-              예: <code>D:\AgentRelayLogs</code> — 이 선택은 저장되어 다음 실행부터 자동 복원됩니다.
+              데이터 폴더에는 GPT 프롬프트와 에이전트 결과가 날짜·에이전트·런별 Markdown 파일로 저장됩니다.<br />
+              기본 폴더를 사용하거나 원하는 폴더를 직접 선택하세요.
             </p>
-            <button className="btn primary" onClick={() => void changeDataRoot()}>
-              📁 데이터 폴더 선택
-            </button>
+            <div className="modalbtns" style={{ justifyContent: 'center' }}>
+              <button className="btn primary" onClick={() => void setDataRoot(settings.defaultDataRoot)}>
+                📁 Documents/Agent Relay 사용
+              </button>
+              <button className="btn" onClick={() => void changeDataRoot()}>
+                다른 폴더 직접 선택
+              </button>
+            </div>
           </div>
         </div>
       )}

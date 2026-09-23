@@ -40,6 +40,8 @@ export interface ProjectInfo {
 /** settings:get response — includes the app base dir where settings live. */
 export interface SettingsView extends AppSettings {
   baseDir: string;
+  /** Default first-run location under the user's Documents folder. */
+  defaultDataRoot: string;
   /** App version from package.json (surfaced for dogfooding context). */
   appVersion: string;
   /** Whether the persisted dataRoot currently exists on disk. */

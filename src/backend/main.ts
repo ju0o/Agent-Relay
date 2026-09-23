@@ -121,6 +121,7 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       const view: SettingsView = {
         ...s,
         baseDir,
+        defaultDataRoot: path.join(app.getPath('documents'), 'Agent Relay'),
         appVersion: app.getVersion(),
         dataRootExists: relay.dataRootExists(s.dataRoot),
       };
