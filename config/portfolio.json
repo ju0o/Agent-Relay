@@ -2225,6 +2225,37 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 08시: '대시보드에 결정이 필요해요가 너무 많아서 뭘 봐야 할지, 언제 어떻게 활용하는지 모르겠음'; 8 stale orphan-recovery requests from 9/15-16 were the cause (closed by Founder decision); approved design UniHome; A-13, A-15",
           "title": "Reorder the operator 홈 around the Founder's questions ('무엇을 "
+        },
+        {
+          "taskId": "JCAPP-DESKTOP-SHELL",
+          "scope": "New Windows desktop program for the Founder in desktop/: a minimal Electron shell (desktop/package.json with electron + electron-builder as devDependencies, productName 'JuControler', NSIS + portable win targets; desktop/main.js) that opens one window on the operator screen URL (default http://100.82.108.31:8787, overridable by JUCONTROLER_URL), adds a tray icon with '열기 / 종료', polls GET /api/gates every 30s and shows a Windows notification '결정할 일이 N개 생겼어요' only when the count rises, and when the server is unreachable shows desktop/offline.html ('지금 ASUS가 꺼져 있어요 — 켜지면 자동으로 다시 연결해요') and retries every 15s. No other remote pages, nodeIntegration off, contextIsolation on, external links open in the default browser. Pure helpers (URL resolution, notification-when-rises logic) live in desktop/logic.cjs and are tested by test/desktop-logic.test.mjs without launching Electron.",
+          "files": [
+            "desktop/package.json",
+            "desktop/main.js",
+            "desktop/logic.cjs",
+            "desktop/offline.html",
+            "test/desktop-logic.test.mjs"
+          ],
+          "tests": [
+            "node --test test/desktop-logic.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 08시: 'UI/UX도 더 편하게', '웹 기반보다 프로그램 기반' → AskUserQuestion: 별도 JuControler 프로그램; phone access keeps the same web screen; approved design canvas UniHome/UniRelay (A-13, A-15)",
+          "title": "New Windows desktop program for the Founder in desktop/: a m"
+        },
+        {
+          "taskId": "JCAPP-UX-COMFORT",
+          "scope": "Comfort pass on operator/public (keep every feature and endpoint): follow the approved target design (canvas UniHome/UniRelay, glitch D rules) for type and spacing — body 15px+, card titles 17px+, one card style with generous padding, clear section headings, buttons 44px tall; responsive layout so the same screen works on a phone (below 720px the left rail becomes a bottom tab bar with the same items, cards stack in one column) and in the desktop program window; visible focus states and 4.5:1 contrast in light and dark. Tests: test/layout-consistency.test.mjs gains assertions for the mobile breakpoint rule and minimum button height tokens.",
+          "files": [
+            "operator/public/app.css",
+            "operator/public/app.js",
+            "test/layout-consistency.test.mjs"
+          ],
+          "tests": [
+            "node --test test/layout-consistency.test.mjs",
+            "node --test test/founder-clean-tokens.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 08시: 'UI/UX도 더 편하게', '웹 기반보다 프로그램 기반' → AskUserQuestion: 별도 JuControler 프로그램; phone access keeps the same web screen; approved design canvas UniHome/UniRelay (A-13, A-15)",
+          "title": "Comfort pass on operator/public (keep every feature and endp"
         }
       ]
     },
