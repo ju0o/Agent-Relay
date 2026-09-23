@@ -2,9 +2,9 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { realpath } from "node:fs/promises";
 import { FounderGateManager } from "../portfolio-jit/index.mjs";
 import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
@@ -13,6 +13,20 @@ export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+
+let atomicCounter = 0;
+
+async function writeFileAtomic(path, contents) {
+  await mkdir(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.${atomicCounter++}.tmp`;
+  await writeFile(temp, contents);
+  try {
+    await rename(temp, path);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
 
 function packetLine(text, prefix) {
   const line = String(text).split(/\r?\n/).reverse().find((item) => item.trim().startsWith(prefix));
@@ -158,7 +172,7 @@ export class PortfolioRunner {
   }
 
   async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
-  async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => { await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
+  async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.catch(() => {}).then(async () => writeFileAtomic(this.statePath, JSON.stringify(snapshot, null, 2))); return this._saveChain; }
 
   async reconcileProjects(state) {
     const projects = []; const founderGates = [];
@@ -225,8 +239,7 @@ export class PortfolioRunner {
 
   async publishResult(task) {
     if (!task.result) return;
-    await mkdir(this.resultRoot, { recursive: true });
-    await writeFile(join(this.resultRoot, `${task.taskId}.json`), JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: task.taskId, result: task.result, qa: task.qa || null, state: task.state }, null, 2));
+    await writeFileAtomic(join(this.resultRoot, `${task.taskId}.json`), JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: task.taskId, result: task.result, qa: task.qa || null, state: task.state }, null, 2));
   }
 
   async _acquireQa() { if (this._qaBusy) await new Promise((resolvePromise) => this._qaWaiters.push(resolvePromise)); this._qaBusy = true; }

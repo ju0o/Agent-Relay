@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
@@ -132,5 +132,40 @@ test("REQUEST_CHANGES retries the same task, then promotion precedes NEXT", asyn
   const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", state: "QUEUED", tasks: [{ taskId: "P-RETRY", scope: "retry", files: [], tests: [] }, { taskId: "P-NEXT", scope: "next", files: [], tests: [] }] }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtime: { command: "codex", async run({ sandbox }) { if (sandbox === "workspace-write") { builds += 1; return { pid: builds, code: 0, startedAt: new Date().toISOString(), text: `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-RETRY", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "b".repeat(40), summary: "retry" })}` }; } qas += 1; return { pid: qas, code: 0, startedAt: new Date().toISOString(), text: qas === 1 ? 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"P-RETRY","verdict":"REQUEST_CHANGES","tests":[],"findings":["retry"],"summary":"retry"}' : 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"P-RETRY","verdict":"ACCEPT","tests":[],"findings":[],"summary":"accept"}' }; } } });
   await runner.enqueue("p"); const state = await runner.runOnce();
   assert.equal(builds, 2); assert.equal(qas, 2); assert.equal(state.tasks[0].state, "VERIFIED_DONE"); assert.equal(state.tasks[0].taskId, "P-RETRY");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("portfolio state saves are atomic and never leave truncated JSON", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-atomic-state-");
+  const statePath = join(root, "state.json");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  await runner.save({ schema: "agent-relay.portfolio-state.v1", service: "IDLE", tasks: [{ taskId: "A" }] });
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).tasks[0].taskId, "A");
+  assert.deepEqual((await readdir(root)).filter((name) => name.includes(".tmp")), []);
+  await runner.save({ schema: "agent-relay.portfolio-state.v1", service: "IDLE", tasks: [{ taskId: "B" }] });
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).tasks[0].taskId, "B");
+  assert.deepEqual((await readdir(root)).filter((name) => name.includes(".tmp")), []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("stale temp files from an interrupted save never shadow valid state", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-atomic-crash-");
+  const statePath = join(root, "state.json");
+  await writeFile(statePath, JSON.stringify({ schema: "agent-relay.portfolio-state.v1", tasks: [{ taskId: "GOOD" }] }));
+  await writeFile(`${statePath}.${process.pid}.crashed.tmp`, '{"tasks": [{"taskId": "TRUNC');
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  assert.equal((await runner.load()).tasks[0].taskId, "GOOD");
+  await runner.save({ schema: "agent-relay.portfolio-state.v1", tasks: [{ taskId: "NEXT" }] });
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).tasks[0].taskId, "NEXT");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("result inbox publishes are atomic and never leave truncated JSON", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-atomic-result-");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), resultRoot: join(root, "result-outbox") });
+  await runner.publishResult({ taskId: "P-ATOMIC", state: "VERIFIED_DONE", result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } });
+  const outPath = join(root, "result-outbox", "P-ATOMIC.json");
+  assert.equal(JSON.parse(await readFile(outPath, "utf8")).result.status, "IMPLEMENTED");
+  assert.deepEqual((await readdir(join(root, "result-outbox"))).filter((name) => name.includes(".tmp")), []);
   await rm(root, { recursive: true, force: true });
 });
