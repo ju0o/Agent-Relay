@@ -1396,6 +1396,17 @@
             "npm test"
           ],
           "ssotEvidence": "docs/product/MASTER_ROADMAP.md:222-240 \"Does a derived day-level view help a user who delegates many tasks\" and Candidate Daily Report Level 1 sections"
+        },
+        {
+          "taskId": "JUCEIPT-M3-DAILY-VALUE-SCORECARD",
+          "scope": "Compare the committed receipt-derived daily view with individual receipts against M3 validation criteria and record an evidence-bounded GO, DEFER, or KILL decision without productizing beyond the experiment.",
+          "files": [
+            "docs/qa/M3_DAILY_VALUE_SCORECARD.md"
+          ],
+          "tests": [
+            "npm test"
+          ],
+          "ssotEvidence": "BUSINESS_PRODUCT_WBS.md:129-136 \"Compare Daily view versus reading individual receipts\"; Founder direction 2026-09-23"
         }
       ]
     },
