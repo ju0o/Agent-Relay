@@ -97,8 +97,10 @@ export type RelayRequest =
  | { op: 'settings:setAgentOrder'; order: string[] }
  | { op: 'settings:setWorkTabOrder'; order: string[] }
  | { op: 'update:check' }
- | { op: 'update:download' }
- | { op: 'update:install' };
+  | { op: 'update:download' }
+ | { op: 'update:install' }
+ | { op: 'controlRoom:board' }
+ | { op: 'controlRoom:approvals' };
 
 /** Standard successful response envelope. */
 export type RelayResult<T = unknown> = { ok: true; value: T };

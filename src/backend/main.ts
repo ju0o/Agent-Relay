@@ -10,6 +10,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electro
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
+import { runControlRoom } from './controlRoom.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
@@ -330,6 +331,12 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'update:install':
       installUpdate();
       return true;
+
+    case 'controlRoom:board':
+      return runControlRoom('board');
+
+    case 'controlRoom:approvals':
+      return runControlRoom('approvals');
 
     default:
       throw new Error('알 수 없는 요청입니다.');
