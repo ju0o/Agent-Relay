@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, isCorruptStateError, parseQaPacket, parseResultPacket, parseTaskPacket, PORTFOLIO_STATE_CORRUPT, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, isCorruptStateError, parseQaPacket, parseResultPacket, parseResultReturn, parseTaskPacket, PM_FILE_CONTRACT, PORTFOLIO_STATE_CORRUPT, PortfolioRunner, readResultReturnFile, readTaskPacketFile, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
@@ -219,5 +219,29 @@ test("result inbox publishes are atomic and never leave truncated JSON", async (
   const outPath = join(root, "result-outbox", "P-ATOMIC.json");
   assert.equal(JSON.parse(await readFile(outPath, "utf8")).result.status, "IMPLEMENTED");
   assert.deepEqual((await readdir(join(root, "result-outbox"))).filter((name) => name.includes(".tmp")), []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("temporary repository-file PM contract reuses canonical packet validation", async () => {
+  assert.equal(PM_FILE_CONTRACT.status, "TEMPORARY_BOOTSTRAP");
+  assert.equal(PM_FILE_CONTRACT.transport, "repository-file");
+  assert.equal(PM_FILE_CONTRACT.bootstrap, "codex-chatgpt-web");
+  const root = await mkdtemp("/tmp/agent-relay-pm-file-contract-");
+  const runner = new PortfolioRunner({ manifest: { projects: [{ id: "p", active: true, task: { taskId: "P-FILE", scope: "bounded", files: ["a"], tests: ["test"] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), resultRoot: join(root, "result-outbox") });
+  const intakeFile = join(root, "pm-inbox-P-FILE.txt");
+  await writeFile(intakeFile, `TASK_PACKET: ${JSON.stringify({ schema: "agent-relay.task.v1", taskId: "P-FILE", projectId: "p", scope: "bounded", files: ["a"], tests: ["test"] })}\n`);
+  assert.equal((await readTaskPacketFile(intakeFile)).taskId, "P-FILE");
+  assert.equal((await runner.acceptTaskPacketFile(intakeFile)).state, "QUEUED");
+  await assert.rejects(() => readTaskPacketFile(join(root, "missing.txt")), /ENOENT/);
+  const validReturn = JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: "P-FILE", result: { schema: "agent-relay.result.v1", taskId: "P-FILE", status: "IMPLEMENTED", changedFiles: ["a"], tests: ["test"], commitSha: "abc", summary: "ok" }, qa: { schema: "agent-relay.qa.v1", taskId: "P-FILE", verdict: "ACCEPT", tests: ["test"], findings: [], summary: "ok" }, state: "VERIFIED_DONE" });
+  assert.equal(parseResultReturn(validReturn).result.status, "IMPLEMENTED");
+  assert.throws(() => parseResultReturn("not json"), /invalid RESULT_RETURN/);
+  assert.throws(() => parseResultReturn(JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: "P-FILE", result: { schema: "agent-relay.result.v1", taskId: "OTHER", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "abc", summary: "ok" }, state: "VERIFIED_DONE" })), /invalid RESULT_RETURN/);
+  assert.throws(() => parseResultReturn(JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: "P-FILE", result: { schema: "agent-relay.result.v1", taskId: "P-FILE", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "abc", summary: "ok" }, qa: { schema: "agent-relay.qa.v1", taskId: "OTHER", verdict: "ACCEPT", tests: [], findings: [], summary: "ok" }, state: "VERIFIED_DONE" })), /invalid RESULT_RETURN/);
+  await runner.publishResult({ taskId: "P-FILE", state: "VERIFIED_DONE", result: { schema: "agent-relay.result.v1", taskId: "P-FILE", status: "IMPLEMENTED", changedFiles: ["a"], tests: ["test"], commitSha: "abc", summary: "ok" }, qa: { schema: "agent-relay.qa.v1", taskId: "P-FILE", verdict: "ACCEPT", tests: ["test"], findings: [], summary: "ok" } });
+  const returned = await runner.readResultReturn("P-FILE");
+  assert.equal(returned.result.status, "IMPLEMENTED");
+  assert.equal(returned.qa.verdict, "ACCEPT");
+  assert.equal((await readResultReturnFile(join(root, "result-outbox", "P-FILE.json"))).state, "VERIFIED_DONE");
   await rm(root, { recursive: true, force: true });
 });

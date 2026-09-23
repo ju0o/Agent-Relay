@@ -54,7 +54,13 @@ if (area === "night-run" && command === "stop") { try { const pid = Number(await
 if (area === "portfolio" && command === "status") { console.log(JSON.stringify(await instance.load(), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "reconcile") { console.log(JSON.stringify(await instance.reconcile(), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "intake" && project) { const packet = parseTaskPacket(await readFile(project, "utf8")); console.log(JSON.stringify(await instance.acceptTaskPacket(packet), null, 2)); process.exit(0); }
+// TEMPORARY repository-file PM contract for the codex-chatgpt-web bootstrap:
+// pm-intake accepts a TASK_PACKET file via the canonical validator and
+// result-return reads a canonical result-inbox file with validation. No
+// permanent transport dependency; remove with PM_FILE_CONTRACT when done.
+if (area === "portfolio" && command === "pm-intake" && project) { console.log(JSON.stringify(await instance.acceptTaskPacketFile(project), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "result" && project) { console.log(await readFile(join(instance.resultRoot, `${project}.json`), "utf8")); process.exit(0); }
+if (area === "portfolio" && command === "result-return" && project) { console.log(JSON.stringify(await instance.readResultReturn(project), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "founder-response" && project && decision) { console.log(JSON.stringify(await instance.resolveFounderGate(project, decision), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "stop") { try { const pid = Number(await readFile(pidPath, "utf8")); if (pid && pid !== process.pid) process.kill(pid, "SIGTERM"); } catch { /* already stopped */ } const state = await instance.load(); state.service = "STOPPED"; await instance.save(state); await rm(pidPath, { force: true }); console.log("STOPPED"); process.exit(0); }
 if (area === "project" && command === "run" && project) { console.log(JSON.stringify(await instance.enqueue(project), null, 2)); process.exit(0); }

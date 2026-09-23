@@ -109,6 +109,43 @@ export function parseQaPacket(text) {
   return packet;
 }
 
+// TEMPORARY repository-file PM contract for the codex-chatgpt-web bootstrap.
+// It carries ChatGPT Web PM input and result return as plain repository files
+// (pm-inbox / result-outbox) and reuses the canonical TASK_PACKET,
+// RESULT_PACKET, and result-inbox validators below. It adds no network client,
+// service dependency, or permanent transport: when the bootstrap ends this
+// block and its bridge commands are removed without touching the runner core.
+export const PM_FILE_CONTRACT = Object.freeze({
+  status: "TEMPORARY_BOOTSTRAP",
+  transport: "repository-file",
+  bootstrap: "codex-chatgpt-web",
+  intakeDir: "pm-inbox",
+  resultDir: "result-outbox",
+});
+
+export function parseResultReturn(text) {
+  let parsed;
+  try { parsed = JSON.parse(String(text)); } catch { throw new Error("invalid RESULT_RETURN"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid RESULT_RETURN");
+  if (parsed.schema !== "agent-relay.result-return.v1" || typeof parsed.taskId !== "string" || !parsed.taskId || typeof parsed.state !== "string" || !parsed.state) throw new Error("invalid RESULT_RETURN");
+  const result = parseResultPacket(`RESULT_PACKET: ${JSON.stringify(parsed.result)}`);
+  if (result.taskId !== parsed.taskId) throw new Error("invalid RESULT_RETURN");
+  let qa = null;
+  if (parsed.qa !== null && parsed.qa !== undefined) {
+    qa = parseQaPacket(`QA_PACKET: ${JSON.stringify(parsed.qa)}`);
+    if (qa.taskId !== parsed.taskId) throw new Error("invalid RESULT_RETURN");
+  }
+  return { ...parsed, result, qa };
+}
+
+export async function readTaskPacketFile(path) {
+  return parseTaskPacket(await readFile(path, "utf8"));
+}
+
+export async function readResultReturnFile(path) {
+  return parseResultReturn(await readFile(path, "utf8"));
+}
+
 function exec(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -273,6 +310,16 @@ export class PortfolioRunner {
     if (state.tasks.some((item) => item.taskId === packet.taskId && item.state === "VERIFIED_DONE")) return state.tasks.find((item) => item.taskId === packet.taskId);
     const task = { ...definition, projectId: project.id, state: "QUEUED", attempts: 0, qaAttempts: 0 };
     state.tasks = state.tasks.filter((item) => item.projectId !== project.id || item.state === "VERIFIED_DONE"); state.tasks.push(task); await this.save(state); return task;
+  }
+
+  // TEMPORARY bootstrap helper: repository-file PM intake reuses parseTaskPacket.
+  async acceptTaskPacketFile(filePath) {
+    return this.acceptTaskPacket(await readTaskPacketFile(filePath));
+  }
+
+  // TEMPORARY bootstrap helper: canonical result-inbox read reuses parseResultReturn.
+  async readResultReturn(taskId) {
+    return readResultReturnFile(join(this.resultRoot, `${taskId}.json`));
   }
 
   async publishResult(task) {
