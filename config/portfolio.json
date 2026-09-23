@@ -780,6 +780,30 @@
             "node --test tests/status-board-cli.test.mjs"
           ],
           "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory ... current.json\""
+        },
+        {
+          "taskId": "JUCONTROLER-STATUS-STRICT-PROJECTION",
+          "scope": "Reject source status snapshots with unknown top-level or source fields so the reader enforces the canonical projection contract fail-closed while preserving UNKNOWN and opaque statuses.",
+          "files": [
+            "src/project-status.mjs",
+            "tests/project-registry.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs"
+          ],
+          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:49-69 source-owned status, UNKNOWN on invalid/ambiguous reads, and read-only projection rules; Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUCONTROLER-STATUS-SOURCE-IDENTITY",
+          "scope": "Propagate each registry entry's canonical sourceRef into unavailable or invalid board projections so UNKNOWN records retain source identity without writing or dispatching.",
+          "files": [
+            "src/project-status.mjs",
+            "tests/project-registry.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs"
+          ],
+          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:53-55 source.id must identify the canonical source and unidentified or unparsable sources produce UNKNOWN; Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
