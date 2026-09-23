@@ -98,6 +98,12 @@ function exec(command, args, options = {}) {
   });
 }
 
+// Local-only branch that collects accepted candidates in order, so each task starts from the previous ones.
+// Agent Relay never pushes it and never touches the user's checkout; merging it anywhere else is the Founder's call.
+export const INTEGRATION_REF = "refs/heads/agent-relay/integration";
+const gitRef = (repo, ref) => exec("git", ["-C", repo, "rev-parse", "--verify", "-q", `${ref}^{commit}`]).then((r) => r.stdout.trim(), () => null);
+const isAncestor = (repo, a, b) => exec("git", ["-C", repo, "merge-base", "--is-ancestor", a, b]).then(() => true, () => false);
+
 export class WorktreeManager {
   constructor(root) { this.root = root; }
 
@@ -109,6 +115,9 @@ export class WorktreeManager {
     try { base = (await exec("git", ["-C", project.path, "rev-parse", project.ref || "HEAD"])).stdout.trim(); }
     catch { base = (await exec("git", ["-C", project.path, "rev-parse", `refs/remotes/origin/${project.ref}`])).stdout.trim(); }
     if (project.expectedHeadSha && base !== project.expectedHeadSha) throw new Error(`target SHA mismatch: ${project.id}`);
+    // Build on accepted work: start from the project's integration branch when it descends from the project base.
+    const integration = await gitRef(project.path, INTEGRATION_REF);
+    if (integration && await isAncestor(project.path, base, integration)) base = integration;
     const name = `${project.id}-${taskId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
     const path = join(this.root, name);
     await mkdir(this.root, { recursive: true });
@@ -127,6 +136,28 @@ export class WorktreeManager {
       if (!(await readFile(exclude, "utf8").catch(() => "")).split(/\r?\n/).includes("node_modules")) { await mkdir(resolve(exclude, ".."), { recursive: true }); await appendFile(exclude, "\nnode_modules\n"); }
     }
     return { path, base, projectId: project.id, async cleanup() { await exec("git", ["-C", project.path, "worktree", "remove", "--force", path]).catch(() => {}); await rm(path, { recursive: true, force: true }); } };
+  }
+
+  // Add an accepted candidate to the integration branch: fast-forward when possible, otherwise cherry-pick
+  // base..commit onto the tip in a scratch worktree and re-run the task's tests there. Never moves on failure.
+  async integrate(project, task, { gate = runTestGate } = {}) {
+    const commit = task.result?.commitSha; const base = task.builderEvidence?.base;
+    let tip = await gitRef(project.path, INTEGRATION_REF);
+    if (!tip) { const start = base || (await gitRef(project.path, project.ref || "HEAD")); await exec("git", ["-C", project.path, "update-ref", INTEGRATION_REF, start]); tip = start; }
+    if (await isAncestor(project.path, tip, commit)) { await exec("git", ["-C", project.path, "update-ref", INTEGRATION_REF, commit, tip]); return { state: "FAST_FORWARD", tip: commit }; }
+    if (!base) return { state: "NOT_INTEGRATED", reason: "unknown candidate base", tip };
+    const scratch = join(this.root, `${project.id}-integrate-${task.taskId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`);
+    await exec("git", ["-C", project.path, "worktree", "add", "--detach", scratch, tip]);
+    try {
+      try { await exec("git", ["-C", scratch, "-c", "user.name=Agent Relay", "-c", "user.email=agent-relay@localhost", "cherry-pick", "--allow-empty", `${base}..${commit}`]); }
+      catch (error) { await exec("git", ["-C", scratch, "cherry-pick", "--abort"]).catch(() => {}); return { state: "CONFLICT", reason: String(error.message || error).slice(0, 500), tip }; }
+      for (const dir of ["node_modules"]) if (existsSync(join(project.path, dir))) await symlink(join(project.path, dir), join(scratch, dir), "dir").catch(() => {});
+      const result = await gate(scratch, task.tests);
+      if (!result.ok) { const failed = result.results.find((item) => item.code !== 0); return { state: "GATE_FAILED", reason: failed ? `${failed.cmd} exit ${failed.code}: ${failed.tail.slice(-800)}` : "gate failed", tip }; }
+      const merged = (await exec("git", ["-C", scratch, "rev-parse", "HEAD"])).stdout.trim();
+      await exec("git", ["-C", project.path, "update-ref", INTEGRATION_REF, merged, tip]);
+      return { state: "CHERRY_PICKED", tip: merged };
+    } finally { await exec("git", ["-C", project.path, "worktree", "remove", "--force", scratch]).catch(() => {}); await rm(scratch, { recursive: true, force: true }); }
   }
 
   async promote(project, taskId, commitSha) {
@@ -315,7 +346,7 @@ export class PortfolioRunner {
         const failed = gate.results.find((result) => result.code !== 0);
         if (!task.testGate.ok) task.qa = { ...task.qa, verdict: "REQUEST_CHANGES", findings: [...(task.qa.findings || []), failed ? `TEST_GATE: \`${failed.cmd}\` exit ${failed.code}: ${failed.tail}` : "TEST_GATE: tests changed HEAD"] };
       }
-      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; task.state = "VERIFIED_DONE"; await this.publishResult(task); break; }
+      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; if (this.worktrees.integrate && !task.verificationOnly) task.integration = await this.worktrees.integrate(project, task).catch((error) => ({ state: "NOT_INTEGRATED", reason: String(error.message || error).slice(0, 500) })); task.state = "VERIFIED_DONE"; await this.publishResult(task); break; }
       if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
       if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; await this.publishResult(task); break;
       }

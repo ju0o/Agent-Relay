@@ -195,3 +195,27 @@ test("runTestGate runs commands in order in the workspace and stops at the first
   assert.equal(gate.ok, false); assert.equal(gate.results.length, 2); assert.equal(gate.results[1].code, 3); assert.match(gate.results[0].tail, /ar-rtg-/);
   assert.equal((await runTestGate(dir, ["true"])).ok, true);
 });
+
+test("integration branch: next task builds on accepted work; stale candidates cherry-pick; conflicts and gate failures never move it", async () => {
+  const { execFileSync } = await import("node:child_process"); const { tmpdir } = await import("node:os");
+  const { WorktreeManager, INTEGRATION_REF } = await import("../../src/v2/portfolio-runner/index.mjs");
+  const repo = await mkdtemp(join(tmpdir(), "ar-int-")); const g = (cwd, ...a) => execFileSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...a], { encoding: "utf8" }).trim();
+  g(repo, "init", "-q"); await writeFile(join(repo, "a.txt"), "a\n"); await writeFile(join(repo, "b.txt"), "b\n"); g(repo, "add", "."); g(repo, "commit", "-qm", "base");
+  const base = g(repo, "rev-parse", "HEAD"); const project = { id: "p", path: repo };
+  const wm = new WorktreeManager(await mkdtemp(join(tmpdir(), "ar-int-root-"))); const pass = async () => ({ ok: true, results: [] });
+  const candidate = async (id, file, text, from) => { const wt = from ? { path: join(wm.root, id), base: from } : await wm.create(project, id); if (from) g(repo, "worktree", "add", "-q", "--detach", wt.path, from); await writeFile(join(wt.path, file), text); g(wt.path, "commit", "-qam", id); return { taskId: id, tests: [], result: { commitSha: g(wt.path, "rev-parse", "HEAD") }, builderEvidence: { base: wt.base } }; };
+  const t1 = await candidate("T-1", "a.txt", "a1\n");
+  assert.equal((await wm.integrate(project, t1, { gate: pass })).state, "FAST_FORWARD");
+  const wt2 = await wm.create(project, "T-2"); assert.equal(wt2.base, t1.result.commitSha, "next task must start from integration");
+  const stale = await candidate("T-STALE", "b.txt", "b1\n", base);
+  const picked = await wm.integrate(project, stale, { gate: pass }); assert.equal(picked.state, "CHERRY_PICKED");
+  assert.equal(g(repo, "show", `${INTEGRATION_REF}:a.txt`), "a1"); assert.equal(g(repo, "show", `${INTEGRATION_REF}:b.txt`), "b1");
+  const tip = g(repo, "rev-parse", INTEGRATION_REF);
+  const clash = await candidate("T-CLASH", "a.txt", "zzz\n", base);
+  assert.equal((await wm.integrate(project, clash, { gate: pass })).state, "CONFLICT"); assert.equal(g(repo, "rev-parse", INTEGRATION_REF), tip);
+  const bad = await candidate("T-BAD", "c.txt", "c\n", base).catch(async () => null);
+  const badTask = bad || (await (async () => { const p = join(wm.root, "T-BAD2"); g(repo, "worktree", "add", "-q", "--detach", p, base); await writeFile(join(p, "c.txt"), "c\n"); g(p, "add", "c.txt"); g(p, "commit", "-qm", "c"); return { taskId: "T-BAD2", tests: ["false"], result: { commitSha: g(p, "rev-parse", "HEAD") }, builderEvidence: { base } }; })());
+  assert.equal((await wm.integrate(project, { ...badTask, tests: ["false"] }, { gate: async () => ({ ok: false, results: [{ cmd: "false", code: 1, tail: "" }] }) })).state, "GATE_FAILED");
+  assert.equal(g(repo, "rev-parse", INTEGRATION_REF), tip, "gate failure must not move integration");
+  assert.equal(g(repo, "rev-parse", "HEAD"), base, "the user's checkout never moves"); assert.equal(g(repo, "status", "--porcelain"), "");
+});
