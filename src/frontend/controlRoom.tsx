@@ -46,6 +46,14 @@ const NEVER_AUTO_CATEGORIES: ReadonlySet<string> = new Set([
   'destructive',
 ]);
 
+const PROJECT_PRESENTATION: Record<string, { name: string; goal: string }> = {
+  'agent-relay': { name: '에이전트 릴레이', goal: 'CORE V1 자동 실행과 결과 수집' },
+  actl: { name: '액틀', goal: '안전한 작업 전달과 Windows Board 검증' },
+  juplan: { name: '주플랜', goal: '계획 기반 프로젝트 실행과 릴리스 검증' },
+  juceipt: { name: '주싯', goal: '영수증 처리 재시도와 안정성 검증' },
+  jucontroler: { name: '주컨트롤러', goal: '프로젝트 통합 제어와 운영 가시성' },
+};
+
 function label(value: unknown, fallback = '—'): string {
   return typeof value === 'string' && value.trim() ? value : fallback;
 }
@@ -83,6 +91,38 @@ function detail(value: unknown): string {
 function projectOf(lane: ControlRoomLane): string {
   const raw = lane.project ?? lane.id;
   return typeof raw === 'string' ? raw : '';
+}
+
+function projectPresentation(lane: ControlRoomLane): { id: string; name: string; goal: string } {
+  const id = projectOf(lane);
+  const known = PROJECT_PRESENTATION[id];
+  const current = lane.current ?? {};
+  return {
+    id,
+    name: known?.name ?? label(lane.project ?? lane.id, '알 수 없는 프로젝트'),
+    goal: label(lane.goal ?? lane.summary ?? current.goal ?? current.summary, known?.goal ?? '현재 작업 목표를 확인하세요.'),
+  };
+}
+
+function rawText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function qaFindingOf(lane: ControlRoomLane): unknown {
+  const current = lane.current ?? {};
+  const qa = current.qa;
+  if (lane.qaFinding ?? lane.qaFindings ?? current.qaFinding ?? current.qaFindings) return lane.qaFinding ?? lane.qaFindings ?? current.qaFinding ?? current.qaFindings;
+  if (qa && typeof qa === 'object') return (qa as Record<string, unknown>).finding ?? (qa as Record<string, unknown>).findings;
+  return undefined;
+}
+
+function holdSummary(lane: ControlRoomLane, reason: string): string {
+  const text = `${lane.blocker ?? ''} ${reason}`.toUpperCase();
+  if (text.includes('FOUNDER')) return 'Founder 확인이 필요해 작업을 보류했습니다.';
+  if (text.includes('SCOPE')) return '승인된 작업 범위가 없어 작업을 보류했습니다.';
+  if (text.includes('NOT_CONNECTED')) return 'PM 연결이 없어 다음 작업을 대기 중입니다.';
+  return reason ? `작업이 보류되었습니다: ${reason}` : '작업이 보류되었습니다.';
 }
 
 /** Normalize a worker/QA chain value (string | string[] | {chain|name|...}) to an ordered id list. */
@@ -337,9 +377,20 @@ function LaneView({ lane, onRefresh }: {
   const worker = lane.workerChain ?? current.worker;
   const qa = lane.qaChain ?? current.qa;
   const project = projectOf(lane);
+  const presentation = projectPresentation(lane);
+  const qaFinding = qaFindingOf(lane);
   const paused = isPaused(lane);
   return (
     <section className="control-lane-view">
+      <header className="control-card">
+        <h2>{presentation.name}</h2>
+        <p>{presentation.goal}</p>
+        <details>
+          <summary>원문 보기</summary>
+          <p className="muted mono">{presentation.id || '—'}</p>
+          <pre className="mono">{rawText(lane)}</pre>
+        </details>
+      </header>
       <div className="control-flow" aria-label="lane lifecycle">
         {FLOW.map((name, index) => {
           const state = flowState(stageValue, index);
@@ -364,7 +415,7 @@ function LaneView({ lane, onRefresh }: {
             </div>
           )}
         </article>
-        {(lane.blocker || holds.length > 0) && <article className="control-card blocked"><h3>Hold / Blocked</h3><p>{lane.blocker ?? holds.map(detail).join(', ')}</p></article>}
+        {(lane.blocker || holds.length > 0) && <article className="control-card blocked"><h3>보류 / 차단</h3><p>{holdSummary(lane, holds.map(detail).join(', '))}</p>{qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
         {gate && <article className="control-card human"><h3>Human Gate</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
       </div>
     </section>
@@ -407,7 +458,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
       {error && <div className="flash err">{error}</div>}
       <ModelUsagePanel models={board.models} />
       {!lanes.length ? <div className="control-empty">표시할 lane이 없습니다.</div> : <>
-        <div className="control-tabs" role="tablist">{lanes.map((lane, index) => <button className={`control-tab${index === selected ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelected(index)} role="tab">{label(lane.project ?? lane.id, `Lane ${index + 1}`)}</button>)}</div>
+        <div className="control-tabs" role="tablist">{lanes.map((lane, index) => { const presentation = projectPresentation(lane); return <button className={`control-tab${index === selected ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelected(index)} role="tab" aria-label={`${presentation.name}: ${presentation.goal}`}><span>{presentation.name}</span><small>{presentation.goal}</small></button>; })}</div>
         {activeLane && <LaneView lane={activeLane} onRefresh={load} />}
       </>}
     </main>
