@@ -2155,6 +2155,17 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JCAPP-QUICKSTART",
+          "scope": "README에 처음 쓰는 법 섹션을 추가해 오프라인 E2E가 실행하는 기존 테스트·임시 포트 서버·모듈 API GET 명령을 그대로 문서화한다.",
+          "files": [
+            "README.md"
+          ],
+          "tests": [
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ]
     },
