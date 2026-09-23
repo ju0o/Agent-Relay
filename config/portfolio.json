@@ -258,6 +258,19 @@
             "npm run build"
           ],
           "ssotEvidence": "BACKLOG.md:34 \"마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원\""
+        },
+        {
+          "taskId": "AGENTRELAY-V1-UPDATER-PACKAGE-GUARD",
+          "scope": "Add an offline regression guard that fails when electron-updater is not a production dependency or the packaged file rules omit the runtime server required by the updater.",
+          "files": [
+            "test/v03.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "npm run test:v03",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "BACKLOG.md:36 \"electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨\""
         }
       ]
     },
@@ -322,6 +335,33 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:15-16 \"A refresh expanded into roughly 19 logical remote operations\"; docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:45-46 \"topology notifications ... a 60-second health refresh is the fallback\""
+        },
+        {
+          "taskId": "ACTL-TMUX-ERROR-FRAME-RECOVERY",
+          "scope": "Make RemoteTransport consume tmux control-mode %error frames without contaminating the next response, fail the affected request deterministically, and add offline regression coverage.",
+          "files": [
+            "src/actl/core/tmux.py",
+            "tests/test_tmux.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "ACTL-BATCH-PANE-METADATA",
+          "scope": "Reduce refresh SSH fan-out by reusing pane metadata already returned by list-panes instead of issuing repeated per-pane metadata reads, while preserving existing fail-closed mapping and validation behavior.",
+          "files": [
+            "src/actl/core/discovery.py",
+            "src/actl/core/validation.py",
+            "src/actl/tui.py",
+            "tests/test_discovery.py",
+            "tests/test_validation.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:95-102 \"At the measured 19-operation expansion this is\""
         }
       ]
     },
@@ -406,6 +446,19 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "DECISION_LOG.md:67 \"P2 scanner's entry-point Gap heuristic checks for index.* anywhere in the scanned tree, not scoped to the root package specifically\""
+        },
+        {
+          "taskId": "JUPLAN-G008-WORKSPACE-MANIFESTS",
+          "scope": "Parse workspace member package.json manifests for declared dependencies as evidence-backed DECLARED nodes with deterministic IDs, preserving root-manifest behavior and adding offline regression coverage.",
+          "files": [
+            "packages/project-scanner/src/scan.ts",
+            "packages/project-scanner/test/scan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/project-scanner test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "DECISION_LOG.md:66 \"DEC-G008 ... workspace member manifests ... are not individually parsed for their own dependencies ... GAP\""
         }
       ]
     },
@@ -477,6 +530,18 @@
             "node --test tests/project-registry.test.mjs"
           ],
           "ssotEvidence": "JuControler-Private/docs/CONTROL_TOWER_INTEGRATION_REBASELINE.md:335 \"Project ID ↔ 승인 workspace/dataRoot binding | Relay project configuration\""
+        },
+        {
+          "taskId": "JUCONTROLER-READONLY-STATUS-READER",
+          "scope": "Implement a stdlib-only read-only loader for one source-owned current.json projection that preserves opaque statuses and returns UNKNOWN with stale=true for missing, malformed, ambiguous, or expired observations without writing or mounting projects.",
+          "files": [
+            "src/project-status.mjs",
+            "tests/project-registry.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs"
+          ],
+          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory\" with generated current.json projection; docs/vnext/JUCONTROLER_VNEXT_SSOT.md:47-48 \"Unknown is a valid state\""
         }
       ]
     }
