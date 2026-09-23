@@ -1016,6 +1016,17 @@
             "python3 tests/run_tests.py"
           ],
           "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"The Founder interactive SSH disconnect root cause remains UNKNOWN\" and \"The DA/escape response leak remains UNKNOWN\""
+        },
+        {
+          "taskId": "ACTL-QUICKSTART-E2E",
+          "scope": "README에 오프라인 disposable E2E를 처음 실행하는 한국어 Quickstart 섹션을 추가하고 문서의 명령을 bash scripts/e2e_disposable.sh와 정확히 일치시킨다.",
+          "files": [
+            "README.md"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
