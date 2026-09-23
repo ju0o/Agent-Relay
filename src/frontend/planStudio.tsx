@@ -39,12 +39,34 @@ interface StudioDraft {
 
 const EMPTY_DRAFT: StudioDraft = { goal: '', tasks: [], runPolicy: 'continue' };
 
+const PROJECT_PRESENTATION: Record<string, { name: string; goal: string }> = {
+  'agent-relay': { name: '에이전트 릴레이', goal: 'CORE V1 자동 실행과 결과 수집' },
+  actl: { name: '액틀', goal: '안전한 작업 전달과 Windows Board 검증' },
+  juplan: { name: '주플랜', goal: '계획 기반 프로젝트 실행과 릴리스 검증' },
+  juceipt: { name: '주싯', goal: '영수증 처리 재시도와 안정성 검증' },
+  jucontroler: { name: '주컨트롤러', goal: '프로젝트 통합 제어와 운영 가시성' },
+};
+
 function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
 function label(value: unknown, fallback = '—'): string {
   return typeof value === 'string' && value.trim() ? value : fallback;
+}
+
+function projectPresentation(project: string, lane?: BoardLane): { name: string; goal: string } {
+  const known = PROJECT_PRESENTATION[project];
+  const current = lane?.current ?? {};
+  return {
+    name: known?.name ?? label(project, '알 수 없는 프로젝트'),
+    goal: label(lane?.goal ?? lane?.summary ?? current.goal ?? current.summary, known?.goal ?? '현재 작업 목표를 확인하세요.'),
+  };
+}
+
+function rawText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
 function stageIndex(stage: number | string): number {
@@ -234,6 +256,8 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   }, [draft.tasks, boardStageByTask, lanes, project]);
 
   const selected = tasks.find(t => t.id === selectedId) ?? tasks[0] ?? null;
+  const projectLane = lanes.find(l => str(l.project ?? l.id) === project);
+  const presentation = projectPresentation(project, projectLane);
   const activeLane = useMemo(
     () => lanes.find(l => str(l.current?.taskId ?? l.id) === (selected?.id ?? '') || str(l.current?.taskId ?? l.id) === (selected?.title ?? '')),
     [lanes, selected],
@@ -320,17 +344,21 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
           {projects.length === 0
             ? <p className="muted">board에 lane이 없습니다.</p>
             : <div className="plan-project-list" role="listbox" aria-label="projects">
-              {projects.map(name => (
+              {projects.map(name => {
+                const lane = lanes.find(l => str(l.project ?? l.id) === name);
+                const item = projectPresentation(name, lane);
+                return (
                 <button
                   key={name}
                   role="option"
                   aria-selected={name === project}
                   className={`plan-project${name === project ? ' active' : ''}`}
                   onClick={() => setProject(name)}
-                >{name}</button>
-              ))}
+                ><span>{item.name}</span><small>{item.goal}</small></button>
+                );
+              })}
             </div>}
-          <p className="muted">선택: <strong>{project}</strong></p>
+          <p className="muted">선택: <strong>{presentation.name}</strong></p>
         </section>
 
         <section className="plan-center" aria-label="goal and task chain">
@@ -338,9 +366,13 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
             <h3>Goal</h3>
             {loading
               ? <p className="muted">불러오는 중...</p>
-              : draft.goal
-                ? <p className="control-card-value" style={{ fontSize: 14 }}>{draft.goal}</p>
-                : <p className="muted">Goal이 비어 있습니다. PM chat으로 초안을 다듬으세요.</p>}
+              : <>
+                <p className="control-card-value" style={{ fontSize: 14 }}>{presentation.goal}</p>
+                <details>
+                  <summary>원문 보기</summary>
+                  <pre className="mono">{rawText(projectLane ?? draft)}</pre>
+                </details>
+              </>}
           </article>
 
           <article className="control-card" aria-label="task chain">
