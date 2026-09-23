@@ -1485,7 +1485,55 @@
       ],
       "pmTransport": "codex-chatgpt-web",
       "pmState": "NIGHT_PLAN_PM",
-      "tasks": []
+      "tasks": [
+        {
+          "taskId": "JCAPP-RELAY-BOARD-API",
+          "scope": "Read-only Agent Relay source for the operator: new lib/relayBoard.mjs exporting readRelayBoard({exec, now}) that runs the local Agent Relay board command (~/.agents/skills/auto-night-orchestrator/scripts/night board, via an injectable execFile, no shell, 8s timeout), parses its JSON (kind BOARD: runner, lanes[{id,state,workerChain,qaChain,counts,current{taskId,stage,attempts,worker,qa},holds,humanGate}], models) and returns it with fetchedAt and a 5s in-memory cache; on any failure returns {available:false, reason} (never throws, never guesses). Wire GET /api/relay/board in operator/server.mjs api(). Tests in test/relay-board.test.mjs with a fake exec: success, cache hit, timeout/garbage -> available:false.",
+          "files": [
+            "lib/relayBoard.mjs",
+            "operator/server.mjs",
+            "test/relay-board.test.mjs"
+          ],
+          "tests": [
+            "node --test test/relay-board.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: 통합 구현 = 홈 + Agent Relay부터, 위치 = JuControler 운영 화면); approval rules A-13 (glitch D), A-15",
+          "title": "Read-only Agent Relay source for the operator: new lib/relay"
+        },
+        {
+          "taskId": "JCAPP-AGENT-RELAY-MODULE-VIEW",
+          "scope": "Add the 'Agent Relay (actl 포함)' module to the operator app following the approved target design artboard /home/skkse12/Desktop/Projects/Team/.design/agent-relay-control-room/project/UniRelay.dc.html (glitch D is the existing skin; reuse existing tokens/classes in operator/public/app.css): a new rail item after 홈 (keep 홈/결과/대화/더보기 working), and a view that polls GET /api/relay/board every 5s and shows: project tabs (one per lane), the 7-step flow row PM → 검증 → Worker → QA → 테스트 게이트 → Human → 통합 with the current step from lane.current.stage (pulse only on the active ring, per the glitch allow-list), who/attempts sentence, the Worker/QA chains, HOLD cards with QA's finding sentence, and an 'actl 리모컨' panel listing panes from the existing GET /api/panes. Every state is a Korean sentence; unavailable board -> '확인 중' sentence, never empty. Read-only (no write actions yet). Tests in test/agent-relay-module.test.mjs extract the real render functions from app.js (same technique as test/control-tower.test.mjs) and check flow-step mapping, hold rendering and the unavailable state.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/agent-relay-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/agent-relay-module.test.mjs",
+            "node --test test/control-tower.test.mjs",
+            "node --test test/founder-clean-tokens.test.mjs"
+          ],
+          "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: 통합 구현 = 홈 + Agent Relay부터, 위치 = JuControler 운영 화면); approval rules A-13 (glitch D), A-15",
+          "title": "Add the 'Agent Relay (actl 포함)' module to the operator app f"
+        },
+        {
+          "taskId": "JCAPP-HOME-HUB",
+          "scope": "Extend the operator 홈 with the hub section of the approved target design /home/skkse12/Desktop/Projects/Team/.design/agent-relay-control-room/project/UniHome.dc.html: one top sentence summarizing the portfolio from GET /api/relay/board (how many lanes are working, holds, human gates), project cards (id, state sentence, done/total from counts, current task) that open the Agent Relay module on that lane, and the architecture line 'JuControler ⟵ Agent Relay(+actl) · JuPlan · JuCeipt · Tester · Skill'. Keep the existing 홈 content (top status, 확인이 필요해요, 진행 중, 결과, 팀) unchanged above or below it. Tests in test/home-hub.test.mjs (extract real render function; sentences for working/idle/hold/unavailable).",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/home-hub.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-hub.test.mjs",
+            "node --test test/top-status-count.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: 통합 구현 = 홈 + Agent Relay부터, 위치 = JuControler 운영 화면); approval rules A-13 (glitch D), A-15",
+          "title": "Extend the operator 홈 with the hub section of the approved t"
+        }
+      ]
     },
     {
       "id": "juceipt-planning",
