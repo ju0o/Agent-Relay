@@ -441,6 +441,19 @@ function createWindow(): void {
     );
   });
 
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(mainWindow!, {
+      type: 'warning',
+      buttons: ['취소', '닫기'],
+      defaultId: 0,
+      cancelId: 0,
+      title: '저장되지 않은 내용',
+      message: '저장되지 않은 프롬프트 또는 결과가 있습니다.',
+      detail: '앱을 닫으면 저장되지 않은 내용이 사라집니다.',
+    });
+    if (choice === 1) event.preventDefault();
+  });
+
   // ── Load UI ──
   if (!fs.existsSync(clientPath)) {
     dialog.showErrorBox(
