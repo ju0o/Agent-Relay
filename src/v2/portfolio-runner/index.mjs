@@ -98,7 +98,7 @@ function nextDefinition(project, state) {
 export function buildCoreV1Snapshot(manifest, state) {
   const lanes = manifest.projects.filter((project) => project.coreV1 !== false).map((project) => {
     const tasks = state.tasks.filter((task) => task.projectId === project.id);
-    const task = tasks.at(-1) || null;
+    const task = tasks.find((candidate) => candidate.state !== "VERIFIED_DONE" && candidate.state !== "V1_COMPLETE") || tasks.at(-1) || null;
     const next = nextDefinition(project, state);
     const lifecycleEvents = (Array.isArray(state.events) ? state.events : []).filter((event) => event.projectId === project.id);
     return {

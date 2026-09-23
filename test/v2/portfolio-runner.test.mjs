@@ -40,6 +40,12 @@ test("CORE V1 Result Inbox keeps lane fields machine-readable and pipeable", () 
   assert.equal(formatCoreV1Results(snapshot, false), formatCoreV1Text(snapshot));
 });
 
+test("CORE V1 snapshot prefers active task over historical completed task", () => {
+  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", tasks: [{ taskId: "P-CURRENT", scope: "bounded", files: [], tests: [] }, { taskId: "P-OLD", scope: "bounded", files: [], tests: [] }] }] }, { service: "IDLE", updatedAt: "now", events: [], tasks: [{ projectId: "p", taskId: "P-CURRENT", state: "QA", attempts: 1 }, { projectId: "p", taskId: "P-OLD", state: "VERIFIED_DONE", attempts: 1 }] });
+  assert.equal(snapshot.lanes[0].currentTask, "P-CURRENT");
+  assert.equal(snapshot.lanes[0].next, null);
+});
+
 test("core-v1 status supports --json and preserves text default", async () => {
   const execFileAsync = promisify(execFile);
   const root = await mkdtemp("/tmp/agent-relay-core-status-json-");
