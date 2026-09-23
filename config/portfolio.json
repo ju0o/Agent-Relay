@@ -1464,6 +1464,17 @@
             "git diff --check"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUCEIPTPLAN-M2-RECEIPT-FINAL-SCORECARD",
+          "scope": "Read the 14-task M2 corpus from the separate JuCeipt checkout without modifying it, compare each claude-final.txt with its receipt.json using the roadmap rubric, and record per-task scores plus bounded findings in one planning-only scorecard.",
+          "files": [
+            "docs/qa/M2_RECEIPT_VALUE_SCORECARD.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: score the 14 M2 corpus tasks first (receipt vs claude-final, planning-only output in JuCeipt-Private)"
         }
       ]
     }
