@@ -1937,6 +1937,21 @@
           ],
           "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
           "title": "Two fixes: (1) 홈 renders the '창업자 운영 화면 / 오늘의 운영 상태' header "
+        },
+        {
+          "taskId": "JCAPP-JUPLAN-PROJECT-DISCOVERY",
+          "scope": "lib/juplanStatus.mjs currently reads one fixed export path that does not exist (/home/skkse12/Desktop/Projects/Team/JuPlan/.juplan/exports/project-status.v1.json), so the JuPlan module is always unavailable. Make it discover JuPlan projects: find `.juplan/exports/project-status.v1.json` under $JUPLAN_PROJECTS_ROOT (default /home/skkse12/Desktop/Projects, max depth 4, skip node_modules/.git, cap 20); GET /api/juplan/status returns one entry per project (path, fetchedAt, parsed export or available:false with reason); zero projects -> available:false with the sentence 'JuPlan 프로젝트가 아직 없어요'. The JuPlan module lists every project with its state sentence, goal/milestone and gates. Update test/juplan-status.test.mjs with a temp tree holding two fixture exports and one malformed file.",
+          "files": [
+            "lib/juplanStatus.mjs",
+            "operator/public/app.js",
+            "test/juplan-status.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juplan-status.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor check 2026-09-24: the fixed export path does not exist; JuPlan writes the export per project in writeProjections (packages/runtime/src/index.ts:249); Founder A-15",
+          "title": "lib/juplanStatus.mjs currently reads one fixed export path t"
         }
       ]
     },
