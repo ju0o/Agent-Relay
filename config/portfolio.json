@@ -852,6 +852,19 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 'repeated preview 10s timeout'"
+        },
+        {
+          "taskId": "ACTL-DISPOSABLE-BOARD-E2E",
+          "scope": "Add an offline Tester harness for disposable-tmux stub-agent Windows Board SEND -> RESULT -> COPY coverage that never targets real agent panes or leaves a session behind.",
+          "files": [
+            "scripts/tester.sh",
+            "tests/test_board_e2e_harness.py",
+            "docs/TESTER.md"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
@@ -1098,6 +1111,31 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-PROJECT-STATUS-V1",
+          "scope": "Export the existing V1 runtime status as deterministic .juplan/exports/project-status.v1.json without changing V1 semantics or status fields, with offline regression coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-AR-INTAKE-CONTRACT",
+          "scope": "Document the bounded AR-JUPLAN-001 intake contract for authorized Worker tasks, RESULT_PACKET return, independent QA outcomes, retry boundaries, and no-dispatch behavior.",
+          "files": [
+            "docs/agent-relay/AR-JUPLAN-001.md"
+          ],
+          "tests": [
+            "pnpm test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "CONTROL_TOWER.md:62-64 \"Execute only AR-JUPLAN-001 ... Worker/RESULT_PACKET/independent-QA routing\""
         }
       ],
       "qaRuntime": [
