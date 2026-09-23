@@ -35,7 +35,8 @@ if (area === "night-run" && command === "up") {
   const deadlineIndex = process.argv.indexOf("--deadline");
   const deadline = deadlineIndex >= 0 ? process.argv[deadlineIndex + 1] : DEFAULT_DEADLINE;
   const mainPcPull = process.argv.includes("--mainpc-pull");
-  const noPoweroff = process.argv.includes("--no-poweroff") || mainPcPull;
+  // ASUS never powers itself off unless explicitly asked; the MainPC wrapper owns shutdown order.
+  const noPoweroff = !process.argv.includes("--self-poweroff") || mainPcPull;
   try { const oldPid = Number(await readFile(nightPidPath, "utf8")); if (oldPid && oldPid !== process.pid) { process.kill(oldPid, 0); throw new Error(`night run already active: ${oldPid}`); } } catch (error) { if (String(error.message).includes("already active")) throw error; }
   await mkdir(root, { recursive: true }); await writeFile(nightPidPath, String(process.pid));
   const controller = new AbortController(); const shutdown = async () => { controller.abort(); await instance.stop(); await rm(nightPidPath, { force: true }); process.exit(0); };

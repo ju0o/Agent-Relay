@@ -144,3 +144,16 @@ test("night-run status survives a slow pipe reader beyond 64KB", async () => {
   await new Promise((r) => child.once("close", r));
   assert.equal(JSON.parse(out).lanes[0].note.length, 200_000);
 });
+
+test("night-run up never powers ASUS off without --self-poweroff", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { writeFile: write, readFile: read, mkdir: mk, chmod } = await import("node:fs/promises");
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-nopower-")); const bin = join(dir, "bin"); await mk(bin);
+  for (const cmd of ["sudo", "poweroff", "shutdown", "systemctl"]) { await write(join(bin, cmd), `#!/bin/sh\necho "${cmd} $*" >> "${dir}/power.log"; exit 1\n`); await chmod(join(bin, cmd), 0o755); }
+  await write(join(dir, "manifest.json"), JSON.stringify({ projects: [{ id: "sim", state: "HOLD", tasks: [] }] }));
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_RELAY_DATA_ROOT: join(dir, "data"), AGENT_RELAY_FOUNDER_OUTBOX: join(dir, "outbox"), AGENT_RELAY_PORTFOLIO_MANIFEST: join(dir, "manifest.json"), MAINPC_SSH_TARGET: "invalid.invalid", AGENT_RELAY_SEND_TO_MAINPC: "/bin/false" };
+  const run = spawnSync(process.execPath, [new URL("../../bridge/agent-relay.mjs", import.meta.url).pathname, "night-run", "up", "--deadline", "04:30"], { env, encoding: "utf8", timeout: 30_000 });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(await read(join(dir, "power.log"), "utf8").catch(() => ""), "");
+  assert.equal(JSON.parse(await read(join(dir, "data", "LAST_NIGHT_RUN.json"), "utf8")).shutdownState, "READY_FOR_ASUS_POWEROFF");
+});
