@@ -907,6 +907,45 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-RUNTIME-VALIDATION-DEDUPE",
+          "scope": "Emit the UNKNOWN_SURFACED validation warning at most once and add an offline regression test.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-RUNTIME-STATUS-FAIL-CLOSED",
+          "scope": "Make status distinguish a missing snapshots directory from unexpected filesystem errors instead of silently reporting an empty snapshot list, with offline coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-SCANNER-ROOT-DIRECTORY",
+          "scope": "Reject a file path supplied as the scanner root with an actionable error instead of treating it as an empty project, with offline regression coverage.",
+          "files": [
+            "packages/project-scanner/src/fs-walk.ts",
+            "packages/project-scanner/test/scan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/project-scanner test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
