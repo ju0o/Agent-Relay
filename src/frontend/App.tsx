@@ -8,6 +8,7 @@ import { must, hasBridge, dragLocalFile, onUpdateStatus } from './bridge.js';
 import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
+import { ControlRoom } from './controlRoom.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
@@ -185,6 +186,7 @@ function AppInner(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [dfMode, setDfMode]             = useState(false);
   const [pdMode, setPdMode]             = useState(false);
+  const [controlRoomMode, setControlRoomMode] = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
   const [showQuickDf, setShowQuickDf]   = useState(false);
@@ -1058,6 +1060,11 @@ function AppInner(): React.ReactElement {
               onClick={() => setShowQuickDf(true)}
             >＋ 피드백</button>
             <button
+              className={`mini${controlRoomMode ? ' on' : ''}`}
+              title="Control Room — lane 상태 보기"
+              onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); }}
+            >🛰 Control Room</button>
+            <button
               className="mini"
               title="설정 — 저장공간(Storage)"
               onClick={() => setShowSettings(true)}
@@ -1071,7 +1078,9 @@ function AppInner(): React.ReactElement {
             </div>
           )}
 
-          {dfMode ? (
+          {controlRoomMode ? (
+            <ControlRoom onClose={() => setControlRoomMode(false)} />
+          ) : dfMode ? (
             /* ── App Dogfooding 패널 — Agent Relay 앱 자체 개선 기록 ── */
             <DogfoodPanel
               key="df-app"
