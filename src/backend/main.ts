@@ -25,6 +25,7 @@ import {
   RelayResponse,
   RunFolderResult,
   SettingsView,
+  StartView,
   UpdateEvent,
   UpdateStatus,
   nextUpdateStatus,
@@ -32,6 +33,30 @@ import {
 
 /** Mutable runtime state. */
 let baseDir = '';
+
+/**
+ * Launch-time start view for Automated Tester support (`--view=<name>`).
+ *
+ * Only 'home' | 'control-room' | 'approvals' | 'plan-studio' are accepted —
+ * anything else (including a missing argument) resolves to 'home' and never
+ * raises an error dialog. Normal launches without the argument behave exactly
+ * as before (home).
+ */
+const START_VIEW_PREFIX = '--view=';
+export function parseStartView(argv: readonly string[]): StartView {
+  let found: string | null = null;
+  for (const arg of argv) {
+    if (typeof arg === 'string' && arg.startsWith(START_VIEW_PREFIX)) {
+      found = arg.slice(START_VIEW_PREFIX.length).trim();
+    }
+  }
+  if (found === 'control-room' || found === 'approvals' || found === 'plan-studio' || found === 'home') {
+    return found;
+  }
+  return 'home';
+}
+
+let startView: StartView = parseStartView(process.argv);
 function currentSettings(): AppSettings {
   return relay.loadSettings(baseDir);
 }
@@ -338,6 +363,9 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
     case 'controlRoom:approvals':
       return runControlRoom('approvals');
 
+    case 'app:startView':
+      return { view: startView };
+
     default:
       throw new Error('알 수 없는 요청입니다.');
   }
@@ -483,6 +511,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   app.setAppUserModelId('com.agentrelaylog.v0');
+  startView = parseStartView(process.argv);
   baseDir = resolveBaseDir();
   fs.mkdirSync(baseDir, { recursive: true });
   migrateLegacySettings();

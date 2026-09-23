@@ -19,6 +19,8 @@ import {
   ROOT_PROJECT,
   RunFolderResult,
   SettingsView,
+  StartView,
+  StartViewResult,
   TAG_PRESETS,
   UpdateStatus,
   applyOrderByKeys,
@@ -152,6 +154,42 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { err: stri
   }
 }
 
+// ── 시작 화면 패널 (Automated Tester `--view=` 지원용, App.tsx 내장) ──────────
+// Founder 승인 내역: 기존 controlRoom:approvals 읽기 전용 조회 결과를 그대로 보여준다.
+function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElement {
+  const [items, setItems] = useState<unknown>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let alive = true;
+    void must<unknown>({ op: 'controlRoom:approvals' }).then(next => {
+      if (alive) setItems(next);
+    }).catch(e => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { alive = false; };
+  }, []);
+  const list = Array.isArray(items) ? items : items == null ? [] : [items];
+  return (
+    <main className="control-room">
+      <div className="control-room-head"><div><h1>Founder 승인 내역</h1><p className="muted">읽기 전용 · controlRoom:approvals</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      {error && <div className="flash err">{error}</div>}
+      {items === null && !error ? <div className="control-empty">불러오는 중...</div>
+        : list.length === 0 ? <div className="control-empty">표시할 승인 내역이 없습니다.</div>
+        : <div className="control-cards">{list.map((item, i) => (
+          <article className="control-card" key={i}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</p></article>
+        ))}</div>}
+    </main>
+  );
+}
+
+// Plan Studio: 아직 전용 백엔드가 없어 시작 화면 진입용 읽기 전용 안내 패널만 제공한다.
+function PlanStudioPanel({ onClose }: { onClose: () => void }): React.ReactElement {
+  return (
+    <main className="control-room">
+      <div className="control-room-head"><div><h1>Plan Studio</h1><p className="muted">읽기 전용 · 시작 화면 진입</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      <div className="control-empty">Plan Studio 시작 화면입니다.</div>
+    </main>
+  );
+}
+
 // ── 최상위 App ────────────────────────────────────────────────────────────────
 export function App(): React.ReactElement {
   return <ErrorBoundary><AppInner /></ErrorBoundary>;
@@ -187,6 +225,8 @@ function AppInner(): React.ReactElement {
   const [dfMode, setDfMode]             = useState(false);
   const [pdMode, setPdMode]             = useState(false);
   const [controlRoomMode, setControlRoomMode] = useState(false);
+  const [approvalsMode, setApprovalsMode] = useState(false);
+  const [planStudioMode, setPlanStudioMode] = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
   const [showQuickDf, setShowQuickDf]   = useState(false);
@@ -781,6 +821,27 @@ function AppInner(): React.ReactElement {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [sessions]);
 
+  // ── 시작 화면 (--view=home|control-room|approvals|plan-studio, 마운트 시 1회) ──
+  // home(기본값)·알 수 없는 값은 오늘과 완전히 동일하게 둔다.
+  const startViewApplied = useRef(false);
+  useEffect(() => {
+    if (startViewApplied.current) return;
+    startViewApplied.current = true;
+    void must<StartViewResult>({ op: 'app:startView' }).then(res => {
+      const view: StartView = res?.view ?? 'home';
+      if (view === 'control-room') {
+        setControlRoomMode(true); setDfMode(false); setPdMode(false);
+        setApprovalsMode(false); setPlanStudioMode(false);
+      } else if (view === 'approvals') {
+        setApprovalsMode(true); setControlRoomMode(false); setDfMode(false); setPdMode(false);
+        setPlanStudioMode(false);
+      } else if (view === 'plan-studio') {
+        setPlanStudioMode(true); setControlRoomMode(false); setDfMode(false); setPdMode(false);
+        setApprovalsMode(false);
+      }
+    }).catch(() => undefined);
+  }, []);
+
   // ── 초기화 ────────────────────────────────────────────────────────────────────
   // settings.json의 DATA_ROOT/lastProject를 자동 복원한다.
   //  - 경로 존재 → 자동 사용 + 마지막 프로젝트 세션 복원
@@ -1045,13 +1106,13 @@ function AppInner(): React.ReactElement {
             <button
               className={`mini df-toggle${dfMode ? ' on' : ''}`}
               title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
-              onClick={() => { setDfMode(m => !m); setPdMode(false); setControlRoomMode(false); }}
+              onClick={() => { setDfMode(m => !m); setPdMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
             >🐾 App Dogfooding</button>
             <button
               className={`mini df-toggle${pdMode ? ' on' : ''}`}
               disabled={!project}
               title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
-              onClick={() => { setPdMode(m => !m); setDfMode(false); setControlRoomMode(false); }}
+              onClick={() => { setPdMode(m => !m); setDfMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
             >📋 Project Dogfooding</button>
             <button
               className="mini qdf-toggle"
@@ -1062,7 +1123,7 @@ function AppInner(): React.ReactElement {
             <button
               className={`mini df-toggle${controlRoomMode ? ' on' : ''}`}
               title="Control Room — lane 상태 보기"
-              onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); }}
+              onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
             >🛰 Control Room</button>
             <button
               className="mini"
@@ -1080,6 +1141,10 @@ function AppInner(): React.ReactElement {
 
           {controlRoomMode ? (
             <ControlRoom onClose={() => setControlRoomMode(false)} />
+          ) : approvalsMode ? (
+            <ApprovalsPanel onClose={() => setApprovalsMode(false)} />
+          ) : planStudioMode ? (
+            <PlanStudioPanel onClose={() => setPlanStudioMode(false)} />
           ) : dfMode ? (
             /* ── App Dogfooding 패널 — Agent Relay 앱 자체 개선 기록 ── */
             <DogfoodPanel

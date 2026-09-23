@@ -58,6 +58,14 @@ export interface RunFolderResult {
   run: string;
 }
 
+/** Launch-time start view selected via `--view=<name>` (invalid/missing = home). */
+export type StartView = 'home' | 'control-room' | 'approvals' | 'plan-studio';
+
+/** app:startView response — which view the app should open on launch. */
+export interface StartViewResult {
+  view: StartView;
+}
+
 /**
  * Discriminated-union IPC request sent from the React UI to the Electron
  * backend (main process) via the single 'relay' channel.
@@ -99,8 +107,9 @@ export type RelayRequest =
  | { op: 'update:check' }
   | { op: 'update:download' }
  | { op: 'update:install' }
- | { op: 'controlRoom:board' }
- | { op: 'controlRoom:approvals' };
+  | { op: 'controlRoom:board' }
+  | { op: 'controlRoom:approvals' }
+  | { op: 'app:startView' };
 
 /** Standard successful response envelope. */
 export type RelayResult<T = unknown> = { ok: true; value: T };
