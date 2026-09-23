@@ -459,6 +459,32 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "DECISION_LOG.md:66 \"DEC-G008 ... workspace member manifests ... are not individually parsed for their own dependencies ... GAP\""
+        },
+        {
+          "taskId": "JUPLAN-SCANNER-SYMLINK-CYCLES",
+          "scope": "Prevent recursive in-root symlink cycles during project scanning while preserving bounded symlink traversal and add offline regression coverage.",
+          "files": [
+            "packages/project-scanner/src/fs-walk.ts",
+            "packages/project-scanner/test/scan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/project-scanner test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-UNDO-HISTORY-CLEANUP",
+          "scope": "Make undo consume history entries cleanly so repeated undo reports no history instead of parsing an emptied JSON file, with offline regression coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ]
     },
