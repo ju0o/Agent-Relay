@@ -43,7 +43,11 @@ export function readCompletion(value) {
   return { ok: true, reason: value.endReason, resumeRequired: Boolean(value.resumeRequired) };
 }
 
+// node --test marks its processes with NODE_TEST_CONTEXT; a real power command from a test is always a bug.
+const underTest = () => Boolean(process.env.NODE_TEST_CONTEXT);
+
 export function runPoweroff({ checkpoint, command = "sudo", args = ["-n", "/usr/sbin/poweroff"] }) {
+  if (underTest() && command === "sudo") return Promise.resolve({ ok: false, status: "REFUSED", reason: "REAL_POWEROFF_UNDER_TEST" });
   const gate = readCompletion(checkpoint);
   if (!gate.ok) return Promise.resolve({ ok: false, status: "REFUSED", reason: gate.reason });
   return new Promise((resolve) => {
@@ -92,6 +96,7 @@ export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), 
 }
 
 export async function requestMainPcShutdown({ target = mainPcTarget(), identity = mainPcIdentity(), execFileImpl = execFile } = {}) {
+  if (underTest() && execFileImpl === execFile) throw new Error("REAL_MAINPC_SHUTDOWN_UNDER_TEST");
   const key = identity ? ["-i", identity, "-o", "IdentitiesOnly=yes"] : [];
   const result = await execFileImpl("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ...key, target, "shutdown.exe /s /t 30"], { env: process.env });
   return { state: "REQUESTED", target, command: "shutdown.exe /s /t 30", at: new Date().toISOString(), output: String(result.stdout || "").trim() };

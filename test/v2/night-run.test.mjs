@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { buildNightReport, finalizeNightRun, NightRunSupervisor, deadlineAt, drainManaged, evaluateExhaustion, readCompletion, requestMainPcShutdown, runPoweroff, sendReportToMainPc } from "../../src/v2/night-run/index.mjs";
+// Tests must never reach a real MainPC: the production defaults point at it (a no-arg shutdown test powered it off on 2026-09-23).
+process.env.MAINPC_SSH_TARGET = "agent-relay-test.invalid"; process.env.MAINPC_SSH_KEY = "/nonexistent/agent-relay-test-key";
 
 const lanes = (states) => ({ projects: states.map(([id, state]) => ({ id, coreV1: true, active: true, state })), tasks: [] });
 const runner = (state, after = state) => ({ manifest: { projects: state.projects }, reconcile: async () => state, runOnce: async () => after });
@@ -130,7 +132,8 @@ test("MainPC wrapper pulls from ASUS and fails closed before destructive command
 
 test("requestMainPcShutdown accepts a no-argument call", async () => {
   const { requestMainPcShutdown } = await import("../../src/v2/night-run/index.mjs");
-  await assert.rejects(requestMainPcShutdown(), (error) => !String(error.message).includes("reading 'target'"));
+  let seen; await requestMainPcShutdown({ execFileImpl: async (_c, args) => { seen = args; return { stdout: "", stderr: "" }; } });
+  assert.equal(seen.at(-2), "agent-relay-test.invalid"); assert.ok(!seen.includes("-i"));
 });
 
 test("night-run status survives a slow pipe reader beyond 64KB", async () => {
@@ -169,4 +172,10 @@ test("push finalize fails closed: no shutdowns without a delivered report, no AS
   assert.equal(noPc.shutdownState, "MAINPC_SHUTDOWN_FAILED"); assert.deepEqual(calls, []);
   const ok = await finalizeNightRun({ record, checkpointPath: join(dir, "c.json"), persist, send: async () => ({ state: "DELIVERED", path: "x", remoteSha: "y" }), requestShutdown: async () => { calls.push("mainpc"); return { state: "REQUESTED", at: "t" }; }, poweroff: async () => { calls.push("asus"); return { ok: true, status: "POWEROFF_REQUESTED" }; } });
   assert.equal(ok.shutdownState, "POWEROFF_REQUESTED"); assert.deepEqual(calls, ["mainpc", "asus"]);
+});
+
+test("real power commands are refused under node --test", async () => {
+  await assert.rejects(requestMainPcShutdown({ target: "agent-relay-test.invalid" }), /REAL_MAINPC_SHUTDOWN_UNDER_TEST/);
+  const checkpoint = { schema: "agent-relay.last-night-run.v1", runId: "r", startedAt: "x", deadline: "x", freezeAt: "x", checkpointAt: "x", endedAt: "x", endReason: "WBS_EXHAUSTED", shutdownState: "x", lanes: [] };
+  assert.equal((await runPoweroff({ checkpoint })).reason, "REAL_POWEROFF_UNDER_TEST");
 });
