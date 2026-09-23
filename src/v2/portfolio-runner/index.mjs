@@ -11,6 +11,33 @@ import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 
 export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
+export const LIFECYCLE_EVENT_TYPES = Object.freeze(["TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_RETRY", "TASK_FAILED", "TASK_COMPLETED"]);
+export const MAX_LIFECYCLE_EVENTS = 500;
+
+function truncateLifecycleText(value, limit = 300) {
+  const text = String(value ?? "");
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+export function recordLifecycleEvent(state, event) {
+  if (!state || typeof state !== "object" || !event || typeof event !== "object") return null;
+  if (!Array.isArray(state.events)) state.events = [];
+  const entry = { at: new Date().toISOString(), ...event };
+  if (typeof entry.type !== "string" || !LIFECYCLE_EVENT_TYPES.includes(entry.type)) throw new Error(`invalid lifecycle event type: ${entry.type}`);
+  if (typeof entry.taskId !== "string" || !entry.taskId) throw new Error("lifecycle event requires taskId");
+  for (const key of ["reason", "error", "verdict", "status", "state"]) {
+    if (typeof entry[key] === "string" && entry[key].length > 300) entry[key] = truncateLifecycleText(entry[key]);
+  }
+  state.events.push(entry);
+  if (state.events.length > MAX_LIFECYCLE_EVENTS) state.events.splice(0, state.events.length - MAX_LIFECYCLE_EVENTS);
+  return entry;
+}
+
+export function lastLifecycleEvent(state, taskId) {
+  const events = Array.isArray(state?.events) ? state.events : [];
+  const scoped = taskId ? events.filter((event) => event.taskId === taskId) : events;
+  return scoped.at(-1) || null;
+}
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -208,6 +235,7 @@ export class PortfolioRunner {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.tasks) || !parsed.tasks.every((task) => task && typeof task === "object" && !Array.isArray(task))) {
       throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
     }
+    if (!Array.isArray(parsed.events)) parsed.events = [];
     return parsed;
   }
   async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.catch(() => {}).then(async () => writeFileAtomic(this.statePath, JSON.stringify(snapshot, null, 2))); return this._saveChain; }
@@ -287,28 +315,29 @@ export class PortfolioRunner {
     const project = this.manifest.projects.find((item) => item.id === task.projectId);
     const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
     const availability = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
-    if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; return; }
-    if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; return; }
-    try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; return; }
+    if (!Array.isArray(state.events)) state.events = [];
+    if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: "task definition not authorized" }); return; }
+    if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: availability.reason || "runtime unavailable" }); return; }
+    try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: error.message }); return; }
     const retained = task.builderEvidence?.workspace && existsSync(task.builderEvidence.workspace);
     const builder = retained ? { path: task.builderEvidence.workspace, base: task.builderEvidence.base || (await exec("git", ["-C", task.builderEvidence.workspace, "rev-parse", "HEAD"])).stdout.trim(), projectId: project.id, cleanup: async () => {} } : await this.worktrees.create(project, task.taskId);
-    state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); task.state = "RUNNING"; task.attempts += 1; task.builderEvidence = { ...(task.builderEvidence || {}), workspace: builder.path, base: builder.base, startedAt: new Date().toISOString(), pid: null }; await this.save(state);
+    state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); task.state = "RUNNING"; task.attempts += 1; task.builderEvidence = { ...(task.builderEvidence || {}), workspace: builder.path, base: builder.base, startedAt: new Date().toISOString(), pid: null }; recordLifecycleEvent(state, { type: "TASK_DISPATCHED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts }); await this.save(state);
     let preserveWorktree = retained;
     try {
       for (;;) {
       const builderRun = await adapter.run({ workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }), signal });
       task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, base: builder.base, startedAt: builderRun.startedAt, exitCode: builderRun.code };
-      task.result = parseResultPacket(builderRun.text); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
+      task.result = parseResultPacket(builderRun.text); recordLifecycleEvent(state, { type: "WORKER_RESULT", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, status: task.result.status }); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, state: task.state, reason: `result status ${task.result.status}` }); break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
       await this._acquireQa();
       let qaRun;
       try { task.qaAttempts += 1; qaRun = await adapter.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }); }
       finally { this._releaseQa(); }
-      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
-      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; task.state = "VERIFIED_DONE"; await this.publishResult(task); break; }
-      if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
-      if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; await this.publishResult(task); break;
+      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); recordLifecycleEvent(state, { type: "QA_VERDICT", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, qaAttempt: task.qaAttempts, verdict: task.qa.verdict });
+      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; task.state = "VERIFIED_DONE"; recordLifecycleEvent(state, { type: "TASK_COMPLETED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, state: task.state }); await this.publishResult(task); break; }
+      if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; recordLifecycleEvent(state, { type: "TASK_RETRY", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, qaAttempt: task.qaAttempts, verdict: task.qa.verdict }); await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; recordLifecycleEvent(state, { type: "TASK_DISPATCHED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts }); state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
+      if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, qaAttempt: task.qaAttempts, state: task.state, reason: `QA verdict ${task.qa.verdict}` }); await this.publishResult(task); break;
       }
-    } catch (error) { if (signal?.aborted) { preserveWorktree = true; task.state = "RUNNING"; task.error = "CHECKPOINTED_DEADLINE"; } else { task.state = "HOLD"; task.error = String(error.message || error); } state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); }
+    } catch (error) { if (signal?.aborted) { preserveWorktree = true; task.state = "RUNNING"; task.error = "CHECKPOINTED_DEADLINE"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: "CHECKPOINTED_DEADLINE" }); } else { task.state = "HOLD"; task.error = String(error.message || error); recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: task.error }); } state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); }
     if (!preserveWorktree) await builder.cleanup(); await this.save(state);
   }
 

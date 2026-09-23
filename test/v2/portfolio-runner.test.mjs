@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, isCorruptStateError, parseQaPacket, parseResultPacket, parseTaskPacket, PORTFOLIO_STATE_CORRUPT, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, isCorruptStateError, lastLifecycleEvent, LIFECYCLE_EVENT_TYPES, MAX_LIFECYCLE_EVENTS, parseQaPacket, parseResultPacket, parseTaskPacket, PORTFOLIO_STATE_CORRUPT, PortfolioRunner, recordLifecycleEvent, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
@@ -244,4 +244,56 @@ test("result inbox publishes are atomic and never leave truncated JSON", async (
   assert.equal(JSON.parse(await readFile(outPath, "utf8")).result.status, "IMPLEMENTED");
   assert.deepEqual((await readdir(join(root, "result-outbox"))).filter((name) => name.includes(".tmp")), []);
   await rm(root, { recursive: true, force: true });
+});
+
+test("lifecycle events persist dispatch, result, QA verdict, and completion in order", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-lifecycle-events-");
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-LIFE", scope: "bounded", files: [], tests: [] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtime: { async run({ sandbox }) { return { pid: 7, code: 0, startedAt: new Date().toISOString(), text: sandbox === "workspace-write" ? `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-LIFE", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "c".repeat(40), summary: "ok" })}` : `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-LIFE", verdict: "ACCEPT", tests: [], findings: [], summary: "ok" })}` }; } } });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  const types = state.events.map((event) => event.type);
+  assert.deepEqual(types, ["TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_COMPLETED"]);
+  for (const event of state.events) {
+    assert.ok(LIFECYCLE_EVENT_TYPES.includes(event.type));
+    assert.equal(event.taskId, "P-LIFE");
+    assert.equal(event.projectId, "p");
+    assert.ok(event.at);
+  }
+  assert.equal(lastLifecycleEvent(state, "P-LIFE").type, "TASK_COMPLETED");
+  const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+  assert.deepEqual(persisted.events.map((event) => event.type), types);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("lifecycle events capture retry then completion, and failures stay diagnosable", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-lifecycle-retry-");
+  let builds = 0; let qas = 0;
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-RETRY-LIFE", scope: "bounded", files: [], tests: [] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtime: { async run({ sandbox }) { if (sandbox === "workspace-write") { builds += 1; return { pid: builds, code: 0, startedAt: new Date().toISOString(), text: `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-RETRY-LIFE", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "d".repeat(40), summary: "ok" })}` }; } qas += 1; return { pid: 10 + qas, code: 0, startedAt: new Date().toISOString(), text: qas === 1 ? `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-RETRY-LIFE", verdict: "REQUEST_CHANGES", tests: [], findings: ["retry"], summary: "retry" })}` : `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-RETRY-LIFE", verdict: "ACCEPT", tests: [], findings: [], summary: "ok" })}` }; } } });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  const types = state.events.map((event) => event.type);
+  assert.deepEqual(types, ["TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_RETRY", "TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_COMPLETED"]);
+  assert.equal(lastLifecycleEvent(state).type, "TASK_COMPLETED");
+
+  const failRoot = await mkdtemp("/tmp/agent-relay-lifecycle-fail-");
+  const failing = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-FAIL", scope: "bounded", files: [], tests: [] } }] }, statePath: join(failRoot, "state.json"), worktreeRoot: join(failRoot, "worktrees"), worktrees: { async create() { return { path: failRoot, base: "abc", async cleanup() {} }; } }, runtime: { async run() { throw new Error("builder exploded"); } } });
+  await failing.enqueue("p");
+  const failed = await failing.runOnce();
+  assert.equal(failed.tasks[0].state, "HOLD");
+  assert.ok(failed.events.some((event) => event.type === "TASK_DISPATCHED"));
+  assert.equal(lastLifecycleEvent(failed, "P-FAIL").type, "TASK_FAILED");
+  assert.match(lastLifecycleEvent(failed, "P-FAIL").reason, /builder exploded/);
+  await rm(root, { recursive: true, force: true });
+  await rm(failRoot, { recursive: true, force: true });
+});
+
+test("lifecycle event store stays concise and bounded", () => {
+  const state = { events: [] };
+  for (let i = 0; i < MAX_LIFECYCLE_EVENTS + 10; i += 1) recordLifecycleEvent(state, { type: "TASK_DISPATCHED", taskId: `T-${i}`, projectId: "p", attempt: 1 });
+  assert.equal(state.events.length, MAX_LIFECYCLE_EVENTS);
+  assert.equal(lastLifecycleEvent(state).taskId, `T-${MAX_LIFECYCLE_EVENTS + 9}`);
+  const longError = "x".repeat(1000);
+  const entry = recordLifecycleEvent({ events: [] }, { type: "TASK_FAILED", taskId: "T", projectId: "p", state: "HOLD", reason: longError });
+  assert.ok(entry.reason.length <= 301);
+  assert.throws(() => recordLifecycleEvent({ events: [] }, { type: "NOPE", taskId: "T" }), /invalid lifecycle event type/);
 });
