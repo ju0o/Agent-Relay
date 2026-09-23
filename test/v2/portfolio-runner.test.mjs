@@ -301,3 +301,19 @@ test("autoContinue=false pauses the lane after a finished task until the pause f
   await rmf(join(root, "lane-pause", "s")); state = await runner.runOnce();
   assert.equal(state.tasks.find((t) => t.taskId === "S-2").state, "VERIFIED_DONE");
 });
+
+test("a changed manifest is picked up in place by reconcile (no restart needed)", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-reload-")); const mp = join(root, "portfolio.json");
+  const write = async (tasks) => { await writeFile(mp, JSON.stringify({ projects: [{ id: "r", runtime: ["codex"], tasks }] })); };
+  await write([{ taskId: "R-1", scope: "a", files: [], tests: [] }]);
+  const { loadManifest } = await import("../../src/v2/portfolio-runner/index.mjs");
+  const runner = new PortfolioRunner({ testGate: passGate, manifest: await loadManifest(mp), manifestPath: mp, statePath: join(root, "state.json"), worktreeRoot: join(root, "w") });
+  await runner.reconcile();
+  await new Promise((r) => setTimeout(r, 20));
+  await write([{ taskId: "R-1", scope: "a", files: [], tests: [] }, { taskId: "R-2", scope: "b", files: [], tests: [] }]);
+  await runner.reconcile();
+  assert.equal(runner.manifest.projects[0].tasks.length, 2, "new WBS visible without a restart");
+  await writeFile(mp, "{ half-written");
+  await new Promise((r) => setTimeout(r, 20)); await runner.reconcile();
+  assert.equal(runner.manifest.projects[0].tasks.length, 2, "a broken file keeps the last good manifest");
+});

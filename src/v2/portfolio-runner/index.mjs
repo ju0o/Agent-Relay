@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { appendFile, mkdir, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -237,8 +237,8 @@ export function qaPrompt(task, base) {
 }
 
 export class PortfolioRunner {
-  constructor({ manifest, statePath, worktreeRoot, gateRoot, intakeRoot, resultRoot, runtime = new CodexDevelopmentRuntime(), runtimeAdapters, worktrees = new WorktreeManager(worktreeRoot), gateManager, testGate = runTestGate }) {
-    this.testGate = testGate;
+  constructor({ manifest, statePath, worktreeRoot, gateRoot, intakeRoot, resultRoot, runtime = new CodexDevelopmentRuntime(), runtimeAdapters, worktrees = new WorktreeManager(worktreeRoot), gateManager, testGate = runTestGate, manifestPath = null }) {
+    this.testGate = testGate; this.manifestPath = manifestPath; this._manifestMtime = null;
     this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.runtimeAdapters = runtimeAdapters || createRuntimeAdapters({ codex: runtime }); this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.intakeRoot = intakeRoot || join(resolve(statePath, ".."), "pm-inbox"); this.resultRoot = resultRoot || join(resolve(statePath, ".."), "result-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
   }
 
@@ -274,7 +274,19 @@ export class PortfolioRunner {
     state.projects = projects; state.founderGates = founderGates; return state;
   }
 
+  // A new WBS / plan approval / lane setting only changes the manifest: pick it up in place instead of
+  // restarting the runner (a restart interrupts every running task and makes it start over).
+  async reloadManifestIfChanged() {
+    if (!this.manifestPath) return false;
+    const mtime = await stat(this.manifestPath).then((s) => s.mtimeMs, () => null);
+    if (!mtime || mtime === this._manifestMtime) return false;
+    const first = this._manifestMtime === null; this._manifestMtime = mtime;
+    if (first) return false;
+    try { this.manifest = await loadManifest(this.manifestPath); return true; } catch { return false; }  // a half-written file: keep the old manifest, retry next loop
+  }
+
   async reconcile() {
+    await this.reloadManifestIfChanged();
     const state = await this.load();
     state.activeBuilders = []; state.activeQa = [];
     state.tasks = state.tasks.map((task) => {

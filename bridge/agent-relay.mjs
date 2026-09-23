@@ -10,7 +10,7 @@ for (const stream of [process.stdout, process.stderr]) stream._handle?.setBlocki
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
 const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), ".local", "share", "AgentRelay", "data", "founder-outbox");
 const manifestPath = process.env.AGENT_RELAY_PORTFOLIO_MANIFEST || new URL("../config/portfolio.json", import.meta.url).pathname;
-const runner = () => loadManifest(manifestPath).then((manifest) => new PortfolioRunner({ manifest, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), gateRoot: founderOutbox }));
+const runner = () => loadManifest(manifestPath).then((manifest) => new PortfolioRunner({ manifest, manifestPath, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), gateRoot: founderOutbox }));
 const pidPath = join(root, "runner.pid");
 const nightPath = join(root, "LAST_NIGHT_RUN.json");
 const nightPidPath = join(root, "night-run.pid");
