@@ -2209,6 +2209,22 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 08시: 'JuControler는 아직 보기가 너무 불편' — supervisor capture of live 8537f00 (~/jc-tester/now); approved design canvas UniHome/UniRelay (glitch D, A-13); non-developer rule: every state is a Korean sentence",
           "title": "Founder readability pass 3 in operator/public/app.css (+ min"
+        },
+        {
+          "taskId": "JCAPP-HOME-FOUNDER-FOCUS",
+          "scope": "Reorder the operator 홈 around the Founder's questions ('무엇을 봐야 하고 언제 쓰는지'): top = one sentence '지금 대표님이 할 일' (zero decisions -> '지금 하실 일이 없어요. 알아서 진행 중이에요.'; otherwise at most 3 decision cards, newest first, each naming the project and what to decide); then '지금 일하는 중' (one line per working project from GET /api/relay/board: project Korean name, current step, who); then '오늘 끝난 것' (count + last 3 finished tasks in plain words); then a small '이럴 때 쓰세요' box (결정할 게 있을 때 · 진행이 궁금할 때 · 멈춘 게 있을 때 → which tab). Decision requests older than 3 days or of kind orphan-recovery go to 승인 > '예전 기록' instead of 홈. Keep existing endpoints. Tests: extend test/home-hub.test.mjs (zero-decision sentence, cap of 3, old/orphan requests excluded from 홈).",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/home-hub.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-hub.test.mjs",
+            "node --test test/top-status-count.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 08시: '대시보드에 결정이 필요해요가 너무 많아서 뭘 봐야 할지, 언제 어떻게 활용하는지 모르겠음'; 8 stale orphan-recovery requests from 9/15-16 were the cause (closed by Founder decision); approved design UniHome; A-13, A-15",
+          "title": "Reorder the operator 홈 around the Founder's questions ('무엇을 "
         }
       ]
     },
