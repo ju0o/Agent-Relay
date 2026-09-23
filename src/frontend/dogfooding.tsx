@@ -33,6 +33,7 @@ const PRIORITY_COLORS: Record<DfPriority, string> = {
 
 type Filter = 'ALL' | DfStatus;
 const FILTERS: Filter[] = ['ALL', 'OPEN', 'FIXED', 'HOLD'];
+type TypeFilter = 'ALL' | DfType;
 
 export function nextDfStatus(s: DfStatus): DfStatus {
   const i = DF_STATUSES.indexOf(s);
@@ -60,6 +61,8 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
   const project = isProject ? (props.project ?? '') : '';
   const [items, setItems] = useState<DfItem[]>([]);
   const [filter, setFilter] = useState<Filter>('ALL');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
+  const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [type, setType] = useState<DfType>(isProject ? 'UX' : 'UX');
   const [priority, setPriority] = useState<DfPriority>('MEDIUM');
@@ -165,7 +168,15 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
     void must({ op: 'file:reveal', path: item.folder }).catch(() => props.notify('err', '파일을 열 수 없습니다.'));
   }
 
-  const shown = filter === 'ALL' ? items : items.filter(i => i.status === filter);
+  const query = search.trim().toLowerCase();
+  const shown = items.filter(item => {
+    if (filter !== 'ALL' && item.status !== filter) return false;
+    if (typeFilter !== 'ALL' && item.type !== typeFilter) return false;
+    if (!query) return true;
+    return [item.id, item.feedback, item.desired, item.project, item.context.project, item.context.agent, item.context.run]
+      .filter(Boolean)
+      .some(value => value!.toLowerCase().includes(query));
+  });
   const countOf = (s: DfStatus): number => items.filter(i => i.status === s).length;
 
   return (
@@ -180,6 +191,22 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
             <button key={f} className={`df-filter${filter === f ? ' on' : ''}`} onClick={() => setFilter(f)}>{f}</button>
           ))}
         </div>
+        <input
+          className="df-search"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="검색"
+          aria-label="피드백 검색"
+        />
+        <select
+          className="df-type-filter"
+          value={typeFilter}
+          onChange={e => setTypeFilter(e.target.value as TypeFilter)}
+          aria-label="Type 필터"
+        >
+          <option value="ALL">All Types</option>
+          {typeOptions.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
         <div style={{ flex: 1 }} />
         {isProject && (
           <span className="df-counts" title="상태별 개수">
