@@ -14,8 +14,10 @@ The old manual PM chat/prompt shuttle is not the canonical execution path anymor
 Run this from MainPC PowerShell:
 
 ```powershell
-ssh asus "cd /home/skkse12/Desktop/Projects/Core/Agent-Relay && git fetch origin feat/core-v1-auto-dev-team-01 && git show origin/feat/core-v1-auto-dev-team-01:scripts/core-v1-asus-verify.sh | bash"
+ssh asus "cd /home/skkse12/Desktop/Projects/Core/Agent-Relay && git fetch origin feat/core-v1-auto-dev-team-01 && git show FETCH_HEAD:scripts/core-v1-asus-verify.sh | bash"
 ```
+
+The launcher intentionally reads the fetched commit through `FETCH_HEAD`, so it works even when the local repository does not create an `origin/<branch>` remote-tracking ref for a one-off fetch. The verification script itself then fetches the branch into an explicit remote ref before creating its worktree.
 
 This command does **not** switch/reset/stash the primary checkout. It creates a separate verification worktree at:
 
