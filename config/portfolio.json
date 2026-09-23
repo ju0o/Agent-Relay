@@ -613,6 +613,20 @@
           ],
           "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: 자동 Tester = 실행+화면캡처); canvas Next item 06; approval rule A-01",
           "title": "Automated Tester support (Founder choice 2026-09-23: 실행+화면캡처"
+        },
+        {
+          "taskId": "AGENTRELAY-V1-TOUCH-DRAG-REORDER-R2",
+          "scope": "Add the minimal pointer-event touch fallback for reordering project tabs, work tabs, and agent pills while preserving desktop HTML5 drag behavior, and add focused tests in test/v03.test.mjs that fail on base code and pass with the new pointer reorder flow.",
+          "files": [
+            "src/frontend/App.tsx",
+            "src/frontend/style.css",
+            "test/v03.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "node test/v03.test.mjs"
+          ],
+          "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
