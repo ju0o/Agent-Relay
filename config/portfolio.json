@@ -271,6 +271,37 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "BACKLOG.md:36 \"electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨\""
+        },
+        {
+          "taskId": "AGENTRELAY-V1-WORK-TAB-ORDER",
+          "scope": "Persist Work Tab order across app restarts while preserving the existing rule that unsaved prompt/result content is never restored.",
+          "files": [
+            "src/frontend/App.tsx",
+            "src/backend/main.ts",
+            "src/shared/types.ts",
+            "test/v03.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/v03.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "BACKLOG.md:33 Work Tab 순서 영구 저장 — v0.3은 session-only"
+        },
+        {
+          "taskId": "AGENTRELAY-V1-DEV-WATCH-HMR",
+          "scope": "Add a dependency-free development launcher that provides Vite watch/HMR and keeps the existing Electron app and offline workflow usable.",
+          "files": [
+            "package.json",
+            "scripts/dev.mjs",
+            "src/backend/main.ts",
+            "vite.config.ts"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm test"
+          ],
+          "ssotEvidence": "BACKLOG.md:25 `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행"
         }
       ]
     },
