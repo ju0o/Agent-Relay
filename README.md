@@ -1,244 +1,121 @@
 # Agent Relay
 
-> GPT → 코딩 에이전트 작업을 **Prompt/Result Markdown 쌍**으로 기록하는 로컬 도구.
-> DB 없음 · 클라우드 없음 · 파일시스템이 곧 데이터베이스.
+> 한 사람이 여러 AI 코딩 에이전트를 굴릴 때, **무엇이 끝났는지 상태로 남는** 로컬 오케스트레이션 런타임.
+> 클라우드 없음 · 외부 DB 없음 · 파일시스템이 상태 저장소.
 
-Windows용 Electron 앱. Claude Code, Codex, OpenCode 등 에이전트에게 전달한 프롬프트와
-그 결과를 날짜/에이전트/런(run) 단위로 자동 정리해준다.
+ChatGPT를 **PM** 역할로, Claude Code / Codex 를 **Builder** 역할로 두고 Task 계약 단위로 일을 흘린다.
+Electron 앱 · CLI · TUI · MCP 서버 네 개의 표면을 가진다.
 
-## 설치 (권장 방식)
+---
 
-1. [Releases](https://github.com/ju0o/Agent-Relay/releases) 페이지에서 최신 `AgentRelay-Setup-x.y.z.exe` 다운로드
-2. 실행하면 자동으로 설치된다 — 설치 경로 선택 등 별도 과정 없음
-   (프로그램 본체: `%LOCALAPPDATA%\Programs\Agent Relay\`)
-3. 설치 직후 앱이 바로 실행되며, 이후에는 아래에서 실행
-   - 바탕화면 **Agent Relay** 바로가기
-   - 시작 메뉴 **Agent Relay**
-   - Windows 설정 > 설치된 앱 > **Agent Relay** (제거는 여기서)
-4. 최초 1회만 데이터 폴더(DATA_ROOT) 선택 — 이후 앱이 자동 복원
-5. 새 버전은 앱 안에서 업데이트 (⚙ 설정 → About → [업데이트 확인])
+## 무엇을 푸는가
 
-프로그램 본체와 사용자 데이터는 완전히 분리되어 있다. 제거/업데이트해도
-DATA_ROOT의 기록과 설정은 절대 삭제되지 않는다.
+AI 에이전트가 코드를 쓰는 건 이미 된다. 무너지는 건 그다음이다.
 
-Portable 버전(`AgentRelay-Portable-x.y.z.exe`)은 설치 없이 바로 실행하는 보조 배포판이다.
-설정 파일을 exe 옆에 두므로 USB 휴대에 적합하다.
+- 에이전트가 "완료했습니다"라고 말해도 **무엇이 실제로 검증됐는지** 알 수 없다
+- 여러 에이전트를 동시에 돌리면 **누가 무엇을 어디까지 했는지** 사람이 추적할 수 없다
+- 프로세스가 죽으면 **진행 중이던 작업이 어디로 갔는지** 모른다
 
-> ⚠️ Code signing 인증서가 없으므로 최초 설치 시 Windows SmartScreen 경고가 표시될 수 있다.
-> "추가 정보 → 실행"으로 진행하면 된다.
+Agent Relay는 이 세 가지를 지시·판정·복구가 **상태로 남는 구조**로 바꾼다.
 
-## 현재 기능 (v0.3.0)
+## 작동 흐름
 
-- **Windows 설치형(NSIS)** — 시작 메뉴/바탕화면 등록, 프로그램 추가/제거 지원
-- **앱 내부 업데이트** — GitHub Release 기반, 사용자 클릭으로 다운로드/설치
-- **영구 저장 설정** — DATA_ROOT·마지막 프로젝트·탭/에이전트 순서 저장,
-  포터블 시절 settings.json은 최초 실행 시 조용히 이관(비파괴 복사)
-- **Drag Reorder** — 프로젝트 탭·작업 탭·에이전트 목록을 드래그로 재배치
-  (프로젝트/에이전트 순서는 영구 저장, 실제 폴더는 불변)
-- **Quick Dogfooding 📝** — `[＋ 피드백]` 한 줄 입력 즉시 기록
-  (기본값 Type=UX · Priority=MEDIUM · Status=OPEN, Context 자동 첨부)
-- **프로젝트 세션 탭** — 여러 프로젝트를 동시에 열고 전환
-- **런(run) 관리** — `Project/Date/Agent/NN` 런 폴더 자동 생성·번호 관리(빈 번호 재사용 없음)
-  - 폴더는 **실제 저장 시점에만** 생성된다 (앱을 열기만 해서 폴더가 만들어지지 않음)
-- **병렬 편집 탭** (`Ctrl+T`) — 여러 에이전트의 런을 동시에 작업
-- **Prompt/Result 저장** — 덮어쓰기 금지가 기본, 확인 후 허용
-- **태그** — 성공/진행중/검토/실패/참고 프리셋, 런별 저장
-- **마크다운 미리보기** — 외부 의존성 없는 자체 렌더러
-- **파일 트리** — 최신순 히스토리, 검색 필터, 런 상태 점, 드래그로 다른 날짜/에이전트로 이동
-- **Result → ChatGPT 전달**
-  - 📤 `GPT로 드래그` 칩을 누른 채 ChatGPT 입력창에 놓으면 result.md가 파일 첨부처럼 전달됨 (OS 네이티브 drag-out)
-  - `위치 열기` — 탐색기에서 result.md가 **선택된 상태**로 열림 (fallback)
-  - `.md 내보내기` — prompt+result를 합쳐 단일 파일 저장
-
-단축키: `Ctrl+S` 모두 저장 · `Ctrl+N` 새 런 · `Ctrl+T` 새 탭 · `F12` DevTools
-
-## 업데이트
-
-앱은 GitHub Releases를 업데이트 피드로 사용한다(electron-updater · GitHub provider).
-
-- 실행 후 조용히 1회 확인 — 새 버전이 있으면 작은 알림만 뜬다 (**자동 설치 없음**)
-- ⚙ 설정 → About → [업데이트 확인] → 최신이면 "현재 최신 버전입니다"
-- 새 버전이 있으면 [다운로드 및 업데이트] → 진행률 → [재시작하여 설치]
-- 업데이트해도 DATA_ROOT의 기록·설정은 절대 삭제되지 않는다
-
-참고: 저장소가 **private**인 동안은 GitHub Release를 인증 없이 읽을 수 없어
-앱 내부 업데이트 확인이 실패한다(토큰은 앱에 넣지 않는다). 공개 전환 후 바로 동작한다.
-접근 권한이 있는 환경에서는 환경변수 `AGENT_RELAY_GH_TOKEN`으로 확인할 수 있다
-(머신별 opt-in일 뿐, 바이너리에 포함되지 않는다).
-
-## 데이터 저장 구조
-
-파일시스템 자체가 SSOT다. 모든 기록은 사용자가 지정한 DATA_ROOT 아래에 쌓인다.
-
-```text
-DATA_ROOT/                          ← 최초 1회 선택 (settings.json에 저장)
-├─ {project}/                       ← 프로젝트 폴더
-│  ├─ YYYY-MM-DD/
-│  │  └─ {agent}/                   ← 예: "Claude Code", "OpenCode"
-│  │     ├─ 01/
-│  │     │  ├─ prompt.md            ← GPT가 에이전트에게 준 프롬프트
-│  │     │  ├─ result.md            ← 에이전트의 결과 보고
-│  │     │  └─ meta.json            ← {"tags": [...]}
-│  │     └─ 02/
-│  └─ _dogfooding/                  ← 이 프로젝트의 사용성 피드백 (Work Log와 분리)
-│     ├─ DF-0001.md
-│     └─ DF-0002.md
-└─ .agent-relay/                    ← 앱 내부 데이터 (프로젝트 목록에 나타나지 않음)
-   └─ dogfooding/
-      └─ DF-NNNN.md                 ← Agent Relay 앱 자체 피드백
+```
+Owner GO
+   └─> PM 지시 (Task 계약 생성)
+          └─> Builder 실행 (Claude Code / Codex)
+                 └─> 결과 캡처 (RESULT_PACKET 검증)
+                        └─> PM 판정
+                               ├─ ACCEPT           → 완료
+                               ├─ REQUEST_CHANGES  → 같은 Task 자동 재시도
+                               └─ HUMAN_GATE       → 사람에게 올림
 ```
 
-- 특수 프로젝트 `'.'`: 프로젝트 하위 폴더 없이 `DATA_ROOT/{date}/{agent}/{NN}` 구조
-- prompt.md = 작업 지시 기록, result.md = 결과 보고. **GPT 재전달 UX 대상은 result.md만**
+PM이 낼 수 있는 판정은 `DISPATCH` · `REQUEST_CHANGES` · `ACCEPT` · `HUMAN_GATE` ·
+`MILESTONE_COMPLETE` **다섯 개로 fail-closed 고정**이다. 그 외 응답은 전부 거부된다.
+세션 식별자는 `project + role + runtime + live_session_identity` 이며,
+프로세스 이름으로 워커를 추측하지 않는다.
 
-## DATA_ROOT
+## 지금 상태 — 잰 값과 안 된 것
 
-- 모든 Agent Relay 기록이 저장되는 최상위 폴더. 외장 드라이브/동기화 폴더 어디든 가능.
-- 최초 1회 선택 후 저장되며 매 실행 자동 복원된다. 다시 묻지 않는다.
-- 경로가 사라지면(외장 드라이브 제거 등) "저장공간을 찾을 수 없습니다" 화면이 뜨고 새 위치만 다시 선택하면 된다.
-- 변경은 ⚙ 설정 → Storage 에서만 ([변경] / [폴더 열기]).
-- 설정 파일 위치:
-  - 설치형/Portable 공통: `%APPDATA%\agent-relay-log\settings.json` (Electron userData)
-  - Portable은 exe 옆에 `settings.json`이 있으면 우선 사용 (USB 휴대용)
-  - ~v0.2.x 포터블 폴백 위치(`%APPDATA%\agent-relay-log\AgentRelayLog`)의 설정은
-    최초 실행 시 자동 **복사** 이관된다(원본 유지, 비파괴).
+| | 값 | 근거 |
+|---|---|---|
+| 커밋 | 337 | 전체 브랜치 기준 |
+| 프로덕션 코드 | 175 파일 / 53,719 줄 | `src/` |
+| 테스트 코드 | 111 파일 / 35,514 줄 (프로덕션의 66%) | `test/` |
+| 테스트 파일 | 119 | `test/` |
+| V1 회귀 | 602 assertions PASS | `FINAL_CERTIFICATION_REPORT.md` |
+| V1.5 회귀 | 160 assertions PASS | 동일 |
+| V1.6 회귀 | 479 assertions PASS | 동일 |
+| 미해결 결함 | P0 0 · P1 0 · P2 0 · P3 0 | 동일 |
+| 내구성 | 실제 SIGKILL 후 별도 프로세스 재개 PASS (10 seams, 26 checks) | 동일 |
+| 멱등성 | 동시 제출 포함 PASS (7 groups, 14 checks) | 동일 |
+| typecheck / build | PASS (clean) | `npm run typecheck` / `npm run build` |
 
-## Dogfooding 🐾
+### 안 된 것도 적는다
 
-두 종류가 있으며 **데이터가 절대 섞이지 않는다**.
-
-### Quick Capture (빠른 기록) — v0.3 신규
-
-- 프로젝트 선택 중 상단 `[＋ 피드백]` 클릭 → 작은 Popover에서 한 줄 입력 → Enter 또는 [저장]
-- 기본값 Type=UX / Priority=MEDIUM / Status=OPEN으로 즉시 저장 — 매번 폼을 채우지 않는다
-- [상세 옵션]을 펼치면 Type/Priority/기대한 동작 수정 가능
-- Project/Date/Agent/Run Context는 현재 화면 상태에서 자동 첨부
-- 저장 위치: 현재 프로젝트 `{project}/_dogfooding/DF-NNNN.md`
-- 10초 안에 기록 끝. 관리(모아보기/상태 변경)는 아래 Project Dogfooding 화면에서
-
-### App Dogfooding (앱 자체 개선)
-
-Agent Relay 프로그램 자체를 쓰면서 발견한 Bug/UX/Improvement 기록.
-
-- 상단 `🐾 App Dogfooding` 버튼
-- 저장: `DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md`
-- Type: Bug / UX·불편 / Improvement / Good / Other
-
-### Project Dogfooding (프로젝트 사용성 관리)
-
-Quick Capture로 찍힌 기록을 포함해 프로젝트별 피드백을 모아보고 상태를 관리한다.
-
-- 프로젝트 선택 후 상단 `📋 Project Dogfooding` 버튼 (프로젝트 미선택 시 비활성)
-- 저장: `DATA_ROOT/{project}/_dogfooding/DF-NNNN.md` — **프로젝트마다 독립적인 ID 체계**
-- Type: Bug / UX·Friction / Improvement / Idea / Good / Other
-- Status 클릭 순환 변경: `OPEN → FIXED → HOLD`, 필터 ALL/OPEN/FIXED/HOLD, 상태별 개수 표시
-- 행의 ▸ 클릭으로 전체 내용 보기, `[복사]`(md 전문) / `[파일 열기]`(탐색기 reveal)
-- markdown 하나만 읽어도 어느 프로젝트의, 어떤 상황에서 발견한, 어떤 심각도의, 지금 어떤 상태인지
-  기록이 모두 이해되도록 작성된다 — 나중에 GPT에 그대로 전달해 우선순위 정리를 맡길 수 있다
-
-공통: markdown 파일이 SSOT (index.json 없음), 현재 작업 Context 자동 첨부.
-
-## Release 자동화 (GitHub Actions)
-
-태그를 push하면 Windows 빌드 → 테스트 → Release 업로드가 자동 실행된다.
-
-```bash
-git tag v0.3.1
-git push origin v0.3.1
-# → AgentRelay-Setup-0.3.1.exe / AgentRelay-Portable-0.3.1.exe
-#   latest.yml / blockmap이 GitHub Release에 게시됨
+```
+Bootstrap Final Closure: BLOCKED_BY_TRANSPORT. ACCEPT 선언 없음.
 ```
 
-## 개발 (Development)
+라이브 루프는 `STATE_PACKET → PM → DISPATCH → Builder → RESULT_PACKET` 까지 도달했고
+PM 리뷰도 수행됐다. 그러나 **PASS 결과 이후의 최종 PM 리뷰가 전송 계층 끊김으로 두 번 실패**했고,
+재시도 예산을 소진해 자율 야간 실행에 진입하지 못했다.
+자세한 내용: [`AGENT_RELAY_FINAL_RESULT.md`](AGENT_RELAY_FINAL_RESULT.md)
 
-일반 사용자는 위 "설치" 섹션만 필요하다. 소스에서 직접 빌드할 때만 사용한다.
+이 저장소는 되는 것과 안 되는 것을 같은 크기로 적는다.
+인증 리포트는 구현자가 아닌 **별도 인증 역할**이 작성했고, 인증 중
+프로덕션 코드 수정이 0건이었음을 `git diff --stat -- src/` 로 증명했다.
+
+## 구조
+
+| 디렉터리 | 역할 |
+|---|---|
+| `src/orchestrator/` | PM 판정 스키마, 역할 루프, 자율 액션 |
+| `src/integrations/` | 역할 런타임 어댑터 (tmux 외부 세션 등) |
+| `src/mcp/` | MCP 서버 표면 (PM / Worker) |
+| `src/runner/` | 실행·복구 런너 |
+| `src/workspace/` | 워크스페이스 부트스트랩 |
+| `src/tui/` | 터미널 UI |
+| `src/cli/` | `agent-relay` CLI |
+| `src/backend/`, `src/frontend/` | Electron 앱 (Prompt/Result 기록 표면) |
+| `docs/` | WBS·스펙·인증 리포트·교차 리뷰 기록 |
+
+## 실행
 
 ```bash
 npm install
-
-# client(vite) + server(tsc) 빌드 후 electron 실행
-npm run dev
-
-# 타입 체크
+npm run build        # tsc server + vite client
 npm run typecheck
-
-# 테스트 (fs 레이어 + vnext 회귀 + v0.3 기능)
-npm test
-
-# Windows 패키징 (NSIS Setup + Portable → dist/)
-npm run build:win
-# 또는 로그 래퍼: node scripts/build-win.mjs  (→ dist/buildwin.log)
+npm test             # build + 필수 테스트 스위트
 ```
 
-## Privacy / Local-first
+Electron 앱:
 
-- 계정 없음. telemetry 없음.
-- 모든 데이터는 사용자가 지정한 로컬 폴더에 Markdown/JSON으로만 저장된다.
-- ChatGPT 전달도 OS 파일 드래그일 뿐 — 앱이 대신 전송하거나 DOM을 조작하지 않는다.
-- 네트워크 통신은 업데이트 확인 시 GitHub Releases 조회(읽기)뿐이다. 기록 데이터는 전송되지 않는다.
-
-## Claude worker verification allowlist (ar/v1-pm driver contract)
-
-The `claude-code` driver (`scripts/relay-worker-claude.mjs`) is used both as a
-Builder (implementation role) and as the Semantic QA agent. Since Claude Code in
-`--print` mode auto-rejects every Bash tool call unless it is allow-listed, a
-Builder may now declare a trusted, bounded verification allowlist in its worker
-registry record:
-
-```json
-{
-  "driverOptions": {
-    "claude": {
-      "permissionMode": "acceptEdits",
-      "allowedTools": [
-        "Bash(node:*)",
-        "Bash(npm:*)",
-        "Bash(npx:*)",
-        "Bash(git status:*)",
-        "Bash(git diff:*)",
-        "Bash(git log:*)",
-        "Bash(ls:*)",
-        "Bash(cat:*)",
-        "Bash(head:*)",
-        "Bash(tail:*)",
-        "Bash(wc:*)",
-        "Bash(grep:*)",
-        "Bash(rg:*)",
-        "Bash(find:*)",
-        "Bash(test:*)",
-        "Read",
-        "Glob",
-        "Grep",
-        "Edit",
-        "Write"
-      ]
-    }
-  }
-}
+```bash
+npm run dev
 ```
 
-How it flows (round 35, `ar/v1-pm`):
+Windows 설치형은 [Releases](https://github.com/ju0o/Agent-Relay/releases) 참고.
+코드 서명 인증서가 없어 최초 설치 시 SmartScreen 경고가 뜬다.
 
-1. **Registry** (`src/backend/worker-registry.ts`): `driverOptions.claude.allowedTools`
-   is optional and strictly validated against the allowlist — only
-   `Bash(<cmd>:*)` with `<cmd>` in
-   `{node, npm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}`
-   or exactly one of `Read`, `Glob`, `Grep`, `Edit`, `Write`. Anything else
-   (e.g. `Bash(*)`, `Bash(rm:*)`, `Bash(git push:*)`, `Bash(sudo:*)`, `Bash(pkill:*)`)
-   is rejected at record write time.
-2. **Dispatcher** (`src/backend/dispatcher.ts`): mirrors the `--claudeConfigDir`
-   forwarding and emits one repeated `--allowedTool <pattern>` relay arg per entry.
-3. **Wrapper** (`scripts/relay-worker-claude.mjs`): re-validates every
-   `--allowedTool` with the same strict allowlist (a forbidden pattern is a fatal
-   `ArgError`), then forwards them to Claude as a single
-   `--allowedTools <p1> <p2> …` argv **on the Builder relay path only**.
-   The Semantic QA passthrough rejects `--allowedTool` with a fatal error — QA
-   judges and never edits, and it must never receive a permission mode or an
-   allowed-tools allowlist.
+## Prompt / Result 기록 표면
 
-Still forbidden for a Builder: arbitrary Bash commands (`rm`, `sudo`, `pkill`,
-`git push`, shell operators, wildcard-only patterns), arbitrary Claude CLI flags,
-and any override from Task/Goal/PM narrative — the allowlist comes only from the
-trusted worker registry.
+Electron 앱은 에이전트에게 준 프롬프트와 결과를 날짜/에이전트/런 단위로 정리한다.
+모든 기록은 사용자가 지정한 `DATA_ROOT` 아래에 쌓이며, 프로그램 본체와 완전히 분리된다.
+제거·업데이트해도 기록은 삭제되지 않는다.
 
+```
+DATA_ROOT/
+└─ {project}/
+   └─ YYYY-MM-DD/
+      └─ {agent}/
+         └─ 01/
+            ├─ prompt.md
+            ├─ result.md
+            └─ meta.json
+```
 
+## 만든 사람
+
+황주영 (Ju0) · [github.com/ju0o](https://github.com/ju0o)
