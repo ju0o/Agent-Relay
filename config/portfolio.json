@@ -1417,6 +1417,19 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-24: README '처음 쓰는 법' Quickstart commands must be exactly what the E2E runs"
+        },
+        {
+          "taskId": "JUPLAN-STUDIO-READABLE",
+          "scope": "Improve the read-only Studio page so a Founder can quickly read the plan overview, validation/gates, exports, and searchable planning nodes without changing V1 semantics.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
