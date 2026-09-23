@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS, TRANSIENT_ERROR } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter, createRuntimeAdapters } from "../../src/v2/runtime-adapters/index.mjs";
 const passGate = async () => ({ ok: true, results: [] });
 
@@ -250,6 +250,11 @@ test("runtime chains: a quota error falls through to the next Worker, and QA use
   assert.equal(task.state, "VERIFIED_DONE");
   assert.deepEqual(calls, ["opencode:workspace-write", "codex:workspace-write", "cline:read-only"]);
   assert.equal(task.builderEvidence.runtime, "codex"); assert.deepEqual(task.builderEvidence.fallbacks, ["opencode: quota"]); assert.equal(task.qaEvidence.runtime, "cline");
+});
+
+test("runtime chains: a provider outage (503 overloaded) falls through like a quota hit; a prompt error does not", () => {
+  assert.ok(TRANSIENT_ERROR.test('opencode exit 1: Error: {"message":"Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded","type":"server_error"}'));
+  assert.ok(!TRANSIENT_ERROR.test("opencode exit 1: syntax error in prompt"));
 });
 
 test("runtime chains: a non-quota failure holds the task instead of silently switching models", async () => {

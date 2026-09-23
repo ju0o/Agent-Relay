@@ -34,6 +34,8 @@ function packetLine(text, prefix) {
 
 // A quota/rate-limit failure moves the lane to the next runtime in its chain instead of holding the task.
 export const QUOTA_ERROR = /rate.?limit|quota|usage limit|limit (reached|exceeded)|too many requests|\b429\b|insufficient[_ ]quota|out of credits|credit balance|exceeded your/i;
+// Provider-side outages (free models overload): the next runtime in the chain takes the turn, like a quota hit.
+export const TRANSIENT_ERROR = /\b50[234]\b|overloaded|temporarily unavailable|service unavailable|upstream error|ECONNRESET|ETIMEDOUT|socket hang up/i;
 // Lane config: runtime / qaRuntime may be one id or an ordered fallback list, e.g. ["opencode", "codex"].
 const chainOf = (value) => [value].flat().filter(Boolean);
 
@@ -356,7 +358,7 @@ export class PortfolioRunner {
       if (!status.ok) { tried.push(`${id}: ${status.reason}`); continue; }
       let result;
       try { result = await adapter.run(request); }
-      catch (error) { const message = String(error.message || error); if (request.signal?.aborted || !(QUOTA_ERROR.test(message) || /exit null/.test(message))) throw error; tried.push(`${id}: ${QUOTA_ERROR.test(message) ? "quota" : "timeout"}`); continue; }
+      catch (error) { const message = String(error.message || error); if (request.signal?.aborted || !(QUOTA_ERROR.test(message) || TRANSIENT_ERROR.test(message) || /exit null/.test(message))) throw error; tried.push(`${id}: ${QUOTA_ERROR.test(message) ? "quota" : TRANSIENT_ERROR.test(message) ? "unavailable" : "timeout"}`); continue; }
       if (validate) { try { validate(result.text); } catch { tried.push(`${id}: invalid output`); if (id !== chain.at(-1)) continue; } }
       return { ...result, runtime: id, fallbacks: tried };
     }
