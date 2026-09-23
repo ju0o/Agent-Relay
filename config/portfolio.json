@@ -2166,6 +2166,49 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JCAPP-READABLE-NAMES-AND-TIME",
+          "scope": "Founder readability pass 1 in operator/public/app.js: (1) show Korean project names instead of lane ids everywhere (agent-relay→Agent Relay, juactl→actl, juplan→JuPlan, juceipt→JuCeipt, jucontroler→JuControler, jucontroler-app→통합 관제 화면, juceipt-planning→JuCeipt 기획) via one shared map; (2) relative times as '방금 · N분 전 · N시간 전 · N일 전' (never '12653분 51초 전'); (3) English gate text (e.g. 'Run the Windows Board E2E…') is shown under a Korean one-line summary derived from the gate type/project, with the original in a collapsed '원문 보기'. Tests in test/readable-text.test.mjs over the shared formatters.",
+          "files": [
+            "operator/public/app.js",
+            "test/readable-text.test.mjs"
+          ],
+          "tests": [
+            "node --test test/readable-text.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 08시: 'JuControler는 아직 보기가 너무 불편' — supervisor capture of live 8537f00 (~/jc-tester/now); approved design canvas UniHome/UniRelay (glitch D, A-13); non-developer rule: every state is a Korean sentence",
+          "title": "Founder readability pass 1 in operator/public/app.js: (1) sh"
+        },
+        {
+          "taskId": "JCAPP-HOME-GATE-CARDS-SPECIFIC",
+          "scope": "Founder readability pass 2: every 홈 '결정이 필요해요' card must say WHAT to decide and for WHICH project in one Korean sentence (from the gate's project + question), show the choices as buttons, and group duplicates; the header '확인이 필요한 작업이 N개' counts distinct decisions. Keep the existing decision-send flow. Extend test/home-hub.test.mjs.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-hub.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-hub.test.mjs",
+            "node --test test/top-status-count.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 08시: 'JuControler는 아직 보기가 너무 불편' — supervisor capture of live 8537f00 (~/jc-tester/now); approved design canvas UniHome/UniRelay (glitch D, A-13); non-developer rule: every state is a Korean sentence",
+          "title": "Founder readability pass 2: every 홈 '결정이 필요해요' card must say"
+        },
+        {
+          "taskId": "JCAPP-LAYOUT-CONSISTENT",
+          "scope": "Founder readability pass 3 in operator/public/app.css (+ minimal app.js class changes): one consistent content width for every tab (the approved design's wide main column, not a narrow centered strip on some tabs), compact the repeated top chrome ('창업자 운영 화면 / 오늘의 운영 상태 / 연결 세부 정보') to a single slim bar on module tabs, and keep the glitch-D allow/forbid rules. Test in test/founder-clean-tokens.test.mjs style: assert one shared layout class is applied to every module view.",
+          "files": [
+            "operator/public/app.css",
+            "operator/public/app.js",
+            "test/layout-consistency.test.mjs"
+          ],
+          "tests": [
+            "node --test test/layout-consistency.test.mjs",
+            "node --test test/founder-clean-tokens.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 08시: 'JuControler는 아직 보기가 너무 불편' — supervisor capture of live 8537f00 (~/jc-tester/now); approved design canvas UniHome/UniRelay (glitch D, A-13); non-developer rule: every state is a Korean sentence",
+          "title": "Founder readability pass 3 in operator/public/app.css (+ min"
         }
       ]
     },
