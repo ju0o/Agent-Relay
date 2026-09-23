@@ -656,9 +656,9 @@
         }
       ],
       "qaRuntime": [
-        "cline",
         "opencode",
-        "codex"
+        "codex",
+        "cline"
       ]
     },
     {
