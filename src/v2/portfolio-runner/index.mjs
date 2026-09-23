@@ -169,17 +169,32 @@ export class CodexDevelopmentRuntime {
   }
 }
 
+// Deterministic gate: the runner itself runs the task's tests in the candidate worktree before promotion,
+// because LLM QA runs read-only and often cannot execute them (EROFS) yet still says ACCEPT.
+export function runTestGate(workspace, tests, { timeoutMs = 15 * 60_000, signal } = {}) {
+  const runOneCommand = (cmd) => new Promise((resolvePromise) => {
+    const child = spawn("bash", ["-lc", cmd], { cwd: workspace, env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = ""; const add = (chunk) => { output = (output + chunk).slice(-4000); };
+    child.stdout.on("data", add); child.stderr.on("data", add);
+    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs); const abort = () => child.kill("SIGTERM"); signal?.addEventListener("abort", abort, { once: true });
+    child.once("error", (error) => { clearTimeout(timer); resolvePromise({ cmd, code: -1, tail: String(error.message) }); });
+    child.once("close", (code) => { clearTimeout(timer); signal?.removeEventListener("abort", abort); resolvePromise({ cmd, code: code ?? -1, tail: output.slice(-1500) }); });
+  });
+  return (async () => { const results = []; for (const cmd of tests || []) { const result = await runOneCommand(cmd); results.push(result); if (result.code !== 0) return { ok: false, results }; } return { ok: true, results }; })();
+}
+
 export function builderPrompt(task) {
   const mode = task.verificationOnly ? "Do not modify files or commit; verify the existing implementation only." : "Implement the bounded task and commit locally.";
-  return `You are the Agent Relay Builder. Execute ONLY this repository-backed authorized task. Do not widen scope, ask the Founder routine questions, touch other repositories, or push.\nTASK_PACKET: ${JSON.stringify({ schema: "agent-relay.task.v1", taskId: task.taskId, projectId: task.projectId, scope: task.scope, files: task.files, tests: task.tests, verificationOnly: Boolean(task.verificationOnly) })}\nRead the repository SSOT first. ${mode} Run the listed tests. End with exactly one line: RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: task.taskId, status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "<git-sha>", summary: "<summary>" })}`;
+  return `You are the Agent Relay Builder. Execute ONLY this repository-backed authorized task. Do not widen scope, ask the Founder routine questions, touch other repositories, or push.\nTASK_PACKET: ${JSON.stringify({ schema: "agent-relay.task.v1", taskId: task.taskId, projectId: task.projectId, scope: task.scope, files: task.files, tests: task.tests, verificationOnly: Boolean(task.verificationOnly) })}\nRead the repository SSOT first. ${mode} Run the listed tests.${task.qa?.findings?.length ? ` This is a retry: fix these findings from the previous QA/test gate first: ${JSON.stringify(task.qa.findings).slice(0, 3000)}` : ""} End with exactly one line: RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: task.taskId, status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "<git-sha>", summary: "<summary>" })}`;
 }
 
 export function qaPrompt(task, base) {
-  return `You are an independent read-only QA Agent. Do not modify files, commit, or push. Verify task ${task.taskId} by inspecting git diff ${base}..HEAD (the supplied base is the parent, not the candidate commit), then run relevant read-only-safe checks. If a test is blocked only because the read-only sandbox forbids temporary writes, report that as an environment limitation and continue with static/type checks; do not request changes for EROFS alone. Validate scope. End with exactly one line: QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: task.taskId, verdict: "ACCEPT", tests: [], findings: [], summary: "<evidence>" })}`;
+  return `You are an independent read-only QA Agent. Do not modify files, commit, or push. Verify task ${task.taskId} by inspecting git diff ${base}..HEAD (the supplied base is the parent, not the candidate commit), then run relevant read-only-safe checks. The runner executes the listed tests itself after you, so a test blocked only by the read-only sandbox (EROFS) is not a reason to reject; say so. Any type error, failing check you can run, scope violation or missing test coverage for the change IS a reason: verdict REQUEST_CHANGES with concrete findings. Validate scope. End with exactly one line: QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: task.taskId, verdict: "<ACCEPT|REQUEST_CHANGES|FOUNDER_GATE>", tests: [], findings: [], summary: "<evidence>" })}`;
 }
 
 export class PortfolioRunner {
-  constructor({ manifest, statePath, worktreeRoot, gateRoot, intakeRoot, resultRoot, runtime = new CodexDevelopmentRuntime(), runtimeAdapters, worktrees = new WorktreeManager(worktreeRoot), gateManager }) {
+  constructor({ manifest, statePath, worktreeRoot, gateRoot, intakeRoot, resultRoot, runtime = new CodexDevelopmentRuntime(), runtimeAdapters, worktrees = new WorktreeManager(worktreeRoot), gateManager, testGate = runTestGate }) {
+    this.testGate = testGate;
     this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.runtimeAdapters = runtimeAdapters || createRuntimeAdapters({ codex: runtime }); this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.intakeRoot = intakeRoot || join(resolve(statePath, ".."), "pm-inbox"); this.resultRoot = resultRoot || join(resolve(statePath, ".."), "result-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
   }
 
@@ -291,6 +306,15 @@ export class PortfolioRunner {
       try { task.qaAttempts += 1; qaRun = await adapter.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }); }
       finally { this._releaseQa(); }
       task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
+      if (task.qa.verdict === "ACCEPT" && !task.verificationOnly && this.testGate) {
+        const headOf = () => exec("git", ["-C", builder.path, "rev-parse", "HEAD"]).then((result) => result.stdout.trim(), () => null);
+        const head = await headOf();
+        const gate = await this.testGate(builder.path, task.tests, { signal });
+        const moved = head !== null && (await headOf()) !== head;
+        task.testGate = { ok: gate.ok && !moved, results: gate.results.map(({ cmd, code }) => ({ cmd, code })), at: new Date().toISOString() };
+        const failed = gate.results.find((result) => result.code !== 0);
+        if (!task.testGate.ok) task.qa = { ...task.qa, verdict: "REQUEST_CHANGES", findings: [...(task.qa.findings || []), failed ? `TEST_GATE: \`${failed.cmd}\` exit ${failed.code}: ${failed.tail}` : "TEST_GATE: tests changed HEAD"] };
+      }
       if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; task.state = "VERIFIED_DONE"; await this.publishResult(task); break; }
       if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
       if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; await this.publishResult(task); break;
