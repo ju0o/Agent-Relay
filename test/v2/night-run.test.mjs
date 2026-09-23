@@ -112,6 +112,49 @@ test("report transport verifies the destination hash and shutdown uses the exact
   let args; await requestMainPcShutdown({ target: "mainpc", execFileImpl: async (_command, received) => { args = received; return { stdout: "", stderr: "" }; } }); assert.deepEqual(args, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "mainpc", "shutdown.exe /s /t 30"]);
 });
 
+test("completed-task evidence describes VERIFIED_DONE work, not the in-flight task", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-"));
+  const done = { projectId: "agent-relay", taskId: "DONE-01", state: "VERIFIED_DONE", attempts: 1, promotionRef: "promo-1", result: { status: "IMPLEMENTED", changedFiles: ["src/a.mjs", "src/b.mjs"], tests: ["node --test test/a.test.mjs"], commitSha: "deadbeef", summary: "did stuff" }, qa: { verdict: "ACCEPT", tests: ["qa-t1"], findings: [], summary: "qa ok" } };
+  const current = { projectId: "agent-relay", taskId: "NEXT-01", state: "REQUEST_CHANGES", attempts: 2, result: { status: "BLOCKED", changedFiles: ["src/unfinished.mjs"], tests: ["node --test test/unfinished.test.mjs"], commitSha: "unfinished-sha", summary: "not done yet" }, qa: { verdict: "REQUEST_CHANGES", tests: ["qa-retry-1"], findings: ["missing evidence"], summary: "needs fix" } };
+  const state = { projects: [{ id: "agent-relay", coreV1: true, active: true, state: "RUNNING" }], tasks: [done, current] };
+  const s = new NightRunSupervisor({ runner: { manifest: { projects: state.projects }, reconcile: async () => state, runOnce: async () => state }, checkpointPath: join(dir, "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-23T10:00:00.000Z"), runId: "evidence-test" });
+  const result = await s.once();
+  assert.equal(result.endReason, "RUNNING");
+  assert.equal(result.taskId, "NEXT-01");
+  assert.equal(result.resultStatus, "IMPLEMENTED");
+  assert.deepEqual(result.changedFiles, ["src/a.mjs", "src/b.mjs"]);
+  assert.deepEqual(result.resultTests, ["node --test test/a.test.mjs"]);
+  assert.equal(result.resultSummary, "did stuff");
+  assert.equal(result.commitSha, "deadbeef");
+  assert.equal(result.promotionRef, "promo-1");
+  assert.deepEqual(result.qaTests, ["qa-retry-1"]);
+  assert.deepEqual(result.qaFindings, ["missing evidence"]);
+  assert.equal(result.qaSummary, "needs fix");
+  assert.equal(result.completedTasks.length, 1);
+  assert.deepEqual(result.completedTasks[0], { project: "agent-relay", taskId: "DONE-01", resultStatus: "IMPLEMENTED", changedFiles: ["src/a.mjs", "src/b.mjs"], tests: ["node --test test/a.test.mjs"], commitSha: "deadbeef", promotionRef: "promo-1", qaState: "ACCEPT", qaTests: ["qa-t1"], summary: "did stuff" });
+  const report = buildNightReport(result);
+  const completedSection = report.split("## Completed WBS / task")[1].split("## Completed tasks evidence")[0];
+  assert.match(completedSection, /DONE-01/);
+  assert.match(completedSection, /IMPLEMENTED/);
+  assert.match(completedSection, /src\/a\.mjs/);
+  assert.match(completedSection, /did stuff/);
+  assert.doesNotMatch(completedSection, /NEXT-01/);
+  assert.doesNotMatch(completedSection, /unfinished/);
+  assert.match(report, /## Completed tasks evidence\n- agent-relay\/DONE-01: result=IMPLEMENTED, commit=deadbeef, files=src\/a\.mjs, src\/b\.mjs, tests=node --test test\/a\.test\.mjs, qa-t1, QA=ACCEPT, summary=did stuff/);
+  const retrySection = report.split("## Retry / QA")[1].split("## Unfinished tasks")[0];
+  assert.match(retrySection, /qa-retry-1/);
+  assert.match(retrySection, /missing evidence/);
+  assert.match(retrySection, /needs fix/);
+});
+
+test("completed WBS section degrades gracefully without completed tasks", () => {
+  const record = { runId: "legacy", startedAt: "2026-09-23T17:00:00.000Z", endedAt: "2026-09-23T18:00:00.000Z", endReason: "DEADLINE_COMPLETE", deadline: "2026-09-23T18:00:00.000Z", shutdownState: "DRAINED", taskId: "NR-01", qaState: "ACCEPT", attempts: 1, qaTests: ["qa-t1"], qaFindings: [], qaSummary: "qa ok", lanes: [] };
+  const report = buildNightReport(record);
+  assert.match(report, /## Completed WBS \/ task\n- NR-01\n- resultStatus: -/);
+  assert.match(report, /## Completed tasks evidence\n- none/);
+  assert.match(report, /qa-t1/);
+  assert.match(report, /qa ok/);
+});
 test("MainPC wrapper pulls from ASUS and fails closed before destructive commands", () => {
   const wrapper = readFileSync(new URL("../../scripts/core-night.ps1", import.meta.url), "utf8");
   assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--no-poweroff/); assert.match(wrapper, /scp @transportArgs/);

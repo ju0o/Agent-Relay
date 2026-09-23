@@ -77,8 +77,16 @@ export function buildNightReport(record) {
   const qaTests = Array.isArray(record.qaTests) ? record.qaTests : [];
   const qaFindings = Array.isArray(record.qaFindings) ? record.qaFindings : [];
   const completedTasks = Array.isArray(record.completedTasks) ? record.completedTasks : [];
-  const completedEvidence = completedTasks.map((task) => `- ${task.project || "-"}/${task.taskId || "-"}: result=${task.resultStatus || "-"}, commit=${task.commitSha || "-"}, files=${(task.changedFiles || []).join(", ") || "-"}, tests=${[...(task.tests || []), ...(task.qaTests || [])].join(", ") || "-"}, QA=${task.qaState || "-"}`).join("\n") || "- none";
-  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${record.taskId || "-"}`, `- resultStatus: ${record.resultStatus || "-"}`, `- promotion: ${record.promotionRef || record.commitSha || "-"}`, `- commitSha: ${record.commitSha || "-"}`, `- changedFiles: ${changedFiles.join(", ") || "-"}`, `- resultTests: ${resultTests.join(", ") || "-"}`, `- resultSummary: ${record.resultSummary || "-"}`, "", "## Completed tasks evidence", completedEvidence, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, `- qaTests: ${qaTests.join(", ") || "-"}`, `- qaFindings: ${qaFindings.join(", ") || "-"}`, `- qaSummary: ${record.qaSummary || "-"}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
+  const lastCompleted = completedTasks.at(-1) || null;
+  const completedRef = lastCompleted ? `${lastCompleted.project || "-"}/${lastCompleted.taskId || "-"}` : (record.taskId || "-");
+  const completedStatus = lastCompleted?.resultStatus ?? record.resultStatus ?? "-";
+  const completedPromotion = lastCompleted?.promotionRef ?? record.promotionRef ?? record.commitSha ?? "-";
+  const completedCommit = lastCompleted?.commitSha ?? record.commitSha ?? "-";
+  const completedFiles = Array.isArray(lastCompleted?.changedFiles) ? lastCompleted.changedFiles : changedFiles;
+  const completedResultTests = lastCompleted && Array.isArray(lastCompleted.tests) ? lastCompleted.tests : resultTests;
+  const completedSummary = lastCompleted?.summary ?? record.resultSummary ?? "-";
+  const completedEvidence = completedTasks.map((task) => `- ${task.project || "-"}/${task.taskId || "-"}: result=${task.resultStatus || "-"}, commit=${task.commitSha || "-"}, files=${(task.changedFiles || []).join(", ") || "-"}, tests=${[...(task.tests || []), ...(task.qaTests || [])].join(", ") || "-"}, QA=${task.qaState || "-"}, summary=${task.summary || "-"}`).join("\n") || "- none";
+  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${completedRef}`, `- resultStatus: ${completedStatus || "-"}`, `- promotion: ${completedPromotion || "-"}`, `- commitSha: ${completedCommit || "-"}`, `- changedFiles: ${completedFiles.join(", ") || "-"}`, `- resultTests: ${completedResultTests.join(", ") || "-"}`, `- resultSummary: ${completedSummary || "-"}`, "", "## Completed tasks evidence", completedEvidence, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, `- qaTests: ${qaTests.join(", ") || "-"}`, `- qaFindings: ${qaFindings.join(", ") || "-"}`, `- qaSummary: ${record.qaSummary || "-"}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
 }
 
 export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), scriptPath = process.env.AGENT_RELAY_SEND_TO_MAINPC || DEFAULT_SEND_TO_MAINPC, execFileImpl = execFile }) {
@@ -96,7 +104,7 @@ export async function requestMainPcShutdown({ target = mainPcTarget(), execFileI
 }
 
 export async function finalizeNightRun({ record: initial, checkpointPath, persist, send = sendReportToMainPc, requestShutdown = requestMainPcShutdown, poweroff = runPoweroff, reportPath, dryRun = false, deferPoweroff = false }) {
-  let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [], completedTasks: initial.completedTasks || [], changedFiles: initial.changedFiles || [], resultTests: initial.resultTests || [], qaTests: initial.qaTests || [], qaFindings: initial.qaFindings || [] };
+  let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [], completedTasks: initial.completedTasks || [], changedFiles: initial.changedFiles || [], resultTests: initial.resultTests || [], resultStatus: initial.resultStatus || null, resultSummary: initial.resultSummary || null, commitSha: initial.commitSha || null, promotionRef: initial.promotionRef || null, qaTests: initial.qaTests || [], qaFindings: initial.qaFindings || [], qaSummary: initial.qaSummary || null };
   await mkdir(dirname(record.reportPathAsus), { recursive: true });
   await writeFile(record.reportPathAsus, buildNightReport(record));
   try { const transfer = dryRun ? { state: "DRY_RUN", path: `MainPC/Desktop/${record.reportPathAsus.split("/").pop()}`, remoteSha: createHash("sha256").update(await readFile(record.reportPathAsus)).digest("hex") } : await send({ reportPath: record.reportPathAsus }); record = { ...record, reportTransferState: transfer.state, reportPathMainPC: transfer.path || null, reportTransferSha256: transfer.remoteSha || null }; }
@@ -117,7 +125,8 @@ function currentTask(state) {
 
 function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = null, endReason, shutdownState = "NOT_REQUESTED", state, resumeRequired }) {
   const task = currentTask(state);
-  const completedTasks = (state.tasks || []).filter((item) => item.state === "VERIFIED_DONE").map((item) => ({ project: item.projectId || null, taskId: item.taskId || null, resultStatus: item.result?.status || null, changedFiles: Array.isArray(item.result?.changedFiles) ? [...item.result.changedFiles] : [], tests: Array.isArray(item.result?.tests) ? [...item.result.tests] : [], commitSha: item.result?.commitSha || null, qaState: item.qa?.verdict || null, qaTests: Array.isArray(item.qa?.tests) ? [...item.qa.tests] : [], summary: item.result?.summary || null }));
+  const completedTasks = (state.tasks || []).filter((item) => item.state === "VERIFIED_DONE").map((item) => ({ project: item.projectId || null, taskId: item.taskId || null, resultStatus: item.result?.status || null, changedFiles: Array.isArray(item.result?.changedFiles) ? [...item.result.changedFiles] : [], tests: Array.isArray(item.result?.tests) ? [...item.result.tests] : [], commitSha: item.result?.commitSha || null, promotionRef: item.promotionRef || null, qaState: item.qa?.verdict || null, qaTests: Array.isArray(item.qa?.tests) ? [...item.qa.tests] : [], summary: item.result?.summary || null }));
+  const completed = completedTasks.at(-1) || null;
   return {
     schema: "agent-relay.last-night-run.v1", runId, startedAt, deadline, freezeAt, checkpointAt, endedAt, endReason, shutdownState,
     project: task?.projectId || null, taskId: task?.taskId || null,
@@ -125,11 +134,11 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
     runtime: state.projects?.find((project) => project.id === task?.projectId)?.runtime || null,
     workerState: task?.state || null, qaState: task?.qa?.verdict || null,
     attempts: task?.attempts || 0, worktree: task?.builderEvidence?.workspace || null,
-    commitSha: task?.result?.commitSha || null, promotionRef: task?.promotionRef || null,
-    resultStatus: task?.result?.status || null,
-    changedFiles: Array.isArray(task?.result?.changedFiles) ? [...task.result.changedFiles] : [],
-    resultTests: Array.isArray(task?.result?.tests) ? [...task.result.tests] : [],
-    resultSummary: task?.result?.summary || null,
+    commitSha: completed?.commitSha || null, promotionRef: completed?.promotionRef || null,
+    resultStatus: completed?.resultStatus || null,
+    changedFiles: completed ? [...completed.changedFiles] : [],
+    resultTests: completed ? [...completed.tests] : [],
+    resultSummary: completed?.summary || null,
     qaTests: Array.isArray(task?.qa?.tests) ? [...task.qa.tests] : [],
     qaFindings: Array.isArray(task?.qa?.findings) ? [...task.qa.findings] : [],
     qaSummary: task?.qa?.summary || null,
