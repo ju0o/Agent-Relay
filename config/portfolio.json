@@ -1690,6 +1690,34 @@
             "node --test tests/*.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUCONTROLER-JUPLAN-STATUS-BOARD-SOURCE",
+          "scope": "Wire the existing read-only JuPlan project-status.v1 adapter into the status-board registry/loader for a local saved status JSON source, preserving registry order and fail-closed UNKNOWN behavior without writes or dispatch.",
+          "files": [
+            "src/project-registry.mjs",
+            "src/project-status.mjs",
+            "tests/project-registry.test.mjs",
+            "tests/status-board-cli.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs tests/status-board-cli.test.mjs tests/juplan-adapter.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: Integrate Agent Relay first, then JuPlan, then JuCeipt, each through project-status.v1 exports and read-only adapters."
+        },
+        {
+          "taskId": "JUCONTROLER-JUCEIPT-STATUS-BOARD-SOURCE",
+          "scope": "Wire the existing read-only JuCeipt receipt adapter into the status-board registry/loader for a local saved receipt JSON source, preserving receipt projection semantics and fail-closed UNKNOWN behavior without writes or dispatch.",
+          "files": [
+            "src/project-registry.mjs",
+            "src/project-status.mjs",
+            "tests/project-registry.test.mjs",
+            "tests/status-board-cli.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs tests/status-board-cli.test.mjs tests/juceipt-adapter.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: Integrate Agent Relay first, then JuPlan, then JuCeipt, each through project-status.v1 exports and read-only adapters."
         }
       ],
       "qaRuntime": [
