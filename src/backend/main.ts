@@ -418,18 +418,18 @@ function createWindow(): void {
     },
   });
 
-  // ── F12 / Ctrl+Shift+I → DevTools (even in production builds) ──
-  mainWindow.webContents.on('before-input-event', (_e, input) => {
-    if (
-      input.type === 'keyDown' &&
-      ((input.key === 'F12') ||
-        (input.control && input.shift && input.key === 'I'))
-    ) {
-      mainWindow?.webContents.openDevTools();
-    }
-  });
-
-  // DevTools는 F12 또는 Ctrl+Shift+I로 열 수 있습니다 (위에 등록됨)
+  // ── F12 / Ctrl+Shift+I → DevTools (development only) ──
+  if (!app.isPackaged) {
+    mainWindow.webContents.on('before-input-event', (_e, input) => {
+      if (
+        input.type === 'keyDown' &&
+        ((input.key === 'F12') ||
+          (input.control && input.shift && input.key === 'I'))
+      ) {
+        mainWindow?.webContents.openDevTools();
+      }
+    });
+  }
 
   // ── Detect page-load failure and show a diagnostic dialog ──
   const clientPath = path.join(__dirname, '..', '..', 'client', 'index.html');
