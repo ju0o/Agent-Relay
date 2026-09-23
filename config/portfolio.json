@@ -248,18 +248,6 @@
           "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23"
         },
         {
-          "taskId": "AGENTRELAY-V1-PROD-DEVTOOLS-GATE",
-          "scope": "Allow F12 and Ctrl+Shift+I DevTools only when the Electron app is not packaged.",
-          "files": [
-            "src/backend/main.ts"
-          ],
-          "tests": [
-            "npm run typecheck",
-            "npm run build"
-          ],
-          "ssotEvidence": "BACKLOG.md:26 \"DevTools가 production에서도 F12로 열림\""
-        },
-        {
           "taskId": "AGENTRELAY-V1-RESTORE-LAST-AGENT",
           "scope": "Persist and restore the last selected agent for the initial work tab without restoring unsaved prompt or result content.",
           "files": [
