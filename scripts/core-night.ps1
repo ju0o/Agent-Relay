@@ -25,16 +25,32 @@ function Read-Status($Output) {
 }
 
 $pidFile = "~/.local/share/AgentRelay/data/portfolio-execution/night-run.pid"
+$check = "python3 ~/.agents/skills/auto-night-orchestrator/scripts/night-check.py"
+
+function Get-Preflight {
+  $raw = (Invoke-Asus "$check preflight --json; echo PREFLIGHT_EXIT=`$?") -join "`n"
+  $line = ($raw -split "`n" | Where-Object { $_.TrimStart().StartsWith("{") } | Select-Object -Last 1)
+  if (-not $line) { throw "Refusing activation: preflight produced no result.`n$raw" }
+  return ($line | ConvertFrom-Json)
+}
 if ($DryRun) {
   # DryRun validates transport + status only: never launches, pulls, or shuts down.
   Write-Output "ASUS_SSH: $((Invoke-Asus 'printf MAINPC_TO_ASUS_OK') -join '')"
   Write-Output "NIGHT_RUN_PID: $((Invoke-Asus "cat $pidFile 2>/dev/null || echo none") -join '')"
-  Write-Output "STATUS: $((Invoke-Asus "$relay night-run status") -join "`n")"
+  $pre = Get-Preflight
+  Write-Output "PREFLIGHT: $(if ($pre.ok) { 'READY' } else { 'BLOCKED' })"
+  foreach ($b in $pre.blockers) { Write-Output "  ! $b" }
+  foreach ($i in $pre.info) { Write-Output "  - $i" }
   exit 0
 }
 # Remember the previous night's runId: LAST_NIGHT_RUN.json still holds it until the new run writes RUNNING,
 # and a stale "complete" record must never trigger a pull + shutdown.
 $previous = Read-Status (Invoke-Asus "$relay night-run status")
+# A new run starts only when preflight is READY; otherwise an empty WBS would finish and power both machines off within a minute.
+if ((((Invoke-Asus "kill -0 `$(cat $pidFile 2>/dev/null) 2>/dev/null && echo ACTIVE || echo IDLE") -join "") -match "IDLE")) {
+  $pre = Get-Preflight
+  if (-not $pre.ok) { throw "Refusing activation: preflight BLOCKED`n$(($pre.blockers | ForEach-Object { "  ! $_" }) -join "`n")" }
+}
 $launch = Invoke-Asus "if kill -0 `$(cat $pidFile 2>/dev/null) 2>/dev/null; then echo NIGHT_RUN_ATTACHED; else nohup $relay night-run up --deadline $Deadline --mainpc-pull >> ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED; fi"
 if (-not (($launch -join "`n") -match "NIGHT_RUN_(STARTED|ATTACHED)")) { throw "Refusing activation: detached Night Run was not acknowledged." }
 $staleRunId = if ((($launch -join "`n") -match "NIGHT_RUN_STARTED") -and $null -ne $previous) { [string]$previous.runId } else { $null }
