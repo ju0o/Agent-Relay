@@ -9,6 +9,7 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
+import { Approvals } from './approvals.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
@@ -155,30 +156,8 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { err: stri
 }
 
 // ── 시작 화면 패널 (Automated Tester `--view=` 지원용, App.tsx 내장) ──────────
-// Founder 승인 내역: 기존 controlRoom:approvals 읽기 전용 조회 결과를 그대로 보여준다.
-function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElement {
-  const [items, setItems] = useState<unknown>(null);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    let alive = true;
-    void must<unknown>({ op: 'controlRoom:approvals' }).then(next => {
-      if (alive) setItems(next);
-    }).catch(e => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
-    return () => { alive = false; };
-  }, []);
-  const list = Array.isArray(items) ? items : items == null ? [] : [items];
-  return (
-    <main className="control-room">
-      <div className="control-room-head"><div><h1>Founder 승인 내역</h1><p className="muted">읽기 전용 · controlRoom:approvals</p></div><button className="btn" onClick={onClose}>닫기</button></div>
-      {error && <div className="flash err">{error}</div>}
-      {items === null && !error ? <div className="control-empty">불러오는 중...</div>
-        : list.length === 0 ? <div className="control-empty">표시할 승인 내역이 없습니다.</div>
-        : <div className="control-cards">{list.map((item, i) => (
-          <article className="control-card" key={i}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</p></article>
-        ))}</div>}
-    </main>
-  );
-}
+// Founder 승인 내역: 별도 approvals.tsx 뷰가 controlRoom:approvals를
+// 카테고리별 그룹으로 보여준다 (neverAuto = 항상 질문).
 
 // Plan Studio: 아직 전용 백엔드가 없어 시작 화면 진입용 읽기 전용 안내 패널만 제공한다.
 function PlanStudioPanel({ onClose }: { onClose: () => void }): React.ReactElement {
@@ -1187,7 +1166,7 @@ function AppInner(): React.ReactElement {
           {controlRoomMode ? (
             <ControlRoom onClose={() => setControlRoomMode(false)} />
           ) : approvalsMode ? (
-            <ApprovalsPanel onClose={() => setApprovalsMode(false)} />
+            <Approvals onClose={() => setApprovalsMode(false)} />
           ) : planStudioMode ? (
             <PlanStudioPanel onClose={() => setPlanStudioMode(false)} />
           ) : dfMode ? (

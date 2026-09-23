@@ -109,6 +109,8 @@ export type RelayRequest =
  | { op: 'update:install' }
   | { op: 'controlRoom:board' }
   | { op: 'controlRoom:approvals' }
+  | { op: 'controlRoom:approvalEdit'; id: string; summary: string }
+  | { op: 'controlRoom:approvalRemove'; id: string }
   | { op: 'app:startView' };
 
 /** Standard successful response envelope. */
@@ -291,6 +293,54 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
     default:
       return s;
   }
+}
+
+// ── Founder approvals ledger (controlRoom:approvals `night approvals list --json`) ──
+
+/** One Founder approval rule from the ledger. */
+export interface ApprovalRule {
+  id: string;
+  category: string;
+  scope: string;
+  summary: string;
+  approvedAt?: string;
+  editedAt?: string;
+  source?: string;
+  usedCount?: number;
+  lastUsedAt?: string;
+  [key: string]: unknown;
+}
+
+/** Approvals payload — rules grouped by category; neverAuto categories are always-ask. */
+export interface ApprovalsData {
+  kind?: string;
+  ok?: boolean;
+  categories: Record<string, string>;
+  neverAuto: string[];
+  rules: ApprovalRule[];
+}
+
+/** Group approval rules under their category; unknown categories are appended. */
+export function groupApprovalRules(data: ApprovalsData): { category: string; label: string; alwaysAsk: boolean; rules: ApprovalRule[] }[] {
+  const groups = Object.entries(data.categories ?? {}).map(([category, label]) => ({
+    category,
+    label,
+    alwaysAsk: (data.neverAuto ?? []).includes(category),
+    rules: (data.rules ?? []).filter((r) => r.category === category),
+  }));
+  const known = new Set(groups.map((g) => g.category));
+  for (const rule of data.rules ?? []) {
+    if (!known.has(rule.category)) {
+      known.add(rule.category);
+      groups.push({
+        category: rule.category,
+        label: rule.category,
+        alwaysAsk: (data.neverAuto ?? []).includes(rule.category),
+        rules: (data.rules ?? []).filter((r) => r.category === rule.category),
+      });
+    }
+  }
+  return groups;
 }
 
 // ── Drag reorder helpers ────────────────────────────────────────────────────
