@@ -356,6 +356,32 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-CORE-V1-CORRUPT-STATE-FAIL-CLOSED",
+          "scope": "Make corrupt portfolio state fail closed with explicit machine-readable blocked evidence instead of silently resetting to an empty state.",
+          "files": [
+            "src/v2/portfolio-runner/index.mjs",
+            "test/v2/portfolio-runner.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/portfolio-runner.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-CORE-V1-NIGHT-STATUS-EVIDENCE",
+          "scope": "Make night-run status distinguish a missing checkpoint from a corrupt checkpoint while preserving the existing fail-closed completion gate.",
+          "files": [
+            "src/v2/night-run/index.mjs",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
