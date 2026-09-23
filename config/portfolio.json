@@ -221,14 +221,14 @@
       "active": true,
       "pmChannel": "pm/actl",
       "pmTransport": "codex-chatgpt-web",
-      "pmState": "NOT_CONNECTED",
+      "pmState": "NIGHT_PLAN_PM",
       "path": "/home/skkse12/Desktop/Projects/Core/actl-v0.1.1-managed",
       "repository": "https://github.com/ju0o/JuActl",
       "ref": "feat/v2-founder-ux-closeout-dogfood-06",
       "expectedHeadSha": "5ffaeb4d2be97521421256378786fe08eab5da9d",
       "ssot": "external:ju0o/JuActl-private",
-      "owner": "cursor",
-      "runtime": "cursor",
+      "owner": "codex",
+      "runtime": "codex",
       "state": "FOUNDER_GATE",
       "founderRequired": true,
       "founderGate": {
@@ -259,11 +259,11 @@
       "active": true,
       "pmChannel": "pm/juplan",
       "pmTransport": "codex-chatgpt-web",
-      "pmState": "NOT_CONNECTED",
+      "pmState": "NIGHT_PLAN_PM",
       "path": "/home/skkse12/Desktop/Projects/Team/JuPlan",
       "ssot": "/home/skkse12/Desktop/Projects/Team/JuPlan-Private/CONTROL_TOWER.md",
-      "owner": "claude-team",
-      "runtime": "claude-team",
+      "owner": "codex",
+      "runtime": "codex",
       "state": "HOLD",
       "blockers": [
         "CORE V1 integration phase is authorized in JuPlan-Private; PM transport is not connected, so the lane is held without inventing a Product task"
@@ -289,18 +289,20 @@
     },
     {
       "id": "jucontroler",
-      "coreV1": false,
-      "active": false,
+      "coreV1": true,
+      "active": true,
       "pmChannel": null,
       "path": "/home/skkse12/Desktop/Projects/Core/JuControler",
       "ssot": "/home/skkse12/Desktop/Projects/Core/JuControler-Private",
-      "owner": "claude-team",
-      "runtime": "claude-team",
+      "owner": "codex",
+      "runtime": "codex",
       "state": "FOUNDER_ACCEPTANCE",
       "blockers": [
         "INTEGRATION_TARGET",
         "Founder acceptance and D-08 visual decision required"
-      ]
+      ],
+      "pmTransport": "codex-chatgpt-web",
+      "pmState": "NIGHT_PLAN_PM"
     }
   ]
 }
