@@ -681,6 +681,41 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-24"
+        },
+        {
+          "taskId": "AGENTRELAY-FIRST-RUN-GUIDE",
+          "scope": "첫 실행 화면에 데이터 폴더 용도를 한 문장으로 설명하고 Documents/Agent Relay 기본 폴더 사용 버튼과 기존 직접 선택 버튼을 제공한다.",
+          "files": [
+            "src/frontend/App.tsx",
+            "src/backend/main.ts",
+            "src/shared/types.ts"
+          ],
+          "tests": [
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-CONTROLROOM-KO",
+          "scope": "Control Room에서 lane id 대신 한국어 프로젝트 표시명과 한 줄 목표 요약을 보여주고 원문 보기 disclosure 및 HOLD 카드의 한국어 요약과 접힌 raw QA finding을 추가한다.",
+          "files": [
+            "src/frontend/controlRoom.tsx"
+          ],
+          "tests": [
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-PLANSTUDIO-KO",
+          "scope": "Plan Studio에서 lane id 대신 한국어 프로젝트 표시명과 한 줄 한국어 목표 요약을 보여주고 전체 원문을 원문 보기 disclosure 뒤에 둔다.",
+          "files": [
+            "src/frontend/planStudio.tsx"
+          ],
+          "tests": [
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
@@ -1441,6 +1476,20 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-FOUNDER-PORTFOLIO-DOGFOOD",
+          "scope": "Add the founder-portfolio offline dogfood example for actl, Agent Relay, JuControler, JuPlan, and JuCeipt with a committed project-status export and deterministic regeneration regression test, preserving V1 semantics.",
+          "files": [
+            "examples/founder-portfolio/README.md",
+            "examples/founder-portfolio/.juplan/exports/project-status.v1.json",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
@@ -1557,6 +1606,18 @@
             "npm test"
           ],
           "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:214 \"Capture health UX | ❌\""
+        },
+        {
+          "taskId": "JUCEIPT-M3-KOREAN-DAILY-SUMMARY",
+          "scope": "DailyReport를 근거로 acceptance 상태·검토 필요 작업·전달 결과·비용 불확실성을 과장 없이 Founder가 읽을 수 있는 평문 한국어 요약으로 변환하고 unknown 상태를 유지한다.",
+          "files": [
+            "src/daily/index.ts",
+            "tests/daily.test.ts"
+          ],
+          "tests": [
+            "npm test"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ]
     },
