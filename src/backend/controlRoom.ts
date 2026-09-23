@@ -15,7 +15,10 @@ export type ControlRoomOperation =
   | 'planStudio:chat'
   | 'planStudio:approve'
   | 'gates:list'
-  | 'gates:answer';
+  | 'gates:answer'
+  | 'controlRoom:laneSet'
+  | 'controlRoom:resume'
+  | 'controlRoom:approvalAdd';
 export type PlanStudioAction = 'get' | 'save' | 'chat' | 'approve';
 export type GateAction = 'list' | 'answer';
 export type ControlRoomErrorCode = 'EXEC_FAILED' | 'INVALID_JSON' | 'INVALID_INPUT';
@@ -28,6 +31,21 @@ export type ControlRoomExec = (
 
 export const PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{1,40}$/;
 export const GATE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const APPROVAL_CATEGORY_PATTERN = /^[a-z-]{2,30}$/;
+export const MAX_APPROVAL_SUMMARY_LENGTH = 200;
+export const LANE_ROLES = ['worker', 'qa'] as const;
+export type LaneRole = (typeof LANE_ROLES)[number];
+export const NIGHT_RUNTIMES = [
+  'codex',
+  'opencode',
+  'cline',
+  'grok',
+  'cursor',
+  'claude',
+  'claude-team',
+  'claude-pro',
+] as const;
+export type NightRuntime = (typeof NIGHT_RUNTIMES)[number];
 
 export function isValidProjectId(project: unknown): project is string {
   return typeof project === 'string' && PROJECT_ID_PATTERN.test(project);
@@ -43,6 +61,40 @@ export function isValidOptionIndex(optionIndex: unknown): optionIndex is number 
     Number.isInteger(optionIndex) &&
     optionIndex >= 0 &&
     optionIndex <= MAX_OPTION_INDEX
+  );
+}
+
+/**
+ * POSIX single-quote one remote argument. ssh joins remote arguments into a
+ * remote shell command line, so every variable remote argument goes through
+ * this single helper: wrap in ' and escape embedded ' as '\''.
+ */
+export function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function isValidLaneRole(role: unknown): role is LaneRole {
+  return typeof role === 'string' && (LANE_ROLES as readonly string[]).includes(role);
+}
+
+export function isValidRuntimes(runtimes: unknown): runtimes is string[] {
+  if (!Array.isArray(runtimes) || runtimes.length < 1 || runtimes.length > 4) return false;
+  const allowed = new Set<string>(NIGHT_RUNTIMES as readonly string[]);
+  const seen = new Set<string>();
+  for (const runtime of runtimes) {
+    if (typeof runtime !== 'string' || !allowed.has(runtime) || seen.has(runtime)) return false;
+    seen.add(runtime);
+  }
+  return true;
+}
+
+export function isValidApprovalCategory(category: unknown): category is string {
+  return typeof category === 'string' && APPROVAL_CATEGORY_PATTERN.test(category);
+}
+
+export function isValidApprovalSummary(summary: unknown): summary is string {
+  return (
+    typeof summary === 'string' && summary.length >= 1 && summary.length <= MAX_APPROVAL_SUMMARY_LENGTH
   );
 }
 
@@ -83,6 +135,30 @@ function assertOptionIndex(operation: ControlRoomOperation, optionIndex: unknown
 function assertPayloadString(operation: ControlRoomOperation, name: string, value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) {
     throw invalidInput(operation, `Invalid ${name}: expected a non-empty string`);
+  }
+}
+
+function assertLaneRole(operation: ControlRoomOperation, role: unknown): asserts role is LaneRole {
+  if (!isValidLaneRole(role)) {
+    throw invalidInput(operation, `Invalid role: ${String(role)}`);
+  }
+}
+
+function assertRuntimes(operation: ControlRoomOperation, runtimes: unknown): asserts runtimes is string[] {
+  if (!isValidRuntimes(runtimes)) {
+    throw invalidInput(operation, `Invalid runtimes: ${String(runtimes)}`);
+  }
+}
+
+function assertApprovalCategory(operation: ControlRoomOperation, category: unknown): asserts category is string {
+  if (!isValidApprovalCategory(category)) {
+    throw invalidInput(operation, `Invalid category: ${String(category)}`);
+  }
+}
+
+function assertApprovalSummary(operation: ControlRoomOperation, summary: unknown): asserts summary is string {
+  if (!isValidApprovalSummary(summary)) {
+    throw invalidInput(operation, `Invalid summary: expected 1-${MAX_APPROVAL_SUMMARY_LENGTH} chars`);
   }
 }
 
@@ -196,3 +272,61 @@ export async function runGateAnswer(
     execFileImpl,
   );
 }
+
+export async function runControlRoomLaneSet(
+  project: string,
+  role: string,
+  runtimes: string[],
+  execFileImpl: ControlRoomExec = execFile,
+): Promise<unknown> {
+  const operation: ControlRoomOperation = 'controlRoom:laneSet';
+  assertProjectId(operation, project);
+  assertLaneRole(operation, role);
+  assertRuntimes(operation, runtimes);
+  return runSshJson(
+    operation,
+    [
+      ...SSH_BASE_ARGS,
+      'lane',
+      'set',
+      shQuote(project),
+      shQuote(role),
+      shQuote(runtimes.join(',')),
+      '--json',
+    ],
+    execFileImpl,
+  );
+}
+
+export async function runControlRoomResume(
+  project: string,
+  execFileImpl: ControlRoomExec = execFile,
+): Promise<unknown> {
+  const operation: ControlRoomOperation = 'controlRoom:resume';
+  assertProjectId(operation, project);
+  return runSshJson(
+    operation,
+    [...SSH_BASE_ARGS, 'roadmap', 'resume', shQuote(project), '--json'],
+    execFileImpl,
+  );
+}
+
+export async function runControlRoomApprovalAdd(
+  category: string,
+  summary: string,
+  execFileImpl: ControlRoomExec = execFile,
+): Promise<unknown> {
+  const operation: ControlRoomOperation = 'controlRoom:approvalAdd';
+  assertApprovalCategory(operation, category);
+  assertApprovalSummary(operation, summary);
+  return runSshJson(
+    operation,
+    [...SSH_BASE_ARGS, 'approvals', 'add', shQuote(category), shQuote(summary), '--source', 'app'],
+    execFileImpl,
+  );
+}
+
+// Aliases for relay wiring flexibility.
+export const runLaneSet = runControlRoomLaneSet;
+export const runRoadmapResume = runControlRoomResume;
+export const runApprovalAdd = runControlRoomApprovalAdd;

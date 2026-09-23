@@ -115,6 +115,9 @@ export type RelayRequest =
   | { op: 'planStudio:approve'; project: string }
   | { op: 'gates:list' }
   | { op: 'gates:answer'; gateId: string; optionIndex: number }
+  | { op: 'controlRoom:laneSet'; project: string; role: string; runtimes: string[] }
+  | { op: 'controlRoom:resume'; project: string }
+  | { op: 'controlRoom:approvalAdd'; category: string; summary: string }
   | { op: 'app:startView' };
 
 /** Standard successful response envelope. */
