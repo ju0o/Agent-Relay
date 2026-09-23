@@ -29,7 +29,7 @@ export async function runControlRoom(
   execFileImpl: ControlRoomExec = execFile,
 ): Promise<unknown> {
   const args = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', 'asus', NIGHT_SCRIPT];
-  args.push(operation === 'board' ? 'board' : 'approvals', '--json');
+  args.push(...(operation === 'board' ? ['board', '--json'] : ['approvals', 'list', '--json']));
 
   let stdout: string;
   try {

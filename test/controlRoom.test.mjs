@@ -16,13 +16,16 @@ test("board uses the fixed ssh command and parses JSON", async () => {
 });
 
 test("approvals uses the fixed ssh command", async () => {
-  let args;
-  await runControlRoom("approvals", async (_file, receivedArgs) => {
-    args = receivedArgs;
+  let call;
+  const value = await runControlRoom("approvals", async (...args) => {
+    call = args;
     return { stdout: "[]", stderr: "" };
   });
 
-  assert.deepEqual(args.slice(-2), ["approvals", "--json"]);
+  assert.deepEqual(value, []);
+  assert.equal(call[0], "ssh");
+  assert.deepEqual(call[1], ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "asus", "~/.agents/skills/auto-night-orchestrator/scripts/night", "approvals", "list", "--json"]);
+  assert.deepEqual(call[2], { shell: false, timeout: 10_000 });
 });
 
 test("command failures and invalid JSON are typed", async () => {
