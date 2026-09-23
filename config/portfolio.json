@@ -815,6 +815,44 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-SCANNER-MALFORMED-DEPS",
+          "scope": "Ignore malformed non-object or array dependency fields without emitting bogus dependency nodes, with offline regression coverage.",
+          "files": [
+            "packages/project-scanner/src/scan.ts",
+            "packages/project-scanner/test/scan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/project-scanner test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-PLANCORE-VALIDATOR-COVERAGE",
+          "scope": "Add offline regression coverage for duplicate IDs, dangling edge endpoints, and frozen/lifecycle approval blockers in the existing validator contract.",
+          "files": [
+            "packages/plan-core/test/plan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/plan-core test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-RUNTIME-HTTP-ERRORS",
+          "scope": "Return distinct 400, 404, and 500 responses for malformed URLs, missing export files, and unexpected Studio failures, with offline HTTP regression coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
