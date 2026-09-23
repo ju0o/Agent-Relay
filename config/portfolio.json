@@ -474,6 +474,54 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23: \"harden it as the automation core that runs every project's PM → Worker → QA → promotion loop unattended\""
+        },
+        {
+          "taskId": "AGENTRELAY-CR-01-BOARD-BACKEND",
+          "scope": "Founder-approved Control Room (canvas 2026-09-23): add src/backend/controlRoom.ts with relay IPC ops controlRoom:board and controlRoom:approvals that run `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night board --json` and `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night approvals list --json` via child_process.execFile (no shell, injectable exec, 10s timeout) and return the parsed JSON or a typed error; wire them into the existing handleRequest/RelayRequest union in src/backend/main.ts and src/shared/types.ts; tests use a fake exec only and never run ssh",
+          "files": [
+            "src/backend/controlRoom.ts",
+            "src/backend/main.ts",
+            "src/shared/types.ts",
+            "test/controlRoom.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/controlRoom.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (chat: 이런 방식 맞음 — Control Room canvas); approval rule A-01"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-02-CONTROL-ROOM-VIEW",
+          "scope": "Founder-approved Control Room: add a Control Room view (src/frontend/controlRoom.tsx, reachable from the existing topbar) that polls controlRoom:board every 5s and renders each lane as a tab plus a live 7-step flow row (PM, 검증, WORKER, QA, GATE, HUMAN, 통합) with done/active/blocked states from lane.current.stage, the worker/QA chain, holds and human-gate cards, matching the canvas prototype; no write actions yet",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/frontend/App.tsx",
+            "src/frontend/style.css"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (Control Room canvas, Main artboard); approval rule A-01"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-03-APPROVALS-VIEW",
+          "scope": "Founder-approved Control Room: add a 'Founder 승인 내역' view (src/frontend/approvals.tsx) listing controlRoom:approvals rules grouped by category with the neverAuto categories shown as always-ask; add backend ops controlRoom:approvalEdit and controlRoom:approvalRemove that run `night approvals edit|remove <id>` over the same ssh path with the rule id validated as /^A-\\d{2,3}$/ before spawning; tests use a fake exec only",
+          "files": [
+            "src/frontend/approvals.tsx",
+            "src/frontend/App.tsx",
+            "src/backend/controlRoom.ts",
+            "src/shared/types.ts",
+            "test/controlRoom.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/controlRoom.test.mjs",
+            "npm run typecheck",
+            "npm run build:client"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (chat: 승인 내역 삭제 수정 및 승인 구조); approval rule A-01"
         }
       ],
       "qaRuntime": [
