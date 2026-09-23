@@ -9,6 +9,8 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
+import { approvalStatsLine, groupRulesByCategory } from './approvals.js';
+import type { ApprovalRuleJson } from '../shared/types.js';
 import { PlanStudio } from './planStudio.js';
 import { renderMd } from './md.js';
 import {
@@ -168,15 +170,67 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
     return () => { alive = false; };
   }, []);
   const list = Array.isArray(items) ? items : items == null ? [] : [items];
+  // Approval rules carry optional usedCount/lastUsedAt — normalize to rule
+  // objects, group by category and sort each group by usedCount (desc).
+  const ruleEntries = list.filter(
+    (item): item is ApprovalRuleJson => !!item && typeof item === 'object' && !Array.isArray(item),
+  );
+  const otherEntries = list.filter(
+    item => typeof item === 'string' || Array.isArray(item) || (item !== null && typeof item !== 'object'),
+  );
+  // Also unwrap { rules | items | list } envelope shapes into rule entries.
+  const unwrapped: ApprovalRuleJson[] = [];
+  for (const item of list) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const record = item as Record<string, unknown>;
+      for (const key of ['rules', 'items', 'list']) {
+        const nested = record[key];
+        if (Array.isArray(nested)) {
+          for (const entry of nested) {
+            if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+              unwrapped.push(entry as ApprovalRuleJson);
+            }
+          }
+        }
+      }
+    }
+  }
+  const hasNestedRules = (rule: ApprovalRuleJson): boolean => {
+    const record = rule as Record<string, unknown>;
+    return ['rules', 'items', 'list'].some(key => {
+      const nested = record[key];
+      return Array.isArray(nested) && nested.some(entry => entry && typeof entry === 'object' && !Array.isArray(entry));
+    });
+  };
+  const directRules = ruleEntries.filter(rule => !hasNestedRules(rule));
+  const groups = groupRulesByCategory([...directRules, ...unwrapped]);
+  const ruleLabel = (rule: ApprovalRuleJson): string => {
+    const record = rule as Record<string, unknown>;
+    const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
+    return typeof raw === 'string' && raw.trim() ? raw : JSON.stringify(rule);
+  };
   return (
     <main className="control-room">
       <div className="control-room-head"><div><h1>Founder 승인 내역</h1><p className="muted">읽기 전용 · controlRoom:approvals</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       {error && <div className="flash err">{error}</div>}
       {items === null && !error ? <div className="control-empty">불러오는 중...</div>
         : list.length === 0 ? <div className="control-empty">표시할 승인 내역이 없습니다.</div>
-        : <div className="control-cards">{list.map((item, i) => (
-          <article className="control-card" key={i}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</p></article>
-        ))}</div>}
+        : <>
+          {groups.map(group => (
+            <section className="approval-group" key={group.category} aria-label={`승인 규칙 ${group.category}`}>
+              <h3 className="approval-category">{group.category}</h3>
+              <div className="control-cards">{group.rules.map((rule, i) => (
+                <article className="control-card" key={i}>
+                  <p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{ruleLabel(rule)}</p>
+                  <p className="muted approval-stats">{approvalStatsLine(rule)}</p>
+                </article>
+              ))}</div>
+            </section>
+          ))}
+          {otherEntries.length > 0 && <div className="control-cards">{otherEntries.map((item, i) => (
+            <article className="control-card" key={`other-${i}`}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</p></article>
+          ))}</div>}
+        </>}
     </main>
   );
 }

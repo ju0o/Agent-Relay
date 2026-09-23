@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { must } from './bridge.js';
+import { ModelUsagePanel } from './approvals.js';
+import type { ControlRoomModelUsage } from '../shared/types.js';
 
 export interface ControlRoomLane {
   id?: string;
@@ -14,7 +16,10 @@ export interface ControlRoomLane {
   [key: string]: unknown;
 }
 
-interface ControlRoomBoard { lanes?: ControlRoomLane[] }
+interface ControlRoomBoard {
+  lanes?: ControlRoomLane[];
+  models?: Record<string, ControlRoomModelUsage>;
+}
 type FlowState = 'done' | 'active' | 'blocked' | 'pending';
 type ActionStatus = { state: 'pending' | 'done' | 'error'; text: string } | null;
 
@@ -374,7 +379,10 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
   const load = useCallback(async (): Promise<void> => {
     try {
       const next = await must<ControlRoomBoard>({ op: 'controlRoom:board' });
-      setBoard({ lanes: Array.isArray(next?.lanes) ? next.lanes : [] });
+      setBoard({
+        lanes: Array.isArray(next?.lanes) ? next.lanes : [],
+        models: next?.models && typeof next.models === 'object' ? next.models : undefined,
+      });
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -397,6 +405,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
     <main className="control-room">
       <div className="control-room-head"><div><h1>Control Room</h1><p className="muted">5초마다 board를 읽습니다 · 액션 실행 후 다시 읽습니다</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       {error && <div className="flash err">{error}</div>}
+      <ModelUsagePanel models={board.models} />
       {!lanes.length ? <div className="control-empty">표시할 lane이 없습니다.</div> : <>
         <div className="control-tabs" role="tablist">{lanes.map((lane, index) => <button className={`control-tab${index === selected ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelected(index)} role="tab">{label(lane.project ?? lane.id, `Lane ${index + 1}`)}</button>)}</div>
         {activeLane && <LaneView lane={activeLane} onRefresh={load} />}

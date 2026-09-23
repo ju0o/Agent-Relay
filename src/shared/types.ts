@@ -302,6 +302,36 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
   }
 }
 
+// ── Control Room board + approval learning (CR-08) ──────────────────────────
+//
+// board JSON now carries `models: { runtimeId: { runs, quota?, failed? } }`
+// and approval rules carry `usedCount` / `lastUsedAt`.
+// All new fields are optional — missing values render as 0 / '-'.
+
+/** Per-runtime model quota usage carried by the board JSON. */
+export interface ControlRoomModelUsage {
+  runs: number;
+  quota?: number;
+  failed?: number;
+}
+
+/** Board JSON shape (lanes + optional per-runtime model usage). */
+export interface ControlRoomBoardJson {
+  lanes?: unknown[];
+  models?: Record<string, ControlRoomModelUsage>;
+}
+
+/** An approval rule with optional auto-approval learning stats. */
+export interface ApprovalRuleJson {
+  category?: string;
+  summary?: string;
+  /** How often this rule auto-approved. Missing = 0. */
+  usedCount?: number;
+  /** Last auto-approval timestamp (any parseable date string). Missing = '-'. */
+  lastUsedAt?: string;
+  [key: string]: unknown;
+}
+
 // ── Drag reorder helpers ────────────────────────────────────────────────────
 
 /** Return a new array with the element at `from` moved to index `to`. */

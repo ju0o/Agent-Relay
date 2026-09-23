@@ -1035,6 +1035,18 @@ html, body, #app {
 .gate-fieldset legend { font-weight: 700; padding: 0 6px; }
 .gate-id { font-size: 11px; }
 .save-rule { display: flex; align-items: center; gap: 8px; padding: 8px 0; cursor: pointer; font-size: 12px; }
+/* ── CR-08 model quota board + approval learning ───────────── */
+.model-usage { margin-bottom: 20px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 9px; }
+.model-usage h3 { margin: 0 0 10px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.model-usage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.model-usage-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
+.model-usage-id { font-weight: 700; }
+.model-usage-nums { color: var(--muted); font-variant-numeric: tabular-nums; }
+.model-usage-row.quota-hit { border-color: var(--warn); background: rgba(255,159,10,0.08); }
+.model-usage-row.quota-hit .model-usage-nums { color: var(--warn); font-weight: 700; }
+.approval-group { margin-bottom: 18px; }
+.approval-category { margin: 0 0 8px; font-size: 13px; color: var(--accent); }
+.approval-stats { font-size: 11px; }
 /* ── Plan Studio ─────────────────────────────────────────── */
 .plan-studio-grid { display: grid; grid-template-columns: 220px 1fr 320px; gap: 12px; align-items: start; }
 .plan-projects .plan-project-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
