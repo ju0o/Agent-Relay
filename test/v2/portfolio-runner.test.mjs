@@ -290,6 +290,13 @@ test("runLoop drain: in-flight work finishes, nothing new starts, the loop exits
   assert.equal(runner.draining(), false);
 });
 
+test("every Worker and QA prompt carries the Founder plan harness", async () => {
+  const { builderPrompt, qaPrompt, FOUNDER_PLAN_HARNESS } = await import("../../src/v2/portfolio-runner/index.mjs");
+  const task = { taskId: "H-1", projectId: "p", scope: "x", files: [], tests: [] };
+  assert.ok(builderPrompt(task).startsWith(FOUNDER_PLAN_HARNESS)); assert.ok(qaPrompt(task, "abc").startsWith(FOUNDER_PLAN_HARNESS));
+  assert.match(qaPrompt(task, "abc"), /FOUNDER_GATE only for money/);
+});
+
 test("runtime chains: a provider outage (503 overloaded) falls through like a quota hit; a prompt error does not", () => {
   assert.ok(TRANSIENT_ERROR.test('opencode exit 1: Error: {"message":"Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded","type":"server_error"}'));
   assert.ok(!TRANSIENT_ERROR.test("opencode exit 1: syntax error in prompt"));
