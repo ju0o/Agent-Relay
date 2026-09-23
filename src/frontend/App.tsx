@@ -1345,6 +1345,12 @@ function AppInner(): React.ReactElement {
                             draggable={false}
                             title="이 버튼을 누른 채 ChatGPT 입력창으로 끌어다 놓으세요 (result.md 첨부)"
                             onMouseDown={e => { e.preventDefault(); dragResultToGpt(activeTab); }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                void revealResult(activeTab);
+                              }
+                            }}
                           >📤 GPT로 드래그</button>
                         )}
                         {activeTab.resultSaved && activeTab.folder && (
