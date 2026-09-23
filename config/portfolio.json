@@ -1757,6 +1757,34 @@
             "node --test test/approvals-module.test.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JCAPP-RELAY-MODEL-CHAIN-ACTION",
+          "scope": "Add the UniRelay model-chain reorder control using the existing night lane-set command, with server-side whitelist validation, confirmation sentence, and no free-form shell while preserving current relay views and APIs.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/index.html",
+            "operator/server.mjs",
+            "test/agent-relay-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/agent-relay-module.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay model chain reorder (night lane set), each validated server-side, with a confirmation sentence and no free-form shell."
+        },
+        {
+          "taskId": "JCAPP-HUMAN-GATE-RESUME-ACTIONS",
+          "scope": "Add UniHome/UniApprovals multiple-choice Human Gate answers and lane resume controls through the existing night gate-answer and night roadmap-resume commands, with server-side validation, confirmation sentences, no free-form shell, and all existing screens and APIs preserved.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/index.html",
+            "operator/server.mjs",
+            "test/control-tower.test.mjs"
+          ],
+          "tests": [
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: Human Gate multiple-choice answers (night gate answer), lane resume (night roadmap resume), each validated server-side, with a confirmation sentence and no free-form shell."
         }
       ]
     },
