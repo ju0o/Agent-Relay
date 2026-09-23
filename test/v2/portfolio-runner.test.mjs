@@ -228,3 +228,13 @@ test("a HOLD task does not block its lane: reconcile queues the next definition"
   assert.equal(state.tasks.find((t) => t.taskId === "L-1").state, "HOLD");
   assert.equal(state.tasks.find((t) => t.taskId === "L-2")?.state, "QUEUED");
 });
+
+test("a HOLD task is reported but does not block the lane's next definition", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-hold-"));
+  const statePath = join(root, "state.json");
+  await writeFile(statePath, JSON.stringify({ schema: "agent-relay.portfolio-state.v1", tasks: [{ taskId: "L-1", projectId: "l", state: "HOLD", attempts: 3 }], activeBuilders: [], activeQa: [], events: [] }));
+  const runner = new PortfolioRunner({ testGate: passGate, manifest: { projects: [{ id: "l", owner: "codex", runtime: "codex", tasks: [{ taskId: "L-1", scope: "a", files: [], tests: [] }, { taskId: "L-2", scope: "b", files: [], tests: [] }] }] }, statePath, worktreeRoot: join(root, "w") });
+  const state = await runner.reconcile();
+  assert.equal(state.tasks.find((t) => t.taskId === "L-1").state, "HOLD");
+  assert.equal(state.tasks.find((t) => t.taskId === "L-2")?.state, "QUEUED");
+});
