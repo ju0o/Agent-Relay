@@ -109,7 +109,8 @@ test("report transport verifies the destination hash and shutdown uses the exact
   const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-")); const report = join(dir, "NIGHT_REPORT.md"); await import("node:fs/promises").then(({ writeFile }) => writeFile(report, "report\n"));
   const crypto = await import("node:crypto"); const sha = crypto.createHash("sha256").update("report\n").digest("hex");
   const sent = await sendReportToMainPc({ reportPath: report, target: "mainpc", scriptPath: "send", execFileImpl: async () => ({ stdout: `SENT: C:/Desktop/NIGHT_REPORT.md\nSHA256: ${sha}\n`, stderr: "" }) }); assert.equal(sent.state, "DELIVERED");
-  let args; await requestMainPcShutdown({ target: "mainpc", execFileImpl: async (_command, received) => { args = received; return { stdout: "", stderr: "" }; } }); assert.deepEqual(args, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "mainpc", "shutdown.exe /s /t 30"]);
+  let args; await requestMainPcShutdown({ target: "mainpc", identity: null, execFileImpl: async (_command, received) => { args = received; return { stdout: "", stderr: "" }; } }); assert.deepEqual(args, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "mainpc", "shutdown.exe /s /t 30"]);
+  await requestMainPcShutdown({ target: "User@h", identity: "/k", execFileImpl: async (_command, received) => { args = received; return { stdout: "", stderr: "" }; } }); assert.deepEqual(args, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-i", "/k", "-o", "IdentitiesOnly=yes", "User@h", "shutdown.exe /s /t 30"]);
 });
 
 test("MainPC-pull finalization writes local report without reverse transport", async () => {
@@ -124,7 +125,7 @@ test("MainPC wrapper pulls from ASUS and fails closed before destructive command
   assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--mainpc-pull/); assert.match(wrapper, /scp @transportArgs/);
   assert.match(wrapper, /sha256sum/); assert.match(wrapper, /Get-FileHash/); assert.match(wrapper, /shutdown\.exe \/s \/t 30/); assert.match(wrapper, /sudo -n \/usr\/sbin\/poweroff/); assert.match(wrapper, /shutdown\.exe \/a/);
   assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/); assert.match(wrapper, /DEADLINE_FORCED_CHECKPOINT/); assert.doesNotMatch(wrapper, /shutdown"/);
-  assert.ok(wrapper.indexOf("exit 0") < wrapper.indexOf("nohup $relay"), "DryRun must exit before launching a Night Run"); assert.match(wrapper, /NIGHT_RUN_ATTACHED/); assert.match(wrapper, /\$staleRunId/); assert.match(wrapper, /preflight --json/); assert.ok(wrapper.indexOf("Refusing activation: preflight BLOCKED") < wrapper.indexOf("nohup $relay"), "preflight gate must precede launch"); assert.match(wrapper, /shutdownState -eq "READY_FOR_MAINPC_PULL"\) \{ break \}/); assert.ok(wrapper.indexOf("$previous = Read-Status") < wrapper.indexOf("nohup $relay"), "previous runId must be read before launch");
+  assert.ok(wrapper.indexOf("exit 0") < wrapper.indexOf("nohup $relay"), "DryRun must exit before launching a Night Run"); assert.match(wrapper, /NIGHT_RUN_ATTACHED/); assert.match(wrapper, /\$staleRunId/); assert.match(wrapper, /preflight --json/); assert.match(wrapper, /mainpc_push: OK/); assert.match(wrapper, /--self-poweroff/); assert.ok(wrapper.indexOf("Refusing activation: preflight BLOCKED") < wrapper.indexOf("nohup $relay"), "preflight gate must precede launch"); assert.match(wrapper, /shutdownState -eq "READY_FOR_MAINPC_PULL"\) \{ break \}/); assert.ok(wrapper.indexOf("$previous = Read-Status") < wrapper.indexOf("nohup $relay"), "previous runId must be read before launch");
 });
 
 test("requestMainPcShutdown accepts a no-argument call", async () => {
@@ -155,5 +156,17 @@ test("night-run up never powers ASUS off without --self-poweroff", async () => {
   const run = spawnSync(process.execPath, [new URL("../../bridge/agent-relay.mjs", import.meta.url).pathname, "night-run", "up", "--deadline", "04:30"], { env, encoding: "utf8", timeout: 30_000 });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(await read(join(dir, "power.log"), "utf8").catch(() => ""), "");
-  assert.equal(JSON.parse(await read(join(dir, "data", "LAST_NIGHT_RUN.json"), "utf8")).shutdownState, "READY_FOR_ASUS_POWEROFF");
+  assert.equal(JSON.parse(await read(join(dir, "data", "LAST_NIGHT_RUN.json"), "utf8")).shutdownState, "REPORT_NOT_DELIVERED");
+});
+
+test("push finalize fails closed: no shutdowns without a delivered report, no ASUS poweroff without MainPC shutdown", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-push-"));
+  const record = { schema: "agent-relay.last-night-run.v1", runId: "p", startedAt: "2026-09-23T17:00:00.000Z", deadline: "x", freezeAt: "x", checkpointAt: "x", endedAt: "x", endReason: "WBS_EXHAUSTED", shutdownState: "FINALIZING", lanes: [] };
+  const calls = []; const persist = async (value) => value;
+  const noSend = await finalizeNightRun({ record, checkpointPath: join(dir, "a.json"), persist, send: async () => { throw new Error("MAINPC_SSH_UNREACHABLE"); }, requestShutdown: async () => { calls.push("mainpc"); return { state: "REQUESTED" }; }, poweroff: async () => { calls.push("asus"); return { ok: true }; } });
+  assert.equal(noSend.shutdownState, "REPORT_NOT_DELIVERED"); assert.deepEqual(calls, []);
+  const noPc = await finalizeNightRun({ record, checkpointPath: join(dir, "b.json"), persist, send: async () => ({ state: "DELIVERED", path: "x", remoteSha: "y" }), requestShutdown: async () => { throw new Error("denied"); }, poweroff: async () => { calls.push("asus"); return { ok: true }; } });
+  assert.equal(noPc.shutdownState, "MAINPC_SHUTDOWN_FAILED"); assert.deepEqual(calls, []);
+  const ok = await finalizeNightRun({ record, checkpointPath: join(dir, "c.json"), persist, send: async () => ({ state: "DELIVERED", path: "x", remoteSha: "y" }), requestShutdown: async () => { calls.push("mainpc"); return { state: "REQUESTED", at: "t" }; }, poweroff: async () => { calls.push("asus"); return { ok: true, status: "POWEROFF_REQUESTED" }; } });
+  assert.equal(ok.shutdownState, "POWEROFF_REQUESTED"); assert.deepEqual(calls, ["mainpc", "asus"]);
 });

@@ -3,7 +3,8 @@ param(
   [string]$Deadline = "04:30",
   [int]$PollSeconds = 15,
   [int]$PollTimeoutSeconds = 90000,
-  [switch]$DryRun
+  [switch]$DryRun,
+  [switch]$Push   # ASUS delivers the report and shuts down MainPC then itself; this window may close after launch
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,9 +51,16 @@ $previous = Read-Status (Invoke-Asus "$relay night-run status")
 if ((((Invoke-Asus "kill -0 `$(cat $pidFile 2>/dev/null) 2>/dev/null && echo ACTIVE || echo IDLE") -join "") -match "IDLE")) {
   $pre = Get-Preflight
   if (-not $pre.ok) { throw "Refusing activation: preflight BLOCKED`n$(($pre.blockers | ForEach-Object { "  ! $_" }) -join "`n")" }
+  if ($Push -and -not ($pre.info -contains "mainpc_push: OK")) { throw "Refusing push mode: ASUS cannot reach MainPC ($(($pre.info | Where-Object { $_ -like 'mainpc_push:*' }) -join ''))" }
 }
-$launch = Invoke-Asus "if kill -0 `$(cat $pidFile 2>/dev/null) 2>/dev/null; then echo NIGHT_RUN_ATTACHED; else nohup $relay night-run up --deadline $Deadline --mainpc-pull >> ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED; fi"
+$mode = if ($Push) { "--self-poweroff" } else { "--mainpc-pull" }
+$launch = Invoke-Asus "if kill -0 `$(cat $pidFile 2>/dev/null) 2>/dev/null; then echo NIGHT_RUN_ATTACHED; else nohup $relay night-run up --deadline $Deadline $mode >> ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED; fi"
 if (-not (($launch -join "`n") -match "NIGHT_RUN_(STARTED|ATTACHED)")) { throw "Refusing activation: detached Night Run was not acknowledged." }
+if ($Push) {
+  Write-Output "NIGHT_RUN: $((($launch -join "`n") -split "`n" | Select-String 'NIGHT_RUN_' | Select-Object -First 1))  (push mode, deadline $Deadline)"
+  Write-Output "ASUS will send NIGHT_REPORT to this Desktop, then run shutdown.exe /s /t 30 here, then power itself off. You can close this window."
+  exit 0
+}
 $staleRunId = if ((($launch -join "`n") -match "NIGHT_RUN_STARTED") -and $null -ne $previous) { [string]$previous.runId } else { $null }
 
 $status = $null; $started = Get-Date

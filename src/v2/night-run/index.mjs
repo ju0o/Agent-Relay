@@ -1,6 +1,7 @@
 "use strict";
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { execFile as nodeExecFile } from "node:child_process";
@@ -62,7 +63,13 @@ export async function drainManaged(entries = [], { graceMs = 1_000, sleep = (ms)
 }
 
 export function mainPcTarget(env = process.env) {
-  return env.MAINPC_SSH_TARGET || env.MAINPC_SSH_ALIAS || (env.MAINPC_SSH_USER && env.MAINPC_SSH_HOST ? `${env.MAINPC_SSH_USER}@${env.MAINPC_SSH_HOST}` : "mainpc");
+  return env.MAINPC_SSH_TARGET || env.MAINPC_SSH_ALIAS || (env.MAINPC_SSH_USER && env.MAINPC_SSH_HOST ? `${env.MAINPC_SSH_USER}@${env.MAINPC_SSH_HOST}` : "User@100.86.210.95");
+}
+
+// Same key the send-to-mainpc script uses; explicit so no ~/.ssh/config alias is needed.
+export function mainPcIdentity(env = process.env) {
+  const key = env.MAINPC_SSH_KEY || `${env.HOME || ""}/.ssh/id_ed25519_mainpc`;
+  return existsSync(key) ? key : null;
 }
 
 export function seoulDate(value = new Date()) {
@@ -84,8 +91,9 @@ export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), 
   return { state: "DELIVERED", target, remoteSha, output: output.trim(), path: output.match(/SENT:\s*(\S+)/)?.[1] || null };
 }
 
-export async function requestMainPcShutdown({ target = mainPcTarget(), execFileImpl = execFile } = {}) {
-  const result = await execFileImpl("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "shutdown.exe /s /t 30"], { env: process.env });
+export async function requestMainPcShutdown({ target = mainPcTarget(), identity = mainPcIdentity(), execFileImpl = execFile } = {}) {
+  const key = identity ? ["-i", identity, "-o", "IdentitiesOnly=yes"] : [];
+  const result = await execFileImpl("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ...key, target, "shutdown.exe /s /t 30"], { env: process.env });
   return { state: "REQUESTED", target, command: "shutdown.exe /s /t 30", at: new Date().toISOString(), output: String(result.stdout || "").trim() };
 }
 
@@ -96,9 +104,13 @@ export async function finalizeNightRun({ record: initial, checkpointPath, persis
   if (transport === "mainpc-pull") return persist({ ...record, shutdownState: "READY_FOR_MAINPC_PULL", reportState: "LOCAL_READY", reportTransferState: "LOCAL_ONLY", asusShutdownRequested: false });
   try { const transfer = dryRun ? { state: "DRY_RUN", path: `MainPC/Desktop/${record.reportPathAsus.split("/").pop()}`, remoteSha: createHash("sha256").update(await readFile(record.reportPathAsus)).digest("hex") } : await send({ reportPath: record.reportPathAsus }); record = { ...record, reportTransferState: transfer.state, reportPathMainPC: transfer.path || null, reportTransferSha256: transfer.remoteSha || null }; }
   catch (error) { record = { ...record, reportTransferState: "REPORT_TRANSFER_FAILED", reportTransferError: String(error.message || error) }; }
+  // Fail closed: without a verified report on MainPC, nothing is shut down (the report stays on ASUS).
+  if (!dryRun && record.reportTransferState !== "DELIVERED") return persist({ ...record, shutdownState: "REPORT_NOT_DELIVERED" });
   await persist(record);
   try { const shutdown = dryRun ? { state: "DRY_RUN", command: "shutdown.exe /s /t 30", at: new Date().toISOString() } : await requestShutdown(); record = { ...record, mainPcShutdownRequested: shutdown.state === "REQUESTED" || shutdown.state === "DRY_RUN", mainPcShutdownAt: shutdown.at, mainPcShutdownState: shutdown.state }; }
   catch (error) { record = { ...record, mainPcShutdownState: "FAILED", mainPcShutdownError: String(error.message || error) }; }
+  // MainPC goes first; if it could not be scheduled, ASUS stays on.
+  if (!dryRun && record.mainPcShutdownState !== "REQUESTED") return persist({ ...record, shutdownState: "MAINPC_SHUTDOWN_FAILED" });
   await persist(record);
   if (dryRun || deferPoweroff) return persist({ ...record, shutdownState: dryRun ? "DRY_RUN_COMPLETE" : "READY_FOR_ASUS_POWEROFF", asusShutdownRequested: false });
   record = { ...record, asusShutdownRequested: true, shutdownState: "ASUS_POWEROFF_REQUESTED" }; await persist(record);
