@@ -1809,6 +1809,85 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JCAPP-APPROVALS-MODULE-DATA",
+          "scope": "Make the 승인 module read the existing GET /api/relay/approvals (already returns categories, neverAuto and rules) and render rules grouped by category with neverAuto marked '항상 질문' in a sentence, plus the existing gate list; remove the 'not connected' placeholder when the API is available and keep the honest unavailable state when it is not. Test in test/approvals-module.test.mjs by extracting the real render function.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/approvals-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/approvals-module.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
+          "title": "Make the 승인 module read the existing GET /api/relay/approval"
+        },
+        {
+          "taskId": "JCAPP-TESTER-MODULE-DATA",
+          "scope": "Add read-only GET /api/tester in operator/server.mjs backed by new lib/testerRuns.mjs: reads $AGENT_RELAY_DATA_ROOT/portfolio-execution/tester/last.json and lists TESTER_*.md files there (name, mtime, first heading and the result line), never throws (missing dir -> available:false). The Tester module renders the latest run verdict sentence and the recent runs list. Tests in test/tester-runs.test.mjs with a temp dir fixture.",
+          "files": [
+            "lib/testerRuns.mjs",
+            "operator/server.mjs",
+            "operator/public/app.js",
+            "test/tester-runs.test.mjs"
+          ],
+          "tests": [
+            "node --test test/tester-runs.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
+          "title": "Add read-only GET /api/tester in operator/server.mjs backed "
+        },
+        {
+          "taskId": "JCAPP-JUCEIPT-MODULE-DATA",
+          "scope": "Add read-only GET /api/juceipt/receipts backed by new lib/juceiptReceipts.mjs: reads receipt.json files under $JUCEIPT_ROOT/m2/tasks/*/ (default /home/skkse12/Desktop/Projects/Team/JuCeipt, read-only, never writes, caps at 50) and returns task id, request summary, verdict (ready/review_required/...), gaps count and generated_at; the JuCeipt module renders an inbox list with verdict sentences (받아도 됨 / 확인 후 받기) and a detail panel of the selected receipt's acceptance gaps. Tests in test/juceipt-receipts.test.mjs with fixture receipts in a temp dir.",
+          "files": [
+            "lib/juceiptReceipts.mjs",
+            "operator/server.mjs",
+            "operator/public/app.js",
+            "test/juceipt-receipts.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juceipt-receipts.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
+          "title": "Add read-only GET /api/juceipt/receipts backed by new lib/ju"
+        },
+        {
+          "taskId": "JCAPP-JUPLAN-MODULE-DATA",
+          "scope": "Add read-only GET /api/juplan/status backed by new lib/juplanStatus.mjs: reads the JuPlan project-status.v1 export at $JUPLAN_STATUS_PATH (default /home/skkse12/Desktop/Projects/Team/JuPlan/.juplan/exports/project-status.v1.json) and returns it with fetchedAt; missing or malformed -> available:false with reason, never guessed. The JuPlan module renders the project state sentence, current goal/milestone and gate list from that export. Tests in test/juplan-status.test.mjs with fixture files.",
+          "files": [
+            "lib/juplanStatus.mjs",
+            "operator/server.mjs",
+            "operator/public/app.js",
+            "test/juplan-status.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juplan-status.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
+          "title": "Add read-only GET /api/juplan/status backed by new lib/jupla"
+        },
+        {
+          "taskId": "JCAPP-HOME-HEADER-AND-SKILLS-API",
+          "scope": "Two fixes: (1) 홈 renders the '창업자 운영 화면 / 오늘의 운영 상태' header twice (top chrome plus the hub view); keep exactly one. (2) GET /api/skills returns 500 'skills is not defined' on main and integration: implement skills() in operator/server.mjs as a read-only list of ~/.agents/skills/*/SKILL.md (name + description from front matter, cap 100). Tests: extend test/home-hub.test.mjs for a single header, add test/skills-api.test.mjs with a temp skills dir.",
+          "files": [
+            "operator/public/app.js",
+            "operator/server.mjs",
+            "test/home-hub.test.mjs",
+            "test/skills-api.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-hub.test.mjs",
+            "node --test test/skills-api.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
+          "title": "Two fixes: (1) 홈 renders the '창업자 운영 화면 / 오늘의 운영 상태' header "
         }
       ]
     },
