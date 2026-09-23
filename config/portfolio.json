@@ -1218,6 +1218,18 @@
             "node --test tests/project-registry.test.mjs"
           ],
           "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:56-58 source owner defines the freshness limit"
+        },
+        {
+          "taskId": "JUCONTROLER-REGISTRY-STRICT-KEYS",
+          "scope": "Make the read-only project registry fail closed on unknown top-level or entry fields while preserving the existing freshnessMs field and valid registry behavior.",
+          "files": [
+            "src/project-registry.mjs",
+            "tests/project-registry.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs"
+          ],
+          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-205 \"Each project gets a small, boring integration directory rather than its own custom orchestrator\""
         }
       ],
       "qaRuntime": [
