@@ -840,6 +840,18 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "ACTL-PREVIEW-TIMEOUT-BOUND-R2",
+          "scope": "Narrow GUI preview failure detection to actual capture-failure markers so successful pane text containing 'timeout' is accepted while genuine timeout results preserve the last known preview and bounded non-foreground behavior; add a regression test for _preview_text('LAST_GOOD', 'request timeout recovered\\nready').",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_aliases.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 'repeated preview 10s timeout'"
         }
       ],
       "qaRuntime": [
