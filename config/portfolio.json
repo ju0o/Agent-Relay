@@ -28,8 +28,8 @@
     "qaRequired": true,
     "ssotRequired": true
   },
-  "maxBuilders": 2,
-  "maxQa": 1,
+  "maxBuilders": 4,
+  "maxQa": 4,
   "projects": [
     {
       "id": "agent-relay",
@@ -41,7 +41,10 @@
       "path": "/home/skkse12/Desktop/Projects/Core/Agent-Relay-v2-portfolio-autopilot-dogfood-03",
       "ssot": "repository:BACKLOG.md + config/portfolio.json",
       "owner": "codex",
-      "runtime": "codex",
+      "runtime": [
+        "opencode",
+        "codex"
+      ],
       "state": "QUEUED",
       "tasks": [
         {
@@ -303,6 +306,11 @@
           ],
           "ssotEvidence": "BACKLOG.md:25 `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행"
         }
+      ],
+      "qaRuntime": [
+        "cline",
+        "opencode",
+        "codex"
       ]
     },
     {
@@ -318,7 +326,10 @@
       "expectedHeadSha": "5ffaeb4d2be97521421256378786fe08eab5da9d",
       "ssot": "external:ju0o/JuActl-private",
       "owner": "codex",
-      "runtime": "codex",
+      "runtime": [
+        "codex",
+        "opencode"
+      ],
       "state": "FOUNDER_GATE",
       "founderRequired": true,
       "founderGate": {
@@ -394,6 +405,11 @@
           ],
           "ssotEvidence": "ROOT_CAUSE_REPORT.md:95-102 \"At the measured 19-operation expansion this is\""
         }
+      ],
+      "qaRuntime": [
+        "grok",
+        "cline",
+        "codex"
       ]
     },
     {
@@ -406,7 +422,10 @@
       "path": "/home/skkse12/Desktop/Projects/Team/JuPlan",
       "ssot": "/home/skkse12/Desktop/Projects/Team/JuPlan-Private/CONTROL_TOWER.md",
       "owner": "codex",
-      "runtime": "codex",
+      "runtime": [
+        "cursor",
+        "codex"
+      ],
       "state": "HOLD",
       "blockers": [
         "CORE V1 integration phase is authorized in JuPlan-Private; PM transport is not connected, so the lane is held without inventing a Product task"
@@ -517,6 +536,10 @@
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
         }
+      ],
+      "qaRuntime": [
+        "codex",
+        "opencode"
       ]
     },
     {
@@ -545,7 +568,11 @@
       "path": "/home/skkse12/Desktop/Projects/Core/JuControler",
       "ssot": "/home/skkse12/Desktop/Projects/Core/JuControler-Private",
       "owner": "codex",
-      "runtime": "codex",
+      "runtime": [
+        "claude-team",
+        "claude-pro",
+        "codex"
+      ],
       "state": "FOUNDER_ACCEPTANCE",
       "blockers": [
         "INTEGRATION_TARGET",
@@ -624,6 +651,11 @@
           ],
           "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory ... current.json\""
         }
+      ],
+      "qaRuntime": [
+        "opencode",
+        "cline",
+        "codex"
       ]
     }
   ]

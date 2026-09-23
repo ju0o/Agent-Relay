@@ -6,6 +6,23 @@ import { homedir } from "node:os";
 
 const known = (name) => process.env[`${name.toUpperCase()}_BIN`] || `${homedir()}/.local/bin/${name}`;
 
+// Headless argument sets per CLI, verified on this machine 2026-09-23 (Worker commits in a temp repo, QA replies).
+// Builders edit and run tools inside their own Agent Relay worktree; QA uses each tool's read-only/plan mode
+// (the runner's own test gate executes the tests, so QA does not need write access).
+const OPENCODE_FREE = process.env.AGENT_RELAY_OPENCODE_FREE_MODEL || "opencode/nemotron-3-ultra-free";
+export const CLI_ARGS = {
+  claude: ({ prompt, workspace, sandbox }) => sandbox === "read-only"
+    ? ["-p", prompt, "--add-dir", workspace, "--output-format", "text", "--disallowedTools", "Edit", "Write", "NotebookEdit", "--allowedTools", "Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)"]
+    : ["-p", prompt, "--add-dir", workspace, "--output-format", "text", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(git:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(node:*)", "Bash(pnpm:*)", "Bash(python3:*)"],
+  opencode: ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["run", "--dir", workspace, "-m", OPENCODE_FREE, prompt] : ["run", "--dir", workspace, "--auto", prompt],
+  cursor: ({ prompt, sandbox }) => sandbox === "read-only" ? ["-p", "--trust", "--mode", "ask", "--output-format", "text", prompt] : ["-p", "--force", "--trust", "--output-format", "text", prompt],
+  cline: ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["--cwd", workspace, "-p", prompt] : ["--cwd", workspace, "--auto-approve", "true", prompt],
+  grok: ({ prompt, workspace, sandbox }) => ["--cwd", workspace, "--permission-mode", sandbox === "read-only" ? "plan" : "acceptEdits", "-p", prompt],
+};
+
+// This machine has no global git identity; Workers must still be able to commit in their worktree.
+const GIT_IDENTITY = () => ({ GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || "Agent Relay Worker", GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || "agent-relay@localhost", GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || "Agent Relay Worker", GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || "agent-relay@localhost" });
+
 function probe(command, args = ["--version"]) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -34,7 +51,7 @@ export class CodexRuntimeAdapter extends RuntimeAdapter {
 }
 
 export class CommandRuntimeAdapter extends RuntimeAdapter {
-  constructor({ id, owner, runtime, command, probeArgs = ["--version"], safeNonInteractive = false, reason, buildArgs, timeoutMs = 30 * 60_000 }) { super({ id, owner, runtime, available: false, reason }); this.command = command; this.probeArgs = probeArgs; this.safeNonInteractive = safeNonInteractive; this.buildArgs = buildArgs || (({ prompt, workspace }) => ["-p", prompt, "--add-dir", workspace, "--output-format", "text"]); this.timeoutMs = timeoutMs; this.children = new Set(); }
+  constructor({ id, owner, runtime, command, probeArgs = ["--version"], safeNonInteractive = false, reason, buildArgs, env = {}, timeoutMs = 30 * 60_000 }) { super({ id, owner, runtime, available: false, reason }); this.command = command; this.probeArgs = probeArgs; this.safeNonInteractive = safeNonInteractive; this.buildArgs = buildArgs || CLI_ARGS.claude; this.env = env; this.timeoutMs = timeoutMs; this.children = new Set(); }
   async availability() {
     if (!this.command) return { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, reason: this.reason || "runtime command is not configured" };
     if (this.command.includes("/") && !existsSync(this.command)) return { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, reason: `runtime command missing: ${this.command}` };
@@ -43,10 +60,10 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
     if (!this.safeNonInteractive) return { id: this.id, owner: this.owner, runtime: this.runtime, ok: false, command: this.command, identity: result.output, reason: this.reason || "safe non-interactive execution contract is not configured" };
     return { id: this.id, owner: this.owner, runtime: this.runtime, ok: true, command: this.command, identity: result.output };
   }
-  async run({ workspace, prompt, signal }) {
+  async run({ workspace, prompt, sandbox, signal }) {
     const status = await this.availability();
     if (!status.ok) throw new Error(`${this.id} cannot execute: ${status.reason}`);
-    const child = spawn(this.command, this.buildArgs({ prompt, workspace }), { cwd: workspace, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(this.command, this.buildArgs({ prompt, workspace, sandbox }), { cwd: workspace, env: { ...process.env, ...GIT_IDENTITY(), ...this.env }, stdio: ["ignore", "pipe", "pipe"] });
     this.children.add(child);
     let text = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8"); child.stdout.on("data", (chunk) => { text += chunk; }); child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -61,10 +78,16 @@ export class CommandRuntimeAdapter extends RuntimeAdapter {
 }
 
 export function createRuntimeAdapters({ codex, commands = {} } = {}) {
+  const cli = (id, command) => new CommandRuntimeAdapter({ id, owner: id, runtime: id, command, probeArgs: ["--version"], safeNonInteractive: true, buildArgs: CLI_ARGS[id] });
+  const claudeAt = (id, dir) => new CommandRuntimeAdapter({ id, owner: id, runtime: id, command: commands.claude || process.env.CLAUDE_BIN || known("claude"), probeArgs: ["--help"], safeNonInteractive: true, buildArgs: CLI_ARGS.claude, env: { CLAUDE_CONFIG_DIR: dir } });
   return {
     codex: new CodexRuntimeAdapter(codex),
-    cursor: new CommandRuntimeAdapter({ id: "cursor", owner: "cursor", runtime: "cursor", command: commands.cursor || process.env.CURSOR_BIN || known("agent"), probeArgs: ["agent", "--help"], safeNonInteractive: true, buildArgs: ({ prompt }) => ["agent", "--trust", prompt] }),
-    claude: new CommandRuntimeAdapter({ id: "claude-code", owner: "claude", runtime: "claude", command: commands.claude || process.env.CLAUDE_BIN || known("claude"), probeArgs: ["--help"], safeNonInteractive: true, reason: "Claude Code authentication probe failed" }),
-    "claude-team": new CommandRuntimeAdapter({ id: "claude-team", owner: "claude-team", runtime: "claude-team", command: commands.claudeTeam || process.env.CLAUDE_TEAM_BIN || commands.claude || process.env.CLAUDE_BIN || known("claude"), probeArgs: ["--help"], safeNonInteractive: true, reason: "Claude Team runtime adapter is not configured" }),
+    opencode: cli("opencode", commands.opencode || process.env.OPENCODE_BIN || "/usr/local/bin/opencode"),
+    cline: cli("cline", commands.cline || process.env.CLINE_BIN || "/usr/local/bin/cline"),
+    grok: cli("grok", commands.grok || process.env.GROK_BIN || `${homedir()}/.grok/bin/grok`),
+    cursor: new CommandRuntimeAdapter({ id: "cursor", owner: "cursor", runtime: "cursor", command: commands.cursor || process.env.CURSOR_BIN || known("cursor-agent"), probeArgs: ["--version"], safeNonInteractive: true, buildArgs: CLI_ARGS.cursor }),
+    claude: new CommandRuntimeAdapter({ id: "claude-code", owner: "claude", runtime: "claude", command: commands.claude || process.env.CLAUDE_BIN || known("claude"), probeArgs: ["--help"], safeNonInteractive: true, buildArgs: CLI_ARGS.claude, reason: "Claude Code authentication probe failed" }),
+    "claude-team": claudeAt("claude-team", process.env.CLAUDE_TEAM_CONFIG_DIR || `${homedir()}/.claude-team`),
+    "claude-pro": claudeAt("claude-pro", process.env.CLAUDE_PRO_CONFIG_DIR || `${homedir()}/.claude-pro`),
   };
 }

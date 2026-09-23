@@ -32,6 +32,11 @@ function packetLine(text, prefix) {
   try { return JSON.parse(line.trim().slice(prefix.length).trim()); } catch { return null; }
 }
 
+// A quota/rate-limit failure moves the lane to the next runtime in its chain instead of holding the task.
+export const QUOTA_ERROR = /rate.?limit|quota|usage limit|limit (reached|exceeded)|too many requests|\b429\b|insufficient[_ ]quota|out of credits|credit balance|exceeded your/i;
+// Lane config: runtime / qaRuntime may be one id or an ordered fallback list, e.g. ["opencode", "codex"].
+const chainOf = (value) => [value].flat().filter(Boolean);
+
 const SETTLED = new Set(["VERIFIED_DONE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
 
 function definitions(project) { return project?.tasks || (project?.task ? [project.task] : []); }
@@ -322,30 +327,45 @@ export class PortfolioRunner {
     await writeFile(join(this.resultRoot, `${task.taskId}.json`), JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: task.taskId, result: task.result, qa: task.qa || null, state: task.state }, null, 2));
   }
 
-  async _acquireQa() { if (this._qaBusy) await new Promise((resolvePromise) => this._qaWaiters.push(resolvePromise)); this._qaBusy = true; }
-  _releaseQa() { this._qaBusy = false; this._qaWaiters.shift()?.(); }
+  async _acquireQa() { const slots = Math.max(1, Number(this.manifest.maxQa) || 1); this._qaActive = this._qaActive || 0; while (this._qaActive >= slots) await new Promise((resolvePromise) => this._qaWaiters.push(resolvePromise)); this._qaActive += 1; }
+  _releaseQa() { this._qaActive = Math.max(0, (this._qaActive || 1) - 1); this._qaWaiters.shift()?.(); }
+
+  // Run the first available runtime in the chain; a quota/rate-limit error falls through to the next one.
+  async runChain(chain, request) {
+    const tried = [];
+    for (const id of chain) {
+      const adapter = this.runtimeAdapters[id];
+      if (!adapter) { tried.push(`${id}: not configured`); continue; }
+      const status = await adapter.availability();
+      if (!status.ok) { tried.push(`${id}: ${status.reason}`); continue; }
+      try { return { ...(await adapter.run(request)), runtime: id, fallbacks: tried }; }
+      catch (error) { if (request.signal?.aborted || !QUOTA_ERROR.test(String(error.message || error))) throw error; tried.push(`${id}: quota`); }
+    }
+    throw new Error(`NO_RUNTIME_AVAILABLE: ${tried.join("; ")}`);
+  }
 
   async runOne(task, state, { signal } = {}) {
     const project = this.manifest.projects.find((item) => item.id === task.projectId);
-    const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
-    const availability = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
+    const workerChain = chainOf(project?.runtime || project?.owner); const qaChain = chainOf(project?.qaRuntime || project?.runtime || project?.owner);
+    let adapter = null; let availability = { ok: false, reason: "runtime adapter not configured" };
+    for (const id of workerChain) { const candidate = this.runtimeAdapters[id]; if (!candidate) continue; const status = await candidate.availability(); availability = status; if (status.ok) { adapter = candidate; break; } }
     if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; return; }
     if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; return; }
-    try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; return; }
+    if (!Array.isArray(project.runtime)) { try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; return; } }
     const retained = task.builderEvidence?.workspace && existsSync(task.builderEvidence.workspace);
     const builder = retained ? { path: task.builderEvidence.workspace, base: task.builderEvidence.base || (await exec("git", ["-C", task.builderEvidence.workspace, "rev-parse", "HEAD"])).stdout.trim(), projectId: project.id, cleanup: async () => {} } : await this.worktrees.create(project, task.taskId);
     state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); task.state = "RUNNING"; task.attempts += 1; task.builderEvidence = { ...(task.builderEvidence || {}), workspace: builder.path, base: builder.base, startedAt: new Date().toISOString(), pid: null }; await this.save(state);
     let preserveWorktree = retained;
     try {
       for (;;) {
-      const builderRun = await adapter.run({ workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }), signal });
-      task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, base: builder.base, startedAt: builderRun.startedAt, exitCode: builderRun.code };
+      const builderRun = await this.runChain(workerChain, { workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }), signal });
+      task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, base: builder.base, startedAt: builderRun.startedAt, exitCode: builderRun.code, runtime: builderRun.runtime, fallbacks: builderRun.fallbacks };
       task.result = parseResultPacket(builderRun.text); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
       await this._acquireQa();
       let qaRun;
-      try { task.qaAttempts += 1; qaRun = await adapter.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }); }
+      try { task.qaAttempts += 1; qaRun = await this.runChain(qaChain, { workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }); }
       finally { this._releaseQa(); }
-      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
+      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: qaRun.runtime, fallbacks: qaRun.fallbacks }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
       if (task.qa.verdict === "ACCEPT" && !task.verificationOnly && this.testGate) {
         const headOf = () => exec("git", ["-C", builder.path, "rev-parse", "HEAD"]).then((result) => result.stdout.trim(), () => null);
         const head = await headOf();
@@ -385,7 +405,7 @@ export class PortfolioRunner {
   async stop() { await Promise.all(Object.values(this.runtimeAdapters).map((adapter) => adapter.stop?.())); await this.runtime.stop?.(); }
   async runOnce({ signal } = {}) {
     const state = await this.reconcile(); state.service = "RUNNING";
-    const queued = state.tasks.filter((task) => task.state === "QUEUED").slice(0, Math.min(2, this.manifest.maxBuilders));
+    const queued = state.tasks.filter((task) => task.state === "QUEUED").slice(0, Math.max(1, Number(this.manifest.maxBuilders) || 2));
     await Promise.all(queued.map((task) => this.runOne(task, state, { signal }))); state.service = "IDLE"; await this.save(state); return state;
   }
 

@@ -238,3 +238,39 @@ test("a HOLD task is reported but does not block the lane's next definition", as
   assert.equal(state.tasks.find((t) => t.taskId === "L-1").state, "HOLD");
   assert.equal(state.tasks.find((t) => t.taskId === "L-2")?.state, "QUEUED");
 });
+
+test("runtime chains: a quota error falls through to the next Worker, and QA uses the lane's own qaRuntime", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-chain-")); const calls = [];
+  const packet = (kind) => kind === "workspace-write" ? 'RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"C-1","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"s"}' : 'QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"C-1","verdict":"ACCEPT","tests":[],"findings":[],"summary":"ok"}';
+  const fake = (id, fail) => ({ id, async availability() { return { ok: true }; }, async run({ sandbox }) { calls.push(`${id}:${sandbox}`); if (fail) throw new Error(`${id} exit 1: Rate limit reached for requests`); return { pid: 1, code: 0, startedAt: "t", text: packet(sandbox) }; } });
+  const runner = new PortfolioRunner({ testGate: passGate, runtimeAdapters: { opencode: fake("opencode", true), codex: fake("codex"), cline: fake("cline") },
+    manifest: { maxBuilders: 4, maxQa: 4, projects: [{ id: "c", runtime: ["opencode", "codex"], qaRuntime: ["cline", "codex"], tasks: [{ taskId: "C-1", scope: "x", files: [], tests: [] }] }] },
+    statePath: join(root, "state.json"), worktreeRoot: join(root, "w"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; }, async promote(_p, id) { return `refs/agent-relay/promotions/${id}`; } } });
+  await runner.enqueue("c"); const state = await runner.runOnce(); const task = state.tasks.find((t) => t.taskId === "C-1");
+  assert.equal(task.state, "VERIFIED_DONE");
+  assert.deepEqual(calls, ["opencode:workspace-write", "codex:workspace-write", "cline:read-only"]);
+  assert.equal(task.builderEvidence.runtime, "codex"); assert.deepEqual(task.builderEvidence.fallbacks, ["opencode: quota"]); assert.equal(task.qaEvidence.runtime, "cline");
+});
+
+test("runtime chains: a non-quota failure holds the task instead of silently switching models", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-chain2-")); const calls = [];
+  const bad = { async availability() { return { ok: true }; }, async run() { calls.push("opencode"); throw new Error("opencode exit 1: syntax error in prompt"); } };
+  const good = { async availability() { return { ok: true }; }, async run() { calls.push("codex"); return { pid: 1, code: 0, startedAt: "t", text: "" }; } };
+  const runner = new PortfolioRunner({ testGate: passGate, runtimeAdapters: { opencode: bad, codex: good }, manifest: { projects: [{ id: "d", runtime: ["opencode", "codex"], tasks: [{ taskId: "D-1", scope: "x", files: [], tests: [] }] }] },
+    statePath: join(root, "state.json"), worktreeRoot: join(root, "w"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } } });
+  await runner.enqueue("d"); const state = await runner.runOnce();
+  assert.equal(state.tasks.find((t) => t.taskId === "D-1").state, "HOLD"); assert.deepEqual(calls, ["opencode"]);
+});
+
+test("CLI adapters build builder vs read-only QA arguments and pin Claude accounts", async () => {
+  const { CLI_ARGS, createRuntimeAdapters } = await import("../../src/v2/runtime-adapters/index.mjs");
+  const a = { prompt: "P", workspace: "/w" };
+  assert.ok(CLI_ARGS.opencode({ ...a, sandbox: "workspace-write" }).includes("--auto")); assert.ok(!CLI_ARGS.opencode({ ...a, sandbox: "read-only" }).includes("--auto"));
+  assert.ok(CLI_ARGS.cursor({ ...a, sandbox: "workspace-write" }).includes("--force")); assert.ok(!CLI_ARGS.cursor({ ...a, sandbox: "read-only" }).includes("--force"));
+  assert.ok(CLI_ARGS.cline({ ...a, sandbox: "read-only" }).includes("-p"));
+  assert.deepEqual(CLI_ARGS.grok({ ...a, sandbox: "read-only" }).slice(2, 4), ["--permission-mode", "plan"]);
+  assert.ok(CLI_ARGS.claude({ ...a, sandbox: "read-only" }).includes("--disallowedTools")); assert.ok(CLI_ARGS.claude({ ...a, sandbox: "workspace-write" }).includes("acceptEdits"));
+  const adapters = createRuntimeAdapters({ codex: { command: "codex", async run() {} } });
+  assert.match(adapters["claude-team"].env.CLAUDE_CONFIG_DIR, /\.claude-team$/); assert.match(adapters["claude-pro"].env.CLAUDE_CONFIG_DIR, /\.claude-pro$/);
+  for (const id of ["opencode", "cline", "grok", "cursor", "claude-team", "claude-pro", "codex"]) assert.ok(adapters[id], id);
+});
