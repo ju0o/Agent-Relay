@@ -1336,6 +1336,19 @@
           ],
           "ssotEvidence": "Founder architecture 2026-09-23 (chat): 'JuControler에 Agent-Relay 통합하면 자동으로 actl도 따라오는 구조' — integrate Agent Relay first; approval rule A-01",
           "title": "Let scripts/status-board.mjs accept a registry entry with so"
+        },
+        {
+          "taskId": "JUCONTROLER-AGENT-RELAY-ADAPTER",
+          "scope": "Read-only adapter src/adapters/agent-relay.mjs that turns one Agent Relay board snapshot (the JSON printed by `night board`: {kind:'BOARD', runner:{day,night,notifier,alwaysMode}, lanes:[{id,state,workerChain,qaChain,counts,integrationCommits,current,holds,humanGate,latest version}], models, approvals}) into project-status.v1 entries (one per lane, plus one 'agent-relay' entry for the runner itself; actl appears as its own lane) following docs/integration/PROJECT_STATUS_CONTRACT.md: unknown or missing fields become UNKNOWN, never guessed; malformed input rejects with a typed error; no network, no child processes (the caller passes the parsed JSON). Tests in tests/agent-relay-adapter.test.mjs with inline fixtures: running lane, idle lane, hold, human gate, missing fields -> UNKNOWN, malformed -> error",
+          "files": [
+            "src/adapters/agent-relay.mjs",
+            "tests/agent-relay-adapter.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/agent-relay-adapter.test.mjs"
+          ],
+          "ssotEvidence": "Founder architecture 2026-09-23 (chat): 'JuControler에 Agent-Relay 통합하면 자동으로 actl도 따라오는 구조' — integrate Agent Relay first; approval rule A-01",
+          "title": "Read-only adapter src/adapters/agent-relay.mjs that turns on"
         }
       ],
       "qaRuntime": [
