@@ -271,6 +271,47 @@ async function main() {
     PASS('touch/pen starts, mouse keeps HTML5 DnD, drop resolves via reorderArray');
   } else FAIL('pointer reorder flow broken');
 
+  console.log('T5) pointer capture 없이 좌표 기반 cross-tab drop + dragging 피드백');
+  {
+    const hasSetCapture = /setPointerCapture/.test(appSrc);
+    const hasRelease = /releasePointerCapture/.test(appSrc);
+    const hasFromPoint = /elementFromPoint/.test(appSrc) && /clientX/.test(appSrc) && /clientY/.test(appSrc);
+    const hasGroupAttr = (appSrc.match(/data-reorder-group/g) || []).length >= 3
+      && (appSrc.match(/data-reorder-index/g) || []).length >= 3;
+    const draggingUses = (appSrc.match(/reorder-dragging/g) || []).length;
+    let overHelperOk = false;
+    try {
+      const m = appSrc.match(/export function pointerOverIndexFromPoint[\s\S]*?\n\}/);
+      if (m) {
+        const js = m[0].replace(/^export\s+/, '')
+          .replace(/:\s*number\s*\|\s*null/g, '')
+          .replace(/:\s*string/g, '')
+          .replace(/:\s*number/g, '')
+          .replace(/ as unknown as \{[^}]*\}/g, '')
+          .replace(/ as Element \| null/g, '');
+        const fn = new Function(`${js}; return pointerOverIndexFromPoint;`)();
+        // DOM 없으면 null (closure 폴백 경로)
+        const noDom = fn(10, 10, 'proj-tab', 4) === null;
+        // stub document: 좌표가 가리킨 요소의 group/index로 해석
+        const g = globalThis;
+        const prevDoc = g.document;
+        g.document = {
+          elementFromPoint: () => ({
+            closest: (sel) => (sel === '[data-reorder-group="proj-tab"]'
+              ? { getAttribute: () => '2' }
+              : null),
+          }),
+        };
+        let stubbed = null;
+        try { stubbed = fn(10, 10, 'proj-tab', 4); } finally { g.document = prevDoc; }
+        overHelperOk = noDom && stubbed === 2 && fn(10, 10, 'proj-tab', 4) === null;
+      }
+    } catch { overHelperOk = false; }
+    if (!hasSetCapture && hasRelease && hasFromPoint && hasGroupAttr && draggingUses >= 3 && overHelperOk) {
+      PASS('no capture + elementFromPoint coords + reorder-dragging applied');
+    } else FAIL(`pointer-drop broken: setCapture=${hasSetCapture} release=${hasRelease} fromPoint=${hasFromPoint} group=${hasGroupAttr} draggingUses=${draggingUses} helper=${overHelperOk}`);
+  }
+
   // ── R. Regression — 데이터 구조 불변 ────────────────────────────────────────
   console.log('R1) reorder는 폴더 구조를 건드리지 않음');
   const run01 = relay.ensureRunFolder(TEST_ROOT, 'QUICKPROJ', '2026-08-25', 'Claude Code', '01');

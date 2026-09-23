@@ -204,6 +204,30 @@ export function resolvePointerDropIndex(from: number | null, over: number | null
   if (from < 0 || from >= len || over < 0 || over >= len) return null;
   return over;
 }
+/**
+ * pointer 좌표(clientX/clientY)에서 elementFromPoint로 드롭 대상 인덱스를 찾는다.
+ * source에 pointer capture를 걸면 move/up이 source에만 retarget되어
+ * sibling 핸들러가 절대 발사되지 않으므로, capture 없이 좌표 기반으로 추적한다.
+ * DOM이 없거나(테스트) 해당 그룹이 아니면 null을 반환하고 호출부는 closure 인덱스로 폴백한다.
+ */
+export function pointerOverIndexFromPoint(
+  clientX: number,
+  clientY: number,
+  group: string,
+  len: number,
+): number | null {
+  try {
+    const doc = (globalThis as unknown as { document?: Document }).document;
+    if (!doc || typeof doc.elementFromPoint !== 'function') return null;
+    const el = doc.elementFromPoint(clientX, clientY) as Element | null;
+    const t = el?.closest?.(`[data-reorder-group="${group}"]`) ?? null;
+    if (!t) return null;
+    const raw = t.getAttribute('data-reorder-index');
+    const idx = raw === null ? NaN : Number(raw);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= len) return null;
+    return idx;
+  } catch { return null; }
+}
 
 // ── 최상위 App ────────────────────────────────────────────────────────────────
 export function App(): React.ReactElement {
@@ -1203,7 +1227,9 @@ function AppInner(): React.ReactElement {
               return (
                 <button
                   key={sess.id}
-                  className={`proj-tab${isActive ? ' active' : ''}${projDragOver === i ? ' reorder-over' : ''}`}
+                  data-reorder-group="proj-tab"
+                  data-reorder-index={i}
+                  className={`proj-tab${isActive ? ' active' : ''}${projDragOver === i ? ' reorder-over' : ''}${pointerProjActive.current && projDragOver === i ? ' reorder-dragging' : ''}`}
                   onClick={() => {
                     if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
                     switchSession(sess.id);
@@ -1224,16 +1250,19 @@ function AppInner(): React.ReactElement {
                     projDragFrom.current = i;
                     pointerProjActive.current = true;
                     setProjDragOver(i);
-                    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
+                    // 터치 implicit capture를 풀어야 sibling의 move/up이 발사된다.
+                    try { if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 무시 */ }
                   }}
-                  onPointerMove={() => {
+                  onPointerMove={e => {
                     if (!pointerProjActive.current || projDragFrom.current === null) return;
-                    setProjDragOver(i);
+                    const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'proj-tab', sessions.length);
+                    setProjDragOver(at ?? i);
                   }}
-                  onPointerUp={() => {
+                  onPointerUp={e => {
                     if (!pointerProjActive.current) return;
                     pointerProjActive.current = false;
-                    const to = resolvePointerDropIndex(projDragFrom.current, i, sessions.length);
+                    const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'proj-tab', sessions.length) ?? i;
+                    const to = resolvePointerDropIndex(projDragFrom.current, over, sessions.length);
                     if (to !== null) { pointerSuppressClick.current = true; onProjectTabDrop(to); }
                     else { projDragFrom.current = null; setProjDragOver(null); }
                   }}
@@ -1332,7 +1361,9 @@ function AppInner(): React.ReactElement {
                 {tabs.map((tab, i) => (
                   <button
                     key={tab.id}
-                    className={`tab-btn${tab.id === activeTabId ? ' active' : ''}${tabDragOver === i ? ' reorder-over' : ''}`}
+                    data-reorder-group="work-tab"
+                    data-reorder-index={i}
+                    className={`tab-btn${tab.id === activeTabId ? ' active' : ''}${tabDragOver === i ? ' reorder-over' : ''}${pointerTabActive.current && tabDragOver === i ? ' reorder-dragging' : ''}`}
                     onClick={() => {
                       if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
                       updateActiveSession({ activeTabId: tab.id });
@@ -1353,16 +1384,19 @@ function AppInner(): React.ReactElement {
                       tabDragFrom.current = i;
                       pointerTabActive.current = true;
                       setTabDragOver(i);
-                      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
+                      // 터치 implicit capture를 풀어야 sibling의 move/up이 발사된다.
+                      try { if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 무시 */ }
                     }}
-                    onPointerMove={() => {
+                    onPointerMove={e => {
                       if (!pointerTabActive.current || tabDragFrom.current === null) return;
-                      setTabDragOver(i);
+                      const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'work-tab', tabs.length);
+                      setTabDragOver(at ?? i);
                     }}
-                    onPointerUp={() => {
+                    onPointerUp={e => {
                       if (!pointerTabActive.current) return;
                       pointerTabActive.current = false;
-                      const to = resolvePointerDropIndex(tabDragFrom.current, i, tabs.length);
+                      const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'work-tab', tabs.length) ?? i;
+                      const to = resolvePointerDropIndex(tabDragFrom.current, over, tabs.length);
                       if (to !== null) { pointerSuppressClick.current = true; onWorkTabDrop(to); }
                       else { tabDragFrom.current = null; setTabDragOver(null); }
                     }}
@@ -1403,7 +1437,9 @@ function AppInner(): React.ReactElement {
                           {agents.map((a, i) => (
                             <button
                               key={a}
-                              className={`agent-pill${activeTab.agent === a ? ' active' : ''}${agentDragOver === i ? ' reorder-over' : ''}`}
+                              data-reorder-group="agent-pill"
+                              data-reorder-index={i}
+                              className={`agent-pill${activeTab.agent === a ? ' active' : ''}${agentDragOver === i ? ' reorder-over' : ''}${pointerAgentActive.current && agentDragOver === i ? ' reorder-dragging' : ''}`}
                               title={`${a} — 드래그로 순서 변경 (설정에 저장됨)`}
                               draggable
                               onDragStart={e => {
@@ -1420,16 +1456,19 @@ function AppInner(): React.ReactElement {
                                 agentDragFrom.current = i;
                                 pointerAgentActive.current = true;
                                 setAgentDragOver(i);
-                                try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
+                                // 터치 implicit capture를 풀어야 sibling의 move/up이 발사된다.
+                                try { if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 무시 */ }
                               }}
-                              onPointerMove={() => {
+                              onPointerMove={e => {
                                 if (!pointerAgentActive.current || agentDragFrom.current === null) return;
-                                setAgentDragOver(i);
+                                const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', agents.length);
+                                setAgentDragOver(at ?? i);
                               }}
-                              onPointerUp={() => {
+                              onPointerUp={e => {
                                 if (!pointerAgentActive.current) return;
                                 pointerAgentActive.current = false;
-                                const to = resolvePointerDropIndex(agentDragFrom.current, i, agents.length);
+                                const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', agents.length) ?? i;
+                                const to = resolvePointerDropIndex(agentDragFrom.current, over, agents.length);
                                 if (to !== null) { pointerSuppressClick.current = true; onAgentPillDrop(to); }
                                 else { agentDragFrom.current = null; setAgentDragOver(null); }
                               }}
