@@ -214,6 +214,35 @@ test("corrupt portfolio state fails closed with blocked evidence instead of rese
   await rm(root, { recursive: true, force: true });
 });
 
+test("malformed state arrays and lifecycle events fail closed instead of reaching runner logic", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-state-shape-");
+  const statePath = join(root, "state.json");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  const base = { schema: "agent-relay.portfolio-state.v1", tasks: [] };
+  for (const badEvents of ["not-an-array", "x", 42, {}, null]) {
+    await writeFile(statePath, JSON.stringify({ ...base, events: badEvents }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE" && error.statePath === statePath, `events ${JSON.stringify(badEvents)} must fail closed as INVALID_SHAPE`);
+  }
+  for (const badEvents of [[null], ["x"], [42], [[]], [{ taskId: "T" }], [{ type: "TASK_DISPATCHED" }], [{ type: "TASK_DISPATCHED", taskId: "" }], [{ type: "NOPE", taskId: "T" }], [{ type: "TASK_DISPATCHED", taskId: 42 }]]) {
+    await writeFile(statePath, JSON.stringify({ ...base, events: badEvents }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE", `events ${JSON.stringify(badEvents)} must fail closed as INVALID_SHAPE`);
+  }
+  for (const key of ["activeBuilders", "activeQa", "founderDecisions", "resolvedFounderGates"]) {
+    await writeFile(statePath, JSON.stringify({ ...base, [key]: "not-an-array" }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE", `${key} must fail closed as INVALID_SHAPE`);
+    await assert.rejects(() => runner.reconcile(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE", `${key} must block reconcile`);
+    assert.equal(await readFile(statePath, "utf8"), JSON.stringify({ ...base, [key]: "not-an-array" }), "corrupt state must not be overwritten");
+  }
+  await writeFile(statePath, JSON.stringify({ ...base, events: [{ type: "TASK_DISPATCHED", taskId: "T", projectId: "p", attempt: 1 }] }));
+  assert.deepEqual((await runner.load()).events.map((event) => event.type), ["TASK_DISPATCHED"]);
+  await writeFile(statePath, JSON.stringify({ ...base }));
+  const backfilled = await runner.load();
+  assert.deepEqual(backfilled.events, []);
+  assert.deepEqual(backfilled.activeBuilders, []);
+  assert.deepEqual(backfilled.activeQa, []);
+  await rm(root, { recursive: true, force: true });
+});
+
 test("non-ENOENT state read errors fail closed as corrupt instead of propagating raw", async () => {
   const root = await mkdtemp("/tmp/agent-relay-corrupt-read-");
   const statePath = join(root, "state-dir");

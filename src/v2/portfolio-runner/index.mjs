@@ -41,6 +41,14 @@ export function lastLifecycleEvent(state, taskId) {
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 
+export function isValidLifecycleEvent(event) {
+  return Boolean(event && typeof event === "object" && !Array.isArray(event)
+    && typeof event.type === "string" && LIFECYCLE_EVENT_TYPES.includes(event.type)
+    && typeof event.taskId === "string" && event.taskId.length > 0);
+}
+
+const OPTIONAL_STATE_ARRAYS = Object.freeze(["activeBuilders", "activeQa", "founderDecisions", "resolvedFounderGates"]);
+
 export const PORTFOLIO_STATE_CORRUPT = "PORTFOLIO_STATE_CORRUPT";
 
 export function isCorruptStateError(error) {
@@ -235,7 +243,18 @@ export class PortfolioRunner {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.tasks) || !parsed.tasks.every((task) => task && typeof task === "object" && !Array.isArray(task))) {
       throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
     }
-    if (!Array.isArray(parsed.events)) parsed.events = [];
+    for (const key of OPTIONAL_STATE_ARRAYS) {
+      if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+        throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
+      }
+    }
+    if (parsed.events === undefined) {
+      parsed.events = [];
+    } else if (!Array.isArray(parsed.events) || !parsed.events.every(isValidLifecycleEvent)) {
+      throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
+    }
+    if (parsed.activeBuilders === undefined) parsed.activeBuilders = [];
+    if (parsed.activeQa === undefined) parsed.activeQa = [];
     return parsed;
   }
   async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.catch(() => {}).then(async () => writeFileAtomic(this.statePath, JSON.stringify(snapshot, null, 2))); return this._saveChain; }
