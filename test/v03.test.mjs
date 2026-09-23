@@ -17,6 +17,20 @@ const PASS = (m) => console.log('  PASS  ' + m);
 const FAIL = (m) => { console.log('  FAIL  ' + m); process.exitCode = 1; };
 
 async function main() {
+  // ── P. Packaging — updater runtime inputs stay packaged ────────────────────
+  console.log('P1) electron-updater는 production dependency로 패키징됨');
+  const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+  if (packageJson.dependencies?.['electron-updater']
+    && !packageJson.devDependencies?.['electron-updater']) {
+    PASS('electron-updater is a production dependency');
+  } else FAIL('electron-updater must be a production dependency');
+
+  console.log('P2) packaged files에 updater가 쓰는 runtime server 포함');
+  const builderConfig = fs.readFileSync(path.join(process.cwd(), 'electron.builder.yml'), 'utf8');
+  if (/^\s*-\s*dist\/server\/\*\*\/\*\s*$/m.test(builderConfig)) {
+    PASS('electron-builder files include dist/server');
+  } else FAIL('electron-builder files must include dist/server/**/*');
+
   fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   relay.ensureDataRoot(TEST_ROOT);
 
