@@ -788,6 +788,18 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "ROOT_CAUSE_REPORT.md:272-274 `RemoteTransport now selects only a listed session with a non-numeric session name; numeric auto-numbered sessions such as $0 are rejected fail-closed`"
+        },
+        {
+          "taskId": "ACTL-PANE-BOARD-ALIASES",
+          "scope": "Replace pane-board pane renaming with persistent local display aliases while preserving real tmux rename behavior for sessions and windows, with offline regression coverage.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_aliases.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
