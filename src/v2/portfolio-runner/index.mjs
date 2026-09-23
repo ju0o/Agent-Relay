@@ -104,6 +104,23 @@ export const INTEGRATION_REF = "refs/heads/agent-relay/integration";
 const gitRef = (repo, ref) => exec("git", ["-C", repo, "rev-parse", "--verify", "-q", `${ref}^{commit}`]).then((r) => r.stdout.trim(), () => null);
 const isAncestor = (repo, a, b) => exec("git", ["-C", repo, "merge-base", "--is-ancestor", a, b]).then(() => true, () => false);
 
+// Reuse the project's installed deps (root and per-package, e.g. pnpm workspaces) so build/typecheck/test really run
+// in a worktree; the links are git-excluded so they are never committed.
+async function linkDeps(projectPath, path) {
+  const linked = [];
+  const walk = async (rel, depth) => {
+    if (existsSync(join(projectPath, rel, "node_modules")) && existsSync(join(path, rel)) && !existsSync(join(path, rel, "node_modules"))) { await symlink(join(projectPath, rel, "node_modules"), join(path, rel, "node_modules"), "dir"); linked.push(rel); }
+    if (depth >= 2) return;
+    for (const entry of await readdir(join(projectPath, rel), { withFileTypes: true }).catch(() => [])) if (entry.isDirectory() && !["node_modules", ".git"].includes(entry.name)) await walk(join(rel, entry.name), depth + 1);
+  };
+  await walk("", 0);
+  if (linked.length) {
+    const exclude = resolve(path, (await exec("git", ["-C", path, "rev-parse", "--git-path", "info/exclude"])).stdout.trim());
+    if (!(await readFile(exclude, "utf8").catch(() => "")).split(/\r?\n/).includes("node_modules")) { await mkdir(resolve(exclude, ".."), { recursive: true }); await appendFile(exclude, "\nnode_modules\n"); }
+  }
+  return linked;
+}
+
 export class WorktreeManager {
   constructor(root) { this.root = root; }
 
@@ -123,18 +140,7 @@ export class WorktreeManager {
     await mkdir(this.root, { recursive: true });
     await exec("git", ["-C", project.path, "worktree", "add", "--detach", path, base]);
     // Reuse the project's installed deps so Worker and QA can really build/typecheck/test (a fresh worktree has none).
-    // Workspaces (pnpm) keep node_modules per package too, so link every one within 3 levels that the worktree lacks.
-    const linked = [];
-    const walk = async (rel, depth) => {
-      if (existsSync(join(project.path, rel, "node_modules")) && existsSync(join(path, rel)) && !existsSync(join(path, rel, "node_modules"))) { await symlink(join(project.path, rel, "node_modules"), join(path, rel, "node_modules"), "dir"); linked.push(rel); }
-      if (depth >= 2) return;
-      for (const entry of await readdir(join(project.path, rel), { withFileTypes: true }).catch(() => [])) if (entry.isDirectory() && !["node_modules", ".git"].includes(entry.name)) await walk(join(rel, entry.name), depth + 1);
-    };
-    await walk("", 0);
-    if (linked.length) {
-      const exclude = resolve(path, (await exec("git", ["-C", path, "rev-parse", "--git-path", "info/exclude"])).stdout.trim());
-      if (!(await readFile(exclude, "utf8").catch(() => "")).split(/\r?\n/).includes("node_modules")) { await mkdir(resolve(exclude, ".."), { recursive: true }); await appendFile(exclude, "\nnode_modules\n"); }
-    }
+    await linkDeps(project.path, path);
     return { path, base, projectId: project.id, async cleanup() { await exec("git", ["-C", project.path, "worktree", "remove", "--force", path]).catch(() => {}); await rm(path, { recursive: true, force: true }); } };
   }
 
@@ -151,7 +157,7 @@ export class WorktreeManager {
     try {
       try { await exec("git", ["-C", scratch, "-c", "user.name=Agent Relay", "-c", "user.email=agent-relay@localhost", "cherry-pick", "--allow-empty", `${base}..${commit}`]); }
       catch (error) { await exec("git", ["-C", scratch, "cherry-pick", "--abort"]).catch(() => {}); return { state: "CONFLICT", reason: String(error.message || error).slice(0, 500), tip }; }
-      for (const dir of ["node_modules"]) if (existsSync(join(project.path, dir))) await symlink(join(project.path, dir), join(scratch, dir), "dir").catch(() => {});
+      await linkDeps(project.path, scratch);
       const result = await gate(scratch, task.tests);
       if (!result.ok) { const failed = result.results.find((item) => item.code !== 0); return { state: "GATE_FAILED", reason: failed ? `${failed.cmd} exit ${failed.code}: ${failed.tail.slice(-800)}` : "gate failed", tip }; }
       const merged = (await exec("git", ["-C", scratch, "rev-parse", "HEAD"])).stdout.trim();
