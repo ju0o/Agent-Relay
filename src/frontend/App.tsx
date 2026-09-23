@@ -116,7 +116,13 @@ function hasUnsavedTabs(session: ProjectSession): boolean {
 }
 
 // 초기 세션 — 모듈 로드 시 단 한 번 생성
+const LAST_AGENT_STORAGE_KEY = 'agent-relay:last-agent';
+function lastSelectedAgent(): string | undefined {
+  try { return localStorage.getItem(LAST_AGENT_STORAGE_KEY) || undefined; }
+  catch { return undefined; }
+}
 const _initSess = makeSession();
+if (lastSelectedAgent()) _initSess.tabs[0]!.agent = lastSelectedAgent()!;
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 function todayLocal(): string {
@@ -489,6 +495,7 @@ function AppInner(): React.ReactElement {
 
   // ── 에이전트 변경 (탭 내) ─────────────────────────────────────────────────────
   async function changeTabAgent(tabId: string, agent: string): Promise<void> {
+    try { localStorage.setItem(LAST_AGENT_STORAGE_KEY, agent); } catch { /* 무시 */ }
     updateTab(tabId, { agent, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false });
     const n = await peekNextRun(project, agent, date);
     if (n !== null) updateTab(tabId, { run: n });
