@@ -1297,6 +1297,34 @@
       "qaRuntime": [
         "opencode",
         "codex"
+      ],
+      "tasks": [
+        {
+          "taskId": "JUCEIPT-M2-011-DEPENDENCY-IMPACT",
+          "scope": "Surface the newly added runtime dependency as a dependency_change material impact in m2-011 while preserving explicit temporary verification-install exclusions.",
+          "files": [
+            "src/reconciler/index.ts",
+            "tests/reconciler.test.ts",
+            "m2/tasks/m2-011/receipt.json",
+            "m2/tasks/m2-011/receipt.html"
+          ],
+          "tests": [
+            "npm run build && npm test"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: surface a newly added runtime dependency as a material impact in the receipt (m2-011)"
+        },
+        {
+          "taskId": "JUCEIPT-M2-012-COST-UNKNOWN-GAP",
+          "scope": "Prevent READY when cost is unknown by emitting an explicit material_unknown acceptance gap and cover known-cost and unknown-cost behavior.",
+          "files": [
+            "src/reconciler/index.ts",
+            "tests/reconciler.test.ts"
+          ],
+          "tests": [
+            "npm run build && npm test"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: never mark a receipt READY while cost is unknown without an explicit acceptance gap (m2-012)"
+        }
       ]
     },
     {
