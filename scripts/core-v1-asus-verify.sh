@@ -6,6 +6,7 @@ VERIFY_ROOT="${AGENT_RELAY_VERIFY_ROOT:-/home/skkse12/Desktop/Projects/Core/Agen
 VERIFY_BRANCH="${AGENT_RELAY_VERIFY_BRANCH:-feat/core-v1-auto-dev-team-01}"
 DATA_ROOT="${AGENT_RELAY_VERIFY_DATA_ROOT:-$HOME/.local/share/AgentRelay/data/core-v1-pr8-verify}"
 FOUNDER_OUTBOX="${AGENT_RELAY_VERIFY_FOUNDER_OUTBOX:-$HOME/.local/share/AgentRelay/data/founder-outbox/core-v1-pr8-verify}"
+REMOTE_REF="refs/remotes/origin/$VERIFY_BRANCH"
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -17,13 +18,13 @@ if ! git -C "$PRIMARY_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; the
 fi
 
 log "Fetch PR #8 branch without touching the primary checkout"
-git -C "$PRIMARY_REPO" fetch origin "$VERIFY_BRANCH"
+git -C "$PRIMARY_REPO" fetch origin "$VERIFY_BRANCH:$REMOTE_REF"
 
 log "Recreate isolated verification worktree"
 git -C "$PRIMARY_REPO" worktree remove --force "$VERIFY_ROOT" >/dev/null 2>&1 || true
 rm -rf "$VERIFY_ROOT"
 git -C "$PRIMARY_REPO" worktree prune
-git -C "$PRIMARY_REPO" worktree add --detach "$VERIFY_ROOT" "origin/$VERIFY_BRANCH"
+git -C "$PRIMARY_REPO" worktree add --detach "$VERIFY_ROOT" "$REMOTE_REF"
 
 cd "$VERIFY_ROOT"
 
