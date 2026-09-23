@@ -1004,6 +1004,37 @@ html, body, #app {
 .control-card p { margin: 6px 0; }.control-card-value { font-size: 16px; font-weight: 700; word-break: break-word; }
 .control-card.blocked { border-color: var(--danger); }.control-card.human { border-color: var(--warn); }
 .control-empty { display: grid; place-items: center; min-height: 240px; color: var(--muted); }
+/* ── Control Room actions (CR-07) ─────────────────────────── */
+.control-card.wide { grid-column: span 2; }
+.control-actions { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.chain-editor { border-top: 1px dashed var(--border); padding-top: 10px; }
+.chain-editor h4 { margin: 0 0 4px; font-size: 13px; }
+.chain-editor .muted { margin: 0 0 8px; font-size: 11px; }
+.chain-picks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.chain-pick {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg3); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 11px; cursor: pointer; font-size: 12px;
+}
+.chain-pick:hover { color: var(--fg); border-color: var(--accent); }
+.chain-pick.selected { color: var(--fg); border-color: var(--accent); background: rgba(78,161,255,0.12); }
+.chain-order {
+  display: inline-grid; place-items: center;
+  min-width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent); color: #08121f;
+  font-size: 11px; font-weight: 700; padding: 0 4px;
+}
+.chain-current { font-size: 12px; }
+.resume-control { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.control-status { font-size: 12px; margin: 6px 0 0; }
+.control-status.pending { color: var(--warn); }
+.control-status.done { color: var(--accent2); }
+.control-status.error { color: var(--danger); }
+.gate-fieldset { border: 1px solid var(--warn); border-radius: 8px; padding: 10px; margin: 0; }
+.gate-fieldset legend { font-weight: 700; padding: 0 6px; }
+.gate-id { font-size: 11px; }
+.save-rule { display: flex; align-items: center; gap: 8px; padding: 8px 0; cursor: pointer; font-size: 12px; }
 /* ── Plan Studio ─────────────────────────────────────────── */
 .plan-studio-grid { display: grid; grid-template-columns: 220px 1fr 320px; gap: 12px; align-items: start; }
 .plan-projects .plan-project-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
