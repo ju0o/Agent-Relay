@@ -2045,6 +2045,19 @@
             "git diff --check"
           ],
           "ssotEvidence": "Founder direction 2026-09-23: score the 14 M2 corpus tasks first (receipt vs claude-final, planning-only output in JuCeipt-Private)"
+        },
+        {
+          "taskId": "JUCEIPTPLAN-B0-B2-PHASE-RECONCILIATION",
+          "scope": "Reconcile B0/B1/B2 names and dependencies across WBS, GTM, and canonical HTML with one bounded phase table, explicitly leaving the B0-as-M2-alias versus separate-demand-gate choice unresolved for the Founder.",
+          "files": [
+            "docs/planning/BUSINESS_PRODUCT_WBS.md",
+            "docs/business/GROWTH_MONETIZATION_GTM.md",
+            "docs/visual/05_BUSINESS_SYSTEM_COMPLETE_MAP.html"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-24"
         }
       ]
     }
