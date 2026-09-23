@@ -678,16 +678,23 @@
       "active": true,
       "pmChannel": "pm/juceipt",
       "pmTransport": "codex-chatgpt-web",
-      "pmState": "NOT_CONNECTED",
+      "pmState": "NIGHT_PLAN_PM",
       "path": "/home/skkse12/Desktop/Projects/Team/JuCeipt",
       "ssot": "/home/skkse12/Desktop/Projects/Team/JuCeipt-Private/docs/operations/PM_STATUS_BOARD.md",
-      "owner": "claude",
-      "runtime": "claude",
+      "owner": "codex",
+      "runtime": [
+        "codex",
+        "opencode"
+      ],
       "state": "BLOCKED_SCOPE",
       "blockers": [
         "M2 Retry 01 exact patch requires isolated worktree and independent QA",
         "Primary checkout dirty; preserve all user changes",
         "M2 PM REVIEW remains open"
+      ],
+      "qaRuntime": [
+        "opencode",
+        "codex"
       ]
     },
     {
