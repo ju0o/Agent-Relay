@@ -193,6 +193,14 @@ test("completed WBS section degrades gracefully without completed tasks", () => 
   assert.match(report, /qa-t1/);
   assert.match(report, /qa ok/);
 });
+
+test("Night Report includes only bounded lifecycle count and latest event", () => {
+  const latest = { type: "TASK_COMPLETED", taskId: "T-501", projectId: "agent-relay", state: "VERIFIED_DONE" };
+  const record = { runId: "lifecycle", startedAt: "2026-09-23T17:00:00.000Z", endReason: "DEADLINE_COMPLETE", deadline: "2026-09-23T18:00:00.000Z", shutdownState: "DRAINED", lifecycleEventCount: 501, latestLifecycleEvent: latest, lanes: [] };
+  const report = buildNightReport(record);
+  assert.match(report, /## Lifecycle evidence\n- lifecycleEventCount: 500\n- latestLifecycleEvent: TASK_COMPLETED task=T-501 project=agent-relay state=VERIFIED_DONE/);
+  assert.doesNotMatch(report, /events/);
+});
 test("MainPC wrapper pulls from ASUS and fails closed before destructive commands", () => {
   const wrapper = readFileSync(new URL("../../scripts/core-night.ps1", import.meta.url), "utf8");
   assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--no-poweroff/); assert.match(wrapper, /scp @transportArgs/);

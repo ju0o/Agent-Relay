@@ -14,6 +14,7 @@ export const DEFAULT_DEADLINE = "03:00";
 export const DEFAULT_SEND_TO_MAINPC = "/home/skkse12/.agents/skills/send-to-mainpc/scripts/send-to-mainpc.sh";
 const TERMINAL = new Set(["COMPLETE", "V1_COMPLETE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
 const COMPLETE_REASONS = new Set(["WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT"]);
+const MAX_LIFECYCLE_EVENTS = 500;
 
 export const NIGHT_CHECKPOINT_MISSING = "NIGHT_CHECKPOINT_MISSING";
 export const NIGHT_CHECKPOINT_CORRUPT = "NIGHT_CHECKPOINT_CORRUPT";
@@ -104,7 +105,9 @@ export function buildNightReport(record) {
   const completedResultTests = lastCompleted && Array.isArray(lastCompleted.tests) ? lastCompleted.tests : resultTests;
   const completedSummary = lastCompleted?.summary ?? record.resultSummary ?? "-";
   const completedEvidence = completedTasks.map((task) => `- ${task.project || "-"}/${task.taskId || "-"}: result=${task.resultStatus || "-"}, commit=${task.commitSha || "-"}, files=${(task.changedFiles || []).join(", ") || "-"}, tests=${[...(task.tests || []), ...(task.qaTests || [])].join(", ") || "-"}, QA=${task.qaState || "-"}, summary=${task.summary || "-"}`).join("\n") || "- none";
-  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${completedRef}`, `- resultStatus: ${completedStatus || "-"}`, `- promotion: ${completedPromotion || "-"}`, `- commitSha: ${completedCommit || "-"}`, `- changedFiles: ${completedFiles.join(", ") || "-"}`, `- resultTests: ${completedResultTests.join(", ") || "-"}`, `- resultSummary: ${completedSummary || "-"}`, "", "## Completed tasks evidence", completedEvidence, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, `- qaTests: ${qaTests.join(", ") || "-"}`, `- qaFindings: ${qaFindings.join(", ") || "-"}`, `- qaSummary: ${record.qaSummary || "-"}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
+  const latest = record.latestLifecycleEvent;
+  const latestLifecycle = latest ? `${latest.type || "-"} task=${latest.taskId || "-"} project=${latest.projectId || "-"}${latest.state ? ` state=${latest.state}` : ""}${latest.reason ? ` reason=${latest.reason}` : ""}` : "-";
+  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Lifecycle evidence", `- lifecycleEventCount: ${Math.min(Math.max(0, Number(record.lifecycleEventCount) || 0), MAX_LIFECYCLE_EVENTS)}`, `- latestLifecycleEvent: ${latestLifecycle}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${completedRef}`, `- resultStatus: ${completedStatus || "-"}`, `- promotion: ${completedPromotion || "-"}`, `- commitSha: ${completedCommit || "-"}`, `- changedFiles: ${completedFiles.join(", ") || "-"}`, `- resultTests: ${completedResultTests.join(", ") || "-"}`, `- resultSummary: ${completedSummary || "-"}`, "", "## Completed tasks evidence", completedEvidence, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, `- qaTests: ${qaTests.join(", ") || "-"}`, `- qaFindings: ${qaFindings.join(", ") || "-"}`, `- qaSummary: ${record.qaSummary || "-"}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
 }
 
 export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), scriptPath = process.env.AGENT_RELAY_SEND_TO_MAINPC || DEFAULT_SEND_TO_MAINPC, execFileImpl = execFile }) {
@@ -145,6 +148,7 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
   const task = currentTask(state);
   const completedTasks = (state.tasks || []).filter((item) => item.state === "VERIFIED_DONE").map((item) => ({ project: item.projectId || null, taskId: item.taskId || null, resultStatus: item.result?.status || null, changedFiles: Array.isArray(item.result?.changedFiles) ? [...item.result.changedFiles] : [], tests: Array.isArray(item.result?.tests) ? [...item.result.tests] : [], commitSha: item.result?.commitSha || null, promotionRef: item.promotionRef || null, qaState: item.qa?.verdict || null, qaTests: Array.isArray(item.qa?.tests) ? [...item.qa.tests] : [], summary: item.result?.summary || null }));
   const completed = completedTasks.at(-1) || null;
+  const lifecycleEvents = Array.isArray(state.events) ? state.events.slice(-MAX_LIFECYCLE_EVENTS) : [];
   return {
     schema: "agent-relay.last-night-run.v1", runId, startedAt, deadline, freezeAt, checkpointAt, endedAt, endReason, shutdownState,
     project: task?.projectId || null, taskId: task?.taskId || null,
@@ -161,6 +165,8 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
     qaFindings: Array.isArray(task?.qa?.findings) ? [...task.qa.findings] : [],
     qaSummary: task?.qa?.summary || null,
     completedTasks,
+    lifecycleEventCount: lifecycleEvents.length,
+    latestLifecycleEvent: lifecycleEvents.at(-1) || null,
     blocker: task?.error || task?.blocker || null, resumeRequired,
     lanes: state.projects || [], updatedAt: new Date().toISOString(),
   };
