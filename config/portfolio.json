@@ -325,7 +325,8 @@
             "packages/project-scanner/test/scan.test.ts"
           ],
           "tests": [
-            "pnpm --filter @juplan/project-scanner test"
+            "pnpm --filter @juplan/project-scanner test",
+            "pnpm typecheck"
           ],
           "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:68 DEC-G011: test-directory docs/config files are double-classified"
         },
@@ -337,7 +338,8 @@
             "packages/agent-provider/test/claude-code-provider.test.ts"
           ],
           "tests": [
-            "pnpm --filter @juplan/agent-provider test"
+            "pnpm --filter @juplan/agent-provider test",
+            "pnpm typecheck"
           ],
           "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:70 DEC-G013: valid is_error/non-string CLI envelopes receive a misleading parse error"
         },
@@ -348,7 +350,8 @@
             "packages/agent-provider/test/claude-code-provider.test.ts"
           ],
           "tests": [
-            "pnpm --filter @juplan/agent-provider test"
+            "pnpm --filter @juplan/agent-provider test",
+            "pnpm typecheck"
           ],
           "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:71 DEC-G014: default invokeClaudeCli ENOENT/nonzero paths lack vitest coverage"
         }
