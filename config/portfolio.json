@@ -522,6 +522,35 @@
             "npm run build:client"
           ],
           "ssotEvidence": "Founder direction 2026-09-23 (chat: 승인 내역 삭제 수정 및 승인 구조); approval rule A-01"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-04-PLAN-STUDIO-BACKEND",
+          "scope": "Founder-approved Plan Studio (canvas PlanStudio artboard, 2026-09-23): extend src/backend/controlRoom.ts with relay IPC ops planStudio:get, planStudio:save, planStudio:chat, planStudio:approve, gates:list and gates:answer that run `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night roadmap get|save|chat|approve <project> --json` and `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night gate list|answer <gateId> <optionIndex> --json` via execFile (no shell, injectable exec); validate project ids /^[a-z][a-z0-9-]{1,40}$/, gate ids /^[A-Za-z0-9_-]{1,64}$/ and option indexes as small integers before spawning; save passes the draft through stdin, never argv; tests use a fake exec only",
+          "files": [
+            "src/backend/controlRoom.ts",
+            "src/shared/types.ts",
+            "test/controlRoom.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/controlRoom.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (chat: 다이어그램으로 Task 제작 → 승인하면 자동 진행); approval rule A-01"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-05-PLAN-STUDIO-VIEW",
+          "scope": "Founder-approved Plan Studio view (src/frontend/planStudio.tsx, reachable from the topbar next to Control Room) matching the canvas PlanStudio artboard: project list; Goal card and Task chain with a 7-step progress row per task fed by controlRoom:board; PM chat panel (planStudio:chat) that updates the draft diagram; '계획 승인 → 자동 진행' (planStudio:approve); editable task title/remove for tasks not started (planStudio:save); run-policy radios (continue vs stop after each task); a detail panel for the selected node (current step, agents, blocker, expected risk); Human Gate shown as a multiple-choice fieldset that submits gates:answer",
+          "files": [
+            "src/frontend/planStudio.tsx",
+            "src/frontend/App.tsx",
+            "src/frontend/style.css"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (Plan Studio prototype); approval rule A-01"
         }
       ],
       "qaRuntime": [
