@@ -246,6 +246,30 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-V1-PROD-DEVTOOLS-GATE",
+          "scope": "Allow F12 and Ctrl+Shift+I DevTools only when the Electron app is not packaged.",
+          "files": [
+            "src/backend/main.ts"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build"
+          ],
+          "ssotEvidence": "BACKLOG.md:26 \"DevTools가 production에서도 F12로 열림\""
+        },
+        {
+          "taskId": "AGENTRELAY-V1-RESTORE-LAST-AGENT",
+          "scope": "Persist and restore the last selected agent for the initial work tab without restoring unsaved prompt or result content.",
+          "files": [
+            "src/frontend/App.tsx"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build"
+          ],
+          "ssotEvidence": "BACKLOG.md:34 \"마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원\""
         }
       ]
     },
@@ -298,6 +322,18 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"Windows process/handshake counts, fault recovery ... require independent QA\"; Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "ACTL-TUI-EVENT-COALESCE",
+          "scope": "Make remote TUI refreshes event-aware: perform full refreshes only for topology events, throttle pane-local output/state events, preserve the 60-second health fallback, and add offline regression coverage.",
+          "files": [
+            "src/actl/tui.py",
+            "tests/test_tui.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:15-16 \"A refresh expanded into roughly 19 logical remote operations\"; docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:45-46 \"topology notifications ... a 60-second health refresh is the fallback\""
         }
       ]
     },
@@ -354,6 +390,34 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:71 DEC-G014: default invokeClaudeCli ENOENT/nonzero paths lack vitest coverage"
+        },
+        {
+          "taskId": "JUPLAN-G015-EXPORT-BOUNDARY",
+          "scope": "Enforce the AgentProvider type-only root export while exposing ClaudeCodeProvider through an explicit implementation subpath without changing V1 behavior.",
+          "files": [
+            "packages/agent-provider/package.json",
+            "packages/agent-provider/src/index.ts",
+            "packages/runtime/src/index.ts",
+            "packages/runtime/tsconfig.typecheck.json"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/agent-provider test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "DECISION_LOG.md:72 \"packages/agent-provider root re-exports ClaudeCodeProvider alongside types; Core depends on types.ts only is convention, not package-export enforced\""
+        },
+        {
+          "taskId": "JUPLAN-G009-ROOT-ENTRYPOINT",
+          "scope": "Scope the scanner's index-file entry-point heuristic to the scanned package root so an index file in a workspace sub-package cannot suppress the root entry-point GAP.",
+          "files": [
+            "packages/project-scanner/src/scan.ts",
+            "packages/project-scanner/test/scan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/project-scanner test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "DECISION_LOG.md:67 \"P2 scanner's entry-point Gap heuristic checks for index.* anywhere in the scanned tree, not scoped to the root package specifically\""
         }
       ]
     },
@@ -413,6 +477,18 @@
             "node -e \"JSON.parse(require('fs').readFileSync('docs/integration/project-status.schema.json','utf8'))\""
           ],
           "ssotEvidence": "docs/CONTROL_TOWER_TARGET_ARCHITECTURE.md:200-209 \"Human selection/화면 표시 | Control Tower | source ref + observedAt을 가진 projection. 별도 업무 DB를 만들지 않음\""
+        },
+        {
+          "taskId": "JUCONTROLER-PROJECT-REGISTRY-READONLY",
+          "scope": "Add a stdlib-only read-only project registry loader that validates explicit projectId, workspaceRoot, dataRoot, and sourceRef entries without mutating project state.",
+          "files": [
+            "src/project-registry.mjs",
+            "tests/project-registry.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs"
+          ],
+          "ssotEvidence": "JuControler-Private/docs/CONTROL_TOWER_INTEGRATION_REBASELINE.md:335 \"Project ID ↔ 승인 workspace/dataRoot binding | Relay project configuration\""
         }
       ]
     }
