@@ -551,6 +551,52 @@
             "npm run build:client"
           ],
           "ssotEvidence": "Founder direction 2026-09-23 (Plan Studio prototype); approval rule A-01"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-06-CONTROL-ACTIONS-BACKEND",
+          "scope": "Control Room write actions (canvas Next item 02): extend src/backend/controlRoom.ts with relay IPC ops controlRoom:laneSet, controlRoom:resume and controlRoom:approvalAdd that run `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night lane set <project> worker|qa <runtime,...> --json`, `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night roadmap resume <project> --json` and `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night approvals add <category> <summary> --source app` via execFile (no shell, injectable exec, 10s timeout). Validate before spawning: project /^[a-z][a-z0-9-]{1,40}$/, role worker|qa, runtimes from the fixed set codex,opencode,cline,grok,cursor,claude,claude-team,claude-pro (1-4, no duplicates), category /^[a-z-]{2,30}$/, summary 1-200 chars. Because ssh joins remote arguments into a remote shell command line, every remote argument must be POSIX single-quoted by one helper (wrap in ' and replace ' with '\\''); add the ops to the RelayRequest union in src/shared/types.ts; tests with a fake exec cover each op, each rejection, and that a summary containing \"'; rm -rf ~\" reaches the fake exec only as one single-quoted argument",
+          "files": [
+            "src/backend/controlRoom.ts",
+            "src/shared/types.ts",
+            "test/controlRoom.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/controlRoom.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (canvas Next artboard items 02/04/05: '더 고도화할 내용있으면 Canvas로 공유해주고 이후 다음 이어서 계속 작업'); approval rule A-01",
+          "title": "Control Room write actions (canvas Next item 02): extend src"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-07-CONTROL-ACTIONS-VIEW",
+          "scope": "Control Room buttons (canvas Next item 02) in src/frontend/controlRoom.tsx: per lane an 'Agent 바꾸기' editor for the worker and QA chains (ordered pick from the 8 runtime ids, first = preferred, rest = quota fallback) that submits controlRoom:laneSet; a '다시 시작' button on a paused lane (controlRoom:resume); each Human Gate card rendered as a multiple-choice fieldset that submits gates:answer; next to an answer, an '승인 + 규칙으로 저장' checkbox that also submits controlRoom:approvalAdd with the gate summary. Every action shows pending/done/error inline and re-polls controlRoom:board; neverAuto categories never offer the save-as-rule checkbox",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/frontend/style.css"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (canvas Next artboard items 02/04/05: '더 고도화할 내용있으면 Canvas로 공유해주고 이후 다음 이어서 계속 작업'); approval rule A-01",
+          "title": "Control Room buttons (canvas Next item 02) in src/frontend/c"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-08-MODEL-AND-APPROVAL-STATS",
+          "scope": "Model quota board and approval learning (canvas Next items 04/05): board JSON now carries models: {runtimeId: {runs, quota?, failed?}} and approval rules carry usedCount/lastUsedAt. Add the optional fields to the board/approval types in src/shared/types.ts; in src/frontend/controlRoom.tsx add a '모델 사용량' panel listing each runtime with runs, quota hits and failures (quota hits highlighted); in src/frontend/approvals.tsx show '자동 승인 N회 · 마지막 YYYY-MM-DD' per rule and sort rules within a category by usedCount. Missing fields render as 0 / '-'",
+          "files": [
+            "src/shared/types.ts",
+            "src/frontend/controlRoom.tsx",
+            "src/frontend/approvals.tsx",
+            "src/frontend/style.css"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23 (canvas Next artboard items 02/04/05: '더 고도화할 내용있으면 Canvas로 공유해주고 이후 다음 이어서 계속 작업'); approval rule A-01",
+          "title": "Model quota board and approval learning (canvas Next items 0"
         }
       ],
       "qaRuntime": [
@@ -700,6 +746,20 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 \"repeated preview 10s timeout\""
+        },
+        {
+          "taskId": "ACTL-DISCOVER-JSON",
+          "scope": "Read-only machine output for Agent Relay's Control Room tmux panel (canvas Next item 03): `actl discover --json` prints exactly one JSON object {\"panes\": [{\"paneId\", \"cwd\", \"command\", \"detected\", \"confidence\", \"mapping\", \"evidence\", \"tail\"}]} instead of the table, where tail is the last 3 non-empty lines of the pane from the existing core.tmux.capture_pane (history 50, errors give an empty list). It never modifies config, and --json together with --apply is rejected with a non-zero exit. Extend the existing --json help text. Add tests/test_discover_json.py with fake detections and a fake capture covering output shape, empty discovery, a capture error and the --apply rejection, and register it in tests/run_tests.py if that runner lists modules explicitly",
+          "files": [
+            "src/actl/cli.py",
+            "tests/test_discover_json.py",
+            "tests/run_tests.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: 'actl로 tmux pane 모니터링 … 각 프로젝트별 흐름을 실시간으로' (Control Room); canvas Next item 03; approval rule A-01",
+          "title": "Read-only machine output for Agent Relay's Control Room tmux"
         }
       ],
       "qaRuntime": [
