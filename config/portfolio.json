@@ -1128,6 +1128,28 @@
             "git diff --check"
           ],
           "ssotEvidence": "docs/planning/BUSINESS_PRODUCT_WBS.md:57-76 \"Truth lineage\" and \"Anonymous → account identity\" checks"
+        },
+        {
+          "taskId": "JUCEIPTPLAN-WBS-ENTITY-GATE-MATRIX",
+          "scope": "Audit and document which D0-D5 ERD entity groups activate at each WBS gate, identify any ambiguous or contradictory phase wording, and record only bounded planning-document corrections without implementation authorization.",
+          "files": [
+            "docs/qa/P0_WBS_ENTITY_GATE_MATRIX_AUDIT.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "docs/planning/BUSINESS_PRODUCT_WBS.md:46-55 \"P0 — Business Architecture Planning Gate\" and \"M2 remains current product implementation milestone\"; Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUCEIPTPLAN-CANONICAL-HTML-TRACEABILITY-QA",
+          "scope": "Review canonical HTML 05 for canonical-versus-history labeling, phase/state traceability, and visible planning-only boundaries against the SSOT, then record bounded findings or corrections without changing product code or making gate decisions.",
+          "files": [
+            "docs/qa/P0_CANONICAL_HTML_TRACEABILITY_AUDIT.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:75-84 \"Canonical planning artifacts\" and \"05 is canonical\"; Founder direction 2026-09-23"
         }
       ]
     }
