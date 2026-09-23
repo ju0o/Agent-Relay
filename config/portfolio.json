@@ -542,6 +542,18 @@
             "node --test tests/project-registry.test.mjs"
           ],
           "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory\" with generated current.json projection; docs/vnext/JUCONTROLER_VNEXT_SSOT.md:47-48 \"Unknown is a valid state\""
+        },
+        {
+          "taskId": "JUCONTROLER-STATUS-BOARD-READER",
+          "scope": "Add a read-only multi-project status board reader that loads registered projects in registry order from each dataRoot/current.json, preserves opaque statuses, and returns UNKNOWN with stale=true for unavailable or invalid snapshots without writing any source or registry data.",
+          "files": [
+            "src/project-status.mjs",
+            "tests/project-registry.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/project-registry.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ]
     }
