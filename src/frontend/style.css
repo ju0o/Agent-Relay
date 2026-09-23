@@ -1004,4 +1004,26 @@ html, body, #app {
 .control-card p { margin: 6px 0; }.control-card-value { font-size: 16px; font-weight: 700; word-break: break-word; }
 .control-card.blocked { border-color: var(--danger); }.control-card.human { border-color: var(--warn); }
 .control-empty { display: grid; place-items: center; min-height: 240px; color: var(--muted); }
+/* ── Plan Studio ─────────────────────────────────────────── */
+.plan-studio-grid { display: grid; grid-template-columns: 220px 1fr 320px; gap: 12px; align-items: start; }
+.plan-projects .plan-project-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.plan-project { border: 1px solid var(--border); background: transparent; color: var(--fg); border-radius: 7px; padding: 7px 10px; cursor: pointer; text-align: left; font-size: 12px; }
+.plan-project:hover { border-color: var(--accent); }
+.plan-project.active { background: rgba(78,161,255,0.12); border-color: var(--accent); }
+.plan-center { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.plan-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.plan-tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.plan-task { border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.plan-task.selected { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(78,161,255,0.12); }
+.plan-task-head { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; background: transparent; border: 0; color: var(--fg); cursor: pointer; padding: 0 0 8px; }
+.plan-task-title { font-weight: 700; font-size: 13px; text-align: left; }
+.plan-steps { margin-bottom: 0; }
+.plan-task-edit { display: flex; gap: 6px; margin-top: 8px; }
+.plan-task-edit input { flex: 1; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+.plan-radio { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
+.plan-chat-form { display: flex; flex-direction: column; gap: 8px; }
+.plan-chat-form textarea { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; resize: vertical; font-family: inherit; }
+.plan-gate { border: 1px solid var(--warn); border-radius: 8px; padding: 10px; margin: 0 0 10px; }
+.plan-gate legend { font-weight: 700; padding: 0 6px; }
+@media (max-width: 1100px) { .plan-studio-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .control-room { padding: 16px; }.control-flow { gap: 2px; }.control-step { font-size: 10px; }.control-step-dot { width: 24px; height: 24px; } }

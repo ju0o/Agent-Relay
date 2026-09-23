@@ -9,6 +9,7 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
+import { PlanStudio } from './planStudio.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
@@ -180,15 +181,7 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
   );
 }
 
-// Plan Studio: 아직 전용 백엔드가 없어 시작 화면 진입용 읽기 전용 안내 패널만 제공한다.
-function PlanStudioPanel({ onClose }: { onClose: () => void }): React.ReactElement {
-  return (
-    <main className="control-room">
-      <div className="control-room-head"><div><h1>Plan Studio</h1><p className="muted">읽기 전용 · 시작 화면 진입</p></div><button className="btn" onClick={onClose}>닫기</button></div>
-      <div className="control-empty">Plan Studio 시작 화면입니다.</div>
-    </main>
-  );
-}
+// Plan Studio는 전용 뷰(src/frontend/planStudio.tsx)로 제공한다.
 
 // ── Pointer Reorder fallback (touch) — 순수 헬퍼 (test/v03 검증용 export) ──────
 // HTML5 DnD는 마우스 전용이라 터치에서는 동작하지 않는다.
@@ -1171,6 +1164,11 @@ function AppInner(): React.ReactElement {
               onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
             >🛰 Control Room</button>
             <button
+              className={`mini df-toggle${planStudioMode ? ' on' : ''}`}
+              title="Plan Studio — Goal · Task chain · PM chat"
+              onClick={() => { setPlanStudioMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setControlRoomMode(false); }}
+            >🧪 Plan Studio</button>
+            <button
               className="mini"
               title="설정 — 저장공간(Storage)"
               onClick={() => setShowSettings(true)}
@@ -1189,7 +1187,7 @@ function AppInner(): React.ReactElement {
           ) : approvalsMode ? (
             <ApprovalsPanel onClose={() => setApprovalsMode(false)} />
           ) : planStudioMode ? (
-            <PlanStudioPanel onClose={() => setPlanStudioMode(false)} />
+            <PlanStudio onClose={() => setPlanStudioMode(false)} />
           ) : dfMode ? (
             /* ── App Dogfooding 패널 — Agent Relay 앱 자체 개선 기록 ── */
             <DogfoodPanel
