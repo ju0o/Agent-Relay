@@ -100,6 +100,7 @@ export function buildCoreV1Snapshot(manifest, state) {
     const tasks = state.tasks.filter((task) => task.projectId === project.id);
     const task = tasks.at(-1) || null;
     const next = nextDefinition(project, state);
+    const lifecycleEvents = (Array.isArray(state.events) ? state.events : []).filter((event) => event.projectId === project.id);
     return {
       project: project.id,
       pm: { channel: project.pmChannel || `pm/${project.id}`, state: project.pmState || project.state || "UNKNOWN" },
@@ -111,6 +112,8 @@ export function buildCoreV1Snapshot(manifest, state) {
       next: task?.state === "VERIFIED_DONE" ? next?.taskId || null : null,
       blocker: task?.error || task?.blocker || project.blockers?.[0] || null,
       founderGate: project.gateId ? { gateId: project.gateId, packet: project.gatePacket || null } : null,
+      lifecycleEventCount: lifecycleEvents.length,
+      latestLifecycleEvent: lifecycleEvents.at(-1) || null,
     };
   });
   return { schema: "agent-relay.core-v1.inbox.v1", program: "CORE_V1", service: state.service || "UNKNOWN", updatedAt: state.updatedAt || null, lanes };
@@ -118,7 +121,7 @@ export function buildCoreV1Snapshot(manifest, state) {
 
 export function formatCoreV1Text(snapshot) {
   const lines = [`CORE_V1 ${snapshot.service} · ${snapshot.updatedAt || "no timestamp"}`];
-  for (const lane of snapshot.lanes) lines.push(`${lane.project} | PM=${lane.pm.state} ${lane.pm.channel} | task=${lane.currentTask || "-"} | worker=${lane.worker.runtime}/${lane.worker.state}${lane.worker.pid ? `#${lane.worker.pid}` : ""} | result=${lane.result?.status || "-"} | QA=${lane.qa.verdict || "-"} | retries=${lane.retries} | next=${lane.next || "-"} | blocker=${lane.blocker || "-"}${lane.founderGate ? ` | FOUNDER_GATE=${lane.founderGate.gateId}` : ""}`);
+  for (const lane of snapshot.lanes) lines.push(`${lane.project} | PM=${lane.pm.state} ${lane.pm.channel} | task=${lane.currentTask || "-"} | worker=${lane.worker.runtime}/${lane.worker.state}${lane.worker.pid ? `#${lane.worker.pid}` : ""} | result=${lane.result?.status || "-"} | QA=${lane.qa.verdict || "-"} | retries=${lane.retries} | next=${lane.next || "-"} | lifecycle=${lane.lifecycleEventCount} latest=${lane.latestLifecycleEvent?.type || "-"} | blocker=${lane.blocker || "-"}${lane.founderGate ? ` | FOUNDER_GATE=${lane.founderGate.gateId}` : ""}`);
   return lines.join("\n");
 }
 

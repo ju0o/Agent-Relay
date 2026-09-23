@@ -29,9 +29,13 @@ test("repository TASK_PACKET intake is exact and rejects unauthorized scope", as
 });
 
 test("CORE V1 Result Inbox keeps lane fields machine-readable and pipeable", () => {
-  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }, { service: "IDLE", updatedAt: "now", tasks: [{ projectId: "p", taskId: "P-1", state: "VERIFIED_DONE", attempts: 2, result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } }] });
+  const latest = { type: "TASK_COMPLETED", taskId: "P-1", projectId: "p", state: "VERIFIED_DONE" };
+  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }, { service: "IDLE", updatedAt: "now", events: [{ type: "TASK_DISPATCHED", taskId: "P-1", projectId: "p" }, latest], tasks: [{ projectId: "p", taskId: "P-1", state: "VERIFIED_DONE", attempts: 2, result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } }] });
   assert.equal(snapshot.lanes[0].next, null);
+  assert.equal(snapshot.lanes[0].lifecycleEventCount, 2);
+  assert.deepEqual(snapshot.lanes[0].latestLifecycleEvent, latest);
   assert.match(formatCoreV1Text(snapshot), /p \| PM=READY pm\/p/);
+  assert.match(formatCoreV1Text(snapshot), /lifecycle=2 latest=TASK_COMPLETED/);
   assert.equal(JSON.parse(formatCoreV1Results(snapshot, true)).schema, "agent-relay.core-v1.inbox.v1");
   assert.equal(formatCoreV1Results(snapshot, false), formatCoreV1Text(snapshot));
 });
