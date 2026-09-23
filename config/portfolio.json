@@ -212,6 +212,40 @@
             "npm run build",
             "npm test"
           ]
+        },
+        {
+          "taskId": "AGENTRELAY-V1-QUICK-CAPTURE-FOLLOWUP",
+          "scope": "After Quick Capture saves successfully, open the current Project Dogfooding panel and refresh it so the new record is immediately visible.",
+          "files": [
+            "src/frontend/App.tsx"
+          ],
+          "tests": [
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "BACKLOG.md:37 quote, or Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-V1-KEYBOARD-RESULT-HANDOFF",
+          "scope": "Make the existing GPT result handoff control keyboard-operable by invoking the existing Explorer reveal fallback on Enter or Space while preserving native mouse drag-out.",
+          "files": [
+            "src/frontend/App.tsx"
+          ],
+          "tests": [
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "BACKLOG.md:31 quote, or Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-V1-TOUCH-DRAG-REORDER",
+          "scope": "Add a minimal pointer-event touch fallback for reordering project tabs, work tabs, and agent pills without adding a dependency or changing desktop HTML5 drag behavior.",
+          "files": [
+            "src/frontend/App.tsx",
+            "src/frontend/style.css"
+          ],
+          "tests": [
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23"
         }
       ]
     },
@@ -251,6 +285,20 @@
       "blockers": [
         "Founder Windows Board E2E required: SEND -> RESULT -> COPY",
         "No additional actl Product task is authorized"
+      ],
+      "tasks": [
+        {
+          "taskId": "ACTL-TRANSPORT-RECOVERY",
+          "scope": "Make RemoteTransport fail closed and recover by invalidating the owned control process after reader EOF or command timeout, with offline regression coverage.",
+          "files": [
+            "src/actl/core/tmux.py",
+            "tests/test_tmux.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"Windows process/handshake counts, fault recovery ... require independent QA\"; Founder direction 2026-09-23"
+        }
       ]
     },
     {
@@ -267,6 +315,43 @@
       "state": "HOLD",
       "blockers": [
         "CORE V1 integration phase is authorized in JuPlan-Private; PM transport is not connected, so the lane is held without inventing a Product task"
+      ],
+      "tasks": [
+        {
+          "taskId": "JUPLAN-G011-SCAN-TEST-PATHS",
+          "scope": "Prevent documentation and tsconfig files under test directories from also being emitted as ResearchNote or ConfigurationItem nodes, and add regression coverage.",
+          "files": [
+            "packages/project-scanner/src/scan.ts",
+            "packages/project-scanner/test/scan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/project-scanner test"
+          ],
+          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:68 DEC-G011: test-directory docs/config files are double-classified"
+        },
+        {
+          "taskId": "JUPLAN-G013-CLI-ERROR-MESSAGE",
+          "scope": "Report distinct actionable errors for malformed Claude CLI JSON envelopes versus valid envelopes containing CLI errors, with offline regression tests.",
+          "files": [
+            "packages/agent-provider/src/claude-code-provider.ts",
+            "packages/agent-provider/test/claude-code-provider.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/agent-provider test"
+          ],
+          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:70 DEC-G013: valid is_error/non-string CLI envelopes receive a misleading parse error"
+        },
+        {
+          "taskId": "JUPLAN-G014-CLI-FAILURE-TESTS",
+          "scope": "Add offline automated coverage for the default Claude CLI invocation handling missing executables and non-zero exits without invoking a real provider or network.",
+          "files": [
+            "packages/agent-provider/test/claude-code-provider.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/agent-provider test"
+          ],
+          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:71 DEC-G014: default invokeClaudeCli ENOENT/nonzero paths lack vitest coverage"
+        }
       ]
     },
     {
@@ -302,7 +387,31 @@
         "Founder acceptance and D-08 visual decision required"
       ],
       "pmTransport": "codex-chatgpt-web",
-      "pmState": "NIGHT_PLAN_PM"
+      "pmState": "NIGHT_PLAN_PM",
+      "tasks": [
+        {
+          "taskId": "JUCONTROLER-PUBLIC-STATUS-CONTRACT",
+          "scope": "문서 전용으로 안정 프로젝트를 연결할 읽기 전용 상태 projection 계약과 UNKNOWN·stale·source 기준을 정의한다.",
+          "files": [
+            "docs/integration/PROJECT_STATUS_CONTRACT.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "docs/operator-surface/API_CONTRACT.md:3-5 \"GET /api/status ... return JSON projections ... Clients must display UNKNOWN\""
+        },
+        {
+          "taskId": "JUCONTROLER-STATUS-SCHEMA-SEAM",
+          "scope": "구현이나 장착 없이 프로젝트 상태 projection의 최소 JSON Schema와 필드 소유·관측 시각·읽기 전용 경계를 정의한다.",
+          "files": [
+            "docs/integration/project-status.schema.json"
+          ],
+          "tests": [
+            "node -e \"JSON.parse(require('fs').readFileSync('docs/integration/project-status.schema.json','utf8'))\""
+          ],
+          "ssotEvidence": "docs/CONTROL_TOWER_TARGET_ARCHITECTURE.md:200-209 \"Human selection/화면 표시 | Control Tower | source ref + observedAt을 가진 projection. 별도 업무 DB를 만들지 않음\""
+        }
+      ]
     }
   ]
 }
