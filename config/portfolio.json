@@ -1320,6 +1320,22 @@
             "node --test tests/project-registry.test.mjs"
           ],
           "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-205 \"Each project gets a small, boring integration directory rather than its own custom orchestrator\""
+        },
+        {
+          "taskId": "JUCONTROLER-STATUS-BOARD-AGENT-RELAY-SOURCE",
+          "scope": "Let scripts/status-board.mjs accept a registry entry with source type 'agent-relay-board' whose sourceRef is a local JSON file path (a saved `night board` snapshot); it reads the file, runs src/adapters/agent-relay.mjs and merges those entries into the board output, keeping freshness/stale rules from src/project-status.mjs; file missing -> that entry UNAVAILABLE, never a crash. Extend tests/status-board-cli.test.mjs with a temp-dir fixture snapshot",
+          "files": [
+            "scripts/status-board.mjs",
+            "src/project-status.mjs",
+            "src/project-registry.mjs",
+            "tests/status-board-cli.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/status-board-cli.test.mjs",
+            "node --test tests/project-registry.test.mjs"
+          ],
+          "ssotEvidence": "Founder architecture 2026-09-23 (chat): 'JuControler에 Agent-Relay 통합하면 자동으로 actl도 따라오는 구조' — integrate Agent Relay first; approval rule A-01",
+          "title": "Let scripts/status-board.mjs accept a registry entry with so"
         }
       ],
       "qaRuntime": [
