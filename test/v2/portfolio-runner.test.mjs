@@ -155,3 +155,18 @@ test("REQUEST_CHANGES retries the same task, then promotion precedes NEXT", asyn
   assert.equal(builds, 2); assert.equal(qas, 2); assert.equal(state.tasks[0].state, "VERIFIED_DONE"); assert.equal(state.tasks[0].taskId, "P-RETRY");
   await rm(root, { recursive: true, force: true });
 });
+
+test("worktrees reuse project node_modules without making the tree dirty", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdir, lstat } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { WorktreeManager } = await import("../../src/v2/portfolio-runner/index.mjs");
+  const repo = await mkdtemp(join(tmpdir(), "ar-wt-repo-")); const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  git("init", "-q"); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base");
+  await mkdir(join(repo, "node_modules", ".bin"), { recursive: true });
+  const wt = await new WorktreeManager(await mkdtemp(join(tmpdir(), "ar-wt-root-"))).create({ id: "p", path: repo }, "T-1");
+  assert.ok((await lstat(join(wt.path, "node_modules"))).isSymbolicLink());
+  assert.equal(execFileSync("git", ["-C", wt.path, "status", "--porcelain"], { encoding: "utf8" }), "");
+  await wt.cleanup();
+  assert.ok((await lstat(join(repo, "node_modules", ".bin"))).isDirectory(), "cleanup must not delete the project's node_modules");
+});

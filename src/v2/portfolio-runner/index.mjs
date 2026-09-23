@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -113,6 +113,13 @@ export class WorktreeManager {
     const path = join(this.root, name);
     await mkdir(this.root, { recursive: true });
     await exec("git", ["-C", project.path, "worktree", "add", "--detach", path, base]);
+    // Reuse the project's installed deps so Worker and QA can really build/typecheck/test (a fresh worktree has none).
+    const deps = join(project.path, "node_modules");
+    if (existsSync(deps) && !existsSync(join(path, "node_modules"))) {
+      await symlink(deps, join(path, "node_modules"), "dir");
+      const exclude = resolve(path, (await exec("git", ["-C", path, "rev-parse", "--git-path", "info/exclude"])).stdout.trim());
+      if (!(await readFile(exclude, "utf8").catch(() => "")).split(/\r?\n/).includes("/node_modules")) { await mkdir(resolve(exclude, ".."), { recursive: true }); await appendFile(exclude, "\n/node_modules\n"); }
+    }
     return { path, base, projectId: project.id, async cleanup() { await exec("git", ["-C", project.path, "worktree", "remove", "--force", path]).catch(() => {}); await rm(path, { recursive: true, force: true }); } };
   }
 

@@ -3,9 +3,28 @@
   "program": "CORE_V1",
   "founderPolicy": {
     "routineNonFinancialAutonomy": true,
-    "allowedWork": ["feature-improvement", "quality-reliability", "ui-ux", "integration"],
-    "projects": ["agent-relay", "juactl", "juplan", "juceipt", "jucontroler"],
-    "founderGateRequiredFor": ["money-movement", "payment", "secrets", "credentials", "new-account", "oauth", "irreversible-external-action"],
+    "allowedWork": [
+      "feature-improvement",
+      "quality-reliability",
+      "ui-ux",
+      "integration"
+    ],
+    "projects": [
+      "agent-relay",
+      "juactl",
+      "juplan",
+      "juceipt",
+      "jucontroler"
+    ],
+    "founderGateRequiredFor": [
+      "money-movement",
+      "payment",
+      "secrets",
+      "credentials",
+      "new-account",
+      "oauth",
+      "irreversible-external-action"
+    ],
     "qaRequired": true,
     "ssotRequired": true
   },
@@ -25,17 +44,196 @@
       "runtime": "codex",
       "state": "QUEUED",
       "tasks": [
-        { "taskId": "AGENTRELAY-V1-MOVE-RUN-RECURSIVE", "scope": "V1 backlog: make moveRun preserve nested run files", "files": ["src/backend/fs.ts", "test/fs.test.mjs"], "tests": ["npm run build:server", "node test/fs.test.mjs"] },
-        { "taskId": "AGENTRELAY-V1-EXPORT-NESTED-PATH", "scope": "V1 backlog: harden exportRunMarkdown for nested run paths", "files": ["src/backend/fs.ts", "test/vnext.test.mjs"], "tests": ["npm run build:server", "node test/vnext.test.mjs"] },
-        { "taskId": "AGENTRELAY-CORE-V1-RESULT-INBOX", "scope": "CORE V1: expose the canonical four-lane Result Inbox and one start/resume operation on the existing runner", "files": ["src/v2/portfolio-runner/index.mjs", "bridge/agent-relay.mjs", "config/portfolio.json", "test/v2/portfolio-runner.test.mjs"], "tests": ["node --test test/v2/portfolio-runner.test.mjs", "npm test", "npm run typecheck"] },
-        { "taskId": "AGENTRELAY-NR-01-SUPERVISOR", "scope": "CORE V1 authorized Auto Night Run: supervise existing runOnce, evaluate WBS exhaustion, enforce the first deadline/checkpoint boundary, and persist LAST_NIGHT_RUN.json", "files": ["src/v2/night-run/index.mjs", "bridge/agent-relay.mjs", "config/portfolio.json", "BACKLOG.md", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs", "node --test test/v2/portfolio-runner.test.mjs", "npm run typecheck"] },
-        { "taskId": "AGENTRELAY-NR-02-LOOP", "scope": "CORE V1 authorized Auto Night Run: loop the existing runner through NEXT, retry, and per-lane exhaustion", "files": ["src/v2/night-run/index.mjs", "bridge/agent-relay.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
-        { "taskId": "AGENTRELAY-NR-03-DRAIN", "scope": "CORE V1 authorized Auto Night Run: drain only Agent Relay managed workers, QA, monitors, and panes", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
-        { "taskId": "AGENTRELAY-NR-04-RESUME", "scope": "CORE V1 authorized Auto Night Run: reconcile LAST_NIGHT_RUN.json and preserve unfinished worktrees for resume", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
-        { "taskId": "AGENTRELAY-NR-05-DEADLINE", "scope": "CORE V1 authorized Auto Night Run: complete injectable freeze, checkpoint, and hard deadline enforcement", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
-        { "taskId": "AGENTRELAY-NR-06-ASUS-SHUTDOWN", "scope": "CORE V1 authorized Auto Night Run: non-interactive ASUS shutdown handoff with missing-permission fail-closed status", "files": ["src/v2/night-run/index.mjs", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
-        { "taskId": "AGENTRELAY-NR-07-MAINPC-WRAPPER", "scope": "CORE V1 authorized Auto Night Run: MainPC core-night wrapper refuses unknown or corrupt completion", "files": ["scripts/core-night.ps1", "test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] },
-        { "taskId": "AGENTRELAY-NR-08-SAFETY-QA", "scope": "CORE V1 authorized Auto Night Run: independent safety evidence for multiple lanes, retry, hung runtime, restart, and unrelated panes", "files": ["test/v2/night-run.test.mjs"], "tests": ["node --test test/v2/night-run.test.mjs"] }
+        {
+          "taskId": "AGENTRELAY-V1-MOVE-RUN-RECURSIVE",
+          "scope": "V1 backlog: make moveRun preserve nested run files",
+          "files": [
+            "src/backend/fs.ts",
+            "test/fs.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/fs.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-V1-EXPORT-NESTED-PATH",
+          "scope": "V1 backlog: harden exportRunMarkdown for nested run paths",
+          "files": [
+            "src/backend/fs.ts",
+            "test/vnext.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/vnext.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-CORE-V1-RESULT-INBOX",
+          "scope": "CORE V1: expose the canonical four-lane Result Inbox and one start/resume operation on the existing runner",
+          "files": [
+            "src/v2/portfolio-runner/index.mjs",
+            "bridge/agent-relay.mjs",
+            "config/portfolio.json",
+            "test/v2/portfolio-runner.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/portfolio-runner.test.mjs",
+            "npm test",
+            "npm run typecheck"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-01-SUPERVISOR",
+          "scope": "CORE V1 authorized Auto Night Run: supervise existing runOnce, evaluate WBS exhaustion, enforce the first deadline/checkpoint boundary, and persist LAST_NIGHT_RUN.json",
+          "files": [
+            "src/v2/night-run/index.mjs",
+            "bridge/agent-relay.mjs",
+            "config/portfolio.json",
+            "BACKLOG.md",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs",
+            "node --test test/v2/portfolio-runner.test.mjs",
+            "npm run typecheck"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-02-LOOP",
+          "scope": "CORE V1 authorized Auto Night Run: loop the existing runner through NEXT, retry, and per-lane exhaustion",
+          "files": [
+            "src/v2/night-run/index.mjs",
+            "bridge/agent-relay.mjs",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-03-DRAIN",
+          "scope": "CORE V1 authorized Auto Night Run: drain only Agent Relay managed workers, QA, monitors, and panes",
+          "files": [
+            "src/v2/night-run/index.mjs",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-04-RESUME",
+          "scope": "CORE V1 authorized Auto Night Run: reconcile LAST_NIGHT_RUN.json and preserve unfinished worktrees for resume",
+          "files": [
+            "src/v2/night-run/index.mjs",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-05-DEADLINE",
+          "scope": "CORE V1 authorized Auto Night Run: complete injectable freeze, checkpoint, and hard deadline enforcement",
+          "files": [
+            "src/v2/night-run/index.mjs",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-06-ASUS-SHUTDOWN",
+          "scope": "CORE V1 authorized Auto Night Run: non-interactive ASUS shutdown handoff with missing-permission fail-closed status",
+          "files": [
+            "src/v2/night-run/index.mjs",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-07-MAINPC-WRAPPER",
+          "scope": "CORE V1 authorized Auto Night Run: MainPC core-night wrapper refuses unknown or corrupt completion",
+          "files": [
+            "scripts/core-night.ps1",
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NR-08-SAFETY-QA",
+          "scope": "CORE V1 authorized Auto Night Run: independent safety evidence for multiple lanes, retry, hung runtime, restart, and unrelated panes",
+          "files": [
+            "test/v2/night-run.test.mjs"
+          ],
+          "tests": [
+            "node --test test/v2/night-run.test.mjs"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-V1-DEVTOOLS-DEV-ONLY",
+          "scope": "BACKLOG.md:26 — register the F12 / Ctrl+Shift+I DevTools shortcut only when !app.isPackaged (src/backend/main.ts ~421-432); no other behavior change",
+          "files": [
+            "src/backend/main.ts"
+          ],
+          "tests": [
+            "npm run build:server",
+            "npm run typecheck",
+            "npm test"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-V1-DF-SEARCH-TYPE-FILTER",
+          "scope": "BACKLOG.md:30 — add a client-side text search and a Type filter next to the existing Status filter in the Dogfooding panel",
+          "files": [
+            "src/frontend/dogfooding.tsx",
+            "src/frontend/style.css"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-NIGHT-CONTROLS-READONLY",
+          "scope": "Founder request 2026-09-23 — add read-only Night Run controls: relay IPC ops night:preflight and night:review (src/backend/night.ts, execFile without shell, injectable exec) that run `ssh -o BatchMode=yes -o ConnectTimeout=5 asus python3 ~/.agents/skills/auto-night-orchestrator/scripts/night-check.py preflight|review --json` and return {kind, ok, blockers[], info[]} even on exit 1; plus topbar buttons 야간 준비 점검 / 아침 리포트 showing that JSON in a small panel. No start/shutdown operation, no powershell, no shutdown commands; tests use a fake exec only and never run ssh",
+          "files": [
+            "src/shared/types.ts",
+            "src/backend/night.ts",
+            "src/backend/main.ts",
+            "test/night.test.mjs",
+            "package.json",
+            "src/frontend/App.tsx",
+            "src/frontend/night.tsx",
+            "src/frontend/style.css"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node test/night.test.mjs",
+            "npm test",
+            "npm run typecheck",
+            "npm run build:client"
+          ]
+        },
+        {
+          "taskId": "AGENTRELAY-V1-UNSAVED-EDIT-WARNING",
+          "scope": "BACKLOG.md:29 — warn before app close or project-session switch/close when an edit tab has unsaved prompt/result content (tabs already track promptSaved/resultSaved)",
+          "files": [
+            "src/frontend/App.tsx",
+            "src/backend/main.ts"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "npm test"
+          ]
+        }
       ]
     },
     {
@@ -54,8 +252,27 @@
       "runtime": "cursor",
       "state": "FOUNDER_GATE",
       "founderRequired": true,
-      "founderGate": { "type": "FOUNDER_E2E_REQUIRED", "taskId": "ACTL-V1-WINDOWS-E2E", "summary": "ACTL V1 implementation and QA are complete; the final Windows Board E2E remains Founder-owned.", "reason": "Only the live SEND -> RESULT -> COPY proof can close this lane.", "evidence": ["candidate 5ffaeb4", "repository QA PASS", "implementation BLOCKED_SCOPE"], "founderAction": "Run the Windows Board E2E and verify SEND -> RESULT -> COPY.", "expectedInput": "DECISION: APPROVE|PAUSE\ntimestamp: <ISO>", "resumeAction": "On APPROVE, mark the existing ACTL V1 gate resolved; do not create Product work. On PAUSE, retain HOLD.", "relatedEvidence": ["Founder Windows Board E2E"] },
-      "blockers": ["Founder Windows Board E2E required: SEND -> RESULT -> COPY", "No additional actl Product task is authorized"]
+      "founderGate": {
+        "type": "FOUNDER_E2E_REQUIRED",
+        "taskId": "ACTL-V1-WINDOWS-E2E",
+        "summary": "ACTL V1 implementation and QA are complete; the final Windows Board E2E remains Founder-owned.",
+        "reason": "Only the live SEND -> RESULT -> COPY proof can close this lane.",
+        "evidence": [
+          "candidate 5ffaeb4",
+          "repository QA PASS",
+          "implementation BLOCKED_SCOPE"
+        ],
+        "founderAction": "Run the Windows Board E2E and verify SEND -> RESULT -> COPY.",
+        "expectedInput": "DECISION: APPROVE|PAUSE\ntimestamp: <ISO>",
+        "resumeAction": "On APPROVE, mark the existing ACTL V1 gate resolved; do not create Product work. On PAUSE, retain HOLD.",
+        "relatedEvidence": [
+          "Founder Windows Board E2E"
+        ]
+      },
+      "blockers": [
+        "Founder Windows Board E2E required: SEND -> RESULT -> COPY",
+        "No additional actl Product task is authorized"
+      ]
     },
     {
       "id": "juplan",
@@ -69,7 +286,9 @@
       "owner": "claude-team",
       "runtime": "claude-team",
       "state": "HOLD",
-      "blockers": ["CORE V1 integration phase is authorized in JuPlan-Private; PM transport is not connected, so the lane is held without inventing a Product task"]
+      "blockers": [
+        "CORE V1 integration phase is authorized in JuPlan-Private; PM transport is not connected, so the lane is held without inventing a Product task"
+      ]
     },
     {
       "id": "juceipt",
@@ -83,7 +302,11 @@
       "owner": "claude",
       "runtime": "claude",
       "state": "BLOCKED_SCOPE",
-      "blockers": ["M2 Retry 01 exact patch requires isolated worktree and independent QA", "Primary checkout dirty; preserve all user changes", "M2 PM REVIEW remains open"]
+      "blockers": [
+        "M2 Retry 01 exact patch requires isolated worktree and independent QA",
+        "Primary checkout dirty; preserve all user changes",
+        "M2 PM REVIEW remains open"
+      ]
     },
     {
       "id": "jucontroler",
@@ -95,7 +318,10 @@
       "owner": "claude-team",
       "runtime": "claude-team",
       "state": "FOUNDER_ACCEPTANCE",
-      "blockers": ["INTEGRATION_TARGET", "Founder acceptance and D-08 visual decision required"]
+      "blockers": [
+        "INTEGRATION_TARGET",
+        "Founder acceptance and D-08 visual decision required"
+      ]
     }
   ]
 }
