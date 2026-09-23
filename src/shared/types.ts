@@ -332,6 +332,112 @@ export interface ApprovalRuleJson {
   [key: string]: unknown;
 }
 
+/** One normalized per-runtime model usage row (missing fields → 0). */
+export interface NormalizedModelUsage {
+  runtimeId: string;
+  runs: number;
+  quota: number;
+  failed: number;
+}
+
+/** Normalize a raw models map (missing/invalid fields → 0). Pure — unit-tested. */
+export function normalizeModelUsage(models: unknown): NormalizedModelUsage[] {
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return [];
+  return Object.entries(models as Record<string, unknown>).map(([runtimeId, raw]) => {
+    const record = (raw && typeof raw === 'object' ? raw : {}) as Partial<ControlRoomModelUsage>;
+    const num = (v: unknown): number =>
+      typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+    return { runtimeId, runs: num(record.runs), quota: num(record.quota), failed: num(record.failed) };
+  });
+}
+
+/**
+ * True when a quota is actually hit/exhausted (quota set and runs reached it).
+ * A missing/zero quota means "no limit" → never a hit. Pure — unit-tested.
+ */
+export function isModelQuotaHit(row: { runs: number; quota: number }): boolean {
+  return row.quota > 0 && row.runs >= row.quota;
+}
+
+/** Missing/invalid usedCount renders as 0. Pure — unit-tested. */
+export function approvalUsedCount(rule: ApprovalRuleJson): number {
+  return typeof rule.usedCount === 'number' && Number.isFinite(rule.usedCount) && rule.usedCount >= 0
+    ? Math.floor(rule.usedCount)
+    : 0;
+}
+
+/** Missing/invalid lastUsedAt renders as '-'; otherwise YYYY-MM-DD. Pure — unit-tested. */
+export function approvalLastUsed(rule: ApprovalRuleJson): string {
+  if (typeof rule.lastUsedAt !== 'string' || !rule.lastUsedAt.trim()) return '-';
+  const parsed = new Date(rule.lastUsedAt);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** '자동 승인 N회 · 마지막 YYYY-MM-DD' per rule. Pure — unit-tested. */
+export function approvalStatsLine(rule: ApprovalRuleJson): string {
+  return `자동 승인 ${approvalUsedCount(rule)}회 · 마지막 ${approvalLastUsed(rule)}`;
+}
+
+/**
+ * Sort rules within a category by usedCount (desc, missing = 0).
+ * Stable — ties keep their original relative order. Pure — unit-tested.
+ */
+export function sortRulesByUsage<T extends ApprovalRuleJson>(rules: readonly T[]): T[] {
+  return rules
+    .map((rule, index) => ({ rule, index }))
+    .sort((a, b) => approvalUsedCount(b.rule) - approvalUsedCount(a.rule) || a.index - b.index)
+    .map(entry => entry.rule);
+}
+
+/**
+ * Remove duplicate rule entries, keeping the first occurrence.
+ * Dedupes by object identity first, then by JSON content, so an envelope
+ * `{ rules: [A, B] }` listed alongside the same A/B top-level entries only
+ * renders once. Pure — unit-tested.
+ */
+export function dedupeApprovalRules<T extends ApprovalRuleJson>(rules: readonly T[]): T[] {
+  const seenRef = new Set<unknown>();
+  const seenContent = new Set<string>();
+  const out: T[] = [];
+  for (const rule of rules) {
+    if (seenRef.has(rule)) continue;
+    seenRef.add(rule);
+    let key: string | null = null;
+    try {
+      key = JSON.stringify(rule) ?? null;
+    } catch {
+      key = null;
+    }
+    if (key !== null) {
+      if (seenContent.has(key)) continue;
+      seenContent.add(key);
+    }
+    out.push(rule);
+  }
+  return out;
+}
+
+/** Group rules by category (missing/blank → '기타'), each group sorted by usedCount. Pure — unit-tested. */
+export function groupRulesByCategory<T extends ApprovalRuleJson>(
+  rules: readonly T[],
+): { category: string; rules: T[] }[] {
+  const groups = new Map<string, T[]>();
+  for (const rule of rules) {
+    const category =
+      typeof rule.category === 'string' && rule.category.trim() ? rule.category.trim() : '기타';
+    const list = groups.get(category);
+    if (list) list.push(rule);
+    else groups.set(category, [rule]);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([category, list]) => ({ category, rules: sortRulesByUsage(list) }));
+}
+
 // ── Drag reorder helpers ────────────────────────────────────────────────────
 
 /** Return a new array with the element at `from` moved to index `to`. */

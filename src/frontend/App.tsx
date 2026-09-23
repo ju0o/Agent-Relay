@@ -9,7 +9,7 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
-import { approvalStatsLine, groupRulesByCategory } from './approvals.js';
+import { approvalStatsLine, dedupeApprovalRules, groupRulesByCategory } from './approvals.js';
 import type { ApprovalRuleJson } from '../shared/types.js';
 import { PlanStudio } from './planStudio.js';
 import { renderMd } from './md.js';
@@ -203,7 +203,9 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
     });
   };
   const directRules = ruleEntries.filter(rule => !hasNestedRules(rule));
-  const groups = groupRulesByCategory([...directRules, ...unwrapped]);
+  // Envelope { rules: [A, B] } listed alongside the same A/B as top-level
+  // entries must not render twice — dedupe by identity + content first.
+  const groups = groupRulesByCategory(dedupeApprovalRules([...directRules, ...unwrapped]));
   const ruleLabel = (rule: ApprovalRuleJson): string => {
     const record = rule as Record<string, unknown>;
     const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
