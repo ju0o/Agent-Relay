@@ -1228,6 +1228,45 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "CONTROL_TOWER.md:18-20 \"Keep JuPlan V1 stable ... does not reopen V1\"; Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-EXPORT-TEXT-ESCAPE",
+          "scope": "Escape project-authored text in generated HTML, SVG, and Mermaid exports so hostile labels cannot alter exported markup while preserving V1 fields and semantics.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-MERGE-ID-CONFLICT",
+          "scope": "Make planning-pass merge fail closed on conflicting node or edge IDs instead of silently discarding provider output, with offline regression coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-PROPOSAL-STRICT-SHAPE",
+          "scope": "Reject unexpected top-level fields in AgentProvider graph-change proposals so the declared RESULT shape remains exact without changing accepted V1 proposals.",
+          "files": [
+            "packages/agent-provider/src/proposal.ts",
+            "packages/agent-provider/test/claude-code-provider.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/agent-provider test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
