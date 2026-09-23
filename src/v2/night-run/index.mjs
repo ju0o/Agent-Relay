@@ -171,7 +171,10 @@ export class NightRunSupervisor {
     return this.persist(record({ runId: this.runId, startedAt: started.toISOString(), ...times, endedAt: complete ? this.clock().toISOString() : null, endReason: complete ? "WBS_EXHAUSTED" : "RUNNING", shutdownState: complete ? "DRAIN_REQUIRED" : "NOT_REQUESTED", state, resumeRequired: !complete }));
   }
 
-  async run({ deadline = DEFAULT_DEADLINE, intervalMs = 15_000, signal } = {}) {
+  // holdUntilDeadline (Founder 2026-09-24: "5시까지 계속, 5시에 종료"): running out of WBS does not end the night;
+  // the loop keeps polling (the PM refills lanes meanwhile) and only the deadline path finishes and shuts down.
+  async run({ deadline = DEFAULT_DEADLINE, intervalMs = 15_000, signal, holdUntilDeadline = false } = {}) {
+    const exhausted = (value) => !holdUntilDeadline && evaluateExhaustion(this.runner.manifest, value).complete;
     const started = this.clock();
     const cutoff = deadlineAt(started, deadline);
     const freezeAt = new Date(cutoff - 5 * 60_000);
@@ -182,7 +185,7 @@ export class NightRunSupervisor {
     const finish = async (reason, resumeRequired) => { await this.runner.stop?.(); const result = await write(reason, this.clock().toISOString(), "FINALIZING", resumeRequired); return this.finalize ? this.finalize(result) : result; };
     const drain = async () => { await this.runner.stop?.(); while (this.clock() < drainAt && !signal?.aborted) await this.sleep(Math.max(1, drainAt - this.clock())); };
     state.service = "NIGHT_RUN_ACTIVE"; state.lastTransition = "NIGHT_RUN_STARTED"; await write("RUNNING", null, "ACTIVE", true);
-    if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
+    if (exhausted(state)) return finish("WBS_EXHAUSTED", false);
     while (!signal?.aborted) {
       const now = this.clock(); state.lastTransition = now >= freezeAt ? "DISPATCH_FREEZE" : "RUN_ONCE";
       if (now >= cutoff) return finish("DEADLINE_COMPLETE", true);
@@ -193,7 +196,7 @@ export class NightRunSupervisor {
       }
       if (now >= freezeAt) {
         state = await this.runner.load();
-        if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
+        if (exhausted(state)) return finish("WBS_EXHAUSTED", false);
         await this.sleep(Math.min(intervalMs, Math.max(1, checkpointAt - now)));
         continue;
       }
@@ -207,7 +210,7 @@ export class NightRunSupervisor {
       state = (await Promise.race([work, untilCheckpoint])) || state;
       signal?.removeEventListener("abort", abort);
       if (!completed) { childSignal.abort(); state = await this.runner.load(); await write("CHECKPOINTED_DEADLINE", null, "CHECKPOINT_REQUIRED", true); await drain(); return finish("DEADLINE_COMPLETE", true); }
-      if (evaluateExhaustion(this.runner.manifest, state).complete) return finish("WBS_EXHAUSTED", false);
+      if (exhausted(state)) return finish("WBS_EXHAUSTED", false);
       await this.sleep(intervalMs);
     }
     await this.runner.stop?.(); state = await this.runner.load(); return write("STOPPED", this.clock().toISOString(), "DRAINED", true);

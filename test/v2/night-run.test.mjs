@@ -188,3 +188,13 @@ test("run uses the runner's continuous wave and closes dispatch at the freeze ti
   assert.equal(result.endReason, "WBS_EXHAUSTED"); assert.ok(seen.dispatchUntil instanceof Date);
   assert.equal(seen.dispatchUntil.toISOString(), new Date(new Date(result.deadline) - 5 * 60_000).toISOString());
 });
+
+test("holdUntilDeadline: exhausted WBS does not finish early; only the deadline ends the night", async () => {
+  const done = lanes([["agent-relay", "V1_COMPLETE"]]); let waves = 0; let now = new Date("2026-09-23T16:00:00.000Z");
+  const runner = { manifest: { projects: done.projects }, reconcile: async () => done, load: async () => done, stop: async () => {}, runOnce: async () => done, runWave: async () => { waves += 1; return done; } };
+  const s = new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => now, sleep: (ms) => ms > 120_000 ? new Promise(() => {}) : Promise.resolve().then(() => { now = new Date(now.getTime() + ms); }), runId: "hold-test" });
+  const result = await s.run({ deadline: "05:00", intervalMs: 60_000, holdUntilDeadline: true });
+  assert.equal(result.endReason, "DEADLINE_COMPLETE"); assert.ok(waves > 3, `kept working until the deadline (waves=${waves})`);
+  const early = await new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-23T16:00:00.000Z"), sleep: async () => {}, runId: "early-test" }).run({ deadline: "05:00", intervalMs: 1 });
+  assert.equal(early.endReason, "WBS_EXHAUSTED");
+});

@@ -43,7 +43,7 @@ if (area === "night-run" && command === "up") {
   process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
   try {
     const supervisor = night({ deferPoweroff: !mainPcPull, mainPcPull });
-    const result = await supervisor.run({ deadline, signal: controller.signal });
+    const result = await supervisor.run({ deadline, signal: controller.signal, holdUntilDeadline: process.argv.includes("--hold-until-deadline") });
     console.log(JSON.stringify(result, null, 2));
     if (!noPoweroff && result.shutdownState === "READY_FOR_ASUS_POWEROFF") {
       const checkpoint = { ...result, asusShutdownRequested: true, shutdownState: "ASUS_POWEROFF_REQUESTED" };
