@@ -877,6 +877,21 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "ACTL-LIVE-DISPOSABLE-E2E",
+          "scope": "Live Tester script scripts/e2e_disposable.sh [--ssh HOST]: creates ONE tmux session named actl-e2e-<unix-ts> (refuse if the name exists) running a stub agent (a tiny python loop in tests/fixtures/stub_agent.py that prints a prompt marker, reads a line and answers RESULT::<line>), maps it for this run only through a temporary ACTL config dir (never the user's config), runs the real `actl send` and `actl copy --print` against it (over --ssh when given), verifies the copied text equals RESULT::<probe>, prints one JSON line {ok, steps:[send,result,copy], ms, session}, and in a trap always kills only that exact session and removes the temp config. Never touches other sessions or panes. Offline test tests/test_e2e_disposable_script.py covers argument parsing, the refuse-if-exists guard and the cleanup trap using a fake tmux on PATH.",
+          "files": [
+            "scripts/e2e_disposable.sh",
+            "tests/fixtures/stub_agent.py",
+            "tests/test_e2e_disposable_script.py",
+            "docs/TESTER.md"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: actl E2E = Tester가 자동으로, 일회용 tmux 세션·스텁 에이전트); approval rule A-12",
+          "title": "Live Tester script scripts/e2e_disposable.sh [--ssh HOST]: c"
         }
       ],
       "qaRuntime": [
