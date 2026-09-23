@@ -837,10 +837,16 @@ export function recordSemanticBlockedForRetry(
   project: string,
   qaAttemptId: string,
   reason: string,
+  options: { consumeBudget?: boolean } = {},
 ): Promise<QaAttemptRecord> {
   return withQaAttemptLock(dataRoot, project, qaAttemptId, (): QaAttemptRecord => {
     const current = getQaAttempt(dataRoot, project, qaAttemptId);
-    const count = (current.semanticBlockedAttempts ?? 0) + 1;
+    // V1 W-A3: the bounded semantic-BLOCKED budget exists for WORK defects
+    // (a QA seat that answers something unusable). An infrastructure hold —
+    // every configured seat out of provider quota — must not spend it:
+    // three quota hits would otherwise permanently BLOCK a Task with nothing
+    // wrong with it and escalate it to the owner. Default stays consuming.
+    const count = (current.semanticBlockedAttempts ?? 0) + (options.consumeBudget === false ? 0 : 1);
     const ts = nowIso();
     const next: QaAttemptRecord = {
       ...current,

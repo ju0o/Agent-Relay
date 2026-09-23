@@ -6,7 +6,15 @@ import { readRoleConfig } from '../roles/role-config.js';
 import { getRoleRuntimeAdapter, registerRoleRuntimeAdapter } from '../integrations/core/role-runtime-registry.js';
 import type { RoleRuntimeAdapter } from '../integrations/core/role-runtime.js';
 import { OpenCodeCommandAdapter } from '../integrations/opencode/command-adapter.js';
+import { ClineCommandAdapter } from '../integrations/cline/command-adapter.js';
 import { dispatchV1OwnerApproved } from '../backend/v1-dispatch.js';
+import {
+  detectQuotaSignal,
+  earliestQuotaRelease,
+  isQuotaExhausted,
+  quotaExhaustedReason,
+  recordQuotaExhaustion,
+} from '../backend/quota-signal.js';
 import { dispatchTask } from '../backend/dispatcher.js';
 import {
   ActlBridgeError,
@@ -95,21 +103,25 @@ function withId(adapter: RoleRuntimeAdapter, id: string): RoleRuntimeAdapter {
   };
 }
 
-/** Register one OpenCodeCommandAdapter per distinct primary+fallback key the pm RoleAssignment names. Idempotent (skips already-registered ids). */
-function ensurePmAdaptersRegistered(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): void {
-  const pm = roleConfig.assignments.find((a) => a.roleId === 'pm');
-  if (!pm) return;
-  const keys = [pm.runtimeAdapterId, ...(pm.fallbackChain ?? [])];
-  for (const key of keys) {
-    if (getRoleRuntimeAdapter(key)) continue;
-    const modelRef = parseModelRef(key) ?? (pm.model ? parseModelRef(`opencode/${pm.model}`) : null) ?? { providerID: 'opencode', modelID: 'nemotron-3.5-lightning-free' };
-    // Cast: WBS-3's OpenCodeCommandAdapter.authMode() is async (Promise-returning)
-    // while WBS-2's committed RoleRuntimeAdapter interface declares authMode()
-    // sync — a pre-existing drift between those two already-landed lanes, out
-    // of scope to fix here. The shape is otherwise identical and role-loop.ts
-    // never calls authMode() itself, so this is safe at the call sites that matter.
-    const adapter = new OpenCodeCommandAdapter({ defaultModel: modelRef, dataRoot }) as unknown as RoleRuntimeAdapter;
-    registerRoleRuntimeAdapter(withId(adapter, key));
+/** Register OpenCode adapters for every role's model-qualified fallback entry. */
+function ensureRoleAdaptersRegistered(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): void {
+  for (const assignment of roleConfig.assignments) {
+    const keys = [assignment.runtimeAdapterId, ...(assignment.fallbackChain ?? [])];
+    for (const key of keys) {
+      const modelRef = parseModelRef(key);
+      // actl-managed and qa-worker ids are worker integrations, not
+      // RoleRuntimeAdapter ids. Their fallback entries may still name an
+      // OpenCode model and are registered here for the role-specific resolver.
+      const clineModel = key.startsWith('cline-pass/') ? parseModelRef(key) : (key === 'cline-pass' ? { providerID: 'cline-pass', modelID: assignment.model ?? '' } : null);
+      if (!modelRef && !clineModel && key !== assignment.runtimeAdapterId) continue;
+      if (getRoleRuntimeAdapter(key)) continue;
+      const selectedModel = modelRef ?? (assignment.model ? parseModelRef(`opencode/${assignment.model}`) : null);
+      if (!selectedModel) continue;
+      const adapter = clineModel
+        ? new ClineCommandAdapter({ cwd: assignment.workspace.workspaceRoot, provider: 'cline-pass', model: clineModel.modelID, dataRoot }) as unknown as RoleRuntimeAdapter
+        : new OpenCodeCommandAdapter({ defaultModel: selectedModel, dataRoot }) as unknown as RoleRuntimeAdapter;
+      registerRoleRuntimeAdapter(withId(adapter, key));
+    }
   }
 }
 
@@ -191,32 +203,96 @@ function installActlPermitFactory(builder: ReturnType<typeof readRoleConfig>['as
   return checkReady;
 }
 
+/**
+ * V1 W-A2 — resolve the builder seat at DISPATCH time over
+ * `primary + fallbackChain`, and only ever leave the primary for a reason
+ * that is not a work defect.
+ *
+ * Before this, both builder hooks resolved exactly one worker once, at hook
+ * construction, and `builder.fallbackChain` was dead config (live V1CERT had
+ * it empty for builder AND qa). When Codex hit its usage limit the dispatch
+ * simply failed, PM escalated, and the Founder moved the seat by hand — three
+ * times on 2026-09-16. That manual reassignment is what V1 must delete.
+ *
+ * Failover is deliberately narrow: a seat is skipped when it is unregistered
+ * (config fault in a fallback entry, never in the primary) or under a quota
+ * hold, and abandoned mid-dispatch only when the failure itself carries a
+ * provider limit message. Every other dispatch failure — a busy pane, a
+ * refused permit, an unreachable runtime — still propagates unchanged, so a
+ * real fault can never hide behind a seat rotation.
+ */
+async function dispatchWithBuilderFailover<T>(
+  dataRoot: string,
+  builder: ReturnType<typeof readRoleConfig>['assignments'][number],
+  run: (worker: Record<string, any>) => Promise<T>,
+): Promise<T> {
+  const seats = [builder.runtimeAdapterId, ...(builder.fallbackChain ?? []).filter((id) => typeof id === 'string' && id.trim())];
+  const skipped: string[] = [];
+  for (const [index, seatId] of seats.entries()) {
+    let worker: Record<string, any>;
+    try {
+      worker = selectBuilderWorker(dataRoot, seatId);
+    } catch (err) {
+      // The primary keeps its original loud contract; only fallback entries
+      // may be skipped for being unusable.
+      if (index === 0) throw err;
+      skipped.push(`${seatId}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    const hold = isQuotaExhausted(dataRoot, seatId);
+    if (hold) {
+      skipped.push(`${seatId}: quota hold until ${hold.holdUntil}`);
+      continue;
+    }
+    const checkReady = installActlPermitFactory(builder, worker);
+    try {
+      if (checkReady) await checkReady();
+      return await run(worker);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const quotaHit = detectQuotaSignal(message);
+      if (!quotaHit) throw err;
+      const signal = recordQuotaExhaustion(dataRoot, seatId, quotaHit, { source: `builder-dispatch:${seatId}` });
+      skipped.push(`${seatId}: quota exhausted, held until ${signal.holdUntil}`);
+    }
+  }
+  const releaseAt = earliestQuotaRelease(dataRoot, seats);
+  if (releaseAt) {
+    // Infrastructure wait, phrased so role-loop classifies it as
+    // QUOTA_EXHAUSTED instead of escalating to the owner.
+    throw new Error(`${quotaExhaustedReason(seats, releaseAt)} | seat state: ${skipped.join('; ')}`);
+  }
+  throw new Error(`no usable builder seat in [${seats.join(', ')}]: ${skipped.join('; ') || 'chain is empty'}`);
+}
+
 export function defaultDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): DispatchHook {
   const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
+  // Construction-time validation of the PRIMARY seat is preserved (a missing
+  // builder record is a config fault that must surface before the loop runs);
+  // the seat actually used is chosen per dispatch by the failover walker.
   const worker = builder ? selectBuilderWorker(dataRoot, builder.runtimeAdapterId) : null;
-  const checkReady = builder && worker ? installActlPermitFactory(builder, worker) : null;
   return async (dr, project, task) => {
     if (!builder || !worker) throw new Error('no builder RoleAssignment/worker-registry record (role: implementation) available for dispatch');
-    if (checkReady) await checkReady();
-    return dispatchV1OwnerApproved(dr, project, {
+    return dispatchWithBuilderFailover(dr, builder, (seatWorker) => dispatchV1OwnerApproved(dr, project, {
       taskId: task.taskId,
-      workerId: worker.workerId,
+      workerId: seatWorker.workerId,
       workspaceRoot: builder.workspace.workspaceRoot,
       expectedExecutionState: 'READY',
-    });
+    }));
   };
 }
 
 export function defaultQaRemediationDispatchHook(dataRoot: string, roleConfig: ReturnType<typeof readRoleConfig>): QaRemediationDispatchHook {
   const builder = roleConfig.assignments.find((a) => a.roleId === 'builder');
   const worker = builder ? selectBuilderWorker(dataRoot, builder.runtimeAdapterId) : null;
-  const checkReady = builder && worker ? installActlPermitFactory(builder, worker) : null;
   return async (dr, project, input) => {
     if (!builder || !worker) throw new Error('no builder RoleAssignment/worker-registry record (role: implementation) available for QA remediation');
-    if (checkReady) await checkReady();
-    return dispatchTask(dr, project, {
+    return dispatchWithBuilderFailover(dr, builder, (seatWorker) => dispatchTask(dr, project, {
       taskId: input.taskId,
-      workerId: input.workerId,
+      // A remediation Run is bound to the Worker that produced the original
+      // result; only a quota rotation may move it, and then the seat the
+      // failover walker chose is authoritative over the caller's binding.
+      workerId: seatWorker.workerId === worker.workerId ? input.workerId : seatWorker.workerId,
       workspaceRoot: input.workspaceRoot,
       expectedExecutionState: 'READY',
       qaRemediationContext: {
@@ -224,13 +300,13 @@ export function defaultQaRemediationDispatchHook(dataRoot: string, roleConfig: R
         sourceRunId: input.sourceRunId,
         prompt: input.prompt,
       },
-    });
+    }));
   };
 }
 
 async function buildConfig(a: Args): Promise<RoleLoopConfig> {
   const roleConfig = readRoleConfig(a.dataRoot, a.project);
-  ensurePmAdaptersRegistered(a.dataRoot, roleConfig);
+  ensureRoleAdaptersRegistered(a.dataRoot, roleConfig);
   const pm = roleConfig.assignments.find((r) => r.roleId === 'pm');
   if (!pm) throw new Error(`role config for ${a.project} has no pm RoleAssignment`);
   const pmAdapter = getRoleRuntimeAdapter(pm.runtimeAdapterId);

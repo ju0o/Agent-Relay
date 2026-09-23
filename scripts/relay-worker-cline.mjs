@@ -1,0 +1,1000 @@
+/**
+ *
+ * Protocol adapter between Relay Dispatcher argv and real Cline Code CLI.
+ *
+ * Accepts (and consumes) Relay internal args:
+ *   --dataRoot, --project, --taskId, --runId, --workspaceRoot
+ *
+ * None of these are forwarded to Cline Code.
+ *
+ * Exit semantics:
+ *   0  → Cline process completed normally. NOT RESULT_RECEIVED by itself.
+ *   non-zero → propagated to Dispatcher's non-zero failure path.
+ *
+ * Observation is handled by the cline-code adapter, not by this wrapper.
+ * This wrapper never calls markResultReceived, creates Evidence, or calls MCP.
+ *
+ * V1.6 Slice 8 — QA passthrough mode (additive, relay path unchanged):
+ *   The Semantic QA evaluator (qa-semantic-evaluator.ts invokeOnce) spawns the
+ *   QA worker's own launchCommand + launchArgsPrefix with a trailing
+ *   `--print <prompt>`. When that worker row IS this wrapper (frozen dogfood
+ *   uses qaWorkerId 'cline-code' for both roles), the invocation arrives as
+ *   `relay-worker-cline.mjs --print <prompt>` with NO relay args. That shape
+ *   is served here as a bare passthrough: `cline --print <prompt>` with the
+ *   wrapper's own cwd (the evaluator already spawns with the implementation
+ *   Run's authoritative workspaceRoot), default permission mode, and the same
+ *   Owner profile routing below. No Task is loaded, no prompt.md is written,
+ *   no launch log is minted, no Result/Evidence/MCP is touched — Cline's
+ *   stdout is forwarded verbatim (the semantic parser tolerates surrounding
+ *   whitespace but must see the structured block), diagnostics go to stderr
+ *   only, and Cline's exit code is propagated.
+ */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+// ── dist resolution ───────────────────────────────────────────────────────────
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DIST_BACKEND = path.join(__dirname, '..', 'dist', 'server', 'backend');
+
+// ── constants ─────────────────────────────────────────────────────────────────
+
+/** Maximum total prompt size (bytes, UTF-8). V1 = 16 KiB is sufficient. */
+const PROMPT_SIZE_LIMIT_BYTES = 16 * 1024;
+
+/**
+ * Bound for captured worker stdout/stderr diagnostic excerpts. Never logs a
+ * full transcript, chain-of-thought, or unbounded session output.
+ */
+const MAX_WORKER_DIAG_CHARS = 16 * 1024;
+
+/** Relay wrapper protocol arg keys (consumed here, never forwarded). */
+const RELAY_ARGS = new Set([
+  '--dataRoot',
+  '--project',
+  '--taskId',
+  '--runId',
+  '--workspaceRoot',
+  '--claudeConfigDir',
+  '--permissionMode',
+  '--clineSessionId',
+]);
+
+/**
+ * Allowed Cline permission mode values (narrow enum).
+ * 'dangerously-skip-permissions' is intentionally absent.
+ */
+const VALID_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
+
+// ── argv parsing ──────────────────────────────────────────────────────────────
+
+/**
+ * Parse Relay wrapper protocol args from a raw argv array.
+ *
+ * Rules:
+ *   - No shell parsing, no eval, no exec, no command concatenation.
+ *   - process.argv array only.
+ *   - Rejects: missing required arg, duplicate key, empty value.
+ *   - Optional: --permissionMode (enum: 'default' | 'acceptEdits').
+ *     Duplicate, empty, or invalid enum values are rejected.
+ *     'dangerously-skip-permissions' is explicitly rejected.
+ *
+ * @param {string[]} argv  Slice of process.argv (caller provides slice(2)).
+ * @returns {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string }}
+ */
+function parseRelayArgs(argv) {
+  const result = {};
+  const seen = new Set();
+
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    if (!RELAY_ARGS.has(tok)) continue;
+
+    const key = tok.slice(2); // strip leading '--'
+
+    if (seen.has(key)) {
+      throw new ArgError(`Duplicate relay arg: ${tok}`);
+    }
+    seen.add(key);
+
+    const next = argv[i + 1];
+
+    // Missing value: next token is another relay arg or beyond array end.
+    if (next === undefined || RELAY_ARGS.has(next)) {
+      throw new ArgError(`Missing value for relay arg: ${tok}`);
+    }
+    if (!next.trim()) {
+      throw new ArgError(`Empty value for relay arg: ${tok}`);
+    }
+
+    result[key] = next.trim();
+    i++; // consume the value token
+  }
+
+  for (const req of ['dataRoot', 'project', 'taskId', 'runId', 'workspaceRoot']) {
+    if (!result[req]) {
+      throw new ArgError(`Required relay arg missing: --${req}`);
+    }
+  }
+
+  // Validate optional --permissionMode (narrow enum — no arbitrary Cline flags).
+  if (result.permissionMode !== undefined) {
+    const pm = result.permissionMode;
+    if (pm === 'dangerously-skip-permissions') {
+      throw new ArgError(
+        "--permissionMode 'dangerously-skip-permissions' is not supported by this driver. " +
+        "Allowed values: 'default', 'acceptEdits'.",
+      );
+    }
+    if (!VALID_PERMISSION_MODES.has(pm)) {
+      throw new ArgError(
+        `Invalid --permissionMode value: '${pm}'. Allowed values: 'default', 'acceptEdits'.`,
+      );
+    }
+  }
+
+  return /** @type {{ dataRoot: string; project: string; taskId: string; runId: string; workspaceRoot: string; claudeConfigDir?: string; permissionMode?: string }} */ (result);
+}
+
+class ArgError extends Error {
+  constructor(msg) {
+    super(msg);
+    this.name = 'ArgError';
+  }
+}
+
+// ── workspaceRoot security validation ────────────────────────────────────────
+
+/**
+ * Validate workspaceRoot as the coding workspace cwd.
+ * Must be an existing absolute directory path.
+ * Result is used only as child spawn cwd — never injected into shell or env.
+ *
+ * @param {string} raw
+ * @returns {string} resolved absolute path
+ */
+function validateWorkspaceRoot(raw) {
+  if (!path.isAbsolute(raw)) {
+    throw new Error(`workspaceRoot must be an absolute path: ${raw}`);
+  }
+  const resolved = path.resolve(raw);
+  let st;
+  try {
+    st = fs.statSync(resolved);
+  } catch {
+    throw new Error(`workspaceRoot does not exist: ${resolved}`);
+  }
+  if (!st.isDirectory()) {
+    throw new Error(`workspaceRoot must be a directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+// ── canonical Task loading ────────────────────────────────────────────────────
+
+/**
+ * Load the canonical Task record using the compiled backend module.
+ * Never duplicates path rules — uses existing getTask() SSOT.
+ *
+ * @param {string} dataRoot
+ * @param {string} project
+ * @param {string} taskId
+ * @returns {Promise<import('../src/shared/types.js').TaskRecord>}
+ */
+async function loadCanonicalTask(dataRoot, project, taskId) {
+  const goalTaskPath = path.join(DIST_BACKEND, 'goal-task.js');
+  if (!fs.existsSync(goalTaskPath)) {
+    throw new Error(
+      `Relay backend dist not found: ${goalTaskPath}\n` +
+      'Run "npm run build" before using the relay worker.',
+    );
+  }
+  // Use pathToFileURL for Windows compatibility (absolute paths must be file:// URLs in ESM).
+  const gt = await import(pathToFileURL(goalTaskPath).href);
+  return gt.getTask(dataRoot, project, taskId);
+}
+
+// ── Task validation ───────────────────────────────────────────────────────────
+
+/**
+ * Validate that the given runId is the current (most recent) linked attempt
+ * and that the Task is in a dispatchable execution state.
+ *
+ * @param {import('../src/shared/types.js').TaskRecord} task
+ * @param {string} runId
+ * @returns {{ runFolder: string }} folder path for the matched run
+ */
+function validateTaskAndRun(task, runId) {
+  // 1. runId must be linked to this Task.
+  const linkedRun = task.linkedRuns.find((r) => r.runId === runId);
+  if (!linkedRun) {
+    throw new Error(
+      `runId '${runId}' is not linked to Task '${task.taskId}'. ` +
+      `Linked runs: [${task.linkedRuns.map((r) => r.runId).join(', ')}]`,
+    );
+  }
+
+  // 2. runId must be the current attempt (highest taskRunSequence).
+  const maxSeq = task.linkedRuns.reduce((m, r) => Math.max(m, r.taskRunSequence), 0);
+  if (linkedRun.taskRunSequence !== maxSeq) {
+    throw new Error(
+      `runId '${runId}' (seq=${linkedRun.taskRunSequence}) is not the current attempt ` +
+      `(max seq=${maxSeq}). This wrapper only runs the latest linked attempt.`,
+    );
+  }
+
+  // 3. Task execution state must be DISPATCHED or RUNNING.
+  if (task.executionState !== 'DISPATCHED' && task.executionState !== 'RUNNING') {
+    throw new Error(
+      `Task '${task.taskId}' executionState must be DISPATCHED or RUNNING, ` +
+      `found: ${task.executionState}`,
+    );
+  }
+
+  // 4. Task must not be PM-ACCEPTED.
+  if (task.pmState === 'ACCEPTED') {
+    throw new Error(
+      `Task '${task.taskId}' pmState is ACCEPTED. Cannot dispatch an accepted task.`,
+    );
+  }
+
+  return { runFolder: linkedRun.folder };
+}
+
+// ── bounded Worker prompt construction ───────────────────────────────────────
+
+/**
+ * Build a deterministic, bounded prompt from Task SSOT fields.
+ *
+ * Includes: taskId, runId, title, goal, reason, scope, completionCriteria.
+ * Does NOT include arbitrary Relay storage paths.
+ * Total size bounded to PROMPT_SIZE_LIMIT_BYTES (16 KiB for V1).
+ *
+ * @param {import('../src/shared/types.js').TaskRecord} task
+ * @param {string} runId
+ * @returns {string}
+ */
+function buildWorkerPrompt(task, runId) {
+  const criteria = (task.completionCriteria ?? [])
+    .map((c) => `- ${c}`)
+    .join('\n') || '- (none)';
+
+  const prompt = [
+    'You are executing one Agent Relay Task.',
+    '',
+    `Task ID: ${task.taskId}`,
+    `Run ID: ${runId}`,
+    '',
+    'Title:',
+    task.title,
+    '',
+    'Goal:',
+    task.goal,
+    '',
+    'Reason:',
+    task.reason || '(none)',
+    '',
+    'Scope:',
+    task.scope || '(none)',
+    '',
+    'Completion criteria:',
+    criteria,
+    '',
+    'Instructions:',
+    '- Work only inside the provided coding workspace.',
+    '- Complete the requested task.',
+    '- Do not alter Agent Relay state files directly.',
+    '- When finished, provide a concise final response describing what changed,',
+    '  verification performed, and remaining blockers.',
+  ].join('\n');
+
+  const encoded = Buffer.byteLength(prompt, 'utf8');
+  if (encoded > PROMPT_SIZE_LIMIT_BYTES) {
+    throw new Error(
+      `Worker prompt exceeds size limit: ${encoded} bytes > ${PROMPT_SIZE_LIMIT_BYTES} bytes (16 KiB). ` +
+      'Truncate task narrative fields before dispatching.',
+    );
+  }
+
+  return prompt;
+}
+
+// ── prompt.md write ───────────────────────────────────────────────────────────
+
+/**
+ * V1-G5-C: read and minimally validate retry-context.json from a Run folder.
+ * Returns null for initial Runs (file absent). Malformed context fails safe
+ * (throw) rather than silently falling back to the initial prompt.
+ *
+ * @param {string} runFolder
+ * @returns {{ preparationId: string; sourceRunId: string; taskId: string; judgmentId: string; deliveryId: string } | null}
+ */
+function readRetryContext(runFolder) {
+  const ctxPath = path.join(runFolder, 'retry-context.json');
+  if (!fs.existsSync(ctxPath)) return null;
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(ctxPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`retry-context.json unreadable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  for (const f of ['preparationId', 'sourceRunId', 'taskId', 'judgmentId', 'deliveryId']) {
+    if (!raw || typeof raw[f] !== 'string' || !raw[f]) {
+      throw new Error(`retry-context.json missing field: ${f}`);
+    }
+  }
+  return {
+    preparationId: raw.preparationId,
+    sourceRunId: raw.sourceRunId,
+    taskId: raw.taskId,
+    judgmentId: raw.judgmentId,
+    deliveryId: raw.deliveryId,
+  };
+}
+
+/**
+ * V1.6: read and minimally validate qa-remediation-context.json from a Run
+ * folder. Returns null for non-remediation Runs (file absent). Malformed
+ * context fails safe (throw) rather than silently falling back to the initial
+ * prompt — same discipline as readRetryContext. Never coexists with
+ * retry-context.json (dispatchers enforce mutual exclusivity; both present
+ * is corruption → the caller refuses).
+ *
+ * @param {string} runFolder
+ * @returns {{ preparationId: string; sourceRunId: string; taskId: string } | null}
+ */
+function readQaRemediationContext(runFolder) {
+  const ctxPath = path.join(runFolder, 'qa-remediation-context.json');
+  if (!fs.existsSync(ctxPath)) return null;
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(ctxPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`qa-remediation-context.json unreadable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  for (const f of ['preparationId', 'sourceRunId', 'taskId']) {
+    if (!raw || typeof raw[f] !== 'string' || !raw[f]) {
+      throw new Error(`qa-remediation-context.json missing field: ${f}`);
+    }
+  }
+  return {
+    preparationId: raw.preparationId,
+    sourceRunId: raw.sourceRunId,
+    taskId: raw.taskId,
+  };
+}
+
+/**
+ * V1.6: recompute the QA remediation prompt with the shared dist composer
+ * (identical bytes to the backend pre-write in qa-gate.ts
+ * dispatchFromPreparation, via the same durable inputs). Reads the durable
+ * preparation + attempt + frozen Task + bounded prior excerpt — never Worker
+ * output, never caller narrative.
+ */
+async function buildQaRemediationPrompt(dataRoot, project, task, qaCtx) {
+  if (qaCtx.taskId !== task.taskId) {
+    throw new Error(`qa-remediation-context taskId mismatch: ${qaCtx.taskId} ≠ ${task.taskId}`);
+  }
+  const promptPath = path.join(DIST_BACKEND, 'qa-remediation-prompt.js');
+  const attemptPath = path.join(DIST_BACKEND, 'qa-attempt.js');
+  const prepPath = path.join(DIST_BACKEND, 'qa-remediation-preparation.js');
+  const gatePath = path.join(DIST_BACKEND, 'qa-gate.js');
+  for (const p of [promptPath, attemptPath, prepPath, gatePath]) {
+    if (!fs.existsSync(p)) {
+      throw new Error(
+        'Relay backend dist not found for QA remediation prompt composition.\n' +
+        'Run "npm run build" before using the relay worker.',
+      );
+    }
+  }
+  const qp = await import(pathToFileURL(promptPath).href);
+  const qa = await import(pathToFileURL(attemptPath).href);
+  const qrp = await import(pathToFileURL(prepPath).href);
+  const gate = await import(pathToFileURL(gatePath).href);
+  const prep = qrp.getQaRemediationPreparation(dataRoot, project, qaCtx.preparationId);
+  if (prep.taskId !== task.taskId || prep.sourceRunId !== qaCtx.sourceRunId) {
+    throw new Error('qa-remediation-context does not match its durable preparation.');
+  }
+  const attempt = qa.getQaAttempt(dataRoot, project, prep.sourceQaAttemptId);
+  const sourceLink = task.linkedRuns.find((r) => r.runId === qaCtx.sourceRunId);
+  if (!sourceLink) {
+    throw new Error(`Source Run ${qaCtx.sourceRunId} is no longer linked.`);
+  }
+  const prior = qp.readPriorResultExcerpt(sourceLink.folder);
+  const semanticReason = gate.semanticReasonFromAttempt(attempt);
+  return qp.composeQaRemediationPrompt({
+    task: {
+      taskId: task.taskId,
+      title: task.title,
+      goal: task.goal,
+      reason: task.reason,
+      scope: task.scope,
+      completionCriteria: task.completionCriteria,
+      ...(task.acceptanceCriteria ? { acceptanceCriteria: task.acceptanceCriteria } : {}),
+    },
+    preparationId: prep.preparationId,
+    sourceRunId: prep.sourceRunId,
+    qaRemediationNumber: prep.qaRemediationNumber,
+    failedCriteria: [...attempt.failedCriteria],
+    deterministicSummary: gate.summarizeAttemptDeterministic(attempt),
+    ...(semanticReason ? { semanticReason } : {}),
+    ...(attempt.remediationInstruction ? { remediationInstruction: attempt.remediationInstruction } : {}),
+    priorExcerpt: prior.excerpt,
+    priorAvailable: prior.available,
+  });
+}
+
+/**
+ * V1-G5-C: recompute the retry prompt with the shared dist composer
+ * (identical bytes to the backend pre-write). Reads the durable
+ * instruction + reason from the G5-A judgment/intent and the bounded prior
+ * excerpt from the source Run — same inputs as retry-dispatch.ts.
+ */
+async function buildRetryPrompt(dataRoot, project, task, retryCtx) {
+  if (retryCtx.taskId !== task.taskId) {
+    throw new Error(`retry-context taskId mismatch: ${retryCtx.taskId} ≠ ${task.taskId}`);
+  }
+  const retryPromptPath = path.join(DIST_BACKEND, 'retry-prompt.js');
+  const pmJudgmentPath = path.join(DIST_BACKEND, 'pm-judgment.js');
+  if (!fs.existsSync(retryPromptPath) || !fs.existsSync(pmJudgmentPath)) {
+    throw new Error(
+      'Relay backend dist not found for retry prompt composition.\n' +
+      'Run "npm run build" before using the relay worker.',
+    );
+  }
+  const rp = await import(pathToFileURL(retryPromptPath).href);
+  const pmJud = await import(pathToFileURL(pmJudgmentPath).href);
+  const judgment = pmJud.getPmJudgment(dataRoot, project, retryCtx.judgmentId);
+  const instruction = pmJud.getRetryInstructionForDelivery(dataRoot, project, retryCtx.deliveryId);
+  const sourceLink = task.linkedRuns.find((r) => r.runId === retryCtx.sourceRunId);
+  if (!sourceLink) {
+    throw new Error(`Source Run ${retryCtx.sourceRunId} is no longer linked.`);
+  }
+  const prior = rp.readPriorResultExcerpt(sourceLink.folder);
+  return rp.composeRetryPrompt({
+    task,
+    preparationId: retryCtx.preparationId,
+    sourceRunId: retryCtx.sourceRunId,
+    reason: judgment.reason || '',
+    retryInstruction: instruction,
+    priorExcerpt: prior.excerpt,
+    priorAvailable: prior.available,
+  });
+}
+
+/**
+ * Write the bounded Worker prompt to prompt.md inside the existing Run folder.
+ *
+ * Idempotency rules:
+ *   - If prompt.md does not exist → write it.
+ *   - If prompt.md exists and content is identical → idempotent continue.
+ *   - If prompt.md exists and content differs → fail safely.
+ *
+ * Never materializes a new Run.
+ * Resolves Run folder only through canonical Task.linkedRuns/runId.
+ *
+ * @param {string} runFolder
+ * @param {string} prompt
+ */
+function writePromptMd(runFolder, prompt) {
+  if (!fs.existsSync(runFolder)) {
+    throw new Error(`Run folder does not exist: ${runFolder}`);
+  }
+
+  const promptPath = path.join(runFolder, 'prompt.md');
+
+  if (fs.existsSync(promptPath)) {
+    const existing = fs.readFileSync(promptPath, 'utf8');
+    if (existing === prompt) {
+      // Idempotent: same content — safe to continue.
+      return;
+    }
+    throw new Error(
+      `prompt.md already exists in Run folder with DIFFERENT content.\n` +
+      `Run folder: ${runFolder}\n` +
+      'Refusing to overwrite. Manual resolution required.',
+    );
+  }
+
+  fs.writeFileSync(promptPath, prompt, 'utf8');
+}
+
+// ── Cline executable resolution ─────────────────────────────────────────────
+
+/**
+ * Resolve the Cline Code CLI executable.
+ *
+ * Resolution order:
+ *   1. CLINE_EXE environment variable (operator override).
+ *   2. On Windows: PATH scan for cline.exe (native, shell:false safe).
+ *   3. Fallback: bare 'cline' (works on Unix / when cline is in PATH).
+ *
+ * Security: executable path is NOT derived from Task content, run folder, or
+ * any user-provided data. Only env and PATH are consulted.
+ *
+ * @returns {string} resolved executable path or basename
+ */
+function resolveClineExecutable() {
+  // 1. Operator-supplied override (escape hatch for non-standard installs).
+  const envOverride = process.env['CLINE_EXE'];
+  if (envOverride && envOverride.trim()) {
+    return envOverride.trim();
+  }
+
+  // 2. Windows: native .exe preferred (shell:false safe; .cmd requires cmd.exe).
+  if (process.platform === 'win32') {
+    const pathDirs = (process.env['PATH'] || '').split(path.delimiter).filter(Boolean);
+    for (const dir of pathDirs) {
+      const candidate = path.join(dir, 'cline.exe');
+      try {
+        fs.accessSync(candidate, fs.constants.F_OK);
+        return candidate;
+      } catch {
+        // Not found in this directory — continue scanning.
+      }
+    }
+    // Note: cline.cmd requires shell:true which is forbidden here.
+    // If cline.exe is not found, fall through to 'cline' fallback.
+    // Operators should set CLINE_EXE if cline.exe is not in PATH.
+  }
+
+  // 3. Unix / fallback: rely on PATH.
+  return 'cline';
+}
+
+/**
+ * Resolve the Cline Code config directory without copying credentials.
+ *
+ * Interactive Owner shells on this host select the Team profile for work under
+ * ~/Desktop/Projects/Team and the Pro profile everywhere else. Relay is
+ * launched without that shell function, so preserve an explicit inherited
+ * CLINE_CONFIG_DIR when present and otherwise apply the same directory-only
+ * routing. The selected directory is passed to Cline as environment metadata;
+ * credentials remain in Cline's own permission-restricted storage.
+ *
+ * @param {string} workspaceRoot
+ * @returns {{ configDir?: string; profile: 'run-bound' | 'inherited' | 'team' | 'pro' | 'default' }}
+ */
+function resolveClineConfigDir(workspaceRoot, runConfigDir) {
+  if (runConfigDir) {
+    if (!path.isAbsolute(runConfigDir) || !fs.existsSync(runConfigDir) || !fs.statSync(runConfigDir).isDirectory()) {
+      throw new Error('Run-bound clineConfigDir must be an existing absolute directory.');
+    }
+    return { configDir: path.resolve(runConfigDir), profile: 'run-bound' };
+  }
+  const inherited = process.env['CLINE_CONFIG_DIR'];
+  if (inherited && inherited.trim()) {
+    return { configDir: inherited.trim(), profile: 'inherited' };
+  }
+
+  const home = process.env['HOME'];
+  if (!home || !home.trim()) return { profile: 'default' };
+
+  const teamRoot = path.resolve(home, 'Desktop', 'Projects', 'Team');
+  const workspace = path.resolve(workspaceRoot);
+  const isTeamWorkspace = workspace === teamRoot || workspace.startsWith(teamRoot + path.sep);
+  const profile = isTeamWorkspace ? 'team' : 'pro';
+  const configDir = path.join(home, isTeamWorkspace ? '.cline-team' : '.cline-pro');
+
+  try {
+    if (fs.statSync(configDir).isDirectory()) return { configDir, profile };
+  } catch {
+    // The host does not have the routed profile; retain Cline's normal default.
+  }
+  return { profile: 'default' };
+}
+
+// ── diagnostic log ────────────────────────────────────────────────────────────
+
+/**
+ * Write worker-launch.log to the Run folder for operator inspection.
+ * Safe fields only — no secrets, no full env, no chain-of-thought.
+ *
+ * @param {string} runFolder
+ * @param {object} entry
+ */
+function writeLaunchLog(runFolder, entry) {
+  try {
+    const logPath = path.join(runFolder, 'worker-launch.log');
+    const data = JSON.stringify(entry, null, 2) + '\n';
+    // Append if file exists (non-blocking best-effort).
+    if (fs.existsSync(logPath)) {
+      fs.appendFileSync(logPath, '\n---\n' + data, 'utf8');
+    } else {
+      fs.writeFileSync(logPath, data, 'utf8');
+    }
+  } catch {
+    // Diagnostic log write must never crash the wrapper.
+  }
+}
+
+/**
+ * Collect a child stream into a bounded UTF-8 excerpt (capped at
+ * MAX_WORKER_DIAG_CHARS). Never unbounded; never a full transcript.
+ *
+ * @param {import('node:stream').Readable | null} stream
+ * @returns {Promise<string>} bounded excerpt ('' when stream is null)
+ */
+function collectBoundedStream(stream) {
+  if (!stream) return Promise.resolve('');
+  return new Promise((resolve) => {
+    let text = '';
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk) => {
+      if (text.length < MAX_WORKER_DIAG_CHARS) {
+        text += String(chunk).slice(0, MAX_WORKER_DIAG_CHARS - text.length);
+      }
+    });
+    stream.on('end', () => resolve(text));
+    stream.on('error', () => resolve(text));
+  });
+}
+
+/**
+ * Safe redacted summary of the Cline argv (non-secret shape only). The full
+ * prompt is intentionally NOT logged.
+ *
+ * @param {string} exe
+ * @param {string[]} args
+ * @returns {string[]}
+ */
+function redactedArgvShape(exe, args) {
+  return [exe, ...args.map((a) => {
+    if (/^-/.test(a)) return a;                 // flags are non-secret shape
+    return a.length <= 80 ? a : a.slice(0, 40) + '…(truncated)';
+  })];
+}
+
+// ── V1.6 Slice 8: QA passthrough mode ─────────────────────────────────────────
+
+/**
+ * Serve a bare `--print <prompt>` invocation with no relay args (the exact
+ * shape qa-semantic-evaluator.ts invokeOnce produces against this wrapper's
+ * own registry row) as a direct `cline --print <prompt>` passthrough.
+ *
+ * Security posture (mirrors the relay path, narrowed):
+ *   - spawn cwd is the wrapper's own cwd — the evaluator sets it to the
+ *     implementation Run's authoritative workspaceRoot. Never derived from
+ *     prompt text or any Task narrative available here.
+ *   - No --permission-mode flag (least privilege); QA only judges, never edits.
+ *   - Profile routing identical to the relay path (inherited
+ *     CLINE_CONFIG_DIR, else Owner Team/Pro routing by cwd); credentials
+ *     stay in Cline's own storage, never read here.
+ *   - stdout carries Cline's output verbatim (no wrapper chatter — the
+ *     semantic line parser must see the structured block); all wrapper
+ *     diagnostics go to stderr.
+ *   - Parent signals are forwarded so evaluator timeouts cannot orphan Cline.
+ *
+ * @param {string} prompt  already-bounded QA prompt (composed by the evaluator)
+ * @returns {Promise<never>} always exits the process with Cline's exit code
+ */
+async function runQaPrintPassthrough(prompt) {
+  const cwd = process.cwd();
+  const clineExe = resolveClineExecutable();
+  let configDir;
+  try {
+    const routed = resolveClineConfigDir(cwd);
+    configDir = routed.configDir;
+  } catch {
+    configDir = undefined;
+  }
+  const exitCode = await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(clineExe, ['--print', prompt], {
+        cwd,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: {
+          ...process.env,
+          ...(configDir ? { CLINE_CONFIG_DIR: configDir } : {}),
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[relay-worker-cline:qa] Cline spawn threw: ${msg}\n`);
+      resolve(1);
+      return;
+    }
+    const onSigterm = () => { try { child.kill('SIGTERM'); } catch { /* already gone */ } };
+    const onSigint = () => { try { child.kill('SIGINT'); } catch { /* already gone */ } };
+    process.on('SIGTERM', onSigterm);
+    process.on('SIGINT', onSigint);
+    // Bounded stderr buffer (P2 hardening): keep at most 4× the emitted
+    // excerpt bound in memory; a cut stream still fails closed downstream.
+    const ERR_BUF_MAX = MAX_WORKER_DIAG_CHARS * 4;
+    let errBuffered = 0;
+    const errChunks = [];
+    child.stdout.on('data', (d) => { process.stdout.write(d); });
+    child.stderr.on('data', (d) => {
+      if (errBuffered < ERR_BUF_MAX) {
+        const room = ERR_BUF_MAX - errBuffered;
+        errChunks.push(d.length > room ? d.slice(0, room) : d);
+        errBuffered += Math.min(d.length, room);
+      }
+    });
+    child.on('error', (err) => {
+      process.stderr.write(`[relay-worker-cline:qa] Cline spawn error: ${err.message}\n`);
+      resolve(1);
+    });
+    child.on('exit', (code, sig) => {
+      process.removeListener('SIGTERM', onSigterm);
+      process.removeListener('SIGINT', onSigint);
+      if (errChunks.length > 0) {
+        const excerpt = Buffer.concat(errChunks).toString('utf8').trim().slice(0, MAX_WORKER_DIAG_CHARS);
+        if (excerpt) process.stderr.write(`${excerpt}\n`);
+      }
+      resolve(code ?? (sig ? 1 : 0));
+    });
+  });
+  process.exit(exitCode);
+}
+
+/**
+ * Detect the QA passthrough shape: zero relay-arg tokens present AND a
+ * `--print <prompt>` pair present with a non-flag prompt value.
+ *
+ * @param {string[]} argv  process.argv.slice(2)
+ * @returns {string|null} the prompt, or null when this is not QA shape
+ */
+function detectQaPassthroughPrompt(argv) {
+  for (const tok of argv) {
+    if (RELAY_ARGS.has(tok)) return null; // relay path takes precedence, always
+  }
+  const idx = argv.indexOf('--print');
+  if (idx === -1) return null;
+  const prompt = argv[idx + 1];
+  if (prompt === undefined || prompt.startsWith('--')) return null;
+  return prompt;
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const startedAt = new Date().toISOString();
+  let runFolder = null;
+  let taskId = null;
+  let runId = null;
+
+  try {
+    // ── 1. Parse Relay args (no shell, no eval, process.argv array only) ──────
+    // V1.6 Slice 8: a bare `--print <prompt>` with no relay args is the
+    // Semantic QA evaluator invoking this wrapper's own registry row — serve
+    // it as a direct passthrough (never Fatal, never a Task load attempt).
+    const rawArgv = process.argv.slice(2);
+    const qaPrompt = detectQaPassthroughPrompt(rawArgv);
+    if (qaPrompt !== null) {
+      await runQaPrintPassthrough(qaPrompt);
+      return; // unreachable — runQaPrintPassthrough always exits
+    }
+    const args = parseRelayArgs(rawArgv);
+    taskId = args.taskId;
+    runId = args.runId;
+    const permissionMode = args.permissionMode; // 'default' | 'acceptEdits' | undefined
+
+    // ── 2. Validate workspaceRoot (security) ──────────────────────────────────
+    const workspaceRoot = validateWorkspaceRoot(args.workspaceRoot);
+
+    // ── 3. Load canonical Task ────────────────────────────────────────────────
+    let task;
+    try {
+      task = await loadCanonicalTask(args.dataRoot, args.project, args.taskId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[relay-worker-cline] Task load failed: ${msg}\n`);
+      process.exit(1);
+    }
+
+    // ── 4. Validate Task + runId ──────────────────────────────────────────────
+    let runFolder_;
+    try {
+      ({ runFolder: runFolder_ } = validateTaskAndRun(task, args.runId));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[relay-worker-cline] Task/run validation failed: ${msg}\n`);
+      process.exit(1);
+    }
+    runFolder = runFolder_;
+
+    // ── 5. Build bounded Worker prompt ────────────────────────────────────────
+    // V1-G5-C: retry Runs carry retry-context.json (written pre-commit by the
+    // canonical Dispatcher from backend-composed data). Recompute the
+    // identical retry prompt via the shared dist composer so the idempotent
+    // prompt.md write below agrees byte-for-byte; initial Runs use the
+    // canonical Task prompt as before.
+    // V1.6: QA remediation Runs carry qa-remediation-context.json instead
+    // (mutually exclusive with retry-context.json — both present is
+    // corruption and refuses). Recompute via the shared QA composer so the
+    // pre-written prompt.md agrees byte-for-byte.
+    let prompt;
+    try {
+      const retryCtx = readRetryContext(runFolder);
+      const qaCtx = readQaRemediationContext(runFolder);
+      if (retryCtx && qaCtx) {
+        throw new Error('Run folder carries both retry-context.json and qa-remediation-context.json; lineages are mutually exclusive.');
+      }
+      if (qaCtx) {
+        prompt = await buildQaRemediationPrompt(args.dataRoot, args.project, task, qaCtx);
+      } else if (retryCtx) {
+        prompt = await buildRetryPrompt(args.dataRoot, args.project, task, retryCtx);
+      } else {
+        prompt = buildWorkerPrompt(task, args.runId);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[relay-worker-cline] Prompt construction failed: ${msg}\n`);
+      writeLaunchLog(runFolder, {
+        startedAt,
+        taskId,
+        runId,
+        phase: 'prompt-construction',
+        error: msg,
+        exitCode: 1,
+      });
+      process.exit(1);
+    }
+
+    // ── 6. Write prompt.md to existing Run (idempotent) ───────────────────────
+    try {
+      writePromptMd(runFolder, prompt);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[relay-worker-cline] prompt.md write failed: ${msg}\n`);
+      writeLaunchLog(runFolder, {
+        startedAt,
+        taskId,
+        runId,
+        phase: 'prompt-write',
+        error: msg,
+        exitCode: 1,
+      });
+      process.exit(1);
+    }
+
+    // ── 7. Resolve Cline executable ──────────────────────────────────────────
+    const clineExe = resolveClineExecutable();
+    const clineConfig = resolveClineConfigDir(workspaceRoot, args.claudeConfigDir);
+
+    // ── 8. Write launch log (pre-spawn diagnostics) ───────────────────────────
+    writeLaunchLog(runFolder, {
+      startedAt,
+      taskId,
+      runId,
+      clineExecutableResolved: clineExe,
+      workspaceRoot,
+      // Safe normalized field — not an env dump or raw token
+      permissionMode: permissionMode ?? 'default',
+      clineConfigProfile: clineConfig.profile,
+      phase: 'spawning',
+    });
+
+    // ── 9. Spawn Cline Code CLI (shell:false mandatory) ─────────────────────
+    //
+    // The prompt is passed as a direct argv element — NOT through a shell.
+    // No shell interpolation, no command concatenation, no eval.
+    // Cline CLI: cline --json --provider cline-pass --auto-approve true -c <workspaceRoot> [--id <session-id>] <prompt>.
+    // OAuth credentials come only from the trusted cline-pass provider; no API key is accepted.
+    const clineArgs = ['--json', '--provider', 'cline-pass', '--auto-approve', 'true', '-c', workspaceRoot];
+    if (args.clineSessionId) clineArgs.push('--id', args.clineSessionId);
+    clineArgs.push(prompt);
+
+    let exitCode = 1;
+    let exitSignal = null;
+    let stderrExcerpt = '';
+    let stdoutExcerpt = '';
+    try {
+      exitCode = await new Promise((resolve) => {
+        const child = spawn(clineExe, clineArgs, {
+          cwd: workspaceRoot,    // workspaceRoot = coding workspace cwd only
+          shell: false,          // MANDATORY: no shell
+          stdio: ['ignore', 'pipe', 'pipe'], // capture bounded CLI stdout/stderr for diagnostics
+          windowsHide: true,
+          // Preserve the trusted parent environment. When no explicit config
+          // directory was inherited, route only to the Owner's normal Cline
+          // profile; no Task-derived environment values or secrets are added.
+          env: {
+            ...process.env,
+            ...(clineConfig.configDir ? { CLINE_CONFIG_DIR: clineConfig.configDir } : {}),
+          },
+        });
+
+        const stderrP = collectBoundedStream(child.stderr);
+        const stdoutP = collectBoundedStream(child.stdout);
+
+        child.on('error', (err) => {
+          process.stderr.write(
+            `[relay-worker-cline] Cline spawn error: ${err.message}\n`,
+          );
+          resolve(1);
+        });
+
+        child.on('exit', (code, sig) => {
+          exitSignal = sig;
+          Promise.all([stderrP, stdoutP]).then(([se, so]) => {
+            stderrExcerpt = se;
+            stdoutExcerpt = so;
+            resolve(code ?? (sig ? 1 : 0));
+          });
+        });
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[relay-worker-cline] Spawn threw: ${msg}\n`);
+      writeLaunchLog(runFolder, {
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        taskId,
+        runId,
+        clineExecutableResolved: clineExe,
+        argvShape: redactedArgvShape(clineExe, clineArgs),
+        phase: 'spawn-threw',
+        error: msg,
+        exitCode: 1,
+      });
+      process.exit(1);
+    }
+
+    // ── 10. Write final log entry ──────────────────────────────────────────────
+    const finalEntry = {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      taskId,
+      runId,
+      clineExecutableResolved: clineExe,
+      // Safe normalized field — records what was used, not a raw arg
+      permissionMode: permissionMode ?? 'default',
+      clineConfigProfile: clineConfig.profile,
+      argvShape: redactedArgvShape(clineExe, clineArgs),
+      phase: 'completed',
+      // exitCode=0 does NOT mean RESULT_RECEIVED.
+      // The cline-code adapter observes RESPONSE_COMPLETE independently.
+      exitCode,
+    };
+    // Non-zero exits carry bounded CLI launch diagnostics only — no transcript,
+    // no chain-of-thought, no secrets/env.
+    if (exitCode !== 0 || exitSignal !== null) {
+      if (exitSignal !== null) finalEntry.signal = exitSignal;
+      if (stderrExcerpt.trim()) finalEntry.stderrExcerpt = stderrExcerpt.trim().slice(0, MAX_WORKER_DIAG_CHARS);
+      if (stdoutExcerpt.trim()) finalEntry.stdoutExcerpt = stdoutExcerpt.trim().slice(0, MAX_WORKER_DIAG_CHARS);
+    }
+    writeLaunchLog(runFolder, finalEntry);
+
+    // ── 11. Propagate Cline exit code ────────────────────────────────────────
+    //
+    // exitCode=0 → Cline completed normally. NOT RESULT_RECEIVED.
+    // exitCode≠0 → Dispatcher existing non-zero failure path handles FAILED.
+    //
+    // NEVER calls markResultReceived.
+    // NEVER creates Evidence.
+    // NEVER calls MCP.
+    //
+    process.exit(exitCode);
+  } catch (err) {
+    // Outer catch: handles arg parsing errors and any unexpected failures.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[relay-worker-cline] Fatal: ${msg}\n`);
+
+    if (runFolder) {
+      writeLaunchLog(runFolder, {
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        taskId,
+        runId,
+        phase: 'fatal',
+        error: msg,
+        exitCode: 1,
+      });
+    }
+
+    process.exit(1);
+  }
+}
+
+main().catch((err) => {
+  process.stderr.write(`[relay-worker-cline] Unhandled: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+});

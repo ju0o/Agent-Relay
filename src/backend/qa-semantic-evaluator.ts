@@ -79,6 +79,15 @@ import {
   withQaEvaluatorLock,
 } from './qa-deterministic-evaluator.js';
 import {
+  clearQuotaExhaustion,
+  detectQuotaSignal,
+  earliestQuotaRelease,
+  isQuotaExhausted,
+  quotaExhaustedReason,
+  recordQuotaExhaustion,
+  type QuotaDetection,
+} from './quota-signal.js';
+import {
   type QaAttemptRecord,
   type QaSemanticCriterionResult,
   getQaAttempt,
@@ -366,6 +375,36 @@ export function parseSemanticQaOutput(raw: string, requiredIds: readonly string[
 
 // ── dispatch ─────────────────────────────────────────────────────────────────
 
+
+// ── QA seat chain (V1 W-A2/W-A4) ─────────────────────────────────────────────
+
+/** Role-config seat prefix for a QA worker-registry record. */
+const QA_SEAT_PREFIX = 'qa-worker:';
+
+function stripQaSeatPrefix(seatId: string): string {
+  return seatId.startsWith(QA_SEAT_PREFIX) ? seatId.slice(QA_SEAT_PREFIX.length) : seatId;
+}
+
+/**
+ * Canonical seat-id chain for one semantic evaluation: the attempt's own
+ * frozen `qaWorkerId` first (it is never re-chosen — the record states who
+ * judged it), then the qa RoleAssignment's `fallbackChain`, de-duplicated and
+ * normalized to `qa-worker:<workerId>` so ledger keys match the role config's
+ * own vocabulary. Non-worker entries (e.g. a bare `opencode/<model>` model
+ * ref) stay in the list and are skipped later as unregistered — silently
+ * dropping them here would hide a config error.
+ */
+function normalizeQaSeatChain(primaryWorkerId: string, chain: readonly string[] | undefined): string[] {
+  const seats = [`${QA_SEAT_PREFIX}${stripQaSeatPrefix(primaryWorkerId)}`];
+  for (const raw of chain ?? []) {
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (!trimmed) continue;
+    const seatId = `${QA_SEAT_PREFIX}${stripQaSeatPrefix(trimmed)}`;
+    if (!seats.includes(seatId)) seats.push(seatId);
+  }
+  return seats;
+}
+
 function qaSemanticRunDir(dataRoot: string, project: string, qaAttemptId: string): string {
   return path.join(relayDir(dataRoot, project), 'qa-semantic-runs', qaAttemptId);
 }
@@ -391,6 +430,20 @@ export interface EvaluateSemanticQaInput {
    * attempt's own criteriaValidationModes — validated, not trusted verbatim. */
   criteriaText: Record<string, string>;
   timeoutMs?: number;
+  /**
+   * V1 W-A2: the qa RoleAssignment's `fallbackChain`, seat ids as written in
+   * role-config (`qa-worker:<workerId>`). Entered only when a seat cannot
+   * judge at all — quota exhaustion, unregistered, or independence-barred.
+   * Absent/empty ≡ today's single-seat behaviour.
+   */
+  qaWorkerFallbackChain?: string[];
+  /**
+   * V1 W-A4 / DEC-2026-013: runtimes that must NOT judge this attempt because
+   * they produced the artifact under review (`observationAdapterId` values,
+   * e.g. `actl-managed`). A barred seat is skipped, never used — a same-
+   * runtime second opinion is not independent evidence.
+   */
+  excludeObservationAdapters?: string[];
 }
 
 export type QaSemanticEvaluationOutcome =
@@ -456,12 +509,54 @@ export function evaluateSemanticQa(
     if (!attempt.qaWorkerId) {
       throw new QaSemanticEvaluatorError('BLOCKED', `QA Attempt ${input.qaAttemptId}에 qaWorkerId가 설정되어 있지 않습니다.`);
     }
-    let worker;
-    try {
-      worker = loadWorkerRegistryRecord(dataRoot, attempt.qaWorkerId);
-    } catch (err) {
-      const msg = err instanceof WorkerRegistryError ? err.message : String(err);
-      throw new QaSemanticEvaluatorError('BLOCKED', `qaWorkerId '${attempt.qaWorkerId}'를 worker registry에서 확인할 수 없습니다: ${msg}`);
+    // W-A2/W-A3/W-A4: the QA seat is a CHAIN, not a single worker. The
+    // primary is the attempt's own frozen qaWorkerId; the rest comes from the
+    // qa RoleAssignment and is entered ONLY when a seat cannot judge at all
+    // (out of provider quota, unregistered, or barred by the independence
+    // invariant). A skipped seat produces no verdict and consumes no QA
+    // budget — it is a routing event, not a judgment.
+    const candidateSeatIds = normalizeQaSeatChain(attempt.qaWorkerId, input.qaWorkerFallbackChain);
+    const barredRuntimes = new Set((input.excludeObservationAdapters ?? []).filter((id) => typeof id === 'string' && id.trim()));
+    const quotaHeld: string[] = [];
+    const skipped: string[] = [];
+    type QaSeatCandidate = { seatId: string; workerId: string; worker: ReturnType<typeof loadWorkerRegistryRecord> };
+    const candidates: QaSeatCandidate[] = [];
+    for (const seatId of candidateSeatIds) {
+      const workerId = stripQaSeatPrefix(seatId);
+      let candidateWorker: ReturnType<typeof loadWorkerRegistryRecord>;
+      try {
+        candidateWorker = loadWorkerRegistryRecord(dataRoot, workerId);
+      } catch (err) {
+        const msg = err instanceof WorkerRegistryError ? err.message : String(err);
+        // The PRIMARY must resolve — that is a configuration fault, not a
+        // failover case, and must keep its original error contract.
+        if (seatId === candidateSeatIds[0]) {
+          throw new QaSemanticEvaluatorError('BLOCKED', `qaWorkerId '${workerId}'를 worker registry에서 확인할 수 없습니다: ${msg}`);
+        }
+        skipped.push(`${seatId}: worker registry에 없음 (${msg})`);
+        continue;
+      }
+      // W-A4 / DEC-2026-013: a QA seat sharing the producer's runtime is not
+      // an independent second opinion. Never silently used — the chain waits
+      // instead (the caller supplies the producer runtime; an empty exclusion
+      // set means the caller has nothing to protect against).
+      const runtimeId = typeof candidateWorker.observationAdapterId === 'string' ? candidateWorker.observationAdapterId : '';
+      // Scoped to FALLBACK seats on purpose. The primary is the seat the
+      // Founder-owned role config assigned and the attempt froze; refusing
+      // to run it would be a silent config override. The rule exists to stop
+      // AUTOMATIC failover from landing the reviewer on the builder's own
+      // runtime, which is exactly what the fallback walk can do by accident.
+      if (runtimeId && barredRuntimes.has(runtimeId) && seatId !== candidateSeatIds[0]) {
+        skipped.push(`${seatId}: 런타임 '${runtimeId}'가 산출물 생산 런타임과 동일 (독립성 불변식)`);
+        continue;
+      }
+      const held = isQuotaExhausted(dataRoot, seatId);
+      if (held) {
+        quotaHeld.push(seatId);
+        skipped.push(`${seatId}: quota 소진 상태, ${held.holdUntil}까지 보류`);
+        continue;
+      }
+      candidates.push({ seatId, workerId, worker: candidateWorker });
     }
 
     const { workspaceRoot, runFolder } = resolveAuthoritativeRunBindingOrRethrow(dataRoot, project, attempt);
@@ -489,32 +584,73 @@ export function evaluateSemanticQa(
     const sessionRef = `qa-semantic-runs/${input.qaAttemptId}`;
     const startedAt = new Date().toISOString();
 
-    // One invocation, then — only on parse failure/timeout/error — exactly
-    // one bounded auto-reattempt of the invocation itself (§10 Q9). Never a
-    // second QA attempt, never a remediation-budget consumption.
+    // One invocation per seat, then — only on parse failure/timeout/error —
+    // exactly one bounded auto-reattempt of that seat (§10 Q9). A quota
+    // signal is NOT a parse failure: it ends this seat immediately and hands
+    // the same frozen prompt to the next seat in the chain, which is the
+    // whole point of W-A3. Never a second QA attempt, never a remediation
+    // budget consumption.
     let parsed: ParsedSemanticOutput = { kind: 'unparseable', reason: '(invocation not attempted)' };
     let lastOutcome: ProcessOutcome | undefined;
-    for (let attemptNo = 1; attemptNo <= 2; attemptNo += 1) {
-      const outcome = await invokeOnce(worker.launchCommand, worker.launchArgsPrefix, prompt, workspaceRoot, timeoutMs);
-      lastOutcome = outcome;
-      fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stdout.txt`), outcome.stdout, 'utf8');
-      if (outcome.stderr) fs.writeFileSync(path.join(runDir, `attempt-${attemptNo}-stderr.txt`), outcome.stderr, 'utf8');
-      if (outcome.spawnError || outcome.timedOut || outcome.exitCode === null) {
-        parsed = { kind: 'unparseable', reason: outcome.spawnError ? `실행 실패: ${outcome.spawnError}` : outcome.timedOut ? '시간 초과' : '종료 코드를 확인할 수 없습니다.' };
-        continue; // try the bounded reattempt (attemptNo 2), or fall through to BLOCKED
+    let usedSeat = { seatId: candidateSeatIds[0]!, workerId: stripQaSeatPrefix(candidateSeatIds[0]!) };
+    let invocationNo = 0;
+    for (const candidate of candidates) {
+      usedSeat = { seatId: candidate.seatId, workerId: candidate.workerId };
+      parsed = { kind: 'unparseable', reason: '(invocation not attempted)' };
+      let quotaHit: QuotaDetection | null = null;
+      for (let attemptNo = 1; attemptNo <= 2; attemptNo += 1) {
+        invocationNo += 1;
+        const outcome = await invokeOnce(candidate.worker.launchCommand, candidate.worker.launchArgsPrefix, prompt, workspaceRoot, timeoutMs);
+        lastOutcome = outcome;
+        fs.writeFileSync(path.join(runDir, `attempt-${invocationNo}-stdout.txt`), outcome.stdout, 'utf8');
+        if (outcome.stderr) fs.writeFileSync(path.join(runDir, `attempt-${invocationNo}-stderr.txt`), outcome.stderr, 'utf8');
+        // Seat provenance is evidence: which seat produced which artifact must
+        // be independently readable, never inferred from the verdict.
+        fs.appendFileSync(path.join(runDir, 'seats.jsonl'), `${JSON.stringify({ invocation: invocationNo, seatId: candidate.seatId, attemptNo, exitCode: outcome.exitCode, timedOut: outcome.timedOut === true, spawnError: outcome.spawnError ?? null })}\n`, 'utf8');
+        quotaHit = detectQuotaSignal(`${outcome.stdout}\n${outcome.stderr ?? ''}`);
+        if (quotaHit) break;
+        if (outcome.spawnError || outcome.timedOut || outcome.exitCode === null) {
+          parsed = { kind: 'unparseable', reason: outcome.spawnError ? `실행 실패: ${outcome.spawnError}` : outcome.timedOut ? '시간 초과' : '종료 코드를 확인할 수 없습니다.' };
+          continue; // bounded reattempt (attemptNo 2) on the SAME seat
+        }
+        parsed = parseSemanticQaOutput(outcome.stdout, requiredIds);
+        if (parsed.kind !== 'unparseable') break; // this seat answered
       }
-      parsed = parseSemanticQaOutput(outcome.stdout, requiredIds);
-      if (parsed.kind !== 'unparseable') break; // success — no reattempt needed
+      if (quotaHit) {
+        const signal = recordQuotaExhaustion(dataRoot, candidate.seatId, quotaHit, { source: `qa-semantic:${input.qaAttemptId}` });
+        quotaHeld.push(candidate.seatId);
+        skipped.push(`${candidate.seatId}: quota 소진 감지, ${signal.holdUntil}까지 보류`);
+        fs.writeFileSync(path.join(runDir, `quota-${candidate.workerId}.json`), `${JSON.stringify(signal, null, 2)}\n`, 'utf8');
+        parsed = { kind: 'unparseable', reason: quotaExhaustedReason([candidate.seatId], signal.holdUntil) };
+        continue; // next seat — the work is not blocked, only re-routed
+      }
+      // This seat was alive and answered. Clear any stale hold on it so an
+      // expired limit can never keep a working seat out of rotation.
+      clearQuotaExhaustion(dataRoot, candidate.seatId);
+      // An unparseable answer from a LIVE seat is a QA defect, not a routing
+      // problem: burning the rest of the chain on it would destroy the
+      // independent-seat reserve for no evidence gain.
+      break;
     }
     const completedAt = new Date().toISOString();
 
     if (parsed.kind === 'unparseable') {
-      fs.writeFileSync(path.join(runDir, 'blocked-reason.txt'), parsed.reason, 'utf8');
+      // Distinguish "nobody could be asked" (infrastructure — queue until the
+      // earliest reset, never an owner decision) from "a live seat answered
+      // something unusable" (a real QA defect that must stay BLOCKED).
+      const chainQuotaOnly = quotaHeld.length > 0 && candidates.every((candidate) => quotaHeld.includes(candidate.seatId));
+      const releaseAt = earliestQuotaRelease(dataRoot, candidateSeatIds);
+      const reason = chainQuotaOnly
+        ? `${quotaExhaustedReason(quotaHeld, releaseAt)}${skipped.length ? ` | 좌석 상태: ${skipped.join('; ')}` : ''}`
+        : candidates.length === 0
+          ? `사용 가능한 QA 좌석이 없습니다 — ${skipped.join('; ') || 'fallbackChain이 비어 있습니다.'}`
+          : parsed.reason;
+      fs.writeFileSync(path.join(runDir, 'blocked-reason.txt'), reason, 'utf8');
       const record = await recordSemanticEvidence(dataRoot, project, input.qaAttemptId, {
         status: 'BLOCKED',
         criteria: [],
-        reason: parsed.reason,
-        qaWorkerId: attempt.qaWorkerId,
+        reason,
+        qaWorkerId: usedSeat.workerId,
         sessionRef,
         startedAt,
         completedAt,
@@ -526,7 +662,7 @@ export function evaluateSemanticQa(
       const record = await recordSemanticEvidence(dataRoot, project, input.qaAttemptId, {
         status: 'PASS',
         criteria: parsed.criteria,
-        qaWorkerId: attempt.qaWorkerId,
+        qaWorkerId: usedSeat.workerId,
         sessionRef,
         startedAt,
         completedAt,
@@ -539,7 +675,7 @@ export function evaluateSemanticQa(
       status: 'FAIL',
       criteria: parsed.criteria,
       failedCriteria: parsed.failedCriteria,
-      qaWorkerId: attempt.qaWorkerId,
+      qaWorkerId: usedSeat.workerId,
       sessionRef,
       startedAt,
       completedAt,

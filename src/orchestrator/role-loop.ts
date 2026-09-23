@@ -44,6 +44,17 @@ export interface RoleLoopConfig {
   qaRemediationDispatchHook?: QaRemediationDispatchHook;
 }
 
+import {
+  clearQuotaExhaustion,
+  detectQuotaSignal,
+  earliestQuotaRelease,
+  isQuotaExhausted,
+  isQuotaExhaustedReason,
+  quotaExhaustedReason,
+  recordQuotaExhaustion,
+  resetAtFromReason,
+} from '../backend/quota-signal.js';
+
 export class BillingGuardError extends Error {
   readonly code = 'BLOCKED_BILLING' as const;
 }
@@ -52,6 +63,45 @@ export class PmOwnerRequiredError extends Error {
 }
 export class PmTimeoutError extends Error {
   readonly code = 'BLOCKED_RUNTIME' as const;
+}
+/**
+ * V1 W-A3 — a seat that is out of provider quota. Distinct from
+ * BillingGuardError (a policy refusal the owner must answer) and from
+ * PmOwnerRequiredError (a decision only the owner can make): this one is
+ * pure infrastructure and resolves by WAITING, so it must never reach the
+ * Founder. `resetAt` is the provider-stated (or conservatively derived)
+ * time after which the loop retries on its own.
+ */
+export class QuotaExhaustedError extends Error {
+  readonly code = 'QUOTA_EXHAUSTED' as const;
+  readonly resetAt?: string;
+  constructor(message: string, resetAt?: string) {
+    super(message);
+    this.resetAt = resetAt;
+  }
+}
+
+/** Ledger lookup that degrades to "not held" — a quota ledger problem must
+ * never stop a dispatch (cfg.dataRoot is always set in production; hand-built
+ * test configs may omit it). */
+function quotaHoldFor(cfg: RoleLoopConfig, seatId: string) {
+  if (typeof cfg.dataRoot !== 'string' || !cfg.dataRoot) return null;
+  try { return isQuotaExhausted(cfg.dataRoot, seatId); } catch { return null; }
+}
+
+/**
+ * Classify one raw PM reply. A provider limit message is recorded against
+ * that seat (so the next turn skips it and the reset time is durable) and
+ * returned; anything else clears a stale hold, because a seat that just
+ * answered is demonstrably not exhausted.
+ */
+function noteAdapterOutput(cfg: RoleLoopConfig, adapterId: string, text: string | undefined) {
+  if (typeof cfg.dataRoot !== 'string' || !cfg.dataRoot || !text) return null;
+  try {
+    const hit = detectQuotaSignal(text);
+    if (!hit) { clearQuotaExhaustion(cfg.dataRoot, adapterId); return null; }
+    return recordQuotaExhaustion(cfg.dataRoot, adapterId, hit, { source: `pm-reply:${adapterId}` });
+  } catch { return null; }
 }
 
 function isTerminalFailedRun(dataRoot: string, project: string, link: TaskRecord['linkedRuns'][number]): boolean {
@@ -120,6 +170,15 @@ export function resolvePmAdapterForTurn(cfg: RoleLoopConfig, assignment: RoleAss
   const primary = cfg.resolveAdapter ? cfg.resolveAdapter(assignment.runtimeAdapterId) : (cfg.pmAdapter.id === assignment.runtimeAdapterId ? cfg.pmAdapter : null);
   if (!primary) throw new PmOwnerRequiredError(`OWNER_REQUIRED: PM adapter "${assignment.runtimeAdapterId}" is not registered`);
   try {
+    // W-A3: quota is checked BEFORE billing so an exhausted primary enters
+    // the same fallback walk instead of surfacing as an owner decision.
+    const primaryHold = quotaHoldFor(cfg, assignment.runtimeAdapterId);
+    if (primaryHold) {
+      throw new QuotaExhaustedError(
+        `QUOTA_EXHAUSTED: PM adapter "${assignment.runtimeAdapterId}" is out of provider quota until ${primaryHold.holdUntil}`,
+        primaryHold.resetAt ?? primaryHold.holdUntil,
+      );
+    }
     assertBillingAllowed(assignment);
     return primary;
   } catch (primaryErr) {
@@ -140,7 +199,18 @@ export function resolvePmAdapterForTurn(cfg: RoleLoopConfig, assignment: RoleAss
       // silently used.
       const zeroExtraBilling = assignment.zeroExtraBilling as unknown as boolean;
       if (zeroExtraBilling !== false && !isFreeTierModel(adapterId)) continue;
+      // W-A3: a seat already known to be out of quota is SKIPPED, not tried.
+      // Trying it burns a turn and re-blocks the loop for no evidence gain.
+      if (quotaHoldFor(cfg, adapterId)) continue;
       return adapter;
+    }
+    // Every compliant seat is quota-held: the answer is WAIT, not the owner.
+    // Waiting is correct even when the primary itself was billing-blocked —
+    // a fallback that returns after its reset completes the work unattended.
+    const seats = [assignment.runtimeAdapterId, ...(assignment.fallbackChain ?? [])];
+    const releaseAt = typeof cfg.dataRoot === 'string' && cfg.dataRoot ? earliestQuotaRelease(cfg.dataRoot, seats) : undefined;
+    if (releaseAt || primaryErr instanceof QuotaExhaustedError) {
+      throw new QuotaExhaustedError(quotaExhaustedReason(seats, releaseAt), releaseAt);
     }
     throw new PmOwnerRequiredError(
       `OWNER_REQUIRED: PM adapter "${assignment.runtimeAdapterId}" failed the billing guard (${(primaryErr as Error).message}) and no compliant, registered fallback in [${(assignment.fallbackChain ?? []).join(', ') || '(empty)'}] was found`,
@@ -181,7 +251,7 @@ async function sendAndCollect(adapter: RoleRuntimeAdapter, sessionId: string, en
   }
 }
 
-type ParseOutcome<T> = { ok: true; value: T } | { ok: false; error: string };
+type ParseOutcome<T> = { ok: true; value: T } | { ok: false; error: string; reply?: string };
 
 async function sendAndParseWithReask<T>(
   adapter: RoleRuntimeAdapter,
@@ -217,7 +287,10 @@ async function sendAndParseWithReask<T>(
         reply = next.text;
         continue;
       }
-      return { ok: false, error: lastError };
+      // The raw reply travels with the failure: an unparseable answer may be
+      // a provider limit message rather than a PM contract violation, and
+      // only the caller (which has cfg/dataRoot) can record that.
+      return { ok: false, error: lastError, reply };
     }
   }
 }
@@ -225,7 +298,7 @@ async function sendAndParseWithReask<T>(
 async function sendAndParseOnce<T>(adapter: RoleRuntimeAdapter, sessionId: string, envelope: InputEnvelope, parseFn: (text: string) => T, timeoutMs: number): Promise<ParseOutcome<T>> {
   const reply = await sendAndCollect(adapter, sessionId, envelope, timeoutMs);
   try { return { ok: true, value: parseFn(reply.text) }; }
-  catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+  catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err), reply: reply.text }; }
 }
 
 // ── durable per-cycle "blocked, don't re-ask every poll" state + audit ──────
@@ -432,6 +505,13 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
   try {
     ({ adapter, sessionId } = await ensurePmAdapterAndSession(cfg, assignment, packet.contextHash));
   } catch (err) {
+    // W-A3/W-A5: infrastructure hold, not an owner decision. No durable
+    // `blocked` entry is written — the next supervisor cycle after resetAt
+    // re-enters this step unattended.
+    if (err instanceof QuotaExhaustedError) {
+      audit(cfg.auditDir, { step: 'bootstrap', outcome: 'QUOTA_EXHAUSTED', reason: err.message, ...(err.resetAt ? { resetAt: err.resetAt } : {}) });
+      return { outcome: 'QUOTA_EXHAUSTED', reason: err.message, ...(err.resetAt ? { resetAt: err.resetAt } : {}) };
+    }
     if (err instanceof BillingGuardError || err instanceof PmOwnerRequiredError) {
       const outcome = err instanceof BillingGuardError ? 'BLOCKED_BILLING' : 'OWNER_REQUIRED';
       audit(cfg.auditDir, { step: 'bootstrap', outcome, reason: err.message });
@@ -476,6 +556,17 @@ export async function processBootstrap(cfg: RoleLoopConfig): Promise<Record<stri
   }
 
   if (!parsed.ok) {
+    // An unparseable PM reply may be the provider refusing on quota rather
+    // than the PM breaking its contract. Classify from the raw reply: a
+    // quota message is queued (no durable block, no owner), everything else
+    // keeps the existing BLOCKED contract.
+    const quotaSignal = noteAdapterOutput(cfg, adapter.id, parsed.reply);
+    if (quotaSignal) {
+      const resetAt = quotaSignal.resetAt ?? quotaSignal.holdUntil;
+      const reason = quotaExhaustedReason([adapter.id], resetAt);
+      audit(cfg.auditDir, { step: 'bootstrap', outcome: 'QUOTA_EXHAUSTED', reason, resetAt });
+      return { outcome: 'QUOTA_EXHAUSTED', reason, resetAt };
+    }
     state.blocked[blockKey] = { contextHash: packet.contextHash, reason: parsed.error, updatedAt: new Date().toISOString() };
     writeState(cfg.stateFile, state);
     audit(cfg.auditDir, { step: 'bootstrap', outcome: 'BLOCKED', reason: parsed.error });
@@ -658,6 +749,13 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
   try {
     ({ adapter, sessionId } = await ensurePmAdapterAndSession(cfg, assignment, packet.contextHash));
   } catch (err) {
+    // W-A3/W-A5: infrastructure hold, not an owner decision. No durable
+    // `blocked` entry is written — the next supervisor cycle after resetAt
+    // re-enters this step unattended.
+    if (err instanceof QuotaExhaustedError) {
+      audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'QUOTA_EXHAUSTED', reason: err.message, ...(err.resetAt ? { resetAt: err.resetAt } : {}) });
+      return { outcome: 'QUOTA_EXHAUSTED', reason: err.message, ...(err.resetAt ? { resetAt: err.resetAt } : {}) };
+    }
     if (err instanceof BillingGuardError || err instanceof PmOwnerRequiredError) {
       const outcome = err instanceof BillingGuardError ? 'BLOCKED_BILLING' : 'OWNER_REQUIRED';
       audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome, reason: err.message });
@@ -692,6 +790,13 @@ export async function processFinalGate(cfg: RoleLoopConfig, deliveryId: string):
   }
 
   if (!parsed.ok) {
+    const quotaSignal = noteAdapterOutput(cfg, adapter.id, parsed.reply);
+    if (quotaSignal) {
+      const resetAt = quotaSignal.resetAt ?? quotaSignal.holdUntil;
+      const reason = quotaExhaustedReason([adapter.id], resetAt);
+      audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'QUOTA_EXHAUSTED', reason, resetAt });
+      return { outcome: 'QUOTA_EXHAUSTED', reason, resetAt };
+    }
     state.blocked[blockKey] = { contextHash: packet.contextHash, reason: parsed.error, updatedAt: new Date().toISOString() };
     writeState(cfg.stateFile, state);
     audit(cfg.auditDir, { step: 'final-gate', deliveryId, outcome: 'BLOCKED', reason: parsed.error });
@@ -808,8 +913,15 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
       steps.push({ step: 'qa-semantic-retry', taskId: task.taskId, outcome: result.outcome });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      audit(cfg.auditDir, { step: 'qa-semantic-retry', outcome: 'BLOCKED_RUNTIME', taskId: task.taskId, reason });
-      steps.push({ step: 'qa-semantic-retry', taskId: task.taskId, outcome: 'BLOCKED_RUNTIME' });
+      // W-A3: the QA gate marks a seat-chain quota hold with a machine-
+      // parsable reason. It is NOT a runtime defect: no owner escalation, no
+      // semantic budget spent (qa-attempt.ts), and the resetAt travels into
+      // the audit row so the wait is auditable rather than silent.
+      const quotaHold = isQuotaExhaustedReason(reason);
+      const resetAt = quotaHold ? resetAtFromReason(reason) : undefined;
+      const outcome = quotaHold ? 'QUOTA_EXHAUSTED' : 'BLOCKED_RUNTIME';
+      audit(cfg.auditDir, { step: 'qa-semantic-retry', outcome, taskId: task.taskId, reason, ...(resetAt ? { resetAt } : {}) });
+      steps.push({ step: 'qa-semantic-retry', taskId: task.taskId, outcome, ...(resetAt ? { resetAt } : {}) });
     }
   }
 
@@ -837,13 +949,19 @@ export async function runOnce(cfg: RoleLoopConfig): Promise<{ steps: Array<Recor
       steps.push({ step: 'qa-remediation', taskId: task.taskId, outcome, ...(result.remediationRunId ? { runId: result.remediationRunId } : {}) });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      const quotaHold = isQuotaExhaustedReason(reason);
+      const resetAt = quotaHold ? resetAtFromReason(reason) : undefined;
+      const outcome = quotaHold
+        ? 'QUOTA_EXHAUSTED'
+        : /budget|exceeds/i.test(reason) ? 'QA_BUDGET_EXHAUSTED' : 'BLOCKED_RUNTIME';
       audit(cfg.auditDir, {
         step: 'qa-remediation',
-        outcome: /budget|exceeds/i.test(reason) ? 'QA_BUDGET_EXHAUSTED' : 'BLOCKED_RUNTIME',
+        outcome,
         taskId: task.taskId,
         reason,
+        ...(resetAt ? { resetAt } : {}),
       });
-      steps.push({ step: 'qa-remediation', taskId: task.taskId, outcome: /budget|exceeds/i.test(reason) ? 'QA_BUDGET_EXHAUSTED' : 'BLOCKED_RUNTIME' });
+      steps.push({ step: 'qa-remediation', taskId: task.taskId, outcome, ...(resetAt ? { resetAt } : {}) });
     }
   }
 

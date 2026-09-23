@@ -86,6 +86,8 @@ import {
 import { ensurePmDeliveryForTaskVerify } from './pm-delivery.js';
 import { dispatchTask, validateWorkspaceRoot, DispatcherError } from './dispatcher.js';
 import { loadWorkerRegistryRecord } from './worker-registry.js';
+import { readRoleConfig } from '../roles/role-config.js';
+import { isQuotaExhaustedReason } from './quota-signal.js';
 import { readRunMeta } from './fs.js';
 import {
   closeActlManagedReservation,
@@ -258,6 +260,49 @@ export function semanticReasonFromAttempt(attempt: QaAttemptRecord): string | un
   return [...notes].join(' | ').slice(0, 1000);
 }
 
+
+/**
+ * V1 W-A2/W-A4 — seat routing inputs for one semantic evaluation.
+ *
+ * The gate is the only layer that knows BOTH the role config (who may judge)
+ * and the Task's own linked Runs (who produced the artifact), so it is the
+ * only correct place to compute them. Both lookups are best-effort by design:
+ * a project with no role config (every fixture/test project) or an unreadable
+ * Run must degrade to today's single-seat behaviour, never fail the gate.
+ */
+function resolveQaSeatRouting(
+  dataRoot: string,
+  project: string,
+  task: TaskRecord,
+): { qaWorkerFallbackChain?: string[]; excludeObservationAdapters?: string[] } {
+  let chain: string[] = [];
+  try {
+    const roleConfig = readRoleConfig(dataRoot, project);
+    const qa = roleConfig.assignments.find((assignment) => assignment.roleId === 'qa');
+    chain = (qa?.fallbackChain ?? []).filter((entry) => typeof entry === 'string' && entry.trim());
+  } catch {
+    // No/invalid role config for this project: no chain, no failover.
+  }
+  const producerRuntimes = new Set<string>();
+  for (const link of task.linkedRuns) {
+    try {
+      const meta = readRunMeta(link.folder);
+      if (!meta.workerId) continue;
+      const worker = loadWorkerRegistryRecord(dataRoot, meta.workerId);
+      if (typeof worker.observationAdapterId === 'string' && worker.observationAdapterId) {
+        producerRuntimes.add(worker.observationAdapterId);
+      }
+    } catch {
+      // An unreadable Run/worker row cannot be used to bar a seat, and must
+      // not block judgment either — the primary seat is unaffected.
+    }
+  }
+  return {
+    ...(chain.length ? { qaWorkerFallbackChain: chain } : {}),
+    ...(producerRuntimes.size ? { excludeObservationAdapters: [...producerRuntimes] } : {}),
+  };
+}
+
 function wrapGateError(err: unknown, fallback: QaGateError['code'] = 'INVALID_STATE'): never {
   if (err instanceof QaGateError) throw err;
   const msg = err instanceof Error ? err.message : String(err);
@@ -386,11 +431,20 @@ async function evaluateAttemptToTerminal(
       qaAttemptId: current.qaAttemptId,
       task: { title: task.title, goal: task.goal, reason: task.reason, scope: task.scope },
       criteriaText: derived.semanticCriteriaText,
+      ...resolveQaSeatRouting(dataRoot, project, task),
     });
     current = res.record;
     if (current.finalQaStatus === 'BLOCKED') {
       const reason = current.reason ?? 'semantic QA returned BLOCKED without a reason';
-      const retried = await recordSemanticBlockedForRetry(dataRoot, project, current.qaAttemptId, reason);
+      // V1 W-A3/W-A5: every seat out of provider quota is an infrastructure
+      // hold, not a QA verdict. Keep the attempt PENDING, spend no budget and
+      // never finalize BLOCKED — the supervisor re-enters this same gate after
+      // the recorded reset time and the Task completes without the Founder.
+      const quotaHold = isQuotaExhaustedReason(reason);
+      const retried = await recordSemanticBlockedForRetry(dataRoot, project, current.qaAttemptId, reason, quotaHold ? { consumeBudget: false } : {});
+      if (quotaHold) {
+        throw new QaGateError('BLOCKED', `${reason}; quota 보류 — semantic 예산 미소진 (${retried.semanticBlockedAttempts ?? 0}/3)`);
+      }
       if ((retried.semanticBlockedAttempts ?? 0) < 3) {
         throw new QaGateError('BLOCKED', `${reason}; semantic retry ${retried.semanticBlockedAttempts}/3 remains available`);
       }
