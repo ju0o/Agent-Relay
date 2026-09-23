@@ -179,3 +179,12 @@ test("real power commands are refused under node --test", async () => {
   const checkpoint = { schema: "agent-relay.last-night-run.v1", runId: "r", startedAt: "x", deadline: "x", freezeAt: "x", checkpointAt: "x", endedAt: "x", endReason: "WBS_EXHAUSTED", shutdownState: "x", lanes: [] };
   assert.equal((await runPoweroff({ checkpoint })).reason, "REAL_POWEROFF_UNDER_TEST");
 });
+
+test("run uses the runner's continuous wave and closes dispatch at the freeze time", async () => {
+  const state = lanes([["agent-relay", "RUNNING"]]); const done = lanes([["agent-relay", "V1_COMPLETE"]]); let seen = null;
+  const runner = { manifest: { projects: state.projects }, reconcile: async () => state, load: async () => done, stop: async () => {}, runOnce: async () => { throw new Error("runOnce must not be used"); }, runWave: async (opts) => { seen = opts; return done; } };
+  const s = new NightRunSupervisor({ runner, checkpointPath: join(await mkdtemp(join(tmpdir(), "agent-relay-night-")), "LAST_NIGHT_RUN.json"), clock: () => new Date("2026-09-23T10:00:00.000Z"), sleep: (ms) => ms > 1000 ? new Promise(() => {}) : Promise.resolve(), runId: "wave-test" });
+  const result = await s.run({ intervalMs: 1 });
+  assert.equal(result.endReason, "WBS_EXHAUSTED"); assert.ok(seen.dispatchUntil instanceof Date);
+  assert.equal(seen.dispatchUntil.toISOString(), new Date(new Date(result.deadline) - 5 * 60_000).toISOString());
+});

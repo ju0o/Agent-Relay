@@ -358,16 +358,19 @@ export class PortfolioRunner {
   // A quota error, a hang killed by the timeout ("exit null"), or output without a valid packet means this
   // runtime can't do the job right now: try the next one. Other failures are real and hold the task.
   async runChain(chain, request, validate = null) {
-    const tried = [];
-    for (const id of chain) {
+    const tried = []; const now = Date.now(); this._cooldown ??= {};
+    // A model that just hit quota / timed out / was down goes to the back of the chain for COOLDOWN_MS instead of being tried first again.
+    const ordered = [...chain.filter((id) => !(this._cooldown[id] > now)), ...chain.filter((id) => this._cooldown[id] > now)];
+    const cool = (id) => { this._cooldown[id] = Date.now() + (this.cooldownMs ?? 30 * 60_000); };
+    for (const id of ordered) {
       const adapter = this.runtimeAdapters[id];
       if (!adapter) { tried.push(`${id}: not configured`); continue; }
       const status = await adapter.availability();
       if (!status.ok) { tried.push(`${id}: ${status.reason}`); continue; }
       let result;
       try { result = await adapter.run(request); }
-      catch (error) { const message = String(error.message || error); if (request.signal?.aborted || !(QUOTA_ERROR.test(message) || TRANSIENT_ERROR.test(message) || /exit null/.test(message))) throw error; tried.push(`${id}: ${QUOTA_ERROR.test(message) ? "quota" : TRANSIENT_ERROR.test(message) ? "unavailable" : "timeout"}`); continue; }
-      if (validate) { try { validate(result.text); } catch { tried.push(`${id}: invalid output`); if (id !== chain.at(-1)) continue; } }
+      catch (error) { const message = String(error.message || error); if (request.signal?.aborted || !(QUOTA_ERROR.test(message) || TRANSIENT_ERROR.test(message) || /exit null/.test(message))) throw error; cool(id); tried.push(`${id}: ${QUOTA_ERROR.test(message) ? "quota" : TRANSIENT_ERROR.test(message) ? "unavailable" : "timeout"}`); continue; }
+      if (validate) { try { validate(result.text); } catch { tried.push(`${id}: invalid output`); if (id !== ordered.at(-1)) continue; } }
       return { ...result, runtime: id, fallbacks: tried };
     }
     throw new Error(`NO_RUNTIME_AVAILABLE: ${tried.join("; ")}`);
@@ -438,22 +441,26 @@ export class PortfolioRunner {
     await Promise.all(queued.map((task) => this.runOne(task, state, { signal }))); state.service = "IDLE"; await this.save(state); return state;
   }
 
-  // Day runner: schedule continuously, so a lane that finishes starts its next task while slower lanes keep running
-  // (runOnce waits for its whole batch; the Night Run supervisor keeps using it for deadline checkpoints).
-  async runLoop({ intervalMs = 15_000, signal } = {}) {
-    const inflight = new Map(); let state = null; this._continuous = true;
-    while (!signal?.aborted) {
-      if (!inflight.size) state = await this.reconcile(); // full reconcile (requeue after restart, gates) only when nothing is in flight
-      else { await this.reloadManifestIfChanged(); this.queueNext(state); await this.reconcileProjects(state); } // new WBS / plan approvals join mid-flight
-      const slots = Math.max(1, Number(this.manifest.maxBuilders) || 2) - inflight.size;
-      for (const task of state.tasks.filter((item) => item.state === "QUEUED" && !inflight.has(item.taskId)).slice(0, Math.max(0, slots))) {
-        inflight.set(task.taskId, this.runOne(task, state, { signal }).catch((error) => { if (!signal?.aborted) { task.state = "HOLD"; task.error = `RUNNER_ERROR: ${String(error?.message || error)}`; } }).finally(() => inflight.delete(task.taskId)));
+  // One continuous wave: lanes that finish start their next task while slower lanes keep running (runOnce waits for its
+  // whole batch). Returns when nothing is in flight or queued. No new dispatch after `dispatchUntil` (Night Run freeze).
+  async runWave({ signal, dispatchUntil = Infinity, intervalMs = 15_000 } = {}) {
+    const inflight = new Map(); const state = await this.reconcile(); this._continuous = true;
+    for (;;) {
+      if (!signal?.aborted && Date.now() < Number(dispatchUntil)) {
+        const slots = Math.max(1, Number(this.manifest.maxBuilders) || 2) - inflight.size;
+        for (const task of state.tasks.filter((item) => item.state === "QUEUED" && !inflight.has(item.taskId)).slice(0, Math.max(0, slots))) {
+          inflight.set(task.taskId, this.runOne(task, state, { signal }).catch((error) => { if (!signal?.aborted) { task.state = "HOLD"; task.error = `RUNNER_ERROR: ${String(error?.message || error)}`; } }).finally(() => inflight.delete(task.taskId)));
+        }
       }
       state.service = inflight.size ? "RUNNING" : "IDLE"; await this.save(state);
+      if (!inflight.size) return state;
       await Promise.race([sleep(intervalMs), ...inflight.values()]);
+      if (!signal?.aborted) { await this.reloadManifestIfChanged(); this.queueNext(state); await this.reconcileProjects(state); } // new WBS / plan approvals join mid-flight
     }
-    await Promise.allSettled(inflight.values()); return this.load();
   }
+
+  // Day runner (상시 자동화): waves back to back.
+  async runLoop({ intervalMs = 15_000, signal } = {}) { while (!signal?.aborted) { await this.runWave({ signal, intervalMs }); await sleep(intervalMs); } return this.load(); }
 }
 
 export async function loadManifest(path) { return JSON.parse(await readFile(path, "utf8")); }

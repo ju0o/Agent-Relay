@@ -267,6 +267,16 @@ test("runLoop: a slow lane does not stop another lane from running its next task
   assert.deepEqual(state.tasks.map((t) => `${t.taskId}:${t.state}`).sort(), ["F-1:VERIFIED_DONE", "F-2:VERIFIED_DONE", "S-1:VERIFIED_DONE"]);
 });
 
+test("runtime chains: a model that hit quota is tried last for the cooldown window", async () => {
+  const calls = []; const ok = { pid: 1, code: 0, startedAt: "t", text: "x" };
+  const fake = (id, fail) => ({ async availability() { return { ok: true }; }, async run() { calls.push(id); if (fail()) throw new Error(`${id} exit 1: Rate limit reached`); return ok; } });
+  let clineDown = true;
+  const runner = new PortfolioRunner({ runtimeAdapters: { cline: fake("cline", () => clineDown), codex: fake("codex", () => false) }, manifest: { projects: [] }, statePath: "/nonexistent/s.json", worktreeRoot: "/nonexistent/w" });
+  assert.equal((await runner.runChain(["cline", "codex"], {})).runtime, "codex");
+  assert.equal((await runner.runChain(["cline", "codex"], {})).runtime, "codex"); assert.deepEqual(calls, ["cline", "codex", "codex"]);
+  runner._cooldown.cline = 0; clineDown = false; assert.equal((await runner.runChain(["cline", "codex"], {})).runtime, "cline");
+});
+
 test("runtime chains: a provider outage (503 overloaded) falls through like a quota hit; a prompt error does not", () => {
   assert.ok(TRANSIENT_ERROR.test('opencode exit 1: Error: {"message":"Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded","type":"server_error"}'));
   assert.ok(!TRANSIENT_ERROR.test("opencode exit 1: syntax error in prompt"));

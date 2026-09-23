@@ -200,7 +200,9 @@ export class NightRunSupervisor {
       const childSignal = new AbortController();
       const abort = () => childSignal.abort(); signal?.addEventListener("abort", abort, { once: true });
       let completed = false;
-      const work = this.runner.runOnce({ signal: childSignal.signal }).then((value) => { completed = true; return value; });
+      // Continuous wave when the runner has it (lanes do not wait for each other); dispatch closes at the freeze time.
+      const wave = this.runner.runWave ? this.runner.runWave({ signal: childSignal.signal, dispatchUntil: freezeAt }) : this.runner.runOnce({ signal: childSignal.signal });
+      const work = wave.then((value) => { completed = true; return value; });
       const untilCheckpoint = this.sleep(Math.max(1, checkpointAt - now)).then(() => null);
       state = (await Promise.race([work, untilCheckpoint])) || state;
       signal?.removeEventListener("abort", abort);
