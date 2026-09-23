@@ -1136,6 +1136,45 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "CONTROL_TOWER.md:62-64 \"Execute only AR-JUPLAN-001 ... Worker/RESULT_PACKET/independent-QA routing\""
+        },
+        {
+          "taskId": "JUPLAN-RUNTIME-UNDO-EMPTY-HISTORY",
+          "scope": "Make undo report the existing nothing-to-undo error when the history directory is absent, with offline regression coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-RUNTIME-BUILDER-ERRORS",
+          "scope": "Make Builder handoff distinguish a missing snapshots directory from unexpected filesystem errors while preserving the frozen-snapshot gate, with offline regression coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-SCANNER-MANIFEST-SHAPE",
+          "scope": "Treat valid-JSON package manifests whose root value is not an object as malformed warnings instead of silently ignoring them, with offline scanner regression coverage.",
+          "files": [
+            "packages/project-scanner/src/scan.ts",
+            "packages/project-scanner/test/scan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/project-scanner test:run",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
