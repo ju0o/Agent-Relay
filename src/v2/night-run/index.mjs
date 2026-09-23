@@ -15,6 +15,23 @@ export const DEFAULT_SEND_TO_MAINPC = "/home/skkse12/.agents/skills/send-to-main
 const TERMINAL = new Set(["COMPLETE", "V1_COMPLETE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
 const COMPLETE_REASONS = new Set(["WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT"]);
 
+export const NIGHT_CHECKPOINT_MISSING = "NIGHT_CHECKPOINT_MISSING";
+export const NIGHT_CHECKPOINT_CORRUPT = "NIGHT_CHECKPOINT_CORRUPT";
+
+export function isCorruptCheckpointError(error) {
+  return Boolean(error && error.code === NIGHT_CHECKPOINT_CORRUPT);
+}
+
+export function corruptCheckpointError({ checkpointPath, reason, cause }) {
+  const error = new Error(`night checkpoint corrupt: ${checkpointPath}: ${reason}`);
+  error.code = NIGHT_CHECKPOINT_CORRUPT;
+  error.checkpointPath = checkpointPath;
+  error.reason = reason;
+  error.blocked = { code: NIGHT_CHECKPOINT_CORRUPT, checkpointPath, reason };
+  if (cause !== undefined) error.cause = cause;
+  return error;
+}
+
 export function deadlineAt(now, value = DEFAULT_DEADLINE, timezone = DEFAULT_TIMEZONE) {
   if (timezone !== DEFAULT_TIMEZONE || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error(`invalid deadline/timezone: ${value}/${timezone}`);
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now).filter(({ type }) => type !== "literal").map(({ type, value: part }) => [type, part]));
@@ -37,8 +54,9 @@ export function evaluateExhaustion(manifest, state) {
 }
 
 export function readCompletion(value) {
+  if (value == null) return { ok: false, reason: NIGHT_CHECKPOINT_MISSING };
   const required = ["runId", "startedAt", "deadline", "freezeAt", "checkpointAt", "endedAt", "endReason", "shutdownState"];
-  if (!value || value.schema !== "agent-relay.last-night-run.v1" || required.some((field) => !value[field]) || !Array.isArray(value.lanes) || !COMPLETE_REASONS.has(value.endReason)) return { ok: false, reason: "UNKNOWN_NIGHT_RUN" };
+  if (!value || value.schema !== "agent-relay.last-night-run.v1" || required.some((field) => !value[field]) || !Array.isArray(value.lanes) || !COMPLETE_REASONS.has(value.endReason)) return { ok: false, reason: NIGHT_CHECKPOINT_CORRUPT };
   return { ok: true, reason: value.endReason, resumeRequired: Boolean(value.resumeRequired) };
 }
 
@@ -161,7 +179,20 @@ export class NightRunSupervisor {
     return value;
   }
 
-  async status() { try { return JSON.parse(await readFile(this.checkpointPath, "utf8")); } catch { return null; } }
+  async status() {
+    let raw;
+    try {
+      raw = await readFile(this.checkpointPath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw corruptCheckpointError({ checkpointPath: this.checkpointPath, reason: "READ_ERROR", cause: error });
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (cause) {
+      throw corruptCheckpointError({ checkpointPath: this.checkpointPath, reason: "INVALID_JSON", cause });
+    }
+  }
 
   async once({ deadline = DEFAULT_DEADLINE } = {}) {
     const started = this.clock();

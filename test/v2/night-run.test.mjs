@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { buildNightReport, finalizeNightRun, NightRunSupervisor, deadlineAt, drainManaged, evaluateExhaustion, readCompletion, requestMainPcShutdown, runPoweroff, sendReportToMainPc } from "../../src/v2/night-run/index.mjs";
+import { buildNightReport, finalizeNightRun, NightRunSupervisor, NIGHT_CHECKPOINT_CORRUPT, NIGHT_CHECKPOINT_MISSING, corruptCheckpointError, deadlineAt, drainManaged, evaluateExhaustion, isCorruptCheckpointError, readCompletion, requestMainPcShutdown, runPoweroff, sendReportToMainPc } from "../../src/v2/night-run/index.mjs";
 
 const lanes = (states) => ({ projects: states.map(([id, state]) => ({ id, coreV1: true, active: true, state })), tasks: [] });
 const runner = (state, after = state) => ({ manifest: { projects: state.projects }, reconcile: async () => state, runOnce: async () => after });
@@ -41,8 +41,46 @@ test("deadline boundary checkpoints without dispatch", async () => {
 });
 
 test("shutdown gate refuses missing or corrupt completion", async () => {
-  assert.deepEqual(readCompletion(null), { ok: false, reason: "UNKNOWN_NIGHT_RUN" });
-  assert.deepEqual(await runPoweroff({ checkpoint: null, command: "sh", args: ["-c", "exit 0"] }), { ok: false, status: "REFUSED", reason: "UNKNOWN_NIGHT_RUN" });
+  assert.deepEqual(readCompletion(null), { ok: false, reason: NIGHT_CHECKPOINT_MISSING });
+  assert.deepEqual(readCompletion(undefined), { ok: false, reason: NIGHT_CHECKPOINT_MISSING });
+  assert.deepEqual(await runPoweroff({ checkpoint: null, command: "sh", args: ["-c", "exit 0"] }), { ok: false, status: "REFUSED", reason: NIGHT_CHECKPOINT_MISSING });
+  const corrupt = readCompletion({ schema: "wrong", lanes: [] });
+  assert.equal(corrupt.ok, false);
+  assert.equal(corrupt.reason, NIGHT_CHECKPOINT_CORRUPT);
+  assert.notEqual(readCompletion(null).reason, corrupt.reason);
+  const refused = await runPoweroff({ checkpoint: { schema: "wrong", lanes: [] }, command: "sh", args: ["-c", "exit 0"] });
+  assert.deepEqual(refused, { ok: false, status: "REFUSED", reason: NIGHT_CHECKPOINT_CORRUPT });
+});
+
+test("night-run status distinguishes missing checkpoint from corrupt checkpoint", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-night-status-"));
+  const missingPath = join(dir, "does-not-exist.json");
+  const missingSupervisor = new NightRunSupervisor({ runner: runner(lanes([["agent-relay", "RUNNING"]])), checkpointPath: missingPath, clock: () => new Date("2026-09-23T10:00:00.000Z") });
+  assert.equal(await missingSupervisor.status(), null);
+  const corruptPath = join(dir, "LAST_NIGHT_RUN.json");
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(corruptPath, "{not-json");
+  const corruptSupervisor = new NightRunSupervisor({ runner: runner(lanes([["agent-relay", "RUNNING"]])), checkpointPath: corruptPath, clock: () => new Date("2026-09-23T10:00:00.000Z") });
+  const error = await corruptSupervisor.status().then(() => null, (cause) => cause);
+  assert.ok(error, "corrupt checkpoint must not collapse to null");
+  assert.ok(isCorruptCheckpointError(error));
+  assert.equal(error.code, NIGHT_CHECKPOINT_CORRUPT);
+  assert.equal(error.reason, "INVALID_JSON");
+  assert.equal(error.checkpointPath, corruptPath);
+  assert.ok(error.cause instanceof SyntaxError);
+  assert.equal(error.blocked.code, NIGHT_CHECKPOINT_CORRUPT);
+  assert.equal(await readFile(corruptPath, "utf8"), "{not-json", "corrupt checkpoint must not be overwritten");
+  assert.equal(isCorruptCheckpointError(null), false);
+  assert.equal(isCorruptCheckpointError(new Error("plain")), false);
+  const built = corruptCheckpointError({ checkpointPath: corruptPath, reason: "INVALID_JSON", cause: error.cause });
+  assert.ok(isCorruptCheckpointError(built));
+  const dirSupervisor = new NightRunSupervisor({ runner: runner(lanes([["agent-relay", "RUNNING"]])), checkpointPath: dir, clock: () => new Date("2026-09-23T10:00:00.000Z") });
+  const readError = await dirSupervisor.status().then(() => null, (cause) => cause);
+  assert.ok(isCorruptCheckpointError(readError));
+  assert.equal(readError.reason, "READ_ERROR");
+  // Completion gate stays fail-closed for both cases.
+  assert.deepEqual(readCompletion(await missingSupervisor.status()), { ok: false, reason: NIGHT_CHECKPOINT_MISSING });
+  assert.equal(readCompletion({ schema: "bad" }).reason, NIGHT_CHECKPOINT_CORRUPT);
 });
 
 test("shutdown uses non-interactive sudo and reports missing permission", async () => {
