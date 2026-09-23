@@ -646,6 +646,31 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "ACTL-RUNTIME-DISCOVERY-BOOT",
+          "scope": "Bound managed-runtime discovery latency after ASUS boot and fail closed with a deterministic retryable error, preserving existing send truth.",
+          "files": [
+            "src/actl/core/remote.py",
+            "tests/test_remote.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 \"slow runtime discovery after ASUS boot\""
+        },
+        {
+          "taskId": "ACTL-PREVIEW-TIMEOUT-BOUND",
+          "scope": "Ensure repeated remote pane previews stay bounded and preserve the last known preview on timeout without occupying the foreground transport path.",
+          "files": [
+            "src/actl/tui.py",
+            "src/actl/gui.py",
+            "tests/test_tui.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 \"repeated preview 10s timeout\""
         }
       ],
       "qaRuntime": [
