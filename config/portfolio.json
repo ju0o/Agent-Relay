@@ -597,6 +597,22 @@
           ],
           "ssotEvidence": "Founder direction 2026-09-23 (canvas Next artboard items 02/04/05: '더 고도화할 내용있으면 Canvas로 공유해주고 이후 다음 이어서 계속 작업'); approval rule A-01",
           "title": "Model quota board and approval learning (canvas Next items 0"
+        },
+        {
+          "taskId": "AGENTRELAY-CR-09-START-VIEW",
+          "scope": "Automated Tester support (Founder choice 2026-09-23: 실행+화면캡처, canvas Next item 06): the app accepts one launch argument --view=home|control-room|approvals|plan-studio. src/backend/main.ts reads it from process.argv, accepts only those four values (anything else = home, never an error dialog) and exposes it through the existing relay request path as op app:startView returning {view}; add the op to the RelayRequest union in src/shared/types.ts; src/frontend/App.tsx asks for it once on mount and opens that view (Control Room, Founder 승인 내역, Plan Studio). Normal launches without the argument behave exactly as today",
+          "files": [
+            "src/backend/main.ts",
+            "src/shared/types.ts",
+            "src/frontend/App.tsx"
+          ],
+          "tests": [
+            "npm run build:server",
+            "npm run typecheck",
+            "npm run build:client"
+          ],
+          "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: 자동 Tester = 실행+화면캡처); canvas Next item 06; approval rule A-01",
+          "title": "Automated Tester support (Founder choice 2026-09-23: 실행+화면캡처"
         }
       ],
       "qaRuntime": [
