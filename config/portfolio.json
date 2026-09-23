@@ -1492,6 +1492,31 @@
             "node --test tests/agent-relay-adapter.test.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUCONTROLER-TESTER-HARNESS-CONTRACT",
+          "scope": "Define the independent Tester harness schema with explicit read-only permissions and one offline contract test, keeping Tester separate from QA.",
+          "files": [
+            "docs/integration/tester-harness.schema.json",
+            "tests/tester-harness-contract.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/tester-harness-contract.test.mjs"
+          ],
+          "ssotEvidence": "JuControler-Private/founder/harness/harness-registry.v1.json:152-191 \"qa-v1\"; JuControler-Private/founder/harness/harness-registry.v1.json:233-271 \"tester-beginner-v1\"; Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUCONTROLER-CREATE-SKILL-REGISTRY",
+          "scope": "Register read-only Create Skill schemas for Claude Code, Codex, OpenCode, Cursor, CommandCode, Cline, Grok, and the supervisor with explicit permissions and one offline contract test.",
+          "files": [
+            "docs/integration/create-skill-registry.schema.json",
+            "docs/integration/create-skill-registry.v1.json",
+            "tests/create-skill-registry-contract.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/create-skill-registry-contract.test.mjs"
+          ],
+          "ssotEvidence": "README.md:10-17 \"Role is not Runtime\" and target agents; Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
