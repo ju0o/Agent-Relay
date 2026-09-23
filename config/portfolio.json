@@ -2244,7 +2244,7 @@
         },
         {
           "taskId": "JCAPP-UX-COMFORT",
-          "scope": "Comfort pass on operator/public (keep every feature and endpoint): follow the approved target design (canvas UniHome/UniRelay, glitch D rules) for type and spacing — body 15px+, card titles 17px+, one card style with generous padding, clear section headings, buttons 44px tall; responsive layout so the same screen works on a phone (below 720px the left rail becomes a bottom tab bar with the same items, cards stack in one column) and in the desktop program window; visible focus states and 4.5:1 contrast in light and dark. Tests: test/layout-consistency.test.mjs gains assertions for the mobile breakpoint rule and minimum button height tokens.",
+          "scope": "Comfort pass on operator/public (keep every feature and endpoint): style-neutral (the Founder is choosing a new visual style 2026-09-24; do NOT change colors, fonts, skin or effects) — layout only: body 15px+, card titles 17px+, one card style with generous padding, clear section headings, buttons 44px tall; responsive layout so the same screen works on a phone (below 720px the left rail becomes a bottom tab bar with the same items, cards stack in one column) and in the desktop program window; visible focus states and 4.5:1 contrast in light and dark. Tests: test/layout-consistency.test.mjs gains assertions for the mobile breakpoint rule and minimum button height tokens.",
           "files": [
             "operator/public/app.css",
             "operator/public/app.js",
