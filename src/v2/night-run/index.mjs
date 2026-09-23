@@ -72,7 +72,13 @@ export function seoulDate(value = new Date()) {
 export function buildNightReport(record) {
   const lanes = (record.lanes || []).map((lane) => `- ${lane.id || lane.project}: state=${lane.state || "UNKNOWN"}, blocker=${lane.blockers?.[0] || lane.blocker || "-"}`).join("\n") || "- none";
   const unfinished = (record.unfinishedTasks || []).map((task) => `- ${task.project}/${task.taskId}: worker=${task.workerState || "-"}, QA=${task.qaState || "-"}, worktree=${task.worktree || "-"}, resume=${task.resumeRequired ? "yes" : "no"}`).join("\n") || "- none";
-  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${record.taskId || "-"}`, `- promotion: ${record.promotionRef || record.commitSha || "-"}`, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
+  const changedFiles = Array.isArray(record.changedFiles) ? record.changedFiles : [];
+  const resultTests = Array.isArray(record.resultTests) ? record.resultTests : [];
+  const qaTests = Array.isArray(record.qaTests) ? record.qaTests : [];
+  const qaFindings = Array.isArray(record.qaFindings) ? record.qaFindings : [];
+  const completedTasks = Array.isArray(record.completedTasks) ? record.completedTasks : [];
+  const completedEvidence = completedTasks.map((task) => `- ${task.project || "-"}/${task.taskId || "-"}: result=${task.resultStatus || "-"}, commit=${task.commitSha || "-"}, files=${(task.changedFiles || []).join(", ") || "-"}, tests=${[...(task.tests || []), ...(task.qaTests || [])].join(", ") || "-"}, QA=${task.qaState || "-"}`).join("\n") || "- none";
+  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${record.taskId || "-"}`, `- resultStatus: ${record.resultStatus || "-"}`, `- promotion: ${record.promotionRef || record.commitSha || "-"}`, `- commitSha: ${record.commitSha || "-"}`, `- changedFiles: ${changedFiles.join(", ") || "-"}`, `- resultTests: ${resultTests.join(", ") || "-"}`, `- resultSummary: ${record.resultSummary || "-"}`, "", "## Completed tasks evidence", completedEvidence, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, `- qaTests: ${qaTests.join(", ") || "-"}`, `- qaFindings: ${qaFindings.join(", ") || "-"}`, `- qaSummary: ${record.qaSummary || "-"}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
 }
 
 export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), scriptPath = process.env.AGENT_RELAY_SEND_TO_MAINPC || DEFAULT_SEND_TO_MAINPC, execFileImpl = execFile }) {
@@ -90,7 +96,7 @@ export async function requestMainPcShutdown({ target = mainPcTarget(), execFileI
 }
 
 export async function finalizeNightRun({ record: initial, checkpointPath, persist, send = sendReportToMainPc, requestShutdown = requestMainPcShutdown, poweroff = runPoweroff, reportPath, dryRun = false, deferPoweroff = false }) {
-  let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [] };
+  let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [], completedTasks: initial.completedTasks || [], changedFiles: initial.changedFiles || [], resultTests: initial.resultTests || [], qaTests: initial.qaTests || [], qaFindings: initial.qaFindings || [] };
   await mkdir(dirname(record.reportPathAsus), { recursive: true });
   await writeFile(record.reportPathAsus, buildNightReport(record));
   try { const transfer = dryRun ? { state: "DRY_RUN", path: `MainPC/Desktop/${record.reportPathAsus.split("/").pop()}`, remoteSha: createHash("sha256").update(await readFile(record.reportPathAsus)).digest("hex") } : await send({ reportPath: record.reportPathAsus }); record = { ...record, reportTransferState: transfer.state, reportPathMainPC: transfer.path || null, reportTransferSha256: transfer.remoteSha || null }; }
@@ -111,6 +117,7 @@ function currentTask(state) {
 
 function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = null, endReason, shutdownState = "NOT_REQUESTED", state, resumeRequired }) {
   const task = currentTask(state);
+  const completedTasks = (state.tasks || []).filter((item) => item.state === "VERIFIED_DONE").map((item) => ({ project: item.projectId || null, taskId: item.taskId || null, resultStatus: item.result?.status || null, changedFiles: Array.isArray(item.result?.changedFiles) ? [...item.result.changedFiles] : [], tests: Array.isArray(item.result?.tests) ? [...item.result.tests] : [], commitSha: item.result?.commitSha || null, qaState: item.qa?.verdict || null, qaTests: Array.isArray(item.qa?.tests) ? [...item.qa.tests] : [], summary: item.result?.summary || null }));
   return {
     schema: "agent-relay.last-night-run.v1", runId, startedAt, deadline, freezeAt, checkpointAt, endedAt, endReason, shutdownState,
     project: task?.projectId || null, taskId: task?.taskId || null,
@@ -119,6 +126,14 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
     workerState: task?.state || null, qaState: task?.qa?.verdict || null,
     attempts: task?.attempts || 0, worktree: task?.builderEvidence?.workspace || null,
     commitSha: task?.result?.commitSha || null, promotionRef: task?.promotionRef || null,
+    resultStatus: task?.result?.status || null,
+    changedFiles: Array.isArray(task?.result?.changedFiles) ? [...task.result.changedFiles] : [],
+    resultTests: Array.isArray(task?.result?.tests) ? [...task.result.tests] : [],
+    resultSummary: task?.result?.summary || null,
+    qaTests: Array.isArray(task?.qa?.tests) ? [...task.qa.tests] : [],
+    qaFindings: Array.isArray(task?.qa?.findings) ? [...task.qa.findings] : [],
+    qaSummary: task?.qa?.summary || null,
+    completedTasks,
     blocker: task?.error || task?.blocker || null, resumeRequired,
     lanes: state.projects || [], updatedAt: new Date().toISOString(),
   };
