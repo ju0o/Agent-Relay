@@ -107,6 +107,14 @@ function makeSession(project = ''): ProjectSession {
   };
 }
 
+function hasUnsavedContent(tab: EditorTab): boolean {
+  return (tab.prompt.length > 0 && !tab.promptSaved) || (tab.result.length > 0 && !tab.resultSaved);
+}
+
+function hasUnsavedTabs(session: ProjectSession): boolean {
+  return session.tabs.some(hasUnsavedContent);
+}
+
 // 초기 세션 — 모듈 로드 시 단 한 번 생성
 const _initSess = makeSession();
 
@@ -429,7 +437,7 @@ function AppInner(): React.ReactElement {
         };
       }));
     };
-    if (tab.prompt || tab.result) {
+    if (hasUnsavedContent(tab)) {
       setConfirm({ text: `탭 "${tab.agent} #${tab.run || '?'}"을 닫을까요?\n저장되지 않은 내용은 사라집니다.`, confirmBtn: '닫기', onOk: doRemove });
     } else {
       doRemove();
@@ -454,7 +462,7 @@ function AppInner(): React.ReactElement {
       notify('info', `런 #${h.run} (${h.agent}) 불러옴`);
     };
 
-    const hasContent = !!(tab?.prompt || tab?.result);
+    const hasContent = !!tab && hasUnsavedContent(tab);
     const isDifferentRun = tab?.folder !== h.folder;
     if (hasContent && isDifferentRun) {
       setConfirm({
@@ -696,7 +704,7 @@ function AppInner(): React.ReactElement {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const text = ev.target?.result as string;
-        updateTab(tabId, pane === 'prompt' ? { prompt: text } : { result: text });
+        updateTab(tabId, pane === 'prompt' ? { prompt: text, promptSaved: false } : { result: text, resultSaved: false });
         notify('info', `${file.name} 불러옴`);
       };
       reader.readAsText(file, 'utf-8');
@@ -721,6 +729,31 @@ function AppInner(): React.ReactElement {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // ── 저장되지 않은 편집 보호 ───────────────────────────────────────────────────
+  function confirmLeavingSession(action: () => void): void {
+    if (!hasUnsavedTabs(activeSession)) { action(); return; }
+    setConfirm({
+      text: '현재 프로젝트 세션에 저장되지 않은 프롬프트 또는 결과가 있습니다.\n이동하면 내용이 사라질 수 있습니다.',
+      confirmBtn: '이동',
+      onOk: action,
+    });
+  }
+
+  function switchSession(id: string): void {
+    if (id === activeSessionId) return;
+    confirmLeavingSession(() => setActiveSessionId(id));
+  }
+
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent): void {
+      if (!sessions.some(hasUnsavedTabs)) return;
+      e.preventDefault();
+      e.returnValue = '';
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [sessions]);
 
   // ── 초기화 ────────────────────────────────────────────────────────────────────
   // settings.json의 DATA_ROOT/lastProject를 자동 복원한다.
@@ -759,13 +792,22 @@ function AppInner(): React.ReactElement {
     // 이미 같은 프로젝트가 열려있으면 해당 세션으로 전환
     const existing = sessions.find(s => s.project === name);
     if (existing) {
-      setActiveSessionId(existing.id);
+      switchSession(existing.id);
       return;
     }
 
     // 현재 세션에 프로젝트가 없으면 현재 세션을 이 프로젝트로 설정
     const currSess = sessions.find(s => s.id === activeSessionId) ?? sessions[0]!;
     const useExisting = !currSess.project;
+
+    if (hasUnsavedTabs(currSess)) {
+      setConfirm({
+        text: '현재 프로젝트 세션에 저장되지 않은 프롬프트 또는 결과가 있습니다.\n프로젝트를 전환하면 내용이 사라질 수 있습니다.',
+        confirmBtn: '전환',
+        onOk: () => { void openProjectSession(name, root); },
+      });
+      return;
+    }
 
     let newSessId: string;
     if (useExisting) {
@@ -806,25 +848,38 @@ function AppInner(): React.ReactElement {
 
   // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
   function closeSession(id: string): void {
-    const remaining = sessions.filter(s => s.id !== id);
-    if (!remaining.some(s => s.project === project)) setPdMode(false);
-    if (remaining.length === 0) {
-      const fresh = makeSession();
-      setSessions([fresh]);
-      setActiveSessionId(fresh.id);
-    } else {
-      setSessions(remaining);
-      if (activeSessionId === id) {
-        setActiveSessionId(remaining[remaining.length - 1]!.id);
+    const session = sessions.find(s => s.id === id);
+    if (!session) return;
+    const doClose = (): void => {
+      const remaining = sessions.filter(s => s.id !== id);
+      if (!remaining.some(s => s.project === project)) setPdMode(false);
+      if (remaining.length === 0) {
+        const fresh = makeSession();
+        setSessions([fresh]);
+        setActiveSessionId(fresh.id);
+      } else {
+        setSessions(remaining);
+        if (activeSessionId === id) setActiveSessionId(remaining[remaining.length - 1]!.id);
       }
+    };
+    if (hasUnsavedTabs(session)) {
+      setConfirm({
+        text: `프로젝트 세션 "${session.project || '새 세션'}"에 저장되지 않은 내용이 있습니다.\n세션을 닫으면 내용이 사라집니다.`,
+        confirmBtn: '닫기',
+        onOk: doClose,
+      });
+      return;
     }
+    doClose();
   }
 
   // ── 빈 세션 추가 ─────────────────────────────────────────────────────────────
   function addSession(): void {
-    const fresh = makeSession();
-    setSessions(prev => [...prev, fresh]);
-    setActiveSessionId(fresh.id);
+    confirmLeavingSession(() => {
+      const fresh = makeSession();
+      setSessions(prev => [...prev, fresh]);
+      setActiveSessionId(fresh.id);
+    });
   }
 
   // ── 날짜 변경 ─────────────────────────────────────────────────────────────────
@@ -1030,7 +1085,7 @@ function AppInner(): React.ReactElement {
                 <button
                   key={sess.id}
                   className={`proj-tab${isActive ? ' active' : ''}${projDragOver === i ? ' reorder-over' : ''}`}
-                  onClick={() => setActiveSessionId(sess.id)}
+                  onClick={() => switchSession(sess.id)}
                   title={sess.project || '왼쪽 사이드바에서 프로젝트를 선택하세요'}
                   draggable
                   onDragStart={e => {
@@ -1149,7 +1204,7 @@ function AppInner(): React.ReactElement {
                       {tab.agent}
                       {tab.run && <span className="tab-runnum"> #{tab.run}</span>}
                     </span>
-                    {(tab.prompt || tab.result) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
+                    {hasUnsavedContent(tab) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
                     <button
                       className="tab-close"
                       onClick={e => { e.stopPropagation(); removeTab(tab.id); }}
@@ -1267,7 +1322,7 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.prompt) }} />
                       : <textarea
                           value={activeTab.prompt}
-                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value })}
+                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value, promptSaved: false })}
                           placeholder={'# GPT에게 받은 다음 프롬프트를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
                           spellCheck={false}
                         />
@@ -1312,7 +1367,7 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.result) }} />
                       : <textarea
                           value={activeTab.result}
-                          onChange={e => updateTab(activeTab.id, { result: e.target.value })}
+                          onChange={e => updateTab(activeTab.id, { result: e.target.value, resultSaved: false })}
                           placeholder={'# 에이전트 실행 결과 보고서를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
                           spellCheck={false}
                         />
