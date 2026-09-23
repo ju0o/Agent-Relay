@@ -535,6 +535,19 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-G007-DRAFT-LOCK",
+          "scope": "Add fail-closed process coordination for concurrent .juplan/plan/draft.json mutations, with offline coverage proving competing edits do not overwrite each other or leave corrupt state.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "docs/decisions/DECISION_LOG.md:65 \"DEC-G007 | multi-process/concurrent access to `.juplan/plan/draft.json` is unhandled\""
         }
       ],
       "qaRuntime": [
