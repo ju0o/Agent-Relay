@@ -2256,6 +2256,22 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 08시: 'UI/UX도 더 편하게', '웹 기반보다 프로그램 기반' → AskUserQuestion: 별도 JuControler 프로그램; phone access keeps the same web screen; approved design canvas UniHome/UniRelay (A-13, A-15)",
           "title": "Comfort pass on operator/public (keep every feature and endp"
+        },
+        {
+          "taskId": "JCAPP-STYLE-HERMES",
+          "scope": "Re-skin the operator screen to the Founder's new style 'Hermes AI 느낌' exactly as drawn in /home/skkse12/Desktop/Projects/Team/.design/agent-relay-control-room/project/StyleHermes.dc.html: dark background #0B0D10, panels #12151A, text #E6E8EC, secondary #9AA3AE, accent #7FD4C1, lines #262B33 (1px), warning #E8C270; headings and the brand in JetBrains Mono, body in IBM Plex Sans KR (Google Fonts), radius 10px, the selected rail item as a filled row with '▶'. Remove the glitch-D layers (grain, scanline, RGB split, pulses, magenta jitter) entirely. Keep a readable light variant only via prefers-color-scheme: light using the same layout. Keep every feature and endpoint; contrast 4.5:1. Update test/founder-clean-tokens.test.mjs to assert the new tokens exist and no glitch keyframes remain.",
+          "files": [
+            "operator/public/app.css",
+            "operator/public/index.html",
+            "operator/public/app.js",
+            "test/founder-clean-tokens.test.mjs"
+          ],
+          "tests": [
+            "node --test test/founder-clean-tokens.test.mjs",
+            "node --test test/control-tower.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 AskUserQuestion: 디자인 = ② Hermes AI 느낌 (replaces glitch D; ledger A-13 edited)",
+          "title": "Re-skin the operator screen to the Founder's new style 'Herm"
         }
       ]
     },
