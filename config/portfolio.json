@@ -1360,6 +1360,18 @@
             "npm run build && npm test"
           ],
           "ssotEvidence": "Founder direction 2026-09-23: never mark a receipt READY while cost is unknown without an explicit acceptance gap (m2-012)"
+        },
+        {
+          "taskId": "JUCEIPT-M3-DAILY-VALUE-AGGREGATION",
+          "scope": "Add a pure daily report aggregator over Receipt objects covering delegated tasks, acceptance distribution, review queue, delivered outcomes, material impacts, evidence coverage, and known/unknown cost without event or tool-call analytics.",
+          "files": [
+            "src/daily/index.ts",
+            "tests/daily.test.ts"
+          ],
+          "tests": [
+            "npm test"
+          ],
+          "ssotEvidence": "docs/product/MASTER_ROADMAP.md:222-240 \"Does a derived day-level view help a user who delegates many tasks\" and Candidate Daily Report Level 1 sections"
         }
       ]
     },
