@@ -2,7 +2,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, loadManifest, parseTaskPacket, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, formatCoreV1Results, loadManifest, parseTaskPacket, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
 import { DEFAULT_DEADLINE, finalizeNightRun, NightRunSupervisor, runPoweroff } from "../src/v2/night-run/index.mjs";
 
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
@@ -20,7 +20,7 @@ const night = ({ deferPoweroff = false } = {}) => {
   if (deferPoweroff) supervisor.finalize = (record) => finalizeNightRun({ record, checkpointPath: nightPath, persist: (value) => supervisor.persist(value), deferPoweroff: true });
   return supervisor;
 };
-if (area === "core-v1" && command === "status") { const state = await instance.load(); console.log(formatCoreV1Text(buildCoreV1Snapshot(instance.manifest, state))); process.exit(0); }
+if (area === "core-v1" && command === "status") { const state = await instance.load(); console.log(formatCoreV1Results(buildCoreV1Snapshot(instance.manifest, state), process.argv.includes("--json"))); process.exit(0); }
 if (area === "core-v1" && command === "results") { const state = await instance.load(); console.log(formatCoreV1Results(buildCoreV1Snapshot(instance.manifest, state), process.argv.includes("--json"))); process.exit(0); }
 if (area === "night-run" && command === "status") { console.log(JSON.stringify(await night().status(), null, 2)); process.exit(0); }
 if (area === "night-run" && command === "shutdown") { const supervisor = night(); const result = await runPoweroff({ checkpoint: await supervisor.status() }); const checkpoint = await supervisor.status(); if (checkpoint) { checkpoint.shutdownState = result.status; checkpoint.shutdownError = result.reason || null; await supervisor.persist(checkpoint); } console.log(JSON.stringify(result, null, 2)); process.exit(0); }

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, isCorruptStateError, parseQaPacket, parseResultPacket, parseTaskPacket, PORTFOLIO_STATE_CORRUPT, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
@@ -31,6 +33,28 @@ test("CORE V1 Result Inbox keeps lane fields machine-readable and pipeable", () 
   assert.equal(snapshot.lanes[0].next, null);
   assert.match(formatCoreV1Text(snapshot), /p \| PM=READY pm\/p/);
   assert.equal(JSON.parse(formatCoreV1Results(snapshot, true)).schema, "agent-relay.core-v1.inbox.v1");
+  assert.equal(formatCoreV1Results(snapshot, false), formatCoreV1Text(snapshot));
+});
+
+test("core-v1 status supports --json and preserves text default", async () => {
+  const execFileAsync = promisify(execFile);
+  const root = await mkdtemp("/tmp/agent-relay-core-status-json-");
+  const manifestPath = join(root, "portfolio.json");
+  await writeFile(manifestPath, JSON.stringify({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }));
+  const bridgePath = new URL("../../bridge/agent-relay.mjs", import.meta.url).pathname;
+  const env = { ...process.env, AGENT_RELAY_DATA_ROOT: root, AGENT_RELAY_PORTFOLIO_MANIFEST: manifestPath };
+  try {
+    const { stdout: jsonOut } = await execFileAsync(process.execPath, [bridgePath, "core-v1", "status", "--json"], { env });
+    const parsed = JSON.parse(jsonOut);
+    assert.equal(parsed.schema, "agent-relay.core-v1.inbox.v1");
+    assert.equal(parsed.lanes[0].project, "p");
+    const { stdout: textOut } = await execFileAsync(process.execPath, [bridgePath, "core-v1", "status"], { env });
+    assert.match(textOut, /^CORE_V1/m);
+    assert.match(textOut, /p \| PM=READY pm\/p/);
+    assert.throws(() => JSON.parse(textOut), SyntaxError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("runner blocks external/no-scope projects without launching a Builder", async () => {
