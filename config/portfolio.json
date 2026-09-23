@@ -892,6 +892,19 @@
           ],
           "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: actl E2E = Tester가 자동으로, 일회용 tmux 세션·스텁 에이전트); approval rule A-12",
           "title": "Live Tester script scripts/e2e_disposable.sh [--ssh HOST]: c"
+        },
+        {
+          "taskId": "ACTL-LIVE-E2E-SSH-QUOTING",
+          "scope": "Fix scripts/e2e_disposable.sh --ssh mode: the remote wait loop string \"for i in $(seq 1 100); do ... done\" expands $(seq 1 100) on the LOCAL side into a multi-line list, so the remote bash fails with a syntax error near token `2' (reproduced 2026-09-23 by the supervisor: local mode PASS in 410ms, `--ssh asus` fails before send). Build every remote command so all expansion happens remotely (e.g. a single-quoted remote script passed via stdin to `bash -s` with the session name as an argument), keep the cleanup trap and the refuse-if-exists guard, and extend tests/test_e2e_disposable_script.py with a fake ssh on PATH that executes its command with bash -c, proving the --ssh path reaches send/copy.",
+          "files": [
+            "scripts/e2e_disposable.sh",
+            "tests/test_e2e_disposable_script.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder choice 2026-09-23 actl E2E = Tester 자동 (A-12); supervisor live run reproduced the --ssh failure",
+          "title": "Fix scripts/e2e_disposable.sh --ssh mode: the remote wait lo"
         }
       ],
       "qaRuntime": [
