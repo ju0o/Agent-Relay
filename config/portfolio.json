@@ -201,27 +201,6 @@
           ]
         },
         {
-          "taskId": "AGENTRELAY-NIGHT-CONTROLS",
-          "scope": "Founder request 2026-09-23 — add Night Run controls to the desktop app. Backend: relay IPC ops night:check, night:start, night:review in src/backend/night.ts using child_process.execFile (no shell) with an injectable exec, each running `ssh -o BatchMode=yes -o ConnectTimeout=5 asus ~/.agents/skills/auto-night-orchestrator/scripts/night <check --json|start HH:MM|review --json>`; parse {kind, ok, blockers[], info[]} even on exit 1; validate HH:MM with /^([01]\\d|2[0-3]):[0-5]\\d$/ before spawning. Frontend: topbar buttons 야간 준비 점검 / 야간 시작 (HH:MM input, default 04:30) / 아침 리포트 with a result panel; 야간 시작 first shows an in-app confirmation panel (not window.confirm) stating that MainPC and ASUS will shut down after the deadline, and only calls night:start after the user confirms. No other commands, no powershell, no shutdown calls from the app; tests use a fake exec only and never run ssh",
-          "files": [
-            "src/shared/types.ts",
-            "src/backend/night.ts",
-            "src/backend/main.ts",
-            "test/night.test.mjs",
-            "package.json",
-            "src/frontend/App.tsx",
-            "src/frontend/night.tsx",
-            "src/frontend/style.css"
-          ],
-          "tests": [
-            "npm run build:server",
-            "node test/night.test.mjs",
-            "npm test",
-            "npm run typecheck",
-            "npm run build:client"
-          ]
-        },
-        {
           "taskId": "AGENTRELAY-V1-UNSAVED-EDIT-WARNING",
           "scope": "BACKLOG.md:29 — warn before app close or project-session switch/close when an edit tab has unsaved prompt/result content (tabs already track promptSaved/resultSaved)",
           "files": [
