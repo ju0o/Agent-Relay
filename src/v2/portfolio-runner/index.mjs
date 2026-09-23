@@ -446,7 +446,7 @@ export class PortfolioRunner {
   async runWave({ signal, dispatchUntil = Infinity, intervalMs = 15_000 } = {}) {
     const inflight = new Map(); const state = await this.reconcile(); this._continuous = true;
     for (;;) {
-      if (!signal?.aborted && Date.now() < Number(dispatchUntil)) {
+      if (!signal?.aborted && Date.now() < Number(dispatchUntil) && !this.draining()) {
         const slots = Math.max(1, Number(this.manifest.maxBuilders) || 2) - inflight.size;
         for (const task of state.tasks.filter((item) => item.state === "QUEUED" && !inflight.has(item.taskId)).slice(0, Math.max(0, slots))) {
           inflight.set(task.taskId, this.runOne(task, state, { signal }).catch((error) => { if (!signal?.aborted) { task.state = "HOLD"; task.error = `RUNNER_ERROR: ${String(error?.message || error)}`; } }).finally(() => inflight.delete(task.taskId)));
@@ -459,8 +459,18 @@ export class PortfolioRunner {
     }
   }
 
-  // Day runner (상시 자동화): waves back to back.
-  async runLoop({ intervalMs = 15_000, signal } = {}) { while (!signal?.aborted) { await this.runWave({ signal, intervalMs }); await sleep(intervalMs); } return this.load(); }
+  // `runner.drain` next to state.json: finish what is in flight, dispatch nothing new, then leave (the watchdog restarts on new code).
+  draining() { return existsSync(join(resolve(this.statePath, ".."), "runner.drain")); }
+
+  // Day runner (상시 자동화): waves back to back until stopped or drained.
+  async runLoop({ intervalMs = 15_000, signal } = {}) {
+    while (!signal?.aborted) {
+      await this.runWave({ signal, intervalMs });
+      if (this.draining()) { await rm(join(resolve(this.statePath, ".."), "runner.drain"), { force: true }); break; }
+      await sleep(intervalMs);
+    }
+    return this.load();
+  }
 }
 
 export async function loadManifest(path) { return JSON.parse(await readFile(path, "utf8")); }

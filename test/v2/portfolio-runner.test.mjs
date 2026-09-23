@@ -277,6 +277,19 @@ test("runtime chains: a model that hit quota is tried last for the cooldown wind
   runner._cooldown.cline = 0; clineDown = false; assert.equal((await runner.runChain(["cline", "codex"], {})).runtime, "cline");
 });
 
+test("runLoop drain: in-flight work finishes, nothing new starts, the loop exits and clears the flag", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-drain-")); let release; const gate = new Promise((r) => { release = r; }); const order = [];
+  const packet = (id, kind) => kind === "workspace-write" ? `RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"${id}","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"s"}` : `QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"${id}","verdict":"ACCEPT","tests":[],"findings":[],"summary":"ok"}`;
+  const adapter = { async availability() { return { ok: true }; }, async run({ sandbox, prompt }) { const id = /D-2/.test(prompt) ? "D-2" : "D-1"; if (sandbox === "workspace-write") await gate; order.push(`${id}:${sandbox}`); return { pid: 1, code: 0, startedAt: "t", text: packet(id, sandbox) }; } };
+  const runner = new PortfolioRunner({ testGate: passGate, runtimeAdapters: { codex: adapter }, manifest: { maxBuilders: 4, projects: [{ id: "d", runtime: ["codex"], tasks: [{ taskId: "D-1", scope: "x", files: [], tests: [] }, { taskId: "D-2", scope: "x", files: [], tests: [] }] }] },
+    statePath: join(root, "state.json"), worktreeRoot: join(root, "w"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; }, async promote(_p, id) { return `refs/agent-relay/promotions/${id}`; } } });
+  const loop = runner.runLoop({ intervalMs: 20 }); await new Promise((r) => setTimeout(r, 100));
+  await writeFile(join(root, "runner.drain"), ""); release();
+  const state = await loop;
+  assert.deepEqual(state.tasks.map((t) => `${t.taskId}:${t.state}`), ["D-1:VERIFIED_DONE", "D-2:QUEUED"]); assert.ok(!order.some((x) => x.startsWith("D-2")));
+  assert.equal(runner.draining(), false);
+});
+
 test("runtime chains: a provider outage (503 overloaded) falls through like a quota hit; a prompt error does not", () => {
   assert.ok(TRANSIENT_ERROR.test('opencode exit 1: Error: {"message":"Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded","type":"server_error"}'));
   assert.ok(!TRANSIENT_ERROR.test("opencode exit 1: syntax error in prompt"));
