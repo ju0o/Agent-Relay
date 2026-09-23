@@ -149,6 +149,47 @@ git push origin v0.3.1
 #   latest.yml / blockmap이 GitHub Release에 게시됨
 ```
 
+## 처음 쓰는 법
+
+처음 클론한 뒤 오프라인 E2E 흐름을 그대로 재현한다. 한 줄 실행이 전체 검증이다.
+
+```bash
+bash scripts/e2e.sh
+```
+
+위 스크립트(`scripts/e2e.sh`)가 순서대로 실행하는 명령은 아래와 정확히 같다.
+
+```bash
+npm run build:server
+npm run build:client
+npm run test:v2:runner
+npm run typecheck
+```
+
+각 단계는 오프라인·임시 디렉터리 격리 상태로 실행된다.
+`scripts/e2e.sh`가 하는 일은 다음과 같다.
+
+- `E2E_TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-e2e-XXXXXX")"`로
+  임시 디렉터리를 만들고, `mkdir -p "$E2E_TMP/data"`로 격리된 데이터 폴더를 둔다.
+- 각 단계마다 `npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data"`
+  환경으로 실행한다. 실제 `DATA_ROOT`의 기록에는 손대지 않는다.
+- 단계별 로그는 `$E2E_TMP/<단계>.log`(예: `build_server.log`)에만 쓰고,
+  stdout에는 마지막 한 줄의 JSON(`{"ok":bool,"steps":[{name,ok}],"ms":num}`)만 출력한다.
+  진행 상황은 stderr로만 나온다.
+- 종료 시 `trap 'rm -rf "$E2E_TMP"' EXIT`로 임시 디렉터리 전체를 지운다.
+
+수동으로 같은 흐름을 재현하려면 임시 폴더를 직접 만들고 같은 env를 붙이면 된다.
+
+```bash
+E2E_TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-e2e-XXXXXX")"
+mkdir -p "$E2E_TMP/data"
+npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run build:server
+npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run build:client
+npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run test:v2:runner
+npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run typecheck
+rm -rf "$E2E_TMP"
+```
+
 ## 개발 (Development)
 
 일반 사용자는 위 "설치" 섹션만 필요하다. 소스에서 직접 빌드할 때만 사용한다.
