@@ -12,6 +12,8 @@ import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
 
+const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+
 export const PORTFOLIO_STATE_CORRUPT = "PORTFOLIO_STATE_CORRUPT";
 
 export function isCorruptStateError(error) {
@@ -195,7 +197,7 @@ export class PortfolioRunner {
       raw = await readFile(this.statePath, "utf8");
     } catch (error) {
       if (error?.code === "ENOENT") return freshPortfolioState();
-      throw error;
+      throw corruptStateError({ statePath: this.statePath, reason: "READ_ERROR", cause: error });
     }
     let parsed;
     try {
@@ -203,7 +205,7 @@ export class PortfolioRunner {
     } catch (cause) {
       throw corruptStateError({ statePath: this.statePath, reason: "INVALID_JSON", cause });
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || (parsed.tasks !== undefined && !Array.isArray(parsed.tasks))) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.tasks) || !parsed.tasks.every((task) => task && typeof task === "object" && !Array.isArray(task))) {
       throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
     }
     return parsed;

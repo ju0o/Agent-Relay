@@ -169,17 +169,46 @@ test("corrupt portfolio state fails closed with blocked evidence instead of rese
   const loadError = await runner.load().then(() => null, (error) => error);
   assert.ok(loadError, "load must reject on corrupt state");
   assert.equal(loadError.code, PORTFOLIO_STATE_CORRUPT);
+  assert.equal(loadError.reason, "INVALID_JSON");
+  assert.ok(loadError.cause instanceof SyntaxError, "INVALID_JSON must carry the JSON parse cause");
   assert.equal(loadError.statePath, statePath);
   assert.equal(loadError.blocked.code, PORTFOLIO_STATE_CORRUPT);
   assert.equal(loadError.blocked.statePath, statePath);
+  assert.equal(loadError.blocked.reason, "INVALID_JSON");
   assert.ok(isCorruptStateError(loadError));
   await assert.rejects(() => runner.reconcile(), (error) => isCorruptStateError(error));
   assert.equal(await readFile(statePath, "utf8"), corrupt, "corrupt state must not be overwritten");
   await writeFile(statePath, JSON.stringify({ tasks: "not-an-array" }));
   await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE");
+  for (const badTasks of [[null], ["x"], [42], [[]], [null, { taskId: "T" }]]) {
+    await writeFile(statePath, JSON.stringify({ schema: "agent-relay.portfolio-state.v1", tasks: badTasks }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE", `tasks ${JSON.stringify(badTasks)} must fail closed as INVALID_SHAPE`);
+  }
   await rm(join(root, "state.json"), { force: true });
   const fresh = await runner.load();
   assert.deepEqual(fresh.tasks, []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("non-ENOENT state read errors fail closed as corrupt instead of propagating raw", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-corrupt-read-");
+  const statePath = join(root, "state-dir");
+  await mkdtemp(join(root, "placeholder-"));
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(statePath, { recursive: true });
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "READ_ERROR" && Boolean(error.cause) && error.blocked.reason === "READ_ERROR");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("runLoop interval timer is defined on the live start path", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-runloop-");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees") });
+  let iterations = 0;
+  runner.runOnce = async () => { iterations += 1; controller.abort(); return {}; };
+  const controller = new AbortController();
+  await runner.runLoop({ intervalMs: 1, signal: controller.signal });
+  assert.equal(iterations, 1, "runLoop must execute runOnce then sleep without ReferenceError");
   await rm(root, { recursive: true, force: true });
 });
 
