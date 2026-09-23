@@ -776,6 +776,18 @@
           ],
           "ssotEvidence": "Founder direction 2026-09-23: 'actl로 tmux pane 모니터링 … 각 프로젝트별 흐름을 실시간으로' (Control Room); canvas Next item 03; approval rule A-01",
           "title": "Read-only machine output for Agent Relay's Control Room tmux"
+        },
+        {
+          "taskId": "ACTL-REJECT-NUMERIC-TMUX-SESSION",
+          "scope": "Make RemoteTransport reject numeric-only tmux session names fail-closed and add offline regression coverage for numeric-only and valid-session selection.",
+          "files": [
+            "src/actl/core/tmux.py",
+            "tests/test_tmux.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:272-274 `RemoteTransport now selects only a listed session with a non-numeric session name; numeric auto-numbered sessions such as $0 are rejected fail-closed`"
         }
       ],
       "qaRuntime": [
