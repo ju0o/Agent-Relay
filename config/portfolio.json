@@ -521,6 +521,18 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "ROOT_CAUSE_REPORT.md:95-102 \"At the measured 19-operation expansion this is\""
+        },
+        {
+          "taskId": "ACTL-WINDOWS-CLOCK-FALLBACK",
+          "scope": "Add a Windows-safe boot-time clock fallback and offline regression coverage so runtime freshness checks do not fail when time.clock_gettime(CLOCK_BOOTTIME) is unavailable.",
+          "files": [
+            "src/actl/core/runtime.py",
+            "tests/test_runtime.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "qa/V2_DOGFOOD_REMOTE_SCHEDULER_REPORT.md:75 \"time.clock_gettime missing\" is a pre-existing Windows failure cluster"
         }
       ],
       "qaRuntime": [
