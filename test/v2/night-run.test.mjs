@@ -131,3 +131,16 @@ test("requestMainPcShutdown accepts a no-argument call", async () => {
   const { requestMainPcShutdown } = await import("../../src/v2/night-run/index.mjs");
   await assert.rejects(requestMainPcShutdown(), (error) => !String(error.message).includes("reading 'target'"));
 });
+
+test("night-run status survives a slow pipe reader beyond 64KB", async () => {
+  const { spawn } = await import("node:child_process");
+  const dir = await mkdtemp(join(tmpdir(), "agent-relay-status-"));
+  const big = { schema: "agent-relay.last-night-run.v1", lanes: [{ id: "x", note: "y".repeat(200_000) }] };
+  const { writeFile: write } = await import("node:fs/promises");
+  await write(join(dir, "LAST_NIGHT_RUN.json"), JSON.stringify(big));
+  const child = spawn(process.execPath, [new URL("../../bridge/agent-relay.mjs", import.meta.url).pathname, "night-run", "status"], { env: { ...process.env, AGENT_RELAY_DATA_ROOT: dir }, stdio: ["ignore", "pipe", "inherit"] });
+  child.stdout.pause(); await new Promise((r) => setTimeout(r, 500)); child.stdout.resume();
+  let out = ""; child.stdout.setEncoding("utf8"); child.stdout.on("data", (chunk) => { out += chunk; });
+  await new Promise((r) => child.once("close", r));
+  assert.equal(JSON.parse(out).lanes[0].note.length, 200_000);
+});

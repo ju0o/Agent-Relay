@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, loadManifest, parseTaskPacket, PortfolioRunner } from "../src/v2/portfolio-runner/index.mjs";
 import { DEFAULT_DEADLINE, finalizeNightRun, NightRunSupervisor, runPoweroff } from "../src/v2/night-run/index.mjs";
 
+// Every command ends in process.exit(); blocking stdio keeps piped output (ssh asus ... status) from being cut at 64KB.
+for (const stream of [process.stdout, process.stderr]) stream._handle?.setBlocking?.(true);
 const root = process.env.AGENT_RELAY_DATA_ROOT || join(homedir(), ".local", "share", "AgentRelay", "data", "portfolio-execution");
 const founderOutbox = process.env.AGENT_RELAY_FOUNDER_OUTBOX || join(homedir(), ".local", "share", "AgentRelay", "data", "founder-outbox");
 const manifestPath = process.env.AGENT_RELAY_PORTFOLIO_MANIFEST || new URL("../config/portfolio.json", import.meta.url).pathname;
