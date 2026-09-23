@@ -32,13 +32,19 @@ if ($DryRun) {
   Write-Output "STATUS: $((Invoke-Asus "$relay night-run status") -join "`n")"
   exit 0
 }
+# Remember the previous night's runId: LAST_NIGHT_RUN.json still holds it until the new run writes RUNNING,
+# and a stale "complete" record must never trigger a pull + shutdown.
+$previous = Read-Status (Invoke-Asus "$relay night-run status")
 $launch = Invoke-Asus "if kill -0 `$(cat $pidFile 2>/dev/null) 2>/dev/null; then echo NIGHT_RUN_ATTACHED; else nohup $relay night-run up --deadline $Deadline --mainpc-pull >> ~/.local/share/AgentRelay/data/portfolio-execution/night-run.log 2>&1 < /dev/null & echo NIGHT_RUN_STARTED; fi"
 if (-not (($launch -join "`n") -match "NIGHT_RUN_(STARTED|ATTACHED)")) { throw "Refusing activation: detached Night Run was not acknowledged." }
+$staleRunId = if ((($launch -join "`n") -match "NIGHT_RUN_STARTED") -and $null -ne $previous) { [string]$previous.runId } else { $null }
 
 $status = $null; $started = Get-Date
 while (((Get-Date) - $started).TotalSeconds -lt $PollTimeoutSeconds) {
   $status = Read-Status (Invoke-Asus "$relay night-run status")
-  if ($null -ne $status -and $status.endReason -in @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT") -and -not [string]::IsNullOrWhiteSpace($status.endedAt)) { break }
+  if ($null -ne $status -and $staleRunId -and [string]$status.runId -eq $staleRunId) { $status = $null }
+  if ($null -ne $status -and $status.endReason -in @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT") -and -not [string]::IsNullOrWhiteSpace($status.endedAt) -and $status.shutdownState -eq "READY_FOR_MAINPC_PULL") { break }
+  if ($null -ne $status -and $status.endReason -eq "STOPPED") { break }  # run was stopped: fail below, never shut down
   Start-Sleep -Seconds $PollSeconds
 }
 if ($null -eq $status -or $status.endReason -notin @("WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT") -or $status.shutdownState -ne "READY_FOR_MAINPC_PULL") { throw "Refusing shutdown: NIGHT_RUN_COMPLETE is unknown, corrupt, or timed out." }

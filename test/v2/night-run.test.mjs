@@ -124,7 +124,7 @@ test("MainPC wrapper pulls from ASUS and fails closed before destructive command
   assert.match(wrapper, /ssh @sshArgs/); assert.match(wrapper, /--mainpc-pull/); assert.match(wrapper, /scp @transportArgs/);
   assert.match(wrapper, /sha256sum/); assert.match(wrapper, /Get-FileHash/); assert.match(wrapper, /shutdown\.exe \/s \/t 30/); assert.match(wrapper, /sudo -n \/usr\/sbin\/poweroff/); assert.match(wrapper, /shutdown\.exe \/a/);
   assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/); assert.match(wrapper, /DEADLINE_FORCED_CHECKPOINT/); assert.doesNotMatch(wrapper, /shutdown"/);
-  assert.ok(wrapper.indexOf("exit 0") < wrapper.indexOf("nohup $relay"), "DryRun must exit before launching a Night Run"); assert.match(wrapper, /NIGHT_RUN_ATTACHED/);
+  assert.ok(wrapper.indexOf("exit 0") < wrapper.indexOf("nohup $relay"), "DryRun must exit before launching a Night Run"); assert.match(wrapper, /NIGHT_RUN_ATTACHED/); assert.match(wrapper, /\$staleRunId/); assert.match(wrapper, /shutdownState -eq "READY_FOR_MAINPC_PULL"\) \{ break \}/); assert.ok(wrapper.indexOf("$previous = Read-Status") < wrapper.indexOf("nohup $relay"), "previous runId must be read before launch");
 });
 
 test("requestMainPcShutdown accepts a no-argument call", async () => {
