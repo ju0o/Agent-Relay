@@ -966,6 +966,28 @@
           ],
           "ssotEvidence": "actl direction: fix open defects (Founder 2026-09-23); defect observed in ProtoActl recreation of serve.py @ 1a91b42",
           "title": "Fix the web board (serve.py BOARD_HTML) header counters and "
+        },
+        {
+          "taskId": "ACTL-SSH-DISCONNECT-DIAG-DOC",
+          "scope": "Document a bounded SSH disconnect diagnosis matrix using existing evidence and explicit OBSERVED/UNKNOWN/NOT_PROVEN outcomes, without changing transport behavior or claiming the Founder-only interactive gate.",
+          "files": [
+            "ROOT_CAUSE_REPORT.md"
+          ],
+          "tests": [
+            "python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-24: Authorize bounded diagnosis and documentation of the remaining SSH disconnect and DA-response unknowns, with no transport redesign."
+        },
+        {
+          "taskId": "ACTL-DA-RESPONSE-DIAG-DOC",
+          "scope": "Document the bounded DA-response investigation procedure, known capture limits, and fail-closed reporting rule without filtering escape sequences or asserting reproduction status.",
+          "files": [
+            "docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md"
+          ],
+          "tests": [
+            "python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"The Founder interactive SSH disconnect root cause remains UNKNOWN\" and \"The DA/escape response leak remains UNKNOWN\""
         }
       ],
       "qaRuntime": [
