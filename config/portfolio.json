@@ -1674,6 +1674,30 @@
             "node --test test/tester-module.test.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JCAPP-SKILL-MODULE-VIEW",
+          "scope": "Add the read-only Skill module to the unified operator app using the existing GET /api/studio/skills data, preserving all existing screens and excluding create, edit, enable, disable, attach, and other write controls.",
+          "files": [
+            "operator/public/app.js",
+            "test/skill-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/skill-module.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JCAPP-APPROVALS-MODULE-VIEW",
+          "scope": "Add the read-only Approvals module to the unified operator app with a truthful unavailable state when no canonical approval-ledger source exists, preserving existing human-gate views and adding no approval actions or new API.",
+          "files": [
+            "operator/public/app.js",
+            "test/approvals-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/approvals-module.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ]
     },
