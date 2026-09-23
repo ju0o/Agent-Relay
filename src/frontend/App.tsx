@@ -1389,7 +1389,11 @@ function AppInner(): React.ReactElement {
           context={dfContext()}
           notify={notify}
           onClose={() => setShowQuickDf(false)}
-          onSaved={() => setPdRefreshSignal(n => n + 1)}
+          onSaved={() => {
+            setDfMode(false);
+            setPdMode(true);
+            setPdRefreshSignal(n => n + 1);
+          }}
         />
       )}
 
