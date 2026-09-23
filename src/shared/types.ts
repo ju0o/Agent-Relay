@@ -107,8 +107,14 @@ export type RelayRequest =
  | { op: 'update:check' }
   | { op: 'update:download' }
  | { op: 'update:install' }
-  | { op: 'controlRoom:board' }
+   | { op: 'controlRoom:board' }
   | { op: 'controlRoom:approvals' }
+  | { op: 'planStudio:get'; project: string }
+  | { op: 'planStudio:save'; project: string; draft: string }
+  | { op: 'planStudio:chat'; project: string; message: string }
+  | { op: 'planStudio:approve'; project: string }
+  | { op: 'gates:list' }
+  | { op: 'gates:answer'; gateId: string; optionIndex: number }
   | { op: 'app:startView' };
 
 /** Standard successful response envelope. */

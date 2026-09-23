@@ -10,7 +10,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electro
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
-import { runControlRoom } from './controlRoom.js';
+import { runControlRoom, runGateAnswer, runGatesList, runPlanStudioApprove, runPlanStudioChat, runPlanStudioGet, runPlanStudioSave } from './controlRoom.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
@@ -362,6 +362,24 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
 
     case 'controlRoom:approvals':
       return runControlRoom('approvals');
+
+    case 'planStudio:get':
+      return runPlanStudioGet(req.project);
+
+    case 'planStudio:save':
+      return runPlanStudioSave(req.project, req.draft);
+
+    case 'planStudio:chat':
+      return runPlanStudioChat(req.project, req.message);
+
+    case 'planStudio:approve':
+      return runPlanStudioApprove(req.project);
+
+    case 'gates:list':
+      return runGatesList();
+
+    case 'gates:answer':
+      return runGateAnswer(req.gateId, req.optionIndex);
 
     case 'app:startView':
       return { view: startView };
