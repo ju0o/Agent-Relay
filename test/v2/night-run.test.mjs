@@ -126,3 +126,8 @@ test("MainPC wrapper pulls from ASUS and fails closed before destructive command
   assert.match(wrapper, /WBS_EXHAUSTED/); assert.match(wrapper, /DEADLINE_COMPLETE/); assert.match(wrapper, /DEADLINE_FORCED_CHECKPOINT/); assert.doesNotMatch(wrapper, /shutdown"/);
   assert.ok(wrapper.indexOf("exit 0") < wrapper.indexOf("nohup $relay"), "DryRun must exit before launching a Night Run"); assert.match(wrapper, /NIGHT_RUN_ATTACHED/);
 });
+
+test("requestMainPcShutdown accepts a no-argument call", async () => {
+  const { requestMainPcShutdown } = await import("../../src/v2/night-run/index.mjs");
+  await assert.rejects(requestMainPcShutdown(), (error) => !String(error.message).includes("reading 'target'"));
+});

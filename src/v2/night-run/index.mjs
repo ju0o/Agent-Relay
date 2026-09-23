@@ -84,7 +84,7 @@ export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), 
   return { state: "DELIVERED", target, remoteSha, output: output.trim(), path: output.match(/SENT:\s*(\S+)/)?.[1] || null };
 }
 
-export async function requestMainPcShutdown({ target = mainPcTarget(), execFileImpl = execFile }) {
+export async function requestMainPcShutdown({ target = mainPcTarget(), execFileImpl = execFile } = {}) {
   const result = await execFileImpl("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "shutdown.exe /s /t 30"], { env: process.env });
   return { state: "REQUESTED", target, command: "shutdown.exe /s /t 30", at: new Date().toISOString(), output: String(result.stdout || "").trim() };
 }
