@@ -2010,6 +2010,21 @@
           ],
           "ssotEvidence": "Supervisor visual Tester 2026-09-24 01:06 (~/jc-tester/run-20260924-0106/06-승인.png shows the Tester view); Founder choice 'Tester 자동 확인 후 반영'; A-15",
           "title": "Two issues found by the supervisor's visual Tester review of"
+        },
+        {
+          "taskId": "JCAPP-SKILL-CREATE-CANVAS",
+          "scope": "Tester 다음 레일에 ‘Skill 만들기’ 화면을 추가해 GET /api/skills의 이름·설명·사용 에이전트를 읽기 전용으로 표시하고, 이름·언제 쓰나요·무엇을 하나요·지켜야 할 것·누구에게 주나요 입력으로 SKILL.md 미리보기만 생성하며 파일/API 쓰기와 기존 화면을 유지한다.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/skills-api.test.mjs",
+            "test/tester-module.test.mjs",
+            "test/approvals-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/skills-api.test.mjs test/tester-module.test.mjs test/approvals-module.test.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ]
     },
