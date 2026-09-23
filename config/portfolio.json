@@ -678,6 +678,31 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "docs/decisions/DECISION_LOG.md:65 \"multi-process/concurrent access to `.juplan/plan/draft.json` is unhandled ... file locking deferred\""
+        },
+        {
+          "taskId": "JUPLAN-RUNTIME-SNAPSHOT-LOCK",
+          "scope": "Serialize freeze against concurrent draft mutations so a snapshot cannot race with edit or undo, with offline regression coverage.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-PLAN-CORE-EVIDENCE-REGRESSION",
+          "scope": "Add offline regression coverage for node evidence references that target missing or non-Evidence nodes, preserving the existing validator behavior.",
+          "files": [
+            "packages/plan-core/test/plan.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/plan-core test",
+            "pnpm typecheck"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
@@ -877,7 +902,30 @@
         "codex"
       ],
       "state": "QUEUED",
-      "tasks": []
+      "tasks": [
+        {
+          "taskId": "JUCEIPTPLAN-CROSS-ARTIFACT-QA",
+          "scope": "Audit PM_STATUS_BOARD, DECISION_LOG, WBS, GTM, and canonical HTML for phase, authority, dependency, and planning-only contradictions; record findings and bounded wording corrections without making M2 or P0 decisions.",
+          "files": [
+            "docs/qa/P0_CROSS_ARTIFACT_AUDIT.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:240-242 \"independent planning QA of ERD/WBS/HTML | NOW — planning only\""
+        },
+        {
+          "taskId": "JUCEIPTPLAN-ERD-SCENARIO-QA",
+          "scope": "Audit the canonical ERD against WBS and HTML for DBML relationships, cardinality, anonymous-to-account continuity, consent separation, revocation, and adversarial lifecycle scenarios; record bounded QA findings only.",
+          "files": [
+            "docs/qa/P0_ERD_SCENARIO_AUDIT.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "docs/planning/BUSINESS_PRODUCT_WBS.md:57-76 \"Truth lineage\" and \"Anonymous → account identity\" checks"
+        }
+      ]
     }
   ]
 }
