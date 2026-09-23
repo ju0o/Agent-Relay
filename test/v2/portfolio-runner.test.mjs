@@ -272,6 +272,15 @@ test("runtime chains: a provider outage (503 overloaded) falls through like a qu
   assert.ok(!TRANSIENT_ERROR.test("opencode exit 1: syntax error in prompt"));
 });
 
+test("reconcile requeues a task held by a provider outage at most twice", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-outage-")); const statePath = join(root, "state.json");
+  const held = { taskId: "O-1", projectId: "o", state: "HOLD", error: "opencode exit 1: [503] Upstream error: Service temporarily overloaded" };
+  await writeFile(statePath, JSON.stringify({ tasks: [held, { ...held, taskId: "O-2", outageRequeues: 2 }, { ...held, taskId: "O-3", error: "QA rejected" }], activeBuilders: [], activeQa: [] }));
+  const runner = new PortfolioRunner({ runtimeAdapters: {}, manifest: { projects: [{ id: "o", runtime: ["codex"], tasks: [{ taskId: "O-1" }, { taskId: "O-2" }, { taskId: "O-3" }] }] }, statePath, worktreeRoot: join(root, "w") });
+  const state = await runner.reconcile();
+  assert.deepEqual(state.tasks.map((t) => `${t.taskId}:${t.state}`), ["O-1:QUEUED", "O-2:HOLD", "O-3:HOLD"]);
+});
+
 test("runtime chains: a non-quota failure holds the task instead of silently switching models", async () => {
   const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-chain2-")); const calls = [];
   const bad = { async availability() { return { ok: true }; }, async run() { calls.push("opencode"); throw new Error("opencode exit 1: syntax error in prompt"); } };

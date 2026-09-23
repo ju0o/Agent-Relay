@@ -308,6 +308,7 @@ export class PortfolioRunner {
     state.activeBuilders = []; state.activeQa = [];
     state.tasks = state.tasks.map((task) => {
       if (task.state === "HOLD" && String(task.error || "").startsWith("RUNTIME_LAUNCH:")) return { ...task, state: "QUEUED", error: null, reconcile: "REQUEUED_AFTER_RUNTIME_RECOVERY" };
+      if (task.state === "HOLD" && TRANSIENT_ERROR.test(String(task.error || "")) && (task.outageRequeues || 0) < 2) return { ...task, state: "QUEUED", error: null, attempts: 0, outageRequeues: (task.outageRequeues || 0) + 1, reconcile: "REQUEUED_AFTER_PROVIDER_OUTAGE" };
       if (task.state === "RUNNING" || task.state === "QA") {
         const pid = task.state === "QA" ? task.qaEvidence?.pid : task.builderEvidence?.pid;
         return pid && processAlive(pid) ? { ...task, reconcile: "ACTIVE_PROCESS_PRESERVED" } : { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" };
