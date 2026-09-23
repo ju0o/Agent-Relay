@@ -12,7 +12,25 @@ import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
 
-const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+export const PORTFOLIO_STATE_CORRUPT = "PORTFOLIO_STATE_CORRUPT";
+
+export function isCorruptStateError(error) {
+  return Boolean(error && error.code === PORTFOLIO_STATE_CORRUPT);
+}
+
+export function corruptStateError({ statePath, reason, cause }) {
+  const error = new Error(`portfolio state corrupt: ${statePath}: ${reason}`);
+  error.code = PORTFOLIO_STATE_CORRUPT;
+  error.statePath = statePath;
+  error.reason = reason;
+  error.blocked = { code: PORTFOLIO_STATE_CORRUPT, statePath, reason };
+  if (cause !== undefined) error.cause = cause;
+  return error;
+}
+
+function freshPortfolioState() {
+  return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() };
+}
 
 let atomicCounter = 0;
 
@@ -171,7 +189,25 @@ export class PortfolioRunner {
     this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.runtimeAdapters = runtimeAdapters || createRuntimeAdapters({ codex: runtime }); this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.intakeRoot = intakeRoot || join(resolve(statePath, ".."), "pm-inbox"); this.resultRoot = resultRoot || join(resolve(statePath, ".."), "result-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
   }
 
-  async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
+  async load() {
+    let raw;
+    try {
+      raw = await readFile(this.statePath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return freshPortfolioState();
+      throw error;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (cause) {
+      throw corruptStateError({ statePath: this.statePath, reason: "INVALID_JSON", cause });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || (parsed.tasks !== undefined && !Array.isArray(parsed.tasks))) {
+      throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
+    }
+    return parsed;
+  }
   async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.catch(() => {}).then(async () => writeFileAtomic(this.statePath, JSON.stringify(snapshot, null, 2))); return this._saveChain; }
 
   async reconcileProjects(state) {

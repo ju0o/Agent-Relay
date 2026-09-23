@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, isCorruptStateError, parseQaPacket, parseResultPacket, parseTaskPacket, PORTFOLIO_STATE_CORRUPT, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
@@ -157,6 +157,29 @@ test("stale temp files from an interrupted save never shadow valid state", async
   assert.equal((await runner.load()).tasks[0].taskId, "GOOD");
   await runner.save({ schema: "agent-relay.portfolio-state.v1", tasks: [{ taskId: "NEXT" }] });
   assert.equal(JSON.parse(await readFile(statePath, "utf8")).tasks[0].taskId, "NEXT");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("corrupt portfolio state fails closed with blocked evidence instead of resetting", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-corrupt-state-");
+  const statePath = join(root, "state.json");
+  const corrupt = '{"tasks": [{"taskId": "TRUNC';
+  await writeFile(statePath, corrupt);
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  const loadError = await runner.load().then(() => null, (error) => error);
+  assert.ok(loadError, "load must reject on corrupt state");
+  assert.equal(loadError.code, PORTFOLIO_STATE_CORRUPT);
+  assert.equal(loadError.statePath, statePath);
+  assert.equal(loadError.blocked.code, PORTFOLIO_STATE_CORRUPT);
+  assert.equal(loadError.blocked.statePath, statePath);
+  assert.ok(isCorruptStateError(loadError));
+  await assert.rejects(() => runner.reconcile(), (error) => isCorruptStateError(error));
+  assert.equal(await readFile(statePath, "utf8"), corrupt, "corrupt state must not be overwritten");
+  await writeFile(statePath, JSON.stringify({ tasks: "not-an-array" }));
+  await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE");
+  await rm(join(root, "state.json"), { force: true });
+  const fresh = await runner.load();
+  assert.deepEqual(fresh.tasks, []);
   await rm(root, { recursive: true, force: true });
 });
 
