@@ -4,10 +4,10 @@ import { must } from './bridge.js';
 export interface ControlRoomLane {
   id?: string;
   project?: string;
-  current?: { stage?: string; taskId?: string; [key: string]: unknown };
-  worker?: Record<string, unknown>;
-  qa?: Record<string, unknown>;
-  holds?: unknown[];
+  current?: { stage?: number | string; taskId?: string; worker?: unknown; qa?: unknown; [key: string]: unknown };
+  workerChain?: unknown;
+  qaChain?: unknown;
+  holds?: Array<{ taskId?: string; reason?: string } | string>;
   humanGate?: Record<string, unknown>;
   founderGate?: Record<string, unknown>;
   blocker?: string;
@@ -15,7 +15,7 @@ export interface ControlRoomLane {
 }
 
 interface ControlRoomBoard { lanes?: ControlRoomLane[] }
-type FlowState = 'done' | 'active' | 'blocked';
+type FlowState = 'done' | 'active' | 'blocked' | 'pending';
 
 const FLOW = ['PM', '검증', 'WORKER', 'QA', 'GATE', 'HUMAN', '통합'];
 
@@ -23,8 +23,9 @@ function label(value: unknown, fallback = '—'): string {
   return typeof value === 'string' && value.trim() ? value : fallback;
 }
 
-function stageIndex(stage: string): number {
-  const value = stage.toUpperCase();
+function stageIndex(stage: number | string): number {
+  if (typeof stage === 'number' && Number.isFinite(stage)) return Math.max(0, Math.min(FLOW.length - 1, stage));
+  const value = String(stage).toUpperCase();
   if (value.includes('INTEGR') || value.includes('통합') || value === 'DONE' || value === 'COMPLETE') return 6;
   if (value.includes('HUMAN') || value.includes('FOUNDER')) return 5;
   if (value.includes('GATE')) return 4;
@@ -34,31 +35,38 @@ function stageIndex(stage: string): number {
   return 0;
 }
 
-function flowState(stage: string, index: number): FlowState {
-  const value = stage.toUpperCase();
-  if (value.includes('BLOCK') || value.includes('HOLD')) return index < stageIndex(stage) ? 'done' : index === stageIndex(stage) ? 'blocked' : 'blocked';
+function flowState(stage: number | string, index: number): FlowState {
+  const value = String(stage).toUpperCase();
+  if (value.includes('BLOCK') || value.includes('HOLD')) return index < stageIndex(stage) ? 'done' : index === stageIndex(stage) ? 'blocked' : 'pending';
   if (value === 'DONE' || value === 'COMPLETE' || value === 'V1_COMPLETE' || value === 'INTEGRATED') return 'done';
   const current = stageIndex(stage);
-  return index < current ? 'done' : index === current ? 'active' : 'blocked';
+  return index < current ? 'done' : index === current ? 'active' : 'pending';
 }
 
 function detail(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return label(record.reason ?? record.ask ?? record.verdict ?? record.state ?? record.status);
+  }
   return '—';
 }
 
 function LaneView({ lane }: { lane: ControlRoomLane }): React.ReactElement {
   const current = lane.current ?? {};
-  const stage = label(current.stage, 'PM');
+  const stageValue = current.stage ?? 0;
+  const stage = typeof stageValue === 'number' ? FLOW[stageIndex(stageValue)] : label(stageValue, 'PM');
   const holds = Array.isArray(lane.holds) ? lane.holds : [];
   const gate = lane.humanGate ?? lane.founderGate;
+  const worker = lane.workerChain ?? current.worker;
+  const qa = lane.qaChain ?? current.qa;
   return (
     <section className="control-lane-view">
       <div className="control-flow" aria-label="lane lifecycle">
         {FLOW.map((name, index) => {
-          const state = flowState(stage, index);
-          return <div className={`control-step ${state}`} key={name}><span className="control-step-dot">{state === 'done' ? '✓' : state === 'blocked' ? '!' : '●'}</span><span>{name}</span></div>;
+          const state = flowState(stageValue, index);
+          return <div className={`control-step ${state}`} key={name}><span className="control-step-dot">{state === 'done' ? '✓' : state === 'blocked' ? '!' : state === 'active' ? '●' : '○'}</span><span>{name}</span></div>;
         })}
       </div>
       <div className="control-cards">
@@ -69,11 +77,11 @@ function LaneView({ lane }: { lane: ControlRoomLane }): React.ReactElement {
         </article>
         <article className="control-card">
           <h3>WORKER → QA</h3>
-          <p>Worker: <strong>{detail(lane.worker?.state ?? lane.worker?.status)}</strong></p>
-          <p>QA: <strong>{detail(lane.qa?.verdict ?? lane.qa?.state ?? lane.qa?.status)}</strong></p>
+          <p>Worker: <strong>{detail(worker)}</strong></p>
+          <p>QA: <strong>{detail(qa)}</strong></p>
         </article>
         {(lane.blocker || holds.length > 0) && <article className="control-card blocked"><h3>Hold / Blocked</h3><p>{lane.blocker ?? holds.map(detail).join(', ')}</p></article>}
-        {gate && <article className="control-card human"><h3>Human Gate</h3><p>{detail(gate.title ?? gate.gateId ?? gate.status ?? '확인 필요')}</p><p className="muted">사람 확인이 필요한 단계입니다.</p></article>}
+        {gate && <article className="control-card human"><h3>Human Gate</h3><p>{detail(gate.ask ?? gate.title ?? gate.gateId ?? gate.status ?? '확인 필요')}</p><p className="muted">사람 확인이 필요한 단계입니다.</p></article>}
       </div>
     </section>
   );

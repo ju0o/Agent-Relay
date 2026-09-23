@@ -991,6 +991,7 @@ html, body, #app {
 .control-step.done { color: var(--accent2); }.control-step.done .control-step-dot { background: var(--accent2); color: #101114; border-color: var(--accent2); }
 .control-step.active { color: var(--accent); font-weight: 700; }.control-step.active .control-step-dot { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(78,161,255,.14); }
 .control-step.blocked .control-step-dot { color: var(--muted); }
+.control-step.pending .control-step-dot { color: var(--muted); opacity: .65; }
 .control-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .control-card { min-height: 112px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 9px; }
 .control-card h3 { margin: 0 0 10px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }

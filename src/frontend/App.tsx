@@ -1045,13 +1045,13 @@ function AppInner(): React.ReactElement {
             <button
               className={`mini df-toggle${dfMode ? ' on' : ''}`}
               title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
-              onClick={() => { setDfMode(m => !m); setPdMode(false); }}
+              onClick={() => { setDfMode(m => !m); setPdMode(false); setControlRoomMode(false); }}
             >🐾 App Dogfooding</button>
             <button
               className={`mini df-toggle${pdMode ? ' on' : ''}`}
               disabled={!project}
               title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
-              onClick={() => { setPdMode(m => !m); setDfMode(false); }}
+              onClick={() => { setPdMode(m => !m); setDfMode(false); setControlRoomMode(false); }}
             >📋 Project Dogfooding</button>
             <button
               className="mini qdf-toggle"
@@ -1060,7 +1060,7 @@ function AppInner(): React.ReactElement {
               onClick={() => setShowQuickDf(true)}
             >＋ 피드백</button>
             <button
-              className={`mini${controlRoomMode ? ' on' : ''}`}
+              className={`mini df-toggle${controlRoomMode ? ' on' : ''}`}
               title="Control Room — lane 상태 보기"
               onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); }}
             >🛰 Control Room</button>
