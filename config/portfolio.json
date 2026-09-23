@@ -515,7 +515,8 @@
             "src/actl/core/validation.py",
             "src/actl/tui.py",
             "tests/test_discovery.py",
-            "tests/test_validation.py"
+            "tests/test_validation.py",
+            "tests/test_tui.py"
           ],
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
@@ -856,6 +857,27 @@
         "cline",
         "codex"
       ]
+    },
+    {
+      "id": "juceipt-planning",
+      "coreV1": true,
+      "active": true,
+      "pmChannel": "pm/juceipt",
+      "pmTransport": "codex-chatgpt-web",
+      "pmState": "NIGHT_PLAN_PM",
+      "path": "/home/skkse12/Desktop/Projects/Team/JuCeipt-Private",
+      "ssot": "/home/skkse12/Desktop/Projects/Team/JuCeipt-Private/docs/operations/PM_STATUS_BOARD.md",
+      "owner": "codex",
+      "runtime": [
+        "codex",
+        "opencode"
+      ],
+      "qaRuntime": [
+        "opencode",
+        "codex"
+      ],
+      "state": "QUEUED",
+      "tasks": []
     }
   ]
 }
