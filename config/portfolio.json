@@ -1677,6 +1677,19 @@
             "node --test tests/agent-relay-adapter.test.mjs tests/juplan-adapter.test.mjs"
           ],
           "ssotEvidence": "Founder direction 2026-09-23: integrate Agent Relay first, then JuPlan, then JuCeipt through project-status.v1 exports and read-only adapters"
+        },
+        {
+          "taskId": "JUCONTROLER-JUCEIPT-STATUS-ADAPTER",
+          "scope": "Add a pure read-only JuCeipt receipt adapter that maps acceptance.state and generated_at into project-status.v1, preserves receipt_id as sourceRevision, and fails closed to UNKNOWN/stale for malformed or incomplete saved receipts.",
+          "files": [
+            "src/adapters/juceipt.mjs",
+            "tests/juceipt-adapter.test.mjs",
+            "docs/integration/PROJECT_STATUS_CONTRACT.md"
+          ],
+          "tests": [
+            "node --test tests/*.mjs"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
       "qaRuntime": [
