@@ -290,6 +290,18 @@ test("runLoop drain: in-flight work finishes, nothing new starts, the loop exits
   assert.equal(runner.draining(), false);
 });
 
+test("runWave dispatches at most one task per lane even when several are QUEUED", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-onelane-")); let live = 0, peak = 0;
+  const packet = (id, kind) => kind === "workspace-write" ? `RESULT_PACKET: {"schema":"agent-relay.result.v1","taskId":"${id}","status":"IMPLEMENTED","changedFiles":[],"tests":[],"commitSha":"abc","summary":"s"}` : `QA_PACKET: {"schema":"agent-relay.qa.v1","taskId":"${id}","verdict":"ACCEPT","tests":[],"findings":[],"summary":"ok"}`;
+  const adapter = { async availability() { return { ok: true }; }, async run({ sandbox, prompt }) { const id = /L-2/.test(prompt) ? "L-2" : "L-1"; if (sandbox === "workspace-write") { live += 1; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 30)); live -= 1; } return { pid: 1, code: 0, startedAt: "t", text: packet(id, sandbox) }; } };
+  const statePath = join(root, "state.json");
+  await writeFile(statePath, JSON.stringify({ tasks: [{ taskId: "L-1", projectId: "l", state: "QUEUED", attempts: 0, qaAttempts: 0, scope: "x", files: [], tests: [] }, { taskId: "L-2", projectId: "l", state: "QUEUED", attempts: 0, qaAttempts: 0, scope: "x", files: [], tests: [] }], activeBuilders: [], activeQa: [] }));
+  const runner = new PortfolioRunner({ testGate: passGate, runtimeAdapters: { codex: adapter }, manifest: { maxBuilders: 4, projects: [{ id: "l", runtime: ["codex"], tasks: [{ taskId: "L-1", scope: "x", files: [], tests: [] }, { taskId: "L-2", scope: "x", files: [], tests: [] }] }] },
+    statePath, worktreeRoot: join(root, "w"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; }, async promote(_p, id) { return `refs/agent-relay/promotions/${id}`; } } });
+  const state = await runner.runWave({ intervalMs: 5 });
+  assert.equal(peak, 1); assert.deepEqual(state.tasks.map((t) => t.state), ["VERIFIED_DONE", "VERIFIED_DONE"]);
+});
+
 test("quota wording variants fall back: weekly limit", async () => {
   const { QUOTA_ERROR } = await import("../../src/v2/portfolio-runner/index.mjs");
   assert.ok(QUOTA_ERROR.test("claude-team exit 1: You've hit your weekly limit · resets 11pm (Asia/Seoul)"));

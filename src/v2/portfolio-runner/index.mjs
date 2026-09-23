@@ -451,7 +451,10 @@ export class PortfolioRunner {
     for (;;) {
       if (!signal?.aborted && Date.now() < Number(dispatchUntil) && !this.draining()) {
         const slots = Math.max(1, Number(this.manifest.maxBuilders) || 2) - inflight.size;
-        for (const task of state.tasks.filter((item) => item.state === "QUEUED" && !inflight.has(item.taskId)).slice(0, Math.max(0, slots))) {
+        // One task per lane at a time: tasks of one project edit the same files, so parallel ones conflict at integration.
+        const busyLanes = new Set(state.tasks.filter((item) => inflight.has(item.taskId)).map((item) => item.projectId));
+        const next = state.tasks.filter((item) => item.state === "QUEUED" && !inflight.has(item.taskId) && !busyLanes.has(item.projectId) && (busyLanes.add(item.projectId), true));
+        for (const task of next.slice(0, Math.max(0, slots))) {
           inflight.set(task.taskId, this.runOne(task, state, { signal }).catch((error) => { if (!signal?.aborted) { task.state = "HOLD"; task.error = `RUNNER_ERROR: ${String(error?.message || error)}`; } }).finally(() => inflight.delete(task.taskId)));
         }
       }
