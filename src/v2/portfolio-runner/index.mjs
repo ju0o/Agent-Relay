@@ -33,9 +33,9 @@ function packetLine(text, prefix) {
 }
 
 // A quota/rate-limit failure moves the lane to the next runtime in its chain instead of holding the task.
-export const QUOTA_ERROR = /rate.?limit|quota|usage limit|limit (reached|exceeded)|too many requests|\b429\b|insufficient[_ ]quota|out of credits|credit balance|exceeded your/i;
+export const QUOTA_ERROR = /rate.?limit|quota|usage limit|limit (reached|exceeded)|hit your [a-z ]*limit|weekly limit|too many requests|\b429\b|insufficient[_ ]quota|out of credits|credit balance|exceeded your/i;
 // Provider-side outages (free models overload): the next runtime in the chain takes the turn, like a quota hit.
-export const TRANSIENT_ERROR = /\b50[234]\b|overloaded|temporarily unavailable|service unavailable|upstream error|ECONNRESET|ETIMEDOUT|socket hang up/i;
+export const TRANSIENT_ERROR = /\b50[234]\b|overloaded|temporarily unavailable|service unavailable|upstream error|ECONNRESET|ETIMEDOUT|socket hang up|model not found|hook dispatch failed/i; // last two: a misconfigured runtime (cline 2026-09-23) — the next runtime takes over
 // Lane config: runtime / qaRuntime may be one id or an ordered fallback list, e.g. ["opencode", "codex"].
 const chainOf = (value) => [value].flat().filter(Boolean);
 
@@ -311,7 +311,7 @@ export class PortfolioRunner {
     state.activeBuilders = []; state.activeQa = [];
     state.tasks = state.tasks.map((task) => {
       if (task.state === "HOLD" && String(task.error || "").startsWith("RUNTIME_LAUNCH:")) return { ...task, state: "QUEUED", error: null, reconcile: "REQUEUED_AFTER_RUNTIME_RECOVERY" };
-      if (task.state === "HOLD" && TRANSIENT_ERROR.test(String(task.error || "")) && (task.outageRequeues || 0) < 2) return { ...task, state: "QUEUED", error: null, attempts: 0, outageRequeues: (task.outageRequeues || 0) + 1, reconcile: "REQUEUED_AFTER_PROVIDER_OUTAGE" };
+      if (task.state === "HOLD" && (TRANSIENT_ERROR.test(String(task.error || "")) || QUOTA_ERROR.test(String(task.error || ""))) && (task.outageRequeues || 0) < 2) return { ...task, state: "QUEUED", error: null, attempts: 0, outageRequeues: (task.outageRequeues || 0) + 1, reconcile: "REQUEUED_AFTER_PROVIDER_OUTAGE" };
       if (task.state === "RUNNING" || task.state === "QA") {
         const pid = task.state === "QA" ? task.qaEvidence?.pid : task.builderEvidence?.pid;
         return pid && processAlive(pid) ? { ...task, reconcile: "ACTIVE_PROCESS_PRESERVED" } : { ...task, state: "QUEUED", reconcile: "REQUEUED_AFTER_RESTART" };

@@ -290,6 +290,11 @@ test("runLoop drain: in-flight work finishes, nothing new starts, the loop exits
   assert.equal(runner.draining(), false);
 });
 
+test("quota wording variants fall back: weekly limit", async () => {
+  const { QUOTA_ERROR } = await import("../../src/v2/portfolio-runner/index.mjs");
+  assert.ok(QUOTA_ERROR.test("claude-team exit 1: You've hit your weekly limit · resets 11pm (Asia/Seoul)"));
+});
+
 test("every Worker and QA prompt carries the Founder plan harness", async () => {
   const { builderPrompt, qaPrompt, FOUNDER_PLAN_HARNESS } = await import("../../src/v2/portfolio-runner/index.mjs");
   const task = { taskId: "H-1", projectId: "p", scope: "x", files: [], tests: [] };
@@ -300,6 +305,7 @@ test("every Worker and QA prompt carries the Founder plan harness", async () => 
 test("runtime chains: a provider outage (503 overloaded) falls through like a quota hit; a prompt error does not", () => {
   assert.ok(TRANSIENT_ERROR.test('opencode exit 1: Error: {"message":"Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded","type":"server_error"}'));
   assert.ok(!TRANSIENT_ERROR.test("opencode exit 1: syntax error in prompt"));
+  assert.ok(TRANSIENT_ERROR.test("cline exit 1: error: hook dispatch failed: session.hook requires a valid hook event payload error: model not found"));
 });
 
 test("reconcile requeues a task held by a provider outage at most twice", async () => {
