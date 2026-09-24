@@ -716,6 +716,24 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "AGENTRELAY-APP-PROJECT-NAMES-FIX",
+          "scope": "Fix project labels in the Control Room tabs and the Plan Studio project list (src/frontend): use the product names exactly — Agent Relay, actl, JuPlan, JuCeipt, JuControler, 통합 관제 화면 (jucontroler-app), JuCeipt 기획 (juceipt-planning) — never transliterations like '에이전트 릴레이', '주플랜', '주싯', '주컨트롤러'; and render the one-line goal summary on its own line/element with spacing instead of concatenating it to the name ('에이전트 릴레이CORE V1 …'). One shared label map; unit test in test/project-labels.test.mjs.",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/frontend/planStudio.tsx",
+            "src/shared/projectLabels.ts",
+            "test/project-labels.test.mjs"
+          ],
+          "tests": [
+            "npm run build:server",
+            "node --test test/project-labels.test.mjs",
+            "npm run typecheck",
+            "npm run build:client"
+          ],
+          "ssotEvidence": "Supervisor review of the Windows Tester captures of v3 on MainPC (2026-09-24 08:59, C:\\Users\\user\\Desktop\\AgentRelay-0.3.1\\tester-v3); Founder non-developer readability rule",
+          "title": "Fix project labels in the Control Room tabs and the Plan Stu"
         }
       ],
       "qaRuntime": [
