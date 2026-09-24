@@ -4531,6 +4531,18 @@
           ],
           "ssotEvidence": "Founder direction 2026-09-23: relay-T-DOG-01 PM judgments (DISPATCH + JUDGMENT) from the evidence at /home/skkse12/Desktop/Projects/Core/JuTell/dogfood/relay-T-DOG-01/ with contract_hash 06980371151059ece5670daa6bde2129c4791cf9f804ded8df3c8c5ad1b6b32c; allowed PM_TASK_DECISION v1 DISPATCH/REQUEST_CHANGES/ACCEPT/HUMAN_GATE/MILESTONE_COMPLETE, PM_JUDGMENT v1 ACCEPT/REQUEST_CHANGES/HUMAN_GATE; manual ChatGPT paste packets PM_TO_CHATGPT_*.md are retired",
           "title": "사용 결과를 바르게 평가해 다음 단계 결정"
+        },
+        {
+          "taskId": "JUTELL-SCENARIO-A-CONCISE-REPORT",
+          "scope": "단순 문구·색상 변경 시나리오 A의 최소 최종 보고서 예시와 오프라인 검증을 추가해 6개 항목과 간결성 기준을 확인한다.",
+          "files": [
+            "tests/results/scenario-a/concise-report.fixture.md",
+            "tests/results/scenario-a/concise-report.test.mjs"
+          ],
+          "tests": [
+            "node --test tests/results/scenario-a/concise-report.test.mjs"
+          ],
+          "ssotEvidence": "docs/BEGINNER_REPORT_SPEC.md:127-133 quote: 단순 작업 보고서는 각 기본 항목을 최대 1~2문장으로 작성하고 전체 보고서는 기본적으로 12문장 이내를 우선한다."
         }
       ],
       "note": "lane added by night plan request 2026-09-24",
