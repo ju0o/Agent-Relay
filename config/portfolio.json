@@ -990,7 +990,7 @@
             "node --test test/controlroom-plain-2.test.mjs"
           ],
           "ssotEvidence": "Supervisor capability audit 2026-09-24: hold cards show raw English though plain-Korean explanations exist",
-          "title": "Control Room hold card (src/frontend/controlRoom.tsx): when "
+          "title": "보류 이유와 선택지를 쉽게 확인"
         }
       ],
       "qaRuntime": [
@@ -1488,7 +1488,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
-          "title": "Messages from two boards (or a board plus Agent Relay/CLI) s"
+          "title": "동시 전송이 섞이지 않아요"
         },
         {
           "taskId": "ACTL-BUSY-SEND-STALE-GUARD",
@@ -1502,7 +1502,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
-          "title": "Sending to an agent that is still working (activity RUNNING)"
+          "title": "작업 중인 답을 잘못 받지 않아요"
         },
         {
           "taskId": "ACTL-SEND-AMBIGUOUS-NO-RESEND",
@@ -1516,7 +1516,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
-          "title": "When a send ends as DELIVERY_AMBIGUOUS (sideEffect POSSIBLE/"
+          "title": "전송 여부를 확인하고 중복을 막아요"
         },
         {
           "taskId": "ACTL-RESULT-READY-COPY-CTA",
@@ -1530,7 +1530,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
-          "title": "After a send, when the agent goes from working to idle or it"
+          "title": "새 답변을 바로 복사할 수 있어요"
         },
         {
           "taskId": "ACTL-STALE-LEASE-GUARD",
@@ -1543,7 +1543,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
-          "title": "guard_tmux_writer treats an EXPIRED_HELD lease as not blocki"
+          "title": "재시작된 화면도 막힘없이 써요"
         },
         {
           "taskId": "ACTL-TEST-STATE-ISOLATION",
@@ -1556,7 +1556,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
-          "title": "tests/run_tests.py points ACTL_AUDIT_PATH, ACTL_STATE_PATH a"
+          "title": "실제 사용자 기록을 건드리지 않아요"
         }
       ],
       "qaRuntime": [
@@ -2156,7 +2156,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
-          "title": "New command `juplan apply-proposal --file <json>` (or stdin "
+          "title": "안전하게 계획 변경사항 적용"
         },
         {
           "taskId": "JUPLAN-PRD-EXPORT",
@@ -2171,7 +2171,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
-          "title": "New docs/prd.md built by a pure function in a new packages/r"
+          "title": "JuPlan 기획 문서 자동 정리"
         },
         {
           "taskId": "JUPLAN-ERD-FROM-GRAPH",
@@ -2186,7 +2186,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
-          "title": "diagrams/erd.mmd and plan.dbml come from the real DataEntity"
+          "title": "데이터 구조 그림 자동 생성"
         },
         {
           "taskId": "JUPLAN-WBS-EXPORT",
@@ -2216,7 +2216,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
-          "title": "New docs/api.md (ApiEndpoint method·path table, Event emits/"
+          "title": "연동 방법과 점검 기준 정리"
         },
         {
           "taskId": "JUPLAN-DIAGRAM-TYPE-FILTER",
@@ -2230,7 +2230,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
-          "title": "Each diagram type exports only its node types and the edges "
+          "title": "종류별로 다른 계획 그림 제공"
         },
         {
           "taskId": "JUPLAN-STUDIO-LIVE-REFRESH",
@@ -2244,7 +2244,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
-          "title": "Founder decision A-24: serve gets GET /events (SSE, 127.0.0."
+          "title": "바뀐 계획 화면 바로 반영"
         },
         {
           "taskId": "JUPLAN-DOMAIN-DOCS-FILTER",
@@ -2258,7 +2258,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x planning documents request; A-23",
-          "title": "docs/<domain>.md (8 files) contain only their own area inste"
+          "title": "분야별 계획 문서만 정리"
         }
       ],
       "qaRuntime": [
@@ -3697,7 +3697,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder decision A-25 (2026-09-24 13:3x): Skill 장착 프로젝트·역할별 켜기/끄기, Skill 만들기 저장; engine side done (night lane skills, runner agentContext)",
-          "title": "lib/relayBoard.mjs setLaneSkills(body,{exec,board,installed}"
+          "title": "Agent Relay 역할별 작업 능력 바꾸기"
         },
         {
           "taskId": "JCAPP-LANE-SKILLS-VIEW",
