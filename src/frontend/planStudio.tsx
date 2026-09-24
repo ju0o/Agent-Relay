@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { must } from './bridge.js';
 import { PROJECT_LABELS } from '../shared/projectLabels.js';
-import { isPlanStudioTaskDone, sortPlanStudioTasks } from '../shared/types.js';
+import { founderTaskTitle, isPlanStudioTaskDone, sortPlanStudioTasks } from '../shared/types.js';
 import { InlineConfirm } from './components.js';
 
 const FLOW = ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'] as const;
@@ -319,7 +319,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
       seen.add(id);
       derived.push({
         id,
-        title: id,
+        title: founderTaskTitle(lane.current ?? lane),
         scope: id,
         registered: true,
         stage: (lane.current?.stage ?? 0) as number | string,
@@ -513,7 +513,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                   return (
                     <li key={task.id} className={`plan-task${selected?.id === task.id ? ' selected' : ''}`}>
                       <button className="plan-task-head" onClick={() => setSelectedId(task.id)} title="상세 보기">
-                        <span className="plan-task-title">{task.title}</span>
+                        <span className="plan-task-title">{founderTaskTitle(task)}</span>
                         <span className="muted">{done ? doneLabel(task) : `${FLOW[current]} · ${current + 1}/7`}</span>
                       </button>
                       <div className="control-flow plan-steps" aria-label={`${task.title} progress`}>
@@ -527,6 +527,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                           );
                         })}
                       </div>
+                      <details><summary>원문 보기</summary><p className="muted mono">ID: {task.id}</p><p className="muted mono">범위: {task.scope || '—'}</p></details>
                       {editable && (
                         <div className="plan-task-edit">
                           <input
@@ -656,11 +657,12 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
             {!selected
               ? <p className="muted">task를 선택하세요.</p>
               : <>
-                <p className="control-card-value" style={{ fontSize: 14 }}>{selected.title}</p>
+                <p className="control-card-value" style={{ fontSize: 14 }}>{founderTaskTitle(selected)}</p>
+                <details><summary>원문 보기</summary><p className="muted mono">ID: {selected.id}</p><p className="muted mono">범위: {selected.scope || '—'}</p></details>
                 {isPlanStudioTaskDone(selected)
                   ? <p>{doneLabel(selected)}</p>
                   : <p>현재 단계: <strong>{FLOW[stageIndex(selected.stage)]}</strong> ({stageIndex(selected.stage) + 1}/7)</p>}
-                {selected.agents.trim() ? <p>Agents: <strong>{selected.agents}</strong></p> : null}
+                {selected.agents.trim() ? <p>담당 AI: <strong>{selected.agents}</strong></p> : null}
                 {selected.blocker.trim() ? <p>Blocker: <strong>{selected.blocker}</strong></p> : null}
                 {selected.expectedRisk.trim() ? <p>예상 리스크: <strong>{selected.expectedRisk}</strong></p> : null}
               </>}

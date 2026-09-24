@@ -3,7 +3,7 @@ import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import { InlineConfirm } from './components.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
-import { controlRoomTaskId, controlRoomTaskTitle, controlRoomHasDoneData, controlRoomTodayCount, controlRoomTodayDone, controlRoomVerifiedDoneTotal, controlRoomWorkingRows, laneAttention } from '../shared/types.js';
+import { controlRoomTaskId, controlRoomTaskTitle, founderTaskTitle, controlRoomHasDoneData, controlRoomTodayCount, controlRoomTodayDone, controlRoomVerifiedDoneTotal, controlRoomWorkingRows, laneAttention } from '../shared/types.js';
 import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
 
 export interface ControlRoomHoldExplain {
@@ -165,19 +165,19 @@ function isPaused(lane: ControlRoomLane): boolean {
 // 현재 작업은 한국어 title을 보여주고 ID는 원문 보기로만 둔다.
 // current가 비어 있는 레인은 쉬는 중 — 모든 단계 pending.
 
-const currentTitleOf = controlRoomTaskTitle;
+const currentTitleOf = founderTaskTitle;
 
 const currentIdOf = controlRoomTaskId;
 
 function hasWork(lane: ControlRoomLane): boolean {
   const current = lane.current ?? {};
-  return currentTitleOf(current) !== '' || currentIdOf(current) !== '';
+  return controlRoomTaskTitle(current) !== '' || currentIdOf(current) !== '';
 }
 
-interface TodayItem { lane: string; taskId: string; title: string }
+interface TodayItem { lane: string; taskId: string; title: string; scope?: string }
 
 function todayItemsOf(board: ControlRoomBoard | null): TodayItem[] {
-  return controlRoomTodayDone(board).map(item => ({ lane: item.project, taskId: item.taskId, title: item.title }));
+  return controlRoomTodayDone(board).map(item => ({ lane: item.project, taskId: item.taskId, title: item.title, scope: item.scope }));
 }
 
 function TodayCard({ board }: { board: ControlRoomBoard | null }): React.ReactElement {
@@ -196,7 +196,7 @@ function TodayCard({ board }: { board: ControlRoomBoard | null }): React.ReactEl
             {items.map((item, index) => (
               <li key={`${item.lane}-${item.taskId || item.title}-${index}`}>
                 <span><strong>{item.lane ? `${PROJECT_LABELS[item.lane]?.name ?? item.lane} · ` : ''}{item.title}</strong></span>
-                {item.taskId && <span className="muted mono"> · ID: {item.taskId}</span>}
+                <details><summary>원문 보기</summary><p className="muted mono">ID: {item.taskId || '—'}</p>{item.scope && <p className="muted mono">범위: {item.scope}</p>}</details>
               </li>
             ))}
           </ul></>}
@@ -519,12 +519,16 @@ function LaneView({ lane, onRefresh }: {
   onRefresh: () => Promise<void>;
 }): React.ReactElement {
   const current = lane.current ?? {};
-  const stageValue = current.stage ?? 0;
-  const working = hasWork(lane);
-  const taskTitle = currentTitleOf(current);
-  const taskId = currentIdOf(current);
-  const stage = working ? (FLOW[stageIndex(stageValue)] ?? '계획') : '쉬는 중';
   const holds = visibleHoldEntries(lane.holds);
+  const hasCurrent = hasWork(lane);
+  const holdCurrent = !hasCurrent ? holds[0] : undefined;
+  const rawHold = holdCurrent && lane.holds?.find(entry => entry && typeof entry === 'object' && controlRoomTaskId(entry) === holdCurrent.taskId);
+  const currentTask = hasCurrent ? current : rawHold;
+  const stageValue = hasCurrent ? current.stage ?? 0 : holdCurrent?.step ?? 0;
+  const working = hasCurrent || Boolean(holdCurrent);
+  const taskTitle = currentTitleOf(currentTask);
+  const taskId = hasCurrent ? currentIdOf(current) : holdCurrent?.taskId ?? '';
+  const stage = working ? (holdCurrent ? `멈춤 · ${holdStepLabel(stageValue) || FLOW[stageIndex(stageValue)] || '계획'}` : (FLOW[stageIndex(stageValue)] ?? '계획')) : '쉬는 중';
   const gate = lane.humanGate ?? lane.founderGate;
   const worker = lane.workerChain ?? current.worker;
   const qa = lane.qaChain ?? current.qa;
@@ -545,7 +549,7 @@ function LaneView({ lane, onRefresh }: {
   const holdTitle = (hold: { taskId?: string; reason?: string }): string => {
     const raw = lane.holds?.find(entry => entry && typeof entry === 'object' &&
       controlRoomTaskId(entry) === hold.taskId);
-    return controlRoomTaskTitle(raw) || hold.reason || hold.taskId || '보류된 작업';
+    return founderTaskTitle(raw ?? hold);
   };
   const holdTitles = holds.map(hold => holdTitle(hold));
   const showHoldCard = explainedHolds.length > 0 || holdText !== null;
@@ -566,7 +570,7 @@ function LaneView({ lane, onRefresh }: {
       </header>
       <div className="control-flow" aria-label="lane lifecycle">
         {FLOW.map((name, index) => {
-          const state = working ? flowState(stageValue, index) : 'pending';
+          const state = working ? (holdCurrent ? flowState(`BLOCK ${stageValue}`, index) : flowState(stageValue, index)) : 'pending';
           return <div className={`control-step ${state}`} key={name}><span className="control-step-dot">{state === 'done' ? '✓' : state === 'blocked' ? '!' : state === 'active' ? '●' : '○'}</span><span>{name}</span></div>;
         })}
       </div>
@@ -574,8 +578,8 @@ function LaneView({ lane, onRefresh }: {
         <article className="control-card">
           <h3>현재 작업</h3>
           <p className="control-card-value">{working ? (taskTitle || '지금 하는 일 없음') : '쉬는 중'}</p>
-          {working && taskId && <p className="muted mono">ID: {taskId}</p>}
           <p className="muted">단계: {stage}</p>
+          {working && <details><summary>원문 보기</summary><p className="muted mono">ID: {taskId || '—'}</p><pre className="mono">{rawText(currentTask)}</pre></details>}
           {paused && project && holds.length === 0 && <ResumeControl project={project} onRefresh={onRefresh} />}
         </article>
         <article className="control-card wide">
@@ -591,14 +595,13 @@ function LaneView({ lane, onRefresh }: {
         </article>
         {showHoldCard && <article className="control-card blocked"><h3>보류 / 차단</h3>{explainedHolds.map((hold, index) => (
           <div key={hold.taskId || hold.sentence || index} className="hold-explain">
-            <p><strong>{holdTitle(hold)}</strong></p>
-            {hold.taskId && <p className="muted mono">ID: {hold.taskId}</p>}
+            <p><strong>{founderTaskTitle(lane.holds?.find(entry => entry && typeof entry === 'object' && controlRoomTaskId(entry) === hold.taskId) ?? hold)}</strong></p>
             <p>{hold.sentence}</p>
             {hold.step && <p className="muted">단계: {holdStepLabel(hold.step)}</p>}
             <HoldOptionButtons hold={hold} gateId={gateIdForHold} taskTitle={holdTitle(hold)} onRefresh={onRefresh} />
           </div>
         ))}{holdText !== null && <p>{holdTitles.join(' · ')}</p>}{explainedHolds.length > 0
-          ? <details><summary>원문 보기</summary>{rawReasons.map((reason, index) => <pre key={index} className="mono">{reason}</pre>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>
+          ? <details><summary>원문 보기</summary>{holds.map((hold, index) => <><p key={`id-${index}`} className="muted mono">ID: {hold.taskId || '—'}</p><pre key={`reason-${index}`} className="mono">{rawReasons[index] || hold.reason}</pre></>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>
           : qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
         {gate && <article className="control-card human"><h3>사람 확인</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
       </div>

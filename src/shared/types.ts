@@ -352,6 +352,7 @@ export interface ControlRoomTodayItem {
   project: string;
   taskId: string;
   title: string;
+  scope?: string;
   finishedAt?: string;
 }
 
@@ -385,6 +386,18 @@ export function controlRoomTaskTitle(task: unknown): string {
   return controlRoomValue(record, CONTROL_ROOM_TASK_TITLE_KEYS) || controlRoomTaskId(task);
 }
 
+/** Founder-facing title: raw ids/scope text are never presented as task names. */
+export function founderTaskTitle(task: unknown): string {
+  const title = controlRoomTaskTitle(task);
+  return /[\uac00-\ud7a3]/.test(title) ? title : '이름 준비 중인 작업';
+}
+
+function controlRoomTaskScope(task: unknown): string {
+  return task && typeof task === 'object'
+    ? controlRoomValue(task as Record<string, unknown>, ['scope', 'description'])
+    : '';
+}
+
 function controlRoomFinishedAt(task: unknown): string {
   return task && typeof task === 'object'
     ? controlRoomValue(task as Record<string, unknown>, CONTROL_ROOM_FINISHED_AT_KEYS)
@@ -413,11 +426,12 @@ export function controlRoomTodayDone(board: unknown, now: Date = new Date()): Co
   const lanes = Array.isArray(root.lanes) ? root.lanes : [];
   const add = (task: unknown, project: string, dated: boolean): void => {
     const id = controlRoomTaskId(task);
-    const title = controlRoomTaskTitle(task);
+    const title = founderTaskTitle(task);
     if (!id && !title) return;
     const finishedAt = controlRoomFinishedAt(task);
     if (dated && (!finishedAt || controlRoomLocalDate(finishedAt, '') !== today)) return;
-    output.push({ project, taskId: id, title, ...(finishedAt ? { finishedAt } : {}) });
+    const scope = controlRoomTaskScope(task);
+    output.push({ project, taskId: id, title, ...(scope ? { scope } : {}), ...(finishedAt ? { finishedAt } : {}) });
   };
   for (const laneValue of lanes) {
     if (!laneValue || typeof laneValue !== 'object') continue;
@@ -532,14 +546,27 @@ export function controlRoomWorkingRows(lanes: unknown): string[] {
     if (!laneValue || typeof laneValue !== 'object') return [];
     const lane = laneValue as Record<string, unknown>;
     const current = lane.current && typeof lane.current === 'object' ? lane.current as Record<string, unknown> : {};
-    const title = controlRoomTaskTitle(current);
-    if (!title) return [];
+    const hasCurrent = Boolean(controlRoomTaskId(current) || controlRoomTaskTitle(current));
+    const hold = !hasCurrent && Array.isArray(lane.holds) ? lane.holds.find(entry => {
+      if (!entry || typeof entry !== 'object') return false;
+      const record = entry as Record<string, unknown>;
+      const explain = record.explain ?? record.explanation;
+      const choice = record.choice ?? (explain && typeof explain === 'object'
+        ? (explain as Record<string, unknown>).choice
+        : undefined);
+      // choice가 'skip'인 보류는 보여주지 않으므로 hold-as-current에서도 제외한다.
+      return typeof choice !== 'string' || choice.trim().toLowerCase() !== 'skip';
+    }) : undefined;
+    const task = hasCurrent ? current : hold;
+    const title = founderTaskTitle(task);
+    if (!hasCurrent && !hold) return [];
     const project = controlRoomString(lane.project ?? lane.id) || '알 수 없는 레인';
-    const stage = typeof current.stage === 'number'
-      ? ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'][Math.max(0, Math.min(6, Math.floor(current.stage)))]
-      : controlRoomString(current.stage) || '계획';
+    const stageValue = hasCurrent ? current.stage : (hold as Record<string, unknown> | undefined)?.step;
+    const stage = typeof stageValue === 'number'
+      ? ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'][Math.max(0, Math.min(6, Math.floor(stageValue)))]
+      : controlRoomString(stageValue) || '계획';
     const worker = controlRoomString(Array.isArray(lane.workerChain) ? lane.workerChain[0] : lane.workerChain ?? current.worker);
-    return [`${project} · ${stage} · ${worker || 'AI 확인 중'}`];
+    return [`${project} · ${title} · ${stage} · ${worker || 'AI 확인 중'}`];
   });
 }
 
