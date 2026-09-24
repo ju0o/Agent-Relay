@@ -47,6 +47,29 @@ export const NIGHT_RUNTIMES = [
 ] as const;
 export type NightRuntime = (typeof NIGHT_RUNTIMES)[number];
 
+/** 보류 선택지 라벨이 '직접 확인'(자동 재개 없음)인지 판별. 구 라벨 'Founder에게 확인' 포함. Pure. */
+export function isHoldSelfReviewOption(optionLabel: unknown): boolean {
+  if (typeof optionLabel !== 'string') return false;
+  const text = optionLabel.trim();
+  if (!text) return false;
+  if (text === '내가 직접 볼게요' || text === 'Founder에게 확인') return true;
+  return text.includes('직접');
+}
+
+/**
+ * 보류 선택지 버튼이 눌렸을 때 호출할 백엔드 동작을 정한다. Pure — 단위 테스트 대상.
+ * - 'none': '내가 직접 볼게요' — 자동 호출 없이 원문/증거를 직접 확인한다.
+ * - 'gate': gate가 열려 있으면 `gates:answer`(optionIndex 전달).
+ * - 'resume': gate가 없으면 `controlRoom:resume`(project 전달).
+ */
+export function holdOptionAction(
+  optionLabel: unknown,
+  hasGate: boolean,
+): 'gate' | 'resume' | 'none' {
+  if (isHoldSelfReviewOption(optionLabel)) return 'none';
+  return hasGate ? 'gate' : 'resume';
+}
+
 export function isValidProjectId(project: unknown): project is string {
   return typeof project === 'string' && PROJECT_ID_PATTERN.test(project);
 }

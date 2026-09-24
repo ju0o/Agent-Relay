@@ -1096,6 +1096,23 @@ h1 { font-size: 22px; }
 .gate-fieldset legend { font-weight: 700; padding: 0 6px; }
 .gate-id { font-size: 11px; }
 .save-rule { display: flex; align-items: center; gap: 8px; padding: 8px 0; cursor: pointer; font-size: 12px; }
+/* ── Hold option buttons (R1: 보류 선택지 버튼, 추천 강조 + 인라인 확인) ── */
+.hold-explain { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.hold-options { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0; }
+.hold-option-row { display: flex; flex-direction: column; gap: 6px; }
+.hold-option {
+  text-align: left;
+  background: var(--bg3); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; cursor: pointer; font-size: 13px;
+  word-break: keep-all;
+}
+.hold-option:hover { border-color: var(--accent); }
+.hold-option:disabled { opacity: 0.5; cursor: default; }
+.hold-option.recommended { border-color: var(--accent); border-width: 2px; font-weight: 700; background: rgba(78,161,255,0.12); }
+.hold-confirm { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+.hold-confirm p { margin: 0; font-size: 12px; }
+.hold-confirm-actions { display: flex; gap: 6px; }
 /* ── CR-08 model quota board + approval learning ───────────── */
 .model-usage { margin-bottom: 20px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 9px; }
 .model-usage h3 { margin: 0 0 10px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }

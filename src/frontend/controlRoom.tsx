@@ -3,7 +3,7 @@ import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
 import { laneAttention } from '../shared/types.js';
-import { PROJECT_LABELS, holdCardMessage, visibleHoldEntries } from '../shared/projectLabels.js';
+import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
 
 export interface ControlRoomHoldExplain {
   sentence?: unknown;
@@ -373,6 +373,78 @@ function GateForm({ gate, onRefresh }: {
   );
 }
 
+function HoldOptionButtons({ hold, project, gateId, onRefresh }: {
+  hold: { options: string[]; recommendedIndex: number; taskId?: string };
+  project: string;
+  gateId: string | null;
+  onRefresh: () => Promise<void>;
+}): React.ReactElement {
+  const [pending, setPending] = useState<number | null>(null);
+  const [status, setStatus] = useState<ActionStatus>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function confirm(optionIndex: number, optionLabel: string): Promise<void> {
+    if (busy) return;
+    if (isSelfReviewOption(optionLabel)) {
+      setPending(null);
+      setStatus({ state: 'done', text: '직접 확인할게요 — 아래 원문 보기에서 증거를 확인하세요.' });
+      return;
+    }
+    setBusy(true);
+    setStatus({ state: 'pending', text: `실행 중… (${optionLabel})` });
+    try {
+      if (gateId) {
+        await must({ op: 'gates:answer', gateId, optionIndex });
+      } else {
+        await must({ op: 'controlRoom:resume', project });
+      }
+      setStatus({ state: 'done', text: `실행됨 (${optionLabel})` });
+      setPending(null);
+      await onRefresh();
+    } catch (err) {
+      setStatus({ state: 'error', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="hold-options" role="group" aria-label="보류 선택지">
+      {hold.options.map((option, optionIndex) => {
+        const recommended = optionIndex === hold.recommendedIndex;
+        const isPending = pending === optionIndex;
+        return (
+          <div key={`${hold.taskId ?? 'hold'}-${optionIndex}`} className="hold-option-row">
+            <button
+              type="button"
+              className={`hold-option${recommended ? ' recommended' : ''}`}
+              aria-pressed={isPending}
+              disabled={busy}
+              onClick={() => setPending(isPending ? null : optionIndex)}
+            >
+              {option}{recommended ? ' (추천)' : ''}
+            </button>
+            {isPending && (
+              <div className="hold-confirm">
+                <p>‘{option}’ 하시겠어요?</p>
+                <div className="hold-confirm-actions">
+                  <button className="btn primary" type="button" disabled={busy} onClick={() => void confirm(optionIndex, option)}>
+                    {busy ? '실행 중…' : '확인'}
+                  </button>
+                  <button className="btn subtle" type="button" disabled={busy} onClick={() => setPending(null)}>
+                    취소
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {status && <p className={`control-status ${status.state}`} role="status">{statusText(status)}</p>}
+    </div>
+  );
+}
+
 function LaneView({ lane, onRefresh }: {
   lane: ControlRoomLane;
   onRefresh: () => Promise<void>;
@@ -399,6 +471,10 @@ function LaneView({ lane, onRefresh }: {
     : holdSummary(lane, holds.map(hold => hold.reason || hold.taskId).join(', '));
   const rawReasons = holds.map(hold => hold.reason).filter(text => text.trim().length > 0);
   const showHoldCard = explainedHolds.length > 0 || holdText !== null;
+  const gateRecord = (lane.humanGate ?? lane.founderGate) as Record<string, unknown> | undefined;
+  const gateIdForHold = typeof gateRecord?.gateId === 'string' && gateRecord.gateId
+    ? gateRecord.gateId
+    : typeof gateRecord?.id === 'string' && gateRecord.id ? gateRecord.id : null;
   return (
     <section className="control-lane-view">
       <header className="control-card">
@@ -436,10 +512,8 @@ function LaneView({ lane, onRefresh }: {
         {showHoldCard && <article className="control-card blocked"><h3>보류 / 차단</h3>{explainedHolds.map((hold, index) => (
           <div key={hold.taskId || hold.sentence || index} className="hold-explain">
             <p>{hold.sentence}</p>
-            {hold.step && <p className="muted">단계: {hold.step}</p>}
-            <ul className="hold-options">{hold.options.map((option, optionIndex) => (
-              <li key={`${index}-${optionIndex}`}>{option}{optionIndex === hold.recommendedIndex ? ' (추천)' : ''}</li>
-            ))}</ul>
+            {hold.step && <p className="muted">단계: {holdStepLabel(hold.step)}</p>}
+            <HoldOptionButtons hold={hold} project={project} gateId={gateIdForHold} onRefresh={onRefresh} />
           </div>
         ))}{holdText !== null && <p>{holdText}</p>}{explainedHolds.length > 0
           ? <details><summary>원문 보기</summary>{rawReasons.map((reason, index) => <pre key={index} className="mono">{reason}</pre>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>

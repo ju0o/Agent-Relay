@@ -53,8 +53,26 @@ export function holdCardMessage(blocker: unknown, reason: unknown): string | nul
 export const HOLD_OPTION_LABELS: readonly string[] = [
   '다시 시도',
   '다음 작업으로 진행',
-  'Founder에게 확인',
+  '내가 직접 볼게요',
 ];
+
+/** '내가 직접 볼게요' 선택지(직접 확인 — 자동 재개 없음)인지 판별. 구 라벨 'Founder에게 확인'도 포함. */
+export function isSelfReviewOption(label: unknown): boolean {
+  const text = cleanText(label);
+  if (!text) return false;
+  if (text === '내가 직접 볼게요') return true;
+  if (text === 'Founder에게 확인') return true;
+  return /직접/.test(text);
+}
+
+/** 보류 단계 표기 — 검수 단계 용어로 통일. QA/검증/확인 표기는 모두 '검수'로 보여준다. */
+export function holdStepLabel(step: unknown): string {
+  const text = cleanText(step);
+  if (!text) return '';
+  const upper = text.toUpperCase();
+  if (text.includes('검수') || upper.includes('QA') || text.includes('검증') || text.includes('확인')) return '검수';
+  return text;
+}
 
 /** Control Room 보류 항목 1개의 정규화 결과. */
 export interface NormalizedHold {
@@ -110,7 +128,7 @@ function recommendedIndexOf(choice: unknown, options: string[], hasSentence: boo
   if (hit >= 0) return hit;
   if (/(retry|reattempt|again|다시)/.test(normalized)) return 0;
   if (/(next|continue|proceed|다음)/.test(normalized)) return 1;
-  if (/(founder|ask|confirm|확인)/.test(normalized)) return 2;
+  if (/(founder|ask|confirm|확인|직접|볼게요)/.test(normalized)) return 2;
   return hasSentence ? 0 : -1;
 }
 
