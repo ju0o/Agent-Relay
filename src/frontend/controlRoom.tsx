@@ -436,10 +436,10 @@ function GateForm({ gate, onRefresh }: {
   );
 }
 
-function HoldOptionButtons({ hold, project, gateId, onRefresh }: {
-  hold: { options: string[]; recommendedIndex: number; taskId?: string };
-  project: string;
+function HoldOptionButtons({ hold, gateId, taskTitle, onRefresh }: {
+  hold: { options: string[]; optionIds: string[]; recommendedIndex: number; taskId?: string };
   gateId: string | null;
+  taskTitle: string;
   onRefresh: () => Promise<void>;
 }): React.ReactElement {
   const [pending, setPending] = useState<number | null>(null);
@@ -448,6 +448,7 @@ function HoldOptionButtons({ hold, project, gateId, onRefresh }: {
 
   async function confirm(optionIndex: number, optionLabel: string): Promise<void> {
     if (busy) return;
+    const optionId = hold.optionIds[optionIndex];
     if (isSelfReviewOption(optionLabel)) {
       setPending(null);
       setStatus({ state: 'done', text: '직접 확인할게요 — 아래 원문 보기에서 증거를 확인하세요.' });
@@ -459,7 +460,8 @@ function HoldOptionButtons({ hold, project, gateId, onRefresh }: {
       if (gateId) {
         await must({ op: 'gates:answer', gateId, optionIndex });
       } else {
-        await must({ op: 'controlRoom:resume', project });
+        if (!hold.taskId || !optionId) throw new Error('보류 작업 정보가 없어 실행할 수 없습니다.');
+        await must({ op: 'controlRoom:holdChoose', taskId: hold.taskId, option: optionId as 'retry' | 'narrow' | 'skip' });
       }
       setStatus({ state: 'done', text: `실행됨 (${optionLabel})` });
       setPending(null);
@@ -489,7 +491,7 @@ function HoldOptionButtons({ hold, project, gateId, onRefresh }: {
             </button>
             {isPending && (
               <div className="hold-confirm">
-                <p>‘{option}’ 하시겠어요?</p>
+                <p>‘{taskTitle}’을 ‘{option}’로 진행할게요</p>
                 <div className="hold-confirm-actions">
                   <button className="btn primary" type="button" disabled={busy} onClick={() => void confirm(optionIndex, option)}>
                     {busy ? '실행 중…' : '확인'}
@@ -570,7 +572,7 @@ function LaneView({ lane, onRefresh }: {
           <p className="control-card-value">{working ? (taskTitle || '지금 하는 일 없음') : '쉬는 중'}</p>
           {working && taskId && <p className="muted mono">ID: {taskId}</p>}
           <p className="muted">단계: {stage}</p>
-          {paused && project && <ResumeControl project={project} onRefresh={onRefresh} />}
+          {paused && project && holds.length === 0 && <ResumeControl project={project} onRefresh={onRefresh} />}
         </article>
         <article className="control-card wide">
           <h3>담당 AI</h3>
@@ -589,7 +591,7 @@ function LaneView({ lane, onRefresh }: {
             {hold.taskId && <p className="muted mono">ID: {hold.taskId}</p>}
             <p>{hold.sentence}</p>
             {hold.step && <p className="muted">단계: {holdStepLabel(hold.step)}</p>}
-            <HoldOptionButtons hold={hold} project={project} gateId={gateIdForHold} onRefresh={onRefresh} />
+            <HoldOptionButtons hold={hold} gateId={gateIdForHold} taskTitle={holdTitle(hold)} onRefresh={onRefresh} />
           </div>
         ))}{holdText !== null && <p>{holdTitles.join(' · ')}</p>}{explainedHolds.length > 0
           ? <details><summary>원문 보기</summary>{rawReasons.map((reason, index) => <pre key={index} className="mono">{reason}</pre>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>

@@ -18,6 +18,7 @@ export type ControlRoomOperation =
   | 'gates:answer'
   | 'controlRoom:laneSet'
   | 'controlRoom:resume'
+  | 'controlRoom:holdChoose'
   | 'controlRoom:approvalAdd';
 export type PlanStudioAction = 'get' | 'save' | 'chat' | 'approve';
 export type GateAction = 'list' | 'answer';
@@ -30,6 +31,8 @@ export type ControlRoomExec = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export const PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{1,40}$/;
+export const HOLD_OPTIONS = ['retry', 'narrow', 'skip'] as const;
+export type HoldOption = (typeof HOLD_OPTIONS)[number];
 export const GATE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const APPROVAL_CATEGORY_PATTERN = /^[a-z-]{2,30}$/;
 export const MAX_APPROVAL_SUMMARY_LENGTH = 200;
@@ -152,6 +155,12 @@ function assertGateId(operation: ControlRoomOperation, gateId: unknown): asserts
 function assertOptionIndex(operation: ControlRoomOperation, optionIndex: unknown): asserts optionIndex is number {
   if (!isValidOptionIndex(optionIndex)) {
     throw invalidInput(operation, '선택 번호가 올바르지 않습니다.');
+  }
+}
+
+function assertHoldOption(operation: ControlRoomOperation, option: unknown): asserts option is HoldOption {
+  if (typeof option !== 'string' || !(HOLD_OPTIONS as readonly string[]).includes(option)) {
+    throw invalidInput(operation, '보류 선택지가 올바르지 않습니다.');
   }
 }
 
@@ -332,6 +341,17 @@ export async function runControlRoomResume(
     [...SSH_BASE_ARGS, 'roadmap', 'resume', shQuote(project), '--json'],
     execFileImpl,
   );
+}
+
+export async function runControlRoomHoldChoose(
+  taskId: string,
+  option: string,
+  execFileImpl: ControlRoomExec = execFile,
+): Promise<unknown> {
+  const operation: ControlRoomOperation = 'controlRoom:holdChoose';
+  assertProjectId(operation, taskId);
+  assertHoldOption(operation, option);
+  return runSshJson(operation, ['asus', 'night', 'hold', 'choose', shQuote(taskId), option, '--json'], execFileImpl);
 }
 
 export async function runControlRoomApprovalAdd(

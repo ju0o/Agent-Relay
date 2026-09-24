@@ -85,6 +85,8 @@ export interface NormalizedHold {
   choice: string;
   /** 보여줄 선택지 라벨 (holds 항목의 options가 있으면 그것을, 없으면 HOLD_OPTION_LABELS). */
   options: string[];
+  /** Backend option ids matching options by index. */
+  optionIds: string[];
   /** 추천 선택지 index — sentence가 있을 때만 사용, 없으면 -1. */
   recommendedIndex: number;
 }
@@ -103,29 +105,33 @@ function explainSentenceOf(explain: unknown): string {
   return '';
 }
 
-function optionsOf(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [...HOLD_OPTION_LABELS];
-  const labels = raw
+function optionsOf(raw: unknown): { labels: string[]; ids: string[] } {
+  if (!Array.isArray(raw)) return { labels: [...HOLD_OPTION_LABELS], ids: ['retry', 'narrow', 'skip'] };
+  const parsed = raw
     .map(option => {
-      if (typeof option === 'string') return option.trim();
+      if (typeof option === 'string') return { id: '', label: option.trim() };
       if (option && typeof option === 'object') {
         const record = option as Record<string, unknown>;
-        return cleanText(record.label ?? record.title ?? record.name);
+        return { id: cleanText(record.id), label: cleanText(record.label ?? record.title ?? record.name) };
       }
-      return '';
+      return { id: '', label: '' };
     })
-    .filter(label => label.length > 0);
-  return labels.length > 0 ? labels : [...HOLD_OPTION_LABELS];
+    .filter(option => option.label.length > 0);
+  return parsed.length > 0
+    ? { labels: parsed.map(option => option.label), ids: parsed.map(option => option.id) }
+    : { labels: [...HOLD_OPTION_LABELS], ids: ['retry', 'narrow', 'skip'] };
 }
 
 /** choice 원문을 options index로 푼다. 못 찾으면 sentence가 있을 때 0, 없으면 -1. */
-function recommendedIndexOf(choice: unknown, options: string[], hasSentence: boolean): number {
+function recommendedIndexOf(choice: unknown, options: string[], optionIds: string[], hasSentence: boolean): number {
   const normalized = cleanText(choice).toLowerCase();
   if (!normalized) return hasSentence ? 0 : -1;
   const byNumber = Number(normalized);
   if (Number.isInteger(byNumber) && byNumber >= 0 && byNumber < options.length) return byNumber;
   const hit = options.findIndex(label => label === cleanText(choice) || label.toLowerCase() === normalized);
   if (hit >= 0) return hit;
+  const idHit = optionIds.findIndex(id => id === cleanText(choice) || id.toLowerCase() === normalized);
+  if (idHit >= 0) return idHit;
   if (/(retry|reattempt|again|다시)/.test(normalized)) return 0;
   if (/(next|continue|proceed|다음)/.test(normalized)) return 1;
   if (/(founder|ask|confirm|확인|직접|볼게요)/.test(normalized)) return 2;
@@ -145,13 +151,13 @@ export function normalizeHoldEntry(entry: unknown): NormalizedHold | null {
   if (typeof entry === 'string') {
     const reason = entry.trim();
     if (!reason || isEmptyReasons(reason)) return null;
-    return { taskId: '', reason, step: '', sentence: '', choice: '', options: [...HOLD_OPTION_LABELS], recommendedIndex: -1 };
+    return { taskId: '', reason, step: '', sentence: '', choice: '', options: [...HOLD_OPTION_LABELS], optionIds: ['retry', 'narrow', 'skip'], recommendedIndex: -1 };
   }
   if (!entry || typeof entry !== 'object') return null;
   const record = entry as Record<string, unknown>;
   const explain = record.explain ?? record.explanation;
   const choiceRaw = record.choice ?? (explain && typeof explain === 'object'
-    ? (explain as Record<string, unknown>).choice ?? (explain as Record<string, unknown>).recommended
+    ? (explain as Record<string, unknown>).choice
     : undefined);
   const choice = cleanText(choiceRaw);
   if (isHoldSkipped(choice)) return null;
@@ -161,7 +167,15 @@ export function normalizeHoldEntry(entry: unknown): NormalizedHold | null {
   const stepValue = record.step ?? record.stage;
   const step = typeof stepValue === 'number' && Number.isFinite(stepValue) ? String(stepValue) : cleanText(stepValue);
   if (!sentence && !reason && !taskId && !step) return null;
-  const options = optionsOf(record.options ?? record.choices);
+  const optionSource = explain && typeof explain === 'object'
+    ? (explain as Record<string, unknown>).options ?? record.options ?? record.choices
+    : record.options ?? record.choices;
+  const parsedOptions = optionsOf(optionSource);
+  const options = parsedOptions.labels;
+  const optionIds = parsedOptions.ids.map((id, index) => id || ['retry', 'narrow', 'skip'][index] || '');
+  const recommended = explain && typeof explain === 'object'
+    ? (explain as Record<string, unknown>).recommended ?? record.recommended ?? (Array.isArray(record.options) ? choiceRaw : record.options ?? choiceRaw) ?? HOLD_OPTION_LABELS[0]
+    : record.recommended ?? (Array.isArray(record.options) ? choiceRaw : record.options ?? choiceRaw) ?? HOLD_OPTION_LABELS[0];
   return {
     taskId,
     reason,
@@ -169,7 +183,8 @@ export function normalizeHoldEntry(entry: unknown): NormalizedHold | null {
     sentence,
     choice,
     options,
-    recommendedIndex: recommendedIndexOf(choiceRaw, options, sentence.length > 0),
+    optionIds,
+    recommendedIndex: recommendedIndexOf(recommended, options, optionIds, sentence.length > 0),
   };
 }
 

@@ -143,6 +143,7 @@ export type RelayRequest =
   | { op: 'gates:answer'; gateId: string; optionIndex: number }
   | { op: 'controlRoom:laneSet'; project: string; role: string; runtimes: string[] }
   | { op: 'controlRoom:resume'; project: string }
+  | { op: 'controlRoom:holdChoose'; taskId: string; option: 'retry' | 'narrow' | 'skip' }
   | { op: 'controlRoom:approvalAdd'; category: string; summary: string }
   | { op: 'app:startView' };
 
