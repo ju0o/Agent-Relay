@@ -225,7 +225,7 @@ function ChainEditor({ project, role, initial, onRefresh }: {
 
   return (
     <form className="chain-editor" onSubmit={e => void submit(e)} aria-label={`${role} agent 바꾸기`}>
-      <h4>{role === 'worker' ? 'Worker Agent 바꾸기' : 'QA Agent 바꾸기'}</h4>
+      <h4>{role === 'worker' ? '만드는 AI 바꾸기' : '검수하는 AI 바꾸기'}</h4>
       <p className="muted">순서대로 선택 — 첫 번째가 우선, 나머지는 예비 (최대 4개)</p>
       <div className="chain-picks" role="group" aria-label={`${role} runtime 순서 선택`}>
         {RUNTIMES.map(runtime => {
@@ -379,7 +379,6 @@ function LaneView({ lane, onRefresh }: {
     <section className="control-lane-view">
       <header className="control-card">
         <h2>{presentation.name}</h2>
-        <p>{presentation.goal}</p>
         <details>
           <summary>원문 보기</summary>
           <p className="muted mono">{presentation.id || '—'}</p>
@@ -400,7 +399,7 @@ function LaneView({ lane, onRefresh }: {
           {paused && project && <ResumeControl project={project} onRefresh={onRefresh} />}
         </article>
         <article className="control-card wide">
-          <h3>WORKER → QA</h3>
+          <h3>담당 AI</h3>
           {showWorker && <p>Worker: <strong>{workerText}</strong></p>}
           {showQa && <p>QA: <strong>{qaText}</strong></p>}
           {project && (
@@ -475,7 +474,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
   const activeKey = activeLane ? laneSelectKey(activeLane, sortedLanes.indexOf(activeLane)) : null;
   return (
     <main className="control-room">
-      <div className="control-room-head"><div><h1>Control Room</h1>{decisionCount > 0 && <p className="control-decision-count">결정 대기 {decisionCount}건</p>}<p className="muted">5초마다 자동으로 새로 고쳐요.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      <div className="control-room-head"><div><h1>관제실</h1>{decisionCount > 0 && <p className="control-decision-count">결정 대기 {decisionCount}건</p>}<p className="muted">5초마다 자동으로 새로 고쳐요.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       <ModelUsagePanel models={board?.models} />
       {board === null && !error ? <div className="control-empty">작업 PC에서 불러오는 중…</div>
       : error && lanes.length === 0 ? <div className="control-empty">{error}</div>

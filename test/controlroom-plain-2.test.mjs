@@ -20,6 +20,14 @@ test("controlRoom has no quota/board jargon", async () => {
   assert.doesNotMatch(source, /quota/);
   assert.doesNotMatch(source, /board를 읽습니다/);
   assert.match(source, /5초마다 자동으로 새로 고쳐요\./);
+  assert.doesNotMatch(source, /WORKER → QA/);
+  assert.doesNotMatch(source, /<h1>Control Room<\/h1>/);
+  assert.doesNotMatch(source, /Worker Agent 바꾸기/);
+  assert.doesNotMatch(source, /QA Agent 바꾸기/);
+  assert.match(source, /관제실/);
+  assert.match(source, /담당 AI/);
+  assert.match(source, /만드는 AI 바꾸기/);
+  assert.match(source, /검수하는 AI 바꾸기/);
 });
 
 test("hold card render helper returns null for an empty hold", () => {
