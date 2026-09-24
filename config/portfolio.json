@@ -3940,6 +3940,18 @@
           ],
           "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:71-73 \"P0 ... ACTIVE — PLANNING ONLY\"; docs/operations/PM_STATUS_BOARD.md:101 \"P0 PASS does not advance M2\"",
           "title": "아침에 확인할 핵심 결정 사항 요약"
+        },
+        {
+          "taskId": "JUCEIPTPLAN-STATUS-TRUTH-REFRESH",
+          "scope": "docs/operations/PM_STATUS_BOARD.md (and the 9/24 roadmap/morning summary if they repeat it) still say 'M2 검토 중, M3 잠김' although the Founder decided M2 GO (A-14, 2026-09-23) and 7 M3 tasks are integrated. Update the board to the real state: M2 GO with the two fixes (new-dependency impact, no READY when cost unknown) done, M3 daily value summary integrated, one consistent '받아도 됨' count taken from the receipts, and next steps. Docs only.",
+          "files": [
+            "docs/operations/PM_STATUS_BOARD.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
+          "title": "docs/operations/PM_STATUS_BOARD.md (and the 9/24 roadmap/mor"
         }
       ]
     }
