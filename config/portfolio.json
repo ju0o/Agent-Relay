@@ -3059,6 +3059,49 @@
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
           "title": "더보기 is for the Founder's quick checks, so legacy developer s"
+        },
+        {
+          "taskId": "JCAPP-TESTER-SUMMARY-KOREAN-RESULT",
+          "scope": "Tester summary says '오늘 시험 20번 · 20번 확인 필요' although every run passed, because testerNeedsCheck in operator/public/app.js only recognises the English word PASS while /api/tester runs carry Korean results like '결과: 통과 · 걸린 시간 7초'. Rewrite testerNeedsCheck(run) as a pure classifier: pass when result matches /통과|\\bPASS\\b/i and not /실패|확인 필요|FAIL|CHECK/i; skipped (PC 사용 중, 건너뜀, SKIP*) counts as '미뤄짐' not failure; everything else needs check. testerSummary returns '오늘 시험 N번 · 모두 통과', '오늘 시험 N번 · 모두 통과 · M번은 PC 사용 중이라 미뤄짐', or '오늘 시험 N번 · M번 확인 필요'. The list sort (failures first) uses the same classifier. Extend test/tester-summary.test.mjs with the real Korean results '결과: 통과 · 걸린 시간 7초', '결과: 통과 — ASUS 가상 화면에서…', '결과: 실패 …', 'SKIPPED_USER_ACTIVE' and assert the summaries.",
+          "files": [
+            "operator/public/app.js",
+            "test/tester-summary.test.mjs"
+          ],
+          "tests": [
+            "node --test test/tester-summary.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Tester summary false alarm, 더보기 shows previous tab, duplicated working line",
+          "title": "Tester summary says '오늘 시험 20번 · 20번 확인 필요' although every r"
+        },
+        {
+          "taskId": "JCAPP-MORE-PAGE",
+          "scope": "Tapping 더보기 leaves the previous tab's content (e.g. 대화) in the main area, which reads as a wrong screen. In operator/public/app.js render a real 더보기 page for tab 'more': title '더보기' with lede '자주 안 쓰는 화면과 설정이에요.', then one card per secondary item (기억, 관리자) with a one-line Korean purpose and an 열기 button (data-tab), the '고급 (개발용)' group as a collapsed card listing its items, and the 밝게/어둡게 theme toggle as a card. The rail submenu can stay. Add test/more-page.test.mjs extracting the more-page render helper and asserting it contains '더보기', '기억', '관리자', '고급 (개발용)' and no '대화 기록'.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/more-page.test.mjs"
+          ],
+          "tests": [
+            "node --test test/more-page.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Tester summary false alarm, 더보기 shows previous tab, duplicated working line",
+          "title": "Tapping 더보기 leaves the previous tab's content (e.g. 대화) in t"
+        },
+        {
+          "taskId": "JCAPP-HOME-WORKING-LINE",
+          "scope": "홈 '지금 일하는 중' rows read 'actl · QA 단계 · QA' (step and worker duplicated, English). In operator/public/app.js change the row to '<project> · <Korean step>' + (worker runtime known ? ' · ' + runtime name : '') where steps map PM→'계획 중', RUNNING/Worker→'만드는 중', QA→'검수 중', TEST/GATE→'시험 중', INTEGRATION→'반영 중'; never repeat the step word, never print the raw word QA/Worker alone. Also merge the two top boxes into one: when there is nothing to do and nothing stopped, show one line '지금 하실 일이 없어요. 다 괜찮고, 알아서 진행 중이에요.'; otherwise keep the decision sentence and the health line. Update test/home-hub.test.mjs (or add test/home-working-line.test.mjs) asserting 'actl · 검수 중' and no 'QA 단계 · QA'.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-working-line.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-working-line.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Tester summary false alarm, 더보기 shows previous tab, duplicated working line",
+          "title": "홈 '지금 일하는 중' rows read 'actl · QA 단계 · QA' (step and worker "
         }
       ]
     },
