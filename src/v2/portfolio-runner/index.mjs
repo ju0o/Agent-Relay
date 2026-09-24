@@ -314,6 +314,8 @@ export class PortfolioRunner {
     state.activeBuilders = []; state.activeQa = [];
     state.tasks = state.tasks.map((task) => {
       if (task.state === "HOLD" && String(task.error || "").startsWith("RUNTIME_LAUNCH:")) return { ...task, state: "QUEUED", error: null, reconcile: "REQUEUED_AFTER_RUNTIME_RECOVERY" };
+      // an abbreviated builder sha used to fail promotion after QA ACCEPT; promote() now resolves it, so rerun those once
+      if (task.state === "HOLD" && String(task.error || "").startsWith("invalid promotion commit:") && !task.promotionRequeued) return { ...task, state: "QUEUED", error: null, attempts: 0, promotionRequeued: true, reconcile: "REQUEUED_AFTER_PROMOTION_FIX" };
       if (task.state === "HOLD" && (TRANSIENT_ERROR.test(String(task.error || "")) || QUOTA_ERROR.test(String(task.error || ""))) && (task.outageRequeues || 0) < 2) return { ...task, state: "QUEUED", error: null, attempts: 0, outageRequeues: (task.outageRequeues || 0) + 1, reconcile: "REQUEUED_AFTER_PROVIDER_OUTAGE" };
       if (task.state === "RUNNING" || task.state === "QA") {
         const pid = task.state === "QA" ? task.qaEvidence?.pid : task.builderEvidence?.pid;
