@@ -8,7 +8,8 @@
   "scripts": {
     "build:client": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
-    "dev": "vite build && tsc -p tsconfig.server.json && electron dist/server/backend/main.js",
+    "dev": "node scripts/dev.mjs",
+    "dev:once": "vite build && tsc -p tsconfig.server.json && electron dist/server/backend/main.js",
     "start": "electron dist/server/backend/main.js",
     "build": "tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json",
@@ -20,6 +21,7 @@
     "test:v2:founder": "node test/v2/founder-bridge.test.mjs && node test/v2/founder-ui.test.mjs",
     "test:v2": "npm run test:v2:runner && npm run test:v2:night && npm run test:v2:founder",
     "test": "npm run test:fs && npm run test:vnext && npm run test:v03 && npm run test:v2",
+    "pretest": "npm run build:server",
     "build:win": "vite build && tsc -p tsconfig.server.json && electron-builder --config electron.builder.yml"
   },
   "main": "dist/server/backend/main.js",
