@@ -398,7 +398,7 @@ function ChainEditor({ project, role, initial, onRefresh }: {
   }
 
   return (
-    <form className="chain-editor" onSubmit={e => void submit(e)} aria-label={`${role} agent 바꾸기`}>
+    <form className="chain-editor" onSubmit={e => void submit(e)} aria-label={`${role === 'worker' ? '만드는 AI 순서 저장' : '검수하는 AI 순서 저장'}`}>
       <h4>{role === 'worker' ? '만드는 AI 바꾸기' : '검수하는 AI 바꾸기'}</h4>
       <p className="muted">순서대로 선택 — 첫 번째가 우선, 나머지는 예비 (최대 4개)</p>
       <div className="chain-picks" role="group" aria-label={`${role} runtime 순서 선택`}>
@@ -420,7 +420,7 @@ function ChainEditor({ project, role, initial, onRefresh }: {
       </div>
       <p className="chain-current">현재 순서: <strong>{picked.length ? picked.join(' → ') : '—'}</strong></p>
       <button className="btn" type="submit" disabled={busy || picked.length < 1}>
-        {busy ? '저장 중…' : 'Agent 바꾸기'}
+        {busy ? '저장 중…' : 'AI 순서 저장'}
       </button>
       {status && <p className={`control-status ${status.state}`} role="status">{statusText(status)}</p>}
     </form>
@@ -672,8 +672,8 @@ function LaneView({ lane, onRefresh }: {
         </article>
         <article className="control-card wide">
           <h3>담당 AI</h3>
-          {showWorker && <p>Worker: <strong>{workerText}</strong></p>}
-          {showQa && <p>QA: <strong>{qaText}</strong></p>}
+          {showWorker && <p>만드는 AI: <strong>{workerText}</strong></p>}
+          {showQa && <p>검수하는 AI: <strong>{qaText}</strong></p>}
           {project && (
             <div className="control-actions">
               <ChainEditor key={`${project}-worker`} project={project} role="worker" initial={chainToList(worker)} onRefresh={onRefresh} />
@@ -690,7 +690,7 @@ function LaneView({ lane, onRefresh }: {
         ))}{holdText !== null && <p>{holdText}</p>}{explainedHolds.length > 0
           ? <details><summary>원문 보기</summary>{rawReasons.map((reason, index) => <pre key={index} className="mono">{reason}</pre>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>
           : qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
-        {gate && <article className="control-card human"><h3>Human Gate</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
+        {gate && <article className="control-card human"><h3>사람 확인</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
       </div>
     </section>
   );

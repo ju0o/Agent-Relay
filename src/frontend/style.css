@@ -98,8 +98,14 @@
 /* 기본 버튼 */
 .app[data-theme="light"] .btn { background: #f0f0f2; border-color: rgba(0,0,0,0.1); }
 .app[data-theme="light"] .btn:hover { background: #e8e8ed; border-color: rgba(0,102,204,0.35); }
-/* 프라이머리 버튼 — 흰 글씨 */
-.app[data-theme="light"] .btn.primary { color: #fff; }
+/* 프라이머리 버튼 — 흰 글씨 (라이트 #fff on #0066cc 대비 5.57:1, WCAG AA 4.5:1 충족) */
+.app[data-theme="light"] .btn.primary { background: #0066cc; border-color: #0066cc; color: #fff; }
+/* 순서 배지 — 다크 글씨(#08121f on accent 대비 3.38:1 미달) 대신 흰 글씨로 4.5:1 충족 */
+.app[data-theme="light"] .chain-order { background: #0066cc; color: #fff; }
+/* 라이트 모드 활성 탭 — 진한 글씨(#1d1d1f on #ffffff 대비 16.83:1)로 4.5:1 충족 */
+.app[data-theme="light"] .tab-btn.active { background: #ffffff; color: #1d1d1f; border-color: rgba(0,0,0,0.1); }
+.app[data-theme="light"] .control-tab.active { color: #1d1d1f; }
+.app[data-theme="light"] .agent-pill.active { background: #ffffff; color: #1d1d1f; }
 /* 미니 버튼 */
 .app[data-theme="light"] .mini { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.09); }
 /* kbd 키캡 */
@@ -1022,7 +1028,7 @@ h1 { font-size: 22px; }
   font-size: 12px;
 }
 
-/* ── v0.3 설정 모달 — Storage / About ──────────────────────────────────── */
+/* ── v0.3 설정 모달 — 저장 폴더 / 앱 정보 ──────────────────────────────────── */
 .settings-section {
   padding: 12px 0;
   border-top: 1px solid var(--border);

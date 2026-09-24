@@ -40,6 +40,8 @@ export interface ProjectInfo {
 /** settings:get response — includes the app base dir where settings live. */
 export interface SettingsView extends AppSettings {
   baseDir: string;
+  /** Backend path.join(baseDir, 'settings.json') — SSOT for the settings file path shown in 설정. */
+  settingsFile: string;
   /** Default first-run location under the user's Documents folder. */
   defaultDataRoot: string;
   /** App version from package.json (surfaced for dogfooding context). */

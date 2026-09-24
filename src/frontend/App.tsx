@@ -1219,7 +1219,7 @@ function AppInner(): React.ReactElement {
             >계획</button>
             <button
               className="mini"
-              title="설정 — 저장공간(Storage)"
+              title="설정 — 저장 폴더"
               onClick={() => setShowSettings(true)}
             >설정</button>
             <div className="devtools-wrap">
@@ -1732,14 +1732,14 @@ function AppInner(): React.ReactElement {
         />
       )}
 
-      {/* 설정 모달 — Storage / About(업데이트) */}
+      {/* 설정 모달 — 저장 폴더 / 앱 정보(업데이트) */}
       {showSettings && settings && (
         <div className="modal" onClick={() => setShowSettings(false)}>
           <div className="modcard settings-card" onClick={e => e.stopPropagation()}>
             <h3>설정</h3>
 
             <div className="settings-section">
-              <span className="flabel">Storage — Current Data Root</span>
+              <span className="flabel">저장 폴더</span>
               <div className="field" style={{ marginTop: 4 }}>
                 <span className={`fvalue mono${settings.dataRoot ? '' : ' muted'}`} title={settings.dataRoot}>
                   {settings.dataRoot || '(저장공간이 선택되지 않았습니다)'}
@@ -1755,12 +1755,12 @@ function AppInner(): React.ReactElement {
                 >폴더 열기</button>
               </div>
               <p className="muted" style={{ fontSize: 11, margin: '4px 0 0' }}>
-                설정 파일: {settings.baseDir}\settings.json
+                설정 파일: {settings.settingsFile}
               </p>
             </div>
 
             <div className="settings-section">
-              <span className="flabel">About — Agent Relay v{updateStatus?.version ?? settings.appVersion}</span>
+              <span className="flabel">앱 정보 — Agent Relay v{updateStatus?.version ?? settings.appVersion}</span>
               <UpdateSection
                 status={updateStatus ?? { phase: 'idle', version: settings.appVersion }}
                 notify={notify}
@@ -2048,7 +2048,7 @@ function FileTree({
   );
 }
 
-// ── 업데이트 섹션 (설정 → About) ───────────────────────────────────────────────
+// ── 업데이트 섹션 (설정 → 앱 정보) ───────────────────────────────────────────────
 // 정책: 확인/다운로드/설치 모두 사용자 클릭 기반. 자동 종료·자동 설치 없음.
 function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind: 'ok' | 'err' | 'info', text: string) => void; onOpen?: () => void }): React.ReactElement {
   async function run(op: 'update:check' | 'update:download' | 'update:install', okMsg?: string): Promise<void> {
