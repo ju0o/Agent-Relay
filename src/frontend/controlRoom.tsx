@@ -3,7 +3,7 @@ import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import { InlineConfirm } from './components.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
-import { laneAttention } from '../shared/types.js';
+import { controlRoomTaskId, controlRoomTaskTitle, controlRoomTodayCount, controlRoomTodayDone, controlRoomWorkingRows, laneAttention } from '../shared/types.js';
 import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
 
 export interface ControlRoomHoldExplain {
@@ -165,152 +165,47 @@ function isPaused(lane: ControlRoomLane): boolean {
 // 현재 작업은 한국어 title을 보여주고 ID는 원문 보기로만 둔다.
 // current가 비어 있는 레인은 쉬는 중 — 모든 단계 pending.
 
-function cleanStr(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
+const currentTitleOf = controlRoomTaskTitle;
 
-function currentTitleOf(current: unknown): string {
-  if (typeof current === 'string') return current.trim();
-  if (!current || typeof current !== 'object') return '';
-  const record = current as Record<string, unknown>;
-  for (const key of ['title', 'taskTitle', 'task_title', 'name', 'label', 'subject', 'summary'] as const) {
-    const text = cleanStr(record[key]);
-    if (text) return text;
-  }
-  return cleanStr(record.taskId ?? record.task_id ?? record.id ?? record.key);
-}
-
-function currentIdOf(current: unknown): string {
-  if (typeof current === 'string') return current.trim();
-  if (!current || typeof current !== 'object') return '';
-  const record = current as Record<string, unknown>;
-  return cleanStr(record.taskId ?? record.task_id ?? record.id ?? record.key);
-}
+const currentIdOf = controlRoomTaskId;
 
 function hasWork(lane: ControlRoomLane): boolean {
   const current = lane.current ?? {};
   return currentTitleOf(current) !== '' || currentIdOf(current) !== '';
 }
 
-function startOfWork(current: Record<string, unknown>): unknown {
-  for (const key of ['startedAt', 'started_at', 'startAt', 'start_at', 'beginAt', 'begin_at', 'since'] as const) {
-    const value = current[key];
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-    if (cleanStr(value) !== '') return value;
-  }
-  return undefined;
-}
-
-function elapsedKo(startedAt: unknown, nowMs: number): string {
-  let start: number | null = null;
-  if (typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt > 0) {
-    start = startedAt < 1e12 ? startedAt * 1000 : startedAt;
-  } else if (typeof startedAt === 'string' && startedAt.trim()) {
-    const parsed = Date.parse(startedAt.trim());
-    start = Number.isNaN(parsed) ? null : parsed;
-  }
-  if (start === null) return '';
-  const minutes = Math.floor(Math.max(0, nowMs - start) / 60000);
-  if (minutes < 1) return '방금 시작';
-  if (minutes < 60) return `${minutes}분째`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  if (hours < 24) return rest === 0 ? `${hours}시간째` : `${hours}시간 ${rest}분째`;
-  const days = Math.floor(hours / 24);
-  const restHours = hours % 24;
-  return restHours === 0 ? `${days}일째` : `${days}일 ${restHours}시간째`;
-}
-
-function workerNameOf(lane: ControlRoomLane): string {
-  const current = lane.current ?? {};
-  const list = chainToList(lane.workerChain ?? current.worker ?? lane.worker);
-  if (list.length > 0) return list[0] as string;
-  return cleanStr(current.worker);
-}
-
-function whoSegment(lane: ControlRoomLane, nowMs: number): string | null {
-  if (!hasWork(lane)) return null;
-  const current = lane.current ?? {};
-  const laneName = projectPresentation(lane).name || projectOf(lane) || '알 수 없는 레인';
-  const stage = FLOW[stageIndex(current.stage ?? 0)] ?? '계획';
-  const elapsed = elapsedKo(startOfWork(current), nowMs) || '경과 확인 중';
-  const worker = workerNameOf(lane);
-  return worker ? `${laneName} · ${stage} · ${elapsed} · ${worker}` : `${laneName} · ${stage} · ${elapsed}`;
-}
-
 interface TodayItem { lane: string; taskId: string; title: string }
 
 function todayItemsOf(board: ControlRoomBoard | null): TodayItem[] {
-  if (!board || typeof board !== 'object') return [];
-  const out: TodayItem[] = [];
-  const pushEntry = (entry: unknown, laneFallback: string): void => {
-    if (typeof entry === 'string') {
-      const text = entry.trim();
-      if (text) out.push({ lane: laneFallback, taskId: text, title: text });
-      return;
-    }
-    if (!entry || typeof entry !== 'object') return;
-    const record = entry as Record<string, unknown>;
-    const lane = cleanStr(record.lane ?? record.project) || laneFallback;
-    const taskId = cleanStr(record.taskId ?? record.task_id ?? record.id ?? record.key);
-    const title = cleanStr(record.title ?? record.taskTitle ?? record.name ?? record.label ?? record.summary) || taskId;
-    if (taskId || title) out.push({ lane, taskId, title });
-  };
-  const root = board as Record<string, unknown>;
-  for (const key of ['todayDone', 'today_done', 'doneToday', 'done_today', 'completedToday', 'completed_today', 'done', 'today'] as const) {
-    const list = root[key];
-    if (Array.isArray(list)) {
-      for (const entry of list) {
-        const fallback = entry && typeof entry === 'object'
-          ? cleanStr((entry as Record<string, unknown>).lane ?? (entry as Record<string, unknown>).project)
-          : '';
-        pushEntry(entry, fallback);
-      }
-      if (out.length > 0) return out;
-    }
-  }
-  for (const lane of board.lanes ?? []) {
-    const laneId = projectOf(lane);
-    const record = lane as Record<string, unknown>;
-    for (const key of ['todayDone', 'today_done', 'doneToday', 'done_today', 'completedToday', 'completed_today', 'done', 'today'] as const) {
-      const list = record[key];
-      if (!Array.isArray(list)) continue;
-      for (const entry of list) pushEntry(entry, laneId);
-    }
-  }
-  return out;
+  return controlRoomTodayDone(board).map(item => ({ lane: item.project, taskId: item.taskId, title: item.title }));
 }
 
 function TodayCard({ board }: { board: ControlRoomBoard | null }): React.ReactElement {
-  const items = todayItemsOf(board);
+  const items = todayItemsOf(board).slice(0, 3);
+  const count = controlRoomTodayCount(board);
   return (
     <section className="control-card today-card" aria-label="오늘 끝난 일">
-      <h2>오늘 끝난 일 {items.length > 0 ? `${items.length}개` : ''}</h2>
-      {items.length === 0
+      <h2>오늘 끝난 일</h2>
+      {count === 0
         ? <p className="muted">오늘 끝난 일은 아직 없어요.</p>
-        : <ul className="today-list">
+        : <><p className="control-card-value">오늘 {count}개 끝났어요</p><ul className="today-list">
           {items.map((item, index) => (
             <li key={`${item.lane}-${item.taskId || item.title}-${index}`}>
-              <span><strong>{item.title}</strong></span>
-              {item.lane && <span className="muted"> · {item.lane}</span>}
+              <span><strong>{item.lane ? `${PROJECT_LABELS[item.lane]?.name ?? item.lane} · ` : ''}{item.title}</strong></span>
+              {item.taskId && <span className="muted mono"> · ID: {item.taskId}</span>}
             </li>
           ))}
-        </ul>}
+        </ul></>}
     </section>
   );
 }
 
 function WhoLine({ lanes }: { lanes: ControlRoomLane[] }): React.ReactElement {
-  const nowMs = Date.now();
-  const segments: string[] = [];
-  for (const lane of lanes) {
-    const segment = whoSegment(lane, nowMs);
-    if (segment) segments.push(segment);
-  }
-  const text = segments.length === 0 ? '지금 일하는 AI: 쉬는 중' : `지금 일하는 AI: ${segments.join(' / ')}`;
+  const rows = controlRoomWorkingRows(lanes);
   return (
     <section className="control-card who-line" aria-label="지금 일하는 AI">
-      <p className="control-card-value who-text">{text}</p>
+      <p className="control-card-value who-text">지금 일하는 AI</p>
+      {rows.length === 0 ? <p className="muted">쉬는 중</p> : rows.map(row => <p key={row} className="muted">{row}</p>)}
     </section>
   );
 }
@@ -641,6 +536,12 @@ function LaneView({ lane, onRefresh }: {
     ? holdSummary(lane, plainReasons.join(', '))
     : holdSummary(lane, holds.map(hold => hold.reason || hold.taskId).join(', '));
   const rawReasons = holds.map(hold => hold.reason).filter(text => text.trim().length > 0);
+  const holdTitle = (hold: { taskId?: string; reason?: string }): string => {
+    const raw = lane.holds?.find(entry => entry && typeof entry === 'object' &&
+      controlRoomTaskId(entry) === hold.taskId);
+    return controlRoomTaskTitle(raw) || hold.reason || hold.taskId || '보류된 작업';
+  };
+  const holdTitles = holds.map(hold => holdTitle(hold));
   const showHoldCard = explainedHolds.length > 0 || holdText !== null;
   const gateRecord = (lane.humanGate ?? lane.founderGate) as Record<string, unknown> | undefined;
   const gateIdForHold = typeof gateRecord?.gateId === 'string' && gateRecord.gateId
@@ -667,6 +568,7 @@ function LaneView({ lane, onRefresh }: {
         <article className="control-card">
           <h3>현재 작업</h3>
           <p className="control-card-value">{working ? (taskTitle || '지금 하는 일 없음') : '쉬는 중'}</p>
+          {working && taskId && <p className="muted mono">ID: {taskId}</p>}
           <p className="muted">단계: {stage}</p>
           {paused && project && <ResumeControl project={project} onRefresh={onRefresh} />}
         </article>
@@ -683,11 +585,13 @@ function LaneView({ lane, onRefresh }: {
         </article>
         {showHoldCard && <article className="control-card blocked"><h3>보류 / 차단</h3>{explainedHolds.map((hold, index) => (
           <div key={hold.taskId || hold.sentence || index} className="hold-explain">
+            <p><strong>{holdTitle(hold)}</strong></p>
+            {hold.taskId && <p className="muted mono">ID: {hold.taskId}</p>}
             <p>{hold.sentence}</p>
             {hold.step && <p className="muted">단계: {holdStepLabel(hold.step)}</p>}
             <HoldOptionButtons hold={hold} project={project} gateId={gateIdForHold} onRefresh={onRefresh} />
           </div>
-        ))}{holdText !== null && <p>{holdText}</p>}{explainedHolds.length > 0
+        ))}{holdText !== null && <p>{holdTitles.join(' · ')}</p>}{explainedHolds.length > 0
           ? <details><summary>원문 보기</summary>{rawReasons.map((reason, index) => <pre key={index} className="mono">{reason}</pre>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>
           : qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
         {gate && <article className="control-card human"><h3>사람 확인</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}

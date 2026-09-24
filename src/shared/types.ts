@@ -347,6 +347,125 @@ export interface ControlRoomBoardJson {
   models?: Record<string, ControlRoomModelUsage>;
 }
 
+export interface ControlRoomTodayItem {
+  project: string;
+  taskId: string;
+  title: string;
+  finishedAt?: string;
+}
+
+const CONTROL_ROOM_TASK_ID_KEYS = ['taskId', 'task_id', 'id', 'key'] as const;
+const CONTROL_ROOM_TASK_TITLE_KEYS = ['title', 'taskTitle', 'task_title', 'name', 'label', 'subject', 'summary'] as const;
+const CONTROL_ROOM_FINISHED_AT_KEYS = ['finishedAt', 'finished_at', 'completedAt', 'completed_at', 'doneAt', 'done_at', 'timestamp'] as const;
+
+function controlRoomString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function controlRoomValue(record: Record<string, unknown>, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = controlRoomString(record[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+export function controlRoomTaskId(task: unknown): string {
+  if (typeof task === 'string') return task.trim();
+  return task && typeof task === 'object'
+    ? controlRoomValue(task as Record<string, unknown>, CONTROL_ROOM_TASK_ID_KEYS)
+    : '';
+}
+
+export function controlRoomTaskTitle(task: unknown): string {
+  if (typeof task === 'string') return task.trim();
+  if (!task || typeof task !== 'object') return '';
+  const record = task as Record<string, unknown>;
+  return controlRoomValue(record, CONTROL_ROOM_TASK_TITLE_KEYS) || controlRoomTaskId(task);
+}
+
+function controlRoomFinishedAt(task: unknown): string {
+  return task && typeof task === 'object'
+    ? controlRoomValue(task as Record<string, unknown>, CONTROL_ROOM_FINISHED_AT_KEYS)
+    : '';
+}
+
+function controlRoomLocalDate(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const parsed = value instanceof Date ? value : typeof value === 'number' || typeof value === 'string' ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return fallback;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function controlRoomDoneEntries(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+export function controlRoomTodayDone(board: unknown, now: Date = new Date()): ControlRoomTodayItem[] {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return [];
+  const root = board as Record<string, unknown>;
+  const today = controlRoomLocalDate(now, '');
+  const output: ControlRoomTodayItem[] = [];
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  const add = (task: unknown, project: string, dated: boolean): void => {
+    const id = controlRoomTaskId(task);
+    const title = controlRoomTaskTitle(task);
+    if (!id && !title) return;
+    const finishedAt = controlRoomFinishedAt(task);
+    if (dated && (!finishedAt || controlRoomLocalDate(finishedAt, '') !== today)) return;
+    output.push({ project, taskId: id, title, ...(finishedAt ? { finishedAt } : {}) });
+  };
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const lane = laneValue as Record<string, unknown>;
+    const project = controlRoomString(lane.project ?? lane.id);
+    const done = controlRoomDoneEntries(lane.done);
+    for (const task of done) add(task, project, true);
+    for (const key of ['todayDone', 'today_done', 'doneToday', 'done_today', 'completedToday', 'completed_today'] as const) {
+      for (const task of controlRoomDoneEntries(lane[key])) add(task, project, false);
+    }
+  }
+  for (const task of controlRoomDoneEntries(root.todayDone ?? root.today_done)) add(task, '', false);
+  return output.sort((a, b) => String(b.finishedAt ?? '').localeCompare(String(a.finishedAt ?? '')));
+}
+
+export function controlRoomTodayCount(board: unknown, now: Date = new Date()): number {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return 0;
+  const root = board as Record<string, unknown>;
+  const items = controlRoomTodayDone(board, now);
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  let hinted = 0;
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const counts = (laneValue as Record<string, unknown>).counts;
+    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue;
+    const record = counts as Record<string, unknown>;
+    const value = record.today ?? record.todayDone ?? record.doneToday ?? record.completedToday ?? record.finishedToday ?? record.done;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) hinted += Math.floor(value);
+  }
+  return Math.max(items.length, hinted);
+}
+
+export function controlRoomWorkingRows(lanes: unknown): string[] {
+  if (!Array.isArray(lanes)) return [];
+  return lanes.flatMap(laneValue => {
+    if (!laneValue || typeof laneValue !== 'object') return [];
+    const lane = laneValue as Record<string, unknown>;
+    const current = lane.current && typeof lane.current === 'object' ? lane.current as Record<string, unknown> : {};
+    const title = controlRoomTaskTitle(current);
+    if (!title) return [];
+    const project = controlRoomString(lane.project ?? lane.id) || '알 수 없는 레인';
+    const stage = typeof current.stage === 'number'
+      ? ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'][Math.max(0, Math.min(6, Math.floor(current.stage)))]
+      : controlRoomString(current.stage) || '계획';
+    const worker = controlRoomString(Array.isArray(lane.workerChain) ? lane.workerChain[0] : lane.workerChain ?? current.worker);
+    return [`${project} · ${stage} · ${worker || 'AI 확인 중'}`];
+  });
+}
+
 /** An approval rule with optional auto-approval learning stats. */
 export interface ApprovalRuleJson {
   category?: string;
