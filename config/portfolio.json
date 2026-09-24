@@ -1854,6 +1854,21 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
           "title": "진짜 답이 온 뒤 결과 복사"
+        },
+        {
+          "taskId": "ACTL-PANE-LOCK-R3",
+          "scope": "Third, precise attempt at the cross-process pane lock (supersedes ACTL-CROSS-PROCESS-PANE-LOCK and -R2; keep their good parts). Messages from two boards / board + Agent Relay must never interleave. In src/actl/core/tmux.py: per-pane lock around load→paste→enter; LOCAL path uses fcntl/flock on a per-pane lock file; REMOTE_SSH_TARGET path runs over ssh `flock -x -w 2 <lockfile> sh -c 'echo acquired; cat'` — use `echo` (NOT printf with a backslash-n, which arrives as the literal bytes 'acquiredn' and made every remote send fail closed in -R2), read the 'acquired' line with a 2.0 s timeout, keep ssh stdin open as the lock hold, close it to let go of the lock; on timeout raise the exact Korean PANE_LOCK_ERROR '다른 곳에서 보내는 중이에요. 잠시 뒤 다시 보내 주세요.' and kill the ssh child. src/juactl-board.py: single board instance via a lock file in the user state dir (second launch shows the Korean message and exits). Do NOT modify src/actl/core/remote_scheduler.py or any other file outside the list. Tests: (a) run the exact remote lock command string through a local /bin/sh subprocess (no ssh) and assert readline() returns b'acquired\\n' within 1 s and a second concurrent holder times out with PANE_LOCK_ERROR; (b) isolated tmux server (TMUX_TMPDIR temp) concurrent sends never interleave; (c) second board instance is refused.",
+          "files": [
+            "src/actl/core/tmux.py",
+            "src/juactl-board.py",
+            "tests/test_transport_socket.py",
+            "tests/test_tmux.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 actl collision audit; R2 QA quoting finding",
+          "title": "Third, precise attempt at the cross-process pane lock (super"
         }
       ],
       "qaRuntime": [
