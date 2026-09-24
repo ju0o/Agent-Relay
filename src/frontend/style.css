@@ -25,6 +25,7 @@
 
 /* ── 라이트 모드 (Apple-style) ──────────────────────────────── */
 .app[data-theme="light"] {
+  color-scheme: light;
   --bg:      #fafafa;
   --bg2:     #ffffff;
   --bg3:     #f0f0f2;
@@ -42,6 +43,11 @@
   --sb-hover:  rgba(255,255,255,0.08);
   --sb-active: rgba(255,255,255,0.14);
   --sb-border: rgba(255,255,255,0.10);
+}
+
+/* ── 다크 모드 color-scheme (네이티브 스크롤바/폼 다크화) ── */
+.app[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 /* ── 라이트 모드 — 표면 입체감 ─────────────────────────────── */
@@ -114,6 +120,11 @@
 .app[data-theme="light"] ::-webkit-scrollbar-track { background: transparent; }
 .app[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 4px; }
 .app[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.28); }
+/* 스크롤바 (webkit) — 다크 모드 (라이트 규칙 미러링) */
+.app[data-theme="dark"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+.app[data-theme="dark"] ::-webkit-scrollbar-track { background: transparent; }
+.app[data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 4px; }
+.app[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
 /* 모달 오버레이 */
 .app[data-theme="light"] .modal { background: rgba(0,0,0,0.35); }
 /* 탑바 */
@@ -186,11 +197,33 @@ html, body, #app {
 /* ── 상단바 ────────────────────────────────────────────────── */
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: nowrap;
   padding: 8px 14px;
   background: var(--bg2); border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.brand { font-weight: 700; letter-spacing: 0.3px; }
+.brand { font-weight: 700; letter-spacing: 0.3px; white-space: nowrap; }
+/* 탑바 버튼은 줄바꿈 금지 + 한국어 단어 중간 분리 금지 */
+.topbar .btn,
+.topbar .mini,
+.topbar button {
+  white-space: nowrap;
+  word-break: keep-all;
+}
+/* 버튼/라벨 app-wide — 한국어가 단어 중간에서 끊기지 않도록 */
+.app button,
+.app .btn,
+.app .mini,
+.app .flabel,
+.app .tab-label,
+.app .control-tab,
+.app .topbar-shortcuts,
+.app .brand {
+  word-break: keep-all;
+}
+@media (max-width: 1200px) {
+  .topbar-shortcuts { display: none; }
+}
 .topbar-shortcuts {
   display: flex; gap: 12px; align-items: center;
   font-size: 11px; color: var(--muted);
@@ -984,6 +1017,8 @@ html, body, #app {
 
 /* ── Control Room ─────────────────────────────────────────── */
 .control-room { flex: 1; min-height: 0; overflow: auto; padding: 24px; }
+/* Control Room 배너 좌측 엣지를 h1과 맞춤 */
+.control-room .flash { margin: 0 0 16px; }
 .control-room-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .control-room h1 { margin: 0 0 4px; font-size: 22px; }
 .control-room-head p { margin: 0; }
