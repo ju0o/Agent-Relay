@@ -175,10 +175,13 @@ export class WorktreeManager {
     } finally { await exec("git", ["-C", project.path, "worktree", "remove", "--force", scratch]).catch(() => {}); await rm(scratch, { recursive: true, force: true }); }
   }
 
-  async promote(project, taskId, commitSha) {
+  async promote(project, taskId, reported, builderPath) {
+    // builders often report an abbreviated sha; resolve it to the full commit (builder worktree first, it owns the commit)
+    if (!/^[0-9a-f]{7,40}$/i.test(reported || "")) throw new Error(`invalid promotion commit: ${taskId}`);
+    let commitSha = "";
+    for (const dir of [builderPath, project.path].filter(Boolean)) { commitSha = (await exec("git", ["-C", dir, "rev-parse", "--verify", "-q", `${reported}^{commit}`]).catch(() => ({ stdout: "" }))).stdout.trim(); if (commitSha) break; }
     if (!/^[0-9a-f]{40}$/i.test(commitSha)) throw new Error(`invalid promotion commit: ${taskId}`);
     const ref = `refs/agent-relay/promotions/${taskId}`;
-    await exec("git", ["-C", project.path, "cat-file", "-e", `${commitSha}^{commit}`]);
     await exec("git", ["-C", project.path, "update-ref", ref, commitSha]);
     return ref;
   }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS, TRANSIENT_ERROR } from "../../src/v2/portfolio-runner/index.mjs";
+import { buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, WorktreeManager, STATES, QA_VERDICTS, TRANSIENT_ERROR } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter, createRuntimeAdapters } from "../../src/v2/runtime-adapters/index.mjs";
 const passGate = async () => ({ ok: true, results: [] });
 
@@ -393,4 +393,16 @@ test("a changed manifest is picked up in place by reconcile (no restart needed)"
   await writeFile(mp, "{ half-written");
   await new Promise((r) => setTimeout(r, 20)); await runner.reconcile();
   assert.equal(runner.manifest.projects[0].tasks.length, 2, "a broken file keeps the last good manifest");
+});
+
+test("promote resolves an abbreviated builder sha to the full commit", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const repo = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-promote-sha-"));
+  const git = (...a) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" }).trim();
+  git("init", "-q"); git("commit", "-q", "--allow-empty", "-m", "x");
+  const full = git("rev-parse", "HEAD");
+  const ref = await new WorktreeManager(repo).promote({ path: repo }, "P-SHORT", full.slice(0, 7));
+  assert.equal(git("rev-parse", ref), full);
+  await assert.rejects(new WorktreeManager(repo).promote({ path: repo }, "P-BAD", "zzz"), /invalid promotion commit/);
+  await rm(repo, { recursive: true, force: true });
 });
