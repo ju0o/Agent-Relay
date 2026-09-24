@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
+import { InlineConfirm } from './components.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
 import { laneAttention } from '../shared/types.js';
 import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
@@ -277,6 +278,7 @@ function ResumeControl({ project, onRefresh }: {
 }): React.ReactElement {
   const [status, setStatus] = useState<ActionStatus>(null);
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(false);
 
   async function resume(): Promise<void> {
     if (busy) return;
@@ -285,6 +287,7 @@ function ResumeControl({ project, onRefresh }: {
     try {
       await must({ op: 'controlRoom:resume', project });
       setStatus({ state: 'done', text: '다시 시작됨' });
+      setPending(false);
       await onRefresh();
     } catch (err) {
       setStatus({ state: 'error', text: err instanceof Error ? err.message : String(err) });
@@ -295,9 +298,19 @@ function ResumeControl({ project, onRefresh }: {
 
   return (
     <div className="resume-control">
-      <button className="btn primary" type="button" disabled={busy} onClick={() => void resume()}>
+      <button className="btn primary" type="button" disabled={busy} onClick={() => setPending(true)}>
         {busy ? '다시 시작 중…' : '다시 시작'}
       </button>
+      {pending && (
+        <InlineConfirm
+          message="다시 시작하시겠어요?"
+          confirmLabel="다시 시작"
+          busy={busy}
+          busyLabel="다시 시작 중…"
+          onConfirm={() => void resume()}
+          onCancel={() => setPending(false)}
+        />
+      )}
       {status && <p className={`control-status ${status.state}`} role="status">{statusText(status)}</p>}
     </div>
   );

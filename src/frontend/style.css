@@ -1113,6 +1113,11 @@ h1 { font-size: 22px; }
 .hold-confirm { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
 .hold-confirm p { margin: 0; font-size: 12px; }
 .hold-confirm-actions { display: flex; gap: 6px; }
+/* ── Inline confirm (R2/R3/R7: destructive actions, native dialog 금지) ── */
+.inline-confirm { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.inline-confirm p { margin: 0; font-size: 12px; }
+.inline-confirm-actions { display: flex; gap: 6px; }
+.plan-undo { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
 /* ── CR-08 model quota board + approval learning ───────────── */
 .model-usage { margin-bottom: 20px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 9px; }
 .model-usage h3 { margin: 0 0 10px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }

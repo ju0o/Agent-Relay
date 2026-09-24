@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { must } from './bridge.js';
 import { PROJECT_LABELS } from '../shared/projectLabels.js';
 import { isPlanStudioTaskDone, sortPlanStudioTasks } from '../shared/types.js';
+import { InlineConfirm } from './components.js';
 
 const FLOW = ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'] as const;
 
@@ -174,6 +175,10 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'chat' | 'save' | 'approve' | 'gate' | null>(null);
   const [showDone, setShowDone] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [pendingApprove, setPendingApprove] = useState(false);
+  const [pendingPolicy, setPendingPolicy] = useState<'continue' | 'stop' | null>(null);
+  const [lastDeleted, setLastDeleted] = useState<{ task: StudioTask; index: number } | null>(null);
 
   // Board polling — task progress rows are fed by controlRoom:board.
   useEffect(() => {
@@ -282,7 +287,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
       const payload = JSON.stringify({ goal: next.goal, tasks: next.tasks, runPolicy: next.runPolicy });
       await must({ op: 'planStudio:save', project, draft: payload });
       setDraft(next);
-      flashInfo('초안 저장됨 (planStudio:save)');
+      flashInfo('초안 저장됨');
     } catch (e) { flashError(e); } finally { setBusy(null); }
   }
 
@@ -301,7 +306,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
       if (candidate.tasks.length || candidate.goal) {
         setDraft(candidate);
         setSelectedId(prev => (prev && candidate.tasks.some(t => t.id === prev) ? prev : candidate.tasks[0]?.id ?? null));
-        flashInfo('PM 초안이 갱신되었습니다 (planStudio:chat)');
+        flashInfo('PM 초안이 갱신되었습니다');
       } else {
         const fresh = await must<unknown>({ op: 'planStudio:get', project });
         const next = normalizeDraft(fresh);
@@ -316,8 +321,8 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
     setBusy('approve');
     try {
       await must({ op: 'planStudio:approve', project });
-      flashInfo('계획 승인 → 자동 진행 요청됨 (planStudio:approve)');
-    } catch (e) { flashError(e); } finally { setBusy(null); }
+      flashInfo('계획 승인 → 자동 진행 요청됨');
+    } catch (e) { flashError(e); } finally { setBusy(null); setPendingApprove(false); }
   }
 
   async function answerGate(gateId: string): Promise<void> {
@@ -325,8 +330,34 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
     setBusy('gate');
     try {
       await must({ op: 'gates:answer', gateId, optionIndex });
-      flashInfo(`Gate 응답 제출됨 (${gateId} → ${optionIndex})`);
+      flashInfo('응답 제출됨');
     } catch (e) { flashError(e); } finally { setBusy(null); }
+  }
+
+  function requestDelete(task: StudioTask): void {
+    setLastDeleted(null);
+    setPendingDeleteId(task.id);
+  }
+
+  function confirmDelete(task: StudioTask): void {
+    const index = draft.tasks.findIndex(t => t.id === task.id);
+    const target = draft.tasks[index] ?? task;
+    const at = index >= 0 ? index : draft.tasks.length;
+    const next = { ...draft, tasks: draft.tasks.filter(t => t.id !== task.id) };
+    setPendingDeleteId(null);
+    setSelectedId(next.tasks[Math.min(at, next.tasks.length - 1)]?.id ?? null);
+    setLastDeleted({ task: target, index: at });
+    void persist(next, 'save').then(() => flashInfo(`‘${target.title}’ 삭제됨`));
+  }
+
+  function undoDelete(): void {
+    if (!lastDeleted) return;
+    const restored = [...draft.tasks];
+    restored.splice(Math.min(lastDeleted.index, restored.length), 0, lastDeleted.task);
+    const next = { ...draft, tasks: restored };
+    setLastDeleted(null);
+    setSelectedId(lastDeleted.task.id);
+    void persist(next, 'save').then(() => flashInfo(`‘${lastDeleted.task.title}’ 되돌림`));
   }
 
   return (
@@ -419,18 +450,32 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                             className="mini"
                             title="시작 전 task 삭제"
                             disabled={busy === 'save'}
-                            onClick={() => {
-                              const next = { ...draft, tasks: draft.tasks.filter(t => t.id !== task.id) };
-                              setSelectedId(next.tasks[0]?.id ?? null);
-                              void persist(next, 'save');
-                            }}
+                            onClick={() => requestDelete(task)}
                           >삭제</button>
                         </div>
+                      )}
+                      {pendingDeleteId === task.id && (
+                        <InlineConfirm
+                          message={`‘${task.title}’ 삭제하시겠어요?`}
+                          confirmLabel="삭제"
+                          busy={busy === 'save'}
+                          busyLabel="삭제 중…"
+                          onConfirm={() => confirmDelete(task)}
+                          onCancel={() => setPendingDeleteId(null)}
+                        />
                       )}
                     </li>
                   );
                 })}
                 </ol>
+                {lastDeleted && (
+                  <div className="plan-undo" role="status">
+                    <span>‘{lastDeleted.task.title}’ 삭제됨</span>
+                    <button className="mini" onClick={undoDelete} disabled={busy === 'save'}>
+                      되돌리기
+                    </button>
+                  </div>
+                )}
                 {finishedCount > 0 && (
                   <button
                     className="mini"
@@ -444,14 +489,14 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
           </article>
 
           <article className="control-card" aria-label="run policy">
-            <h3>Run policy</h3>
+            <h3>진행 방식</h3>
             <label className="plan-radio">
               <input
                 type="radio"
                 name="run-policy"
                 value="continue"
-                checked={draft.runPolicy === 'continue'}
-                onChange={() => void persist({ ...draft, runPolicy: 'continue' }, 'save')}
+                checked={pendingPolicy ? pendingPolicy === 'continue' : draft.runPolicy === 'continue'}
+                onChange={() => { setLastDeleted(null); setPendingPolicy('continue'); }}
               />
               계속 진행 — 각 작업 완료 후 자동 계속
             </label>
@@ -460,16 +505,36 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                 type="radio"
                 name="run-policy"
                 value="stop"
-                checked={draft.runPolicy === 'stop'}
-                onChange={() => void persist({ ...draft, runPolicy: 'stop' }, 'save')}
+                checked={pendingPolicy ? pendingPolicy === 'stop' : draft.runPolicy === 'stop'}
+                onChange={() => { setLastDeleted(null); setPendingPolicy('stop'); }}
               />
               각 작업 후 중단 — 확인 후 다음 진행
             </label>
+            {pendingPolicy && pendingPolicy !== draft.runPolicy && (
+              <InlineConfirm
+                message={pendingPolicy === 'continue' ? '계속 진행으로 바꾸시겠어요?' : '각 작업 후 중단으로 바꾸시겠어요?'}
+                confirmLabel="바꾸기"
+                busy={busy === 'save'}
+                busyLabel="저장 중…"
+                onConfirm={() => { const next = pendingPolicy; setPendingPolicy(null); void persist({ ...draft, runPolicy: next }, 'save'); }}
+                onCancel={() => setPendingPolicy(null)}
+              />
+            )}
             <div className="modalbtns" style={{ justifyContent: 'flex-start' }}>
-              <button className="btn primary" disabled={busy === 'approve'} onClick={() => void approve()}>
+              <button className="btn primary" disabled={busy === 'approve'} onClick={() => setPendingApprove(true)}>
                 {busy === 'approve' ? '승인 중...' : '계획 승인 → 자동 진행'}
               </button>
             </div>
+            {pendingApprove && (
+              <InlineConfirm
+                message="계획을 승인하고 자동 진행하시겠어요?"
+                confirmLabel="승인"
+                busy={busy === 'approve'}
+                busyLabel="승인 중…"
+                onConfirm={() => void approve()}
+                onCancel={() => setPendingApprove(false)}
+              />
+            )}
           </article>
         </section>
 
@@ -524,7 +589,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                         {option}
                       </label>
                     ))}
-                    <button className="btn primary" type="submit" disabled={busy === 'gate'}>Gate 제출 (gates:answer)</button>
+                    <button className="btn primary" type="submit" disabled={busy === 'gate'}>답변 제출</button>
                   </fieldset>
                 </form>
               ))}

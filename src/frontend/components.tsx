@@ -53,6 +53,41 @@ export function FieldText(props: {
   );
 }
 
+/** Inline confirmation for destructive actions — never use native dialog/confirm. */
+export function InlineConfirm(props: {
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  busy?: boolean;
+  busyLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}): React.ReactElement {
+  return (
+    <div className="inline-confirm" role="group" aria-label={props.message}>
+      <p>{props.message}</p>
+      <div className="inline-confirm-actions">
+        <button
+          className="btn primary"
+          type="button"
+          disabled={props.busy}
+          onClick={props.onConfirm}
+        >
+          {props.busy ? (props.busyLabel ?? '실행 중…') : (props.confirmLabel ?? '확인')}
+        </button>
+        <button
+          className="btn subtle"
+          type="button"
+          disabled={props.busy}
+          onClick={props.onCancel}
+        >
+          {props.cancelLabel ?? '취소'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** DATA_ROOT status + "변경" action shown in the header. */
 export function DataRootWidget(props: {
   settings: SettingsView | null;
