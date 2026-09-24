@@ -2163,6 +2163,20 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
           "title": "Founder decision A-24: serve gets GET /events (SSE, 127.0.0."
+        },
+        {
+          "taskId": "JUPLAN-DOMAIN-DOCS-FILTER",
+          "scope": "docs/<domain>.md (8 files) contain only their own area instead of the full list: product=DISCOVER+PRODUCT types, ux=EXPERIENCE, system=SYSTEM except data/API, data-api=DataEntity/DataField/ApiEndpoint/Event, delivery=WbsTask/AcceptanceCriterion and the ship-item node type, qa=QaCase, critical-review=Risk/Assumption/Gap/ValidationFinding, evidence=Evidence/Decision/FounderDecision; empty → '(아직 없음)'. Update the affected expectations in runtime.test.ts (readable views, Mermaid escape tests).",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x planning documents request; A-23",
+          "title": "docs/<domain>.md (8 files) contain only their own area inste"
         }
       ],
       "qaRuntime": [
