@@ -23,9 +23,9 @@ test('task titles prefer the plain title and IDs remain separate', () => {
   assert.equal(controlRoomTaskTitle({ taskId: 'T-2' }), 'T-2');
 });
 
-test('working rows are one short project-stage-AI row per lane', () => {
+test('working rows use project label, stage, AI, and Korean title', () => {
   assert.deepEqual(controlRoomWorkingRows([
     { project: 'agent-relay', current: { stage: 2, title: '작업' }, workerChain: ['codex'] },
     { project: 'juplan', current: { stage: 3, title: '검수' }, workerChain: ['opencode'] },
-  ]), ['agent-relay · 작업 · codex', 'juplan · 검수 · opencode']);
+  ]), ['Agent Relay · 작업 · codex · 작업', 'JuPlan · 검수 · AI 확인 중 · 검수']);
 });

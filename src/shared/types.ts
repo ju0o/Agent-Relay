@@ -1,3 +1,5 @@
+import { PROJECT_LABELS } from './projectLabels.js';
+
 /**
  * Shared type definitions for Agent Relay Log V0.
  * Used by the Electron backend (main process) and the React frontend.
@@ -540,34 +542,63 @@ export function controlRoomHasDoneData(board: unknown): boolean {
   return false;
 }
 
-export function controlRoomWorkingRows(lanes: unknown): string[] {
+function controlRoomRuntimeName(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const record = value as Record<string, unknown>;
+  for (const key of ['runtime', 'name', 'id', 'agent', 'model']) {
+    const name = controlRoomString(record[key]);
+    if (name) return name;
+  }
+  return '';
+}
+
+function controlRoomRoutingLine(routing: unknown): string[] {
+  if (!routing || typeof routing !== 'object' || Array.isArray(routing)) return [];
+  const record = routing as Record<string, unknown>;
+  const coolingItems = Array.isArray(record.cooling)
+    ? record.cooling
+    : record.cooling && typeof record.cooling === 'object'
+      ? Object.entries(record.cooling as Record<string, unknown>).map(([runtime, until]) => ({ runtime, until }))
+      : [];
+  const cooling = coolingItems.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return '';
+    const value = item as Record<string, unknown>;
+    const name = controlRoomRuntimeName(value);
+    const until = controlRoomString(value.until ?? value.coolingUntil ?? value.availableAt ?? value.cooling_until);
+    return name && until ? `${name}(${until}까지)` : '';
+  }).filter(Boolean);
+  const lines = cooling.length > 0 ? [`쉬는 AI: ${cooling.join(' · ')}`] : [];
+  if (record.pool !== undefined && record.pool !== null) lines.push('배정 순서: 구독 AI 먼저, 무료 모델은 예비');
+  return lines;
+}
+
+export function controlRoomWorkingRows(input: unknown, routing?: unknown): string[] {
+  const board = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : null;
+  const lanes = Array.isArray(input) ? input : board?.lanes;
   if (!Array.isArray(lanes)) return [];
+  const route = routing ?? board?.routing;
   return lanes.flatMap(laneValue => {
     if (!laneValue || typeof laneValue !== 'object') return [];
     const lane = laneValue as Record<string, unknown>;
     const current = lane.current && typeof lane.current === 'object' ? lane.current as Record<string, unknown> : {};
-    const hasCurrent = Boolean(controlRoomTaskId(current) || controlRoomTaskTitle(current));
-    const hold = !hasCurrent && Array.isArray(lane.holds) ? lane.holds.find(entry => {
-      if (!entry || typeof entry !== 'object') return false;
-      const record = entry as Record<string, unknown>;
-      const explain = record.explain ?? record.explanation;
-      const choice = record.choice ?? (explain && typeof explain === 'object'
-        ? (explain as Record<string, unknown>).choice
-        : undefined);
-      // choice가 'skip'인 보류는 보여주지 않으므로 hold-as-current에서도 제외한다.
-      return typeof choice !== 'string' || choice.trim().toLowerCase() !== 'skip';
-    }) : undefined;
-    const task = hasCurrent ? current : hold;
-    const title = founderTaskTitle(task);
-    if (!hasCurrent && !hold) return [];
-    const project = controlRoomString(lane.project ?? lane.id) || '알 수 없는 레인';
-    const stageValue = hasCurrent ? current.stage : (hold as Record<string, unknown> | undefined)?.step;
+    const title = controlRoomTaskTitle(current);
+    if (!title) return [];
+    const projectId = controlRoomString(lane.project ?? lane.id);
+    const project = projectId || '알 수 없는 레인';
+    const stageValue = current.stage;
     const stage = typeof stageValue === 'number'
       ? ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'][Math.max(0, Math.min(6, Math.floor(stageValue)))]
       : controlRoomString(stageValue) || '계획';
-    const worker = controlRoomString(Array.isArray(lane.workerChain) ? lane.workerChain[0] : lane.workerChain ?? current.worker);
-    return [`${project} · ${title} · ${stage} · ${worker || 'AI 확인 중'}`];
-  });
+    const stageIndex = typeof stageValue === 'number'
+      ? Math.floor(stageValue)
+      : /^(qa|검수|시험|사람 확인|반영|integrat|gate|human)/i.test(controlRoomString(stageValue)) ? 3 : 0;
+    const chain = stageIndex >= 3 ? lane.qaChain : lane.workerChain;
+    const selected = current[stageIndex >= 3 ? 'qa' : 'worker'] ?? (Array.isArray(chain) ? chain[0] : chain);
+    const worker = controlRoomRuntimeName(selected);
+    const projectLabel = PROJECT_LABELS[projectId]?.name ?? project;
+    return [`${projectLabel} · ${stage} · ${worker || 'AI 확인 중'} · ${title}`];
+  }).concat(controlRoomRoutingLine(route));
 }
 
 /** An approval rule with optional auto-approval learning stats. */

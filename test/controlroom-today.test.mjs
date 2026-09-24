@@ -123,5 +123,5 @@ test("모델 사용량은 접힌 details", async () => {
   assert.doesNotMatch(approvals, /<section className="model-usage"/);
   const room = await read("src/frontend/controlRoom.tsx");
   assert.match(room, /<TodayCard board=\{board\} \/>/);
-  assert.match(room, /<WhoLine lanes=\{lanes\} \/>/);
+  assert.match(room, /<WhoLine board=\{board\} \/>/);
 });

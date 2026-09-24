@@ -40,6 +40,7 @@ interface ControlRoomBoard {
   lanes?: ControlRoomLane[];
   models?: Record<string, ControlRoomModelUsage>;
   todayDone?: unknown;
+  routing?: unknown;
 }
 type FlowState = 'done' | 'active' | 'blocked' | 'pending';
 type ActionStatus = { state: 'pending' | 'done' | 'error'; text: string } | null;
@@ -204,8 +205,8 @@ function TodayCard({ board }: { board: ControlRoomBoard | null }): React.ReactEl
   );
 }
 
-function WhoLine({ lanes }: { lanes: ControlRoomLane[] }): React.ReactElement {
-  const rows = controlRoomWorkingRows(lanes);
+function WhoLine({ board }: { board: ControlRoomBoard | null }): React.ReactElement {
+  const rows = controlRoomWorkingRows(board?.lanes ?? [], board?.routing);
   return (
     <section className="control-card who-line" aria-label="지금 일하는 AI">
       <p className="control-card-value who-text">지금 일하는 AI</p>
@@ -643,6 +644,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
       setBoard({
         lanes: Array.isArray(next?.lanes) ? next.lanes : [],
         models: next?.models && typeof next.models === 'object' ? next.models : undefined,
+        routing: (next as Record<string, unknown>)?.routing,
         todayDone: (next as Record<string, unknown>)?.todayDone
           ?? (next as Record<string, unknown>)?.today_done
           ?? (next as Record<string, unknown>)?.doneToday
@@ -674,7 +676,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
     <main className="control-room">
       <div className="control-room-head"><div><h1>관제실</h1>{decisionCount > 0 && <p className="control-decision-count">결정 대기 {decisionCount}건</p>}<p className="muted">5초마다 자동으로 새로 고쳐요.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       <TodayCard board={board} />
-      <WhoLine lanes={lanes} />
+      <WhoLine board={board} />
       <ModelUsagePanel models={board?.models} />
       {board === null && !error ? <div className="control-empty">작업 PC에서 불러오는 중…</div>
       : error && lanes.length === 0 ? <div className="control-empty">{error}</div>
