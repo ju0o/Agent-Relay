@@ -2170,7 +2170,7 @@ function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind
           <>
             <span className="update-err">업데이트를 확인하지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.</span>
             <details>
-              <summary>원문 보기</summary>
+              <summary>{'원문 보기'}</summary>
               <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>{status.errorMessage}</pre>
               {status.errorMessage && status.errorMessage.match(/40[134]|ENOTFOUND|ETIMEDOUT/) &&
                 <span className="muted" style={{ display: 'block', fontSize: 11 }}>
