@@ -1152,7 +1152,7 @@
             "node --test test/controlroom-titles-today.test.mjs"
           ],
           "ssotEvidence": "Supervisor review of the MainPC Tester v10 captures (C:\\Users\\user\\Desktop\\AgentRelay-0.3.1\\tester-v10), board now carries Korean task titles",
-          "title": "Control Room (src/frontend/controlRoom.tsx) as seen in the M"
+          "title": "오늘 끝난 일을 한눈에 보기"
         }
       ],
       "qaRuntime": [
@@ -4232,7 +4232,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Board now carries Korean task titles (night-titles.py, Founder 쉬운 용어)",
-          "title": "The board now includes a plain-Korean title for lane.current"
+          "title": "작업 이름을 쉽게 보여주기"
         },
         {
           "taskId": "JCAPP-JUPLAN-CHAT",
