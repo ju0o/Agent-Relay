@@ -570,7 +570,7 @@ function LaneView({ lane, onRefresh }: {
       </header>
       <div className="control-flow" aria-label="lane lifecycle">
         {FLOW.map((name, index) => {
-          const state = working ? (holdCurrent ? flowState(`BLOCK ${stageValue}`, index) : flowState(stageValue, index)) : 'pending';
+          const state = working && holdCurrent ? flowState(`BLOCK ${stageValue}`, index) : working ? flowState(stageValue, index) : 'pending';
           return <div className={`control-step ${state}`} key={name}><span className="control-step-dot">{state === 'done' ? '✓' : state === 'blocked' ? '!' : state === 'active' ? '●' : '○'}</span><span>{name}</span></div>;
         })}
       </div>
