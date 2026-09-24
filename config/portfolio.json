@@ -3683,6 +3683,52 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x capability checklist (orchestration/skills/context/UX) + A-22 AI 자동 배정; supervisor capability audit",
           "title": "대화 tab: when supervisor readiness is CHECKING/UNKNOWN for ov"
+        },
+        {
+          "taskId": "JCAPP-LANE-SKILLS-API",
+          "scope": "lib/relayBoard.mjs setLaneSkills(body,{exec,board,installed}) + POST /api/relay/lane-skills in operator/server.mjs: project must be a board lane, role pm|worker|qa, every name must be in the installed skills list (/api/skills), no duplicates, confirm must equal laneSkillsSentence(project, role, names) ('<project> 프로젝트의 <역할> Skill을 a, b(으)로 바꿀게요.' / '…Skill을 모두 뺄게요.'); the only write is execFile night ['lane','skills',project,role,names.join(',')||'-'] (no shell). Test with an injected exec.",
+          "files": [
+            "lib/relayBoard.mjs",
+            "operator/server.mjs",
+            "test/lane-skills-api.test.mjs"
+          ],
+          "tests": [
+            "node --test test/lane-skills-api.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder decision A-25 (2026-09-24 13:3x): Skill 장착 프로젝트·역할별 켜기/끄기, Skill 만들기 저장; engine side done (night lane skills, runner agentContext)",
+          "title": "lib/relayBoard.mjs setLaneSkills(body,{exec,board,installed}"
+        },
+        {
+          "taskId": "JCAPP-LANE-SKILLS-VIEW",
+          "scope": "Agent Relay tab lane card gets a '장착된 Skill' block from board lane.skills {pm,worker,qa}: three rows 계획 / 작업 / 검수, each listing attached skills by their Korean purpose name (skill Korean map) with an on/off switch per installed skill; flipping a switch shows the laneSkillsSentence inline with [바꾸기] [취소] (no native dialog), posts /api/relay/lane-skills, then shows '바꿨어요 · 다음 작업부터 적용돼요' or the Korean error under the row. Empty role shows '기본 규칙만 (계획대로 끝까지)'. Pure render helper + test.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/lane-skills-view.test.mjs"
+          ],
+          "tests": [
+            "node --test test/lane-skills-view.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder decision A-25 (2026-09-24 13:3x): Skill 장착 프로젝트·역할별 켜기/끄기, Skill 만들기 저장; engine side done (night lane skills, runner agentContext)",
+          "title": "Agent Relay tab lane card gets a '장착된 Skill' block from boar"
+        },
+        {
+          "taskId": "JCAPP-SKILL-SAVE",
+          "scope": "Founder A-25: Skill 만들기 can save. POST /api/skills {name, description, body, confirm}: name must match ^[a-z][a-z0-9-]{2,40}$ and must not already exist (never overwrite), body ≤ 20KB, confirm must equal '새 Skill <name>을(를) 저장할게요.'; writes ~/.agents/skills/<name>/SKILL.md with front matter (name, description) atomically (write temp + rename) and returns the created path. In the Skill 만들기 view, after the preview a [저장하기] button runs this with an inline confirm; on success show '저장했어요 · Agent Relay 탭에서 역할별로 켤 수 있어요' with a link. Tests: rejects existing names and bad names; writes the file in a temp skills root (inject the root).",
+          "files": [
+            "operator/server.mjs",
+            "lib/skillsStore.mjs",
+            "operator/public/app.js",
+            "test/skill-save.test.mjs"
+          ],
+          "tests": [
+            "node --test test/skill-save.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder decision A-25 (2026-09-24 13:3x): Skill 장착 프로젝트·역할별 켜기/끄기, Skill 만들기 저장; engine side done (night lane skills, runner agentContext)",
+          "title": "Founder A-25: Skill 만들기 can save. POST /api/skills {name, de"
         }
       ]
     },
