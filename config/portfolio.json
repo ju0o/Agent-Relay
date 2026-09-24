@@ -1106,6 +1106,21 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
           "title": "R9/R10/R11: 'Human Gate'→'사람 확인', 'Worker:/QA:'→'만드는 AI/검수하는"
+        },
+        {
+          "taskId": "AGENTRELAY-V1-DEV-WATCH-HMR-R2",
+          "scope": "From base 4e9d8667879cfa8933c13bca5a61e6c4991f741d, add the dependency-free Vite watch/HMR launcher while preserving Electron/offline behavior, and first identify and restore the missing module resolution required for npm test without adding unnecessary dependencies.",
+          "files": [
+            "package.json",
+            "scripts/dev.mjs",
+            "src/backend/main.ts",
+            "vite.config.ts"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm test"
+          ],
+          "ssotEvidence": "BACKLOG.md:25 `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행"
         }
       ],
       "qaRuntime": [
