@@ -1573,6 +1573,19 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
           "title": "실제 사용자 기록을 건드리지 않아요"
+        },
+        {
+          "taskId": "ACTL-TK-PLAIN-CARDS-ONLY",
+          "scope": "Narrowed replacement for ACTL-TK-PLAIN-CARDS-KEYBOARD(-R2) (keyboard navigation dropped). In src/actl/gui.py: a pure _card_line(row) returning '<Korean phase> · <project unless UNASSIGNED/UNKNOWN> · <first 60 chars of preview>' (phase from STATE_KO/_phase → 작업 중/결과 도착/대기/연결 끊김/확인 중; never the literals UNKNOWN or RUNNING, no pane ids), rendered with wraplength so long text cannot widen the centre column; the inspector shows 2 Korean lines (상태 · 프로젝트 · 역할) and the raw Machine/PID/Command block goes to the log only. Remove any leftover _move_card_from_event / arrow-key bindings that reference missing methods. Keep runtime_key/target semantics. Tests in tests/test_gui_plain_cards.py: _card_line never contains 'UNKNOWN', 'RUNNING' or '%' and caps length; inspector detail has no 'PID'; gui.Board has no attribute reference to an undefined _move_card.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_plain_cards.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder standing order 2026-09-24 (추천대로 자동): ACTL-TK-PLAIN-CARDS-KEYBOARD-R2 held twice on the keyboard part → 범위 줄이기",
+          "title": "Narrowed replacement for ACTL-TK-PLAIN-CARDS-KEYBOARD(-R2) ("
         }
       ],
       "qaRuntime": [
