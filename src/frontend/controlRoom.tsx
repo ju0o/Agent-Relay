@@ -416,7 +416,7 @@ function LaneView({ lane, onRefresh }: {
 }
 
 export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactElement {
-  const [board, setBoard] = useState<ControlRoomBoard>({ lanes: [] });
+  const [board, setBoard] = useState<ControlRoomBoard | null>(null);
   const [selected, setSelected] = useState(0);
   const [error, setError] = useState('');
 
@@ -443,14 +443,15 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
     return () => { alive = false; window.clearInterval(timer); };
   }, [load]);
 
-  const lanes = board.lanes ?? [];
+  const lanes = board?.lanes ?? [];
   const activeLane = lanes[Math.min(selected, Math.max(0, lanes.length - 1))];
   return (
     <main className="control-room">
       <div className="control-room-head"><div><h1>Control Room</h1><p className="muted">5초마다 board를 읽습니다 · 액션 실행 후 다시 읽습니다</p></div><button className="btn" onClick={onClose}>닫기</button></div>
-      {error && <div className="flash err">{error}</div>}
-      <ModelUsagePanel models={board.models} />
-      {!lanes.length ? <div className="control-empty">표시할 lane이 없습니다.</div> : <>
+      <ModelUsagePanel models={board?.models} />
+      {board === null && !error ? <div className="control-empty">작업 PC에서 불러오는 중…</div>
+      : error && lanes.length === 0 ? <div className="control-empty">{error}</div>
+      : !lanes.length ? null : <>
         <div className="control-tabs" role="tablist">{lanes.map((lane, index) => { const presentation = projectPresentation(lane); return <button className={`control-tab${index === selected ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelected(index)} role="tab" aria-label={`${presentation.name}: ${presentation.goal}`}><span>{presentation.name}</span><small style={{ display: 'block', marginTop: 4 }}>{presentation.goal}</small></button>; })}</div>
         {activeLane && <LaneView lane={activeLane} onRefresh={load} />}
       </>}

@@ -32,10 +32,12 @@ test("command failures and invalid JSON are typed", async () => {
   const failed = await runControlRoom("board", async () => { throw new Error("offline"); }).catch((error) => error);
   assert.ok(failed instanceof ControlRoomError);
   assert.equal(failed.code, "EXEC_FAILED");
+  assert.match(failed.message, /연결할 수 없습니다/);
 
   const invalid = await runControlRoom("approvals", async () => ({ stdout: "nope", stderr: "" })).catch((error) => error);
   assert.ok(invalid instanceof ControlRoomError);
   assert.equal(invalid.code, "INVALID_JSON");
+  assert.match(invalid.message, /응답을 읽지 못했습니다/);
 });
 
 test("planStudio:get uses roadmap get with validated project", async () => {
@@ -146,10 +148,12 @@ test("planStudio and gates surface EXEC_FAILED and INVALID_JSON", async () => {
   assert.ok(failed instanceof ControlRoomError);
   assert.equal(failed.code, "EXEC_FAILED");
   assert.equal(failed.operation, "planStudio:get");
+  assert.match(failed.message, /연결할 수 없습니다/);
 
   const invalid = await runGatesList(async () => ({ stdout: "nope", stderr: "" })).catch((e) => e);
   assert.ok(invalid instanceof ControlRoomError);
   assert.equal(invalid.code, "INVALID_JSON");
+  assert.match(invalid.message, /응답을 읽지 못했습니다/);
 });
 
 test("controlRoom:laneSet uses lane set with quoted args and parses JSON", async () => {
@@ -258,16 +262,19 @@ test("controlRoom write actions surface EXEC_FAILED and INVALID_JSON", async () 
   assert.ok(failed instanceof ControlRoomError);
   assert.equal(failed.code, "EXEC_FAILED");
   assert.equal(failed.operation, "controlRoom:laneSet");
+  assert.match(failed.message, /연결할 수 없습니다/);
 
   const invalidResume = await runControlRoomResume("agent-relay", async () => ({ stdout: "nope", stderr: "" })).catch((e) => e);
   assert.ok(invalidResume instanceof ControlRoomError);
   assert.equal(invalidResume.code, "INVALID_JSON");
   assert.equal(invalidResume.operation, "controlRoom:resume");
+  assert.match(invalidResume.message, /응답을 읽지 못했습니다/);
 
   const invalidAdd = await runControlRoomApprovalAdd("bug-fix", "hi", async () => ({ stdout: "nope", stderr: "" })).catch((e) => e);
   assert.ok(invalidAdd instanceof ControlRoomError);
   assert.equal(invalidAdd.code, "INVALID_JSON");
   assert.equal(invalidAdd.operation, "controlRoom:approvalAdd");
+  assert.match(invalidAdd.message, /응답을 읽지 못했습니다/);
 });
 
 test("injection payload stays inside one single-quoted argument", async () => {

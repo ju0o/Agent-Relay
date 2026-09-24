@@ -172,13 +172,13 @@ async function runSshJson(
   try {
     ({ stdout } = await execFileImpl('ssh', args, { shell: false, timeout: EXEC_TIMEOUT, ...options }));
   } catch (cause) {
-    throw new ControlRoomError('EXEC_FAILED', operation, `Control Room ${operation} command failed`, cause);
+    throw new ControlRoomError('EXEC_FAILED', operation, '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.', cause);
   }
 
   try {
     return JSON.parse(stdout);
   } catch (cause) {
-    throw new ControlRoomError('INVALID_JSON', operation, `Control Room ${operation} returned invalid JSON`, cause);
+    throw new ControlRoomError('INVALID_JSON', operation, '작업 PC의 응답을 읽지 못했습니다. 잠시 후 자동으로 다시 시도합니다.', cause);
   }
 }
 
@@ -193,13 +193,13 @@ export async function runControlRoom(
   try {
     ({ stdout } = await execFileImpl('ssh', args, { shell: false, timeout: EXEC_TIMEOUT }));
   } catch (cause) {
-    throw new ControlRoomError('EXEC_FAILED', operation, `Control Room ${operation} command failed`, cause);
+    throw new ControlRoomError('EXEC_FAILED', operation, '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.', cause);
   }
 
   try {
     return JSON.parse(stdout);
   } catch (cause) {
-    throw new ControlRoomError('INVALID_JSON', operation, `Control Room ${operation} returned invalid JSON`, cause);
+    throw new ControlRoomError('INVALID_JSON', operation, '작업 PC의 응답을 읽지 못했습니다. 잠시 후 자동으로 다시 시도합니다.', cause);
   }
 }
 
