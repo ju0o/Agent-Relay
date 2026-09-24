@@ -3102,6 +3102,49 @@
           ],
           "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Tester summary false alarm, 더보기 shows previous tab, duplicated working line",
           "title": "홈 '지금 일하는 중' rows read 'actl · QA 단계 · QA' (step and worker "
+        },
+        {
+          "taskId": "JCAPP-SKILL-KOREAN-CARDS",
+          "scope": "Skill cards show English descriptions and '사용 에이전트: 아직 알 수 없어요'. In operator/public/app.js add a Korean one-line map used as the card text (English description only inside a closed <details><summary>원문</summary>): archify → '구조·흐름·순서 다이어그램을 보기 좋은 그림(HTML)으로 만들어요', archify-review → '변경·이슈를 가치·비용·영향으로 검토해요', auto-night-orchestrator → '밤사이 자동 작업(Night Run)을 준비·실행·정리해요', find-skills → '필요한 Skill을 찾아서 설치를 도와줘요', founder-plan-harness → '이미 정한 계획은 다시 묻지 않고 끝까지 진행하게 하는 기본 규칙이에요', send-to-mainpc → '파일을 MainPC 바탕화면으로 안전하게 보내요'; unknown skills keep the first sentence trimmed. Categorise auto-night-orchestrator and founder-plan-harness under 자동화·운영, find-skills under 기타 or 도구. Drop the '사용 에이전트: 아직 알 수 없어요' line when unknown. Lede: 'Skill은 에이전트가 쓰는 작업 설명서예요. 새로 만들려면 아래에 내용을 적으면 미리보기를 만들어 줘요 (저장은 하지 않아요).' Extend test/skill-categories.test.mjs with the map and the dropped line.",
+          "files": [
+            "operator/public/app.js",
+            "test/skill-categories.test.mjs"
+          ],
+          "tests": [
+            "node --test test/skill-categories.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Skill cards English, JuCeipt list bullets, Agent Relay tab jargon",
+          "title": "Skill cards show English descriptions and '사용 에이전트: 아직 알 수 없"
+        },
+        {
+          "taskId": "JCAPP-JUCEIPT-LIST-TIDY",
+          "scope": "The JuCeipt receipt list renders as bullet points with a bright teal selected block, repeated '확인 후 받기' headings and the id on its own line. In operator/public/app.js/app.css render receipts as a calm list without bullets: one row per receipt = status chip ('확인 후 받기' warm, '받아도 돼요' teal) · '영수증 m2-014' · one Korean summary sentence · '빠진 부분 N개' · local date, all in one or two lines; the selected row uses a 1px teal border and slightly lighter panel (never a filled teal block with dark text); the list is sorted newest first and grouped under '확인이 필요한 영수증 N개' and '받아도 되는 영수증 N개'. Add test/juceipt-list.test.mjs asserting the row helper output contains '영수증 m2-014' and '빠진 부분 1개' and that app.css has no filled-accent background for the selected receipt row.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/juceipt-list.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juceipt-list.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Skill cards English, JuCeipt list bullets, Agent Relay tab jargon",
+          "title": "The JuCeipt receipt list renders as bullet points with a bri"
+        },
+        {
+          "taskId": "JCAPP-RELAY-TAB-PLAIN",
+          "scope": "Agent Relay tab polish in operator/public/app.js: flow chips PM/검증/Worker/QA/테스트 게이트/Human/통합 → 계획/확인/작업/검수/시험/사람 확인/반영 (keep data-step keys); title 'Agent Relay (actl 포함)' → 'Agent Relay' with lede '프로젝트마다 계획 → 작업 → 검수 → 반영이 자동으로 이어져요. 5초마다 새로 고쳐요.'; the Worker/QA order lists and '앞으로' buttons move into a closed <details><summary>담당 AI 순서 (고급)</summary>; the '멈춘 작업 (HOLD)' section title → '멈춘 작업' and when there are 0 holds render one calm line '멈춘 작업이 없어요.' instead of an empty dashed box with a '0건' pill. Update test/agent-relay-module.test.mjs for the new labels and the zero-hold line.",
+          "files": [
+            "operator/public/app.js",
+            "test/agent-relay-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/agent-relay-module.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Skill cards English, JuCeipt list bullets, Agent Relay tab jargon",
+          "title": "Agent Relay tab polish in operator/public/app.js: flow chips"
         }
       ]
     },
