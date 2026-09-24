@@ -38,7 +38,7 @@
       "pmChannel": "pm/agent-relay",
       "pmTransport": "repository-file",
       "pmState": "LOCAL_MANIFEST_PM",
-      "path": "/home/skkse12/Desktop/Projects/Core/Agent-Relay-v2-portfolio-autopilot-dogfood-03",
+      "path": "/home/skkse12/Desktop/Projects/Core/Agent-Relay-worktrees/app",
       "ssot": "repository:BACKLOG.md + config/portfolio.json",
       "owner": "codex",
       "runtime": [
