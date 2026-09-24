@@ -2384,6 +2384,52 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 AskUserQuestion: 디자인 = ② Hermes AI 느낌 (replaces glitch D; ledger A-13 edited)",
           "title": "Re-skin the operator screen to the Founder's new style 'Herm"
+        },
+        {
+          "taskId": "JCAPP-HERMES-DARK-ALWAYS",
+          "scope": "The Founder chose the Hermes dark look, but a light-mode OS/browser (headless Firefox, most Windows desktops) now gets the light variant, so the Founder never sees Hermes. Make the Hermes dark palette the default regardless of prefers-color-scheme; keep the light palette only behind a small '밝게/어둡게' toggle in 더보기 persisted in localStorage (try/catch; default dark). Tests: dark tokens apply with no stored choice under a light prefers-color-scheme; toggle switches data-theme.",
+          "files": [
+            "operator/public/app.css",
+            "operator/public/app.js",
+            "operator/public/index.html",
+            "test/founder-clean-tokens.test.mjs"
+          ],
+          "tests": [
+            "node --test test/founder-clean-tokens.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-0903 captures of 924705b; Founder chose 'Hermes AI 느낌' (A-21)",
+          "title": "The Founder chose the Hermes dark look, but a light-mode OS/"
+        },
+        {
+          "taskId": "JCAPP-HEADER-TIDY",
+          "scope": "Header layout fixes seen in captures: on 홈 the '방금' timestamp floats mid-page and '연결 세부 정보' sits alone on its own row — put timestamp and 연결 세부 정보 in the right-hand status cluster next to '실시간 연결됨'; on module tabs remove the stray short divider line above the slim bar; the Agent Relay tab eyebrow says '에이전트 릴레이' — use exact product names (Agent Relay, actl, JuPlan, JuCeipt, JuControler) everywhere, never Korean transliterations. Layout/text only; no endpoint changes. Extend test/layout-consistency.test.mjs.",
+          "files": [
+            "operator/public/app.css",
+            "operator/public/app.js",
+            "test/layout-consistency.test.mjs"
+          ],
+          "tests": [
+            "node --test test/layout-consistency.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-0903 captures of 924705b; Founder chose 'Hermes AI 느낌' (A-21)",
+          "title": "Header layout fixes seen in captures: on 홈 the '방금' timestam"
+        },
+        {
+          "taskId": "JCAPP-HOME-DONE-TODAY-RELAY",
+          "scope": "홈 '오늘 끝난 것' only counts ACCEPTED result-inbox items, so it says '오늘 끝난 작업은 아직 없어요' while Agent Relay finished dozens of tasks today. Also count Agent Relay tasks that reached VERIFIED_DONE today (local date) from the relay board data the home already loads; show count + last 3 as '프로젝트 · 쉬운 한 줄'. Pure helper + unit test.",
+          "files": [
+            "operator/public/app.js",
+            "lib/relay-board.mjs",
+            "test/home-done-today.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-done-today.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-0903 captures of 924705b; Founder chose 'Hermes AI 느낌' (A-21)",
+          "title": "홈 '오늘 끝난 것' only counts ACCEPTED result-inbox items, so it s"
         }
       ]
     },
