@@ -1168,6 +1168,23 @@
           ],
           "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27 (추천대로 자동 진행)",
           "title": "The 기록 (home/log editor) screen is a developer tool (GPT pro"
+        },
+        {
+          "taskId": "AGENTRELAY-VERSION-PER-BUILD",
+          "scope": "The app version stays 0.3.1 across builds v1-v11 so installers cannot be told apart. Add scripts/next-version.mjs that sets package.json version to 0.3.<N> where N = the count of commits on agent-relay/integration since the 0.3.1 commit (or a passed number), and show the version in 설정 and the window title suffix ('Agent Relay 0.3.N'). Do not change build scripts otherwise. Test in test/version-per-builds.test.mjs for the version computation (pure function) and that the title helper includes the version.",
+          "files": [
+            "scripts/next-version.mjs",
+            "src/shared/types.ts",
+            "src/backend/main.ts",
+            "test/version-per-build.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:server",
+            "node --test test/version-per-build.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor retrospective 2026-09-24; Founder standing order A-27",
+          "title": "The app version stays 0.3.1 across builds v1-v11 so installe"
         }
       ],
       "qaRuntime": [
