@@ -3773,6 +3773,183 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
           "title": "Status docs stopped at 9/20-21. Update (docs only): CURRENT."
+        },
+        {
+          "taskId": "JCAPP-COMPOSER-SURVIVES-TABS",
+          "scope": "H1: after visiting 대화 the '운영 담당에게 말하기' composer disappears from every tab until reload, because placeComposer() moves .controls into the conversation view's [data-composer-slot] and the next setView() replaces #view.innerHTML, deleting it. In setView(), before assigning #view.innerHTML, if .controls is inside #view move it back to <main> (main.appendChild(controls)); then placeComposer() as today. Extract the move into a small pure helper that takes (controls, view, main) so it is testable; test that after home→대화→홈→JuPlan the composer node still exists exactly once.",
+          "files": [
+            "operator/public/app.js",
+            "test/composer-survives-tabs.test.mjs"
+          ],
+          "tests": [
+            "node --test test/composer-survives-tabs.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H1: after visiting 대화 the '운영 담당에게 말하기' composer disappears "
+        },
+        {
+          "taskId": "JCAPP-DISCOVER-PARSE-SINGLE-SPACE",
+          "scope": "H2: running Claude/Codex panes show '꺼져 있어요' (actl 리모컨, 에이전트 '관찰된 담당자가 없습니다', 관리자 '바꿀 수 있는 관리자가 없습니다') because lib/state.mjs parseDiscoverLine requires 2+ spaces before the evidence column, but real `actl --discover` prints 'claude-pro    exact      UNMAPPED pid 40592: …' with ONE space after the mapping. Relax to \\s+ before evidence (mapping is a single token), so claude/codex lines parse. Add the 5 real discover lines from 2026-09-24 (claude-pro exact UNMAPPED, codex high UNMAPPED, bash/node Unknown unknown -) to test/state-parser.test.mjs and assert paneId/agent/confidence/disposition for each.",
+          "files": [
+            "lib/state.mjs",
+            "test/state-parser.test.mjs"
+          ],
+          "tests": [
+            "node --test test/state-parser.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H2: running Claude/Codex panes show '꺼져 있어요' (actl 리모컨, 에이전트"
+        },
+        {
+          "taskId": "JCAPP-HOLD-RESOLVED-STALE",
+          "scope": "H3: a HOLD whose recommended retry already runs (lane.current.taskId === hold.taskId + '-R<n>') or whose heldSeen+waitMin deadline has passed with no choice still shows as '멈춘 작업 1건' with '아무것도 안 고르면 13:02에 추천대로 진행해요' at 13:40 and an active [이대로 진행]. Add one pure holdResolved(hold, lane, now) used by holdCard, homeHoldButton, the home health count and the relay '멈춘 작업 N건' pill: resolved holds render one calm line '추천대로 다시 하는 중이에요 (N번째 시도)' with no buttons and are not counted. server chooseHold rejects a resolved hold with a Korean error. Tests for R2 match, past deadline, fresh hold.",
+          "files": [
+            "operator/public/app.js",
+            "operator/server.mjs",
+            "test/hold-card.test.mjs",
+            "test/home-hold-jump.test.mjs"
+          ],
+          "tests": [
+            "node --test test/hold-card.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H3: a HOLD whose recommended retry already runs (lane.curren"
+        },
+        {
+          "taskId": "JCAPP-HOLD-GO-CONFIRM",
+          "scope": "H4: 이대로 진행 ([data-hold-go]) posts /api/relay/hold-choice immediately via inlineRun with no confirm, unlike 승인 규칙 지우기; and uses checked.value inside .then (TypeError when no radio). Use inlineConfirm(card, '<task Korean what or id>을(를) \\'<option label>\\'(으)로 진행할게요.', '진행', …) and checked?.value ?? recommended. No native dialogs. Test in test/inline-actions.test.mjs that the hold-go path goes through inlineConfirm and survives a missing radio.",
+          "files": [
+            "operator/public/app.js",
+            "test/inline-actions.test.mjs"
+          ],
+          "tests": [
+            "node --test test/inline-actions.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H4: 이대로 진행 ([data-hold-go]) posts /api/relay/hold-choice imm"
+        },
+        {
+          "taskId": "JCAPP-DONE-GROUP-BY-PROJECT",
+          "scope": "H5: 홈/결과 '오늘 끝난 것' is ~90% identical '<project> · 작업을 마쳤어요' lines because board.done titles are English scope prefixes. In homeDone and the 결과 '오늘 끝난 것' list: items whose homeDoneLine() is the fallback are grouped into one line per project ('통합 관제 화면 12개 · actl 6개 · JuPlan 5개 끝났어요'), and only Korean-titled items get their own line (max 5, newest first). Count stays the total. Update test/home-done-today.test.mjs with a mixed fixture (3 English jucontroler-app, 1 Korean juactl) → one grouped line + one Korean line.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-done-today.test.mjs",
+            "test/results-recent.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-done-today.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H5: 홈/결과 '오늘 끝난 것' is ~90% identical '<project> · 작업을 마쳤어요' "
+        },
+        {
+          "taskId": "JCAPP-PHONE-TABBAR-FIVE",
+          "scope": "H6: at 390px the bottom nav holds 10 items (scrollWidth 684) so 승인·결과·대화·더보기 sit off-screen with no hint. At max-width 720px render only 홈, Agent Relay, 승인, 대화, 더보기 in .nav; JuPlan, JuCeipt, Tester, Skill 만들기, 결과 move to the 더보기 page as cards (same data-tab buttons). Desktop rail unchanged. Also never show the #secondary-nav popup on phone while tab==='more' (H11 overlap) and give .controls bottom padding equal to the nav height. Test the phone nav item list and the more-page card list.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/phone-more-menu.test.mjs",
+            "test/more-page.test.mjs"
+          ],
+          "tests": [
+            "node --test test/phone-more-menu.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H6: at 390px the bottom nav holds 10 items (scrollWidth 684)"
+        },
+        {
+          "taskId": "JCAPP-HOME-GUIDE-HOLD-TARGET",
+          "scope": "H7: 홈 '이럴 때 쓰세요 → 멈춘 게 있을 때 [승인 · 다시 시작]' opens 승인, which says '멈춘 레인이 없어요' while the HOLD lives on Agent Relay. Make that guide button reuse homeHoldButton's target (data-hub-lane of the first unresolved hold, else data-quick-tab=relay) with label '멈춘 작업 보기'; and when board has holds, the 승인 '사람 확인 · 다시 시작' empty line reads '멈춘 작업은 Agent Relay 탭에 있어요' with a [보러 가기] button. Tests in test/home-hub.test.mjs and test/approvals-module.test.mjs.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-hub.test.mjs",
+            "test/approvals-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-hub.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H7: 홈 '이럴 때 쓰세요 → 멈춘 게 있을 때 [승인 · 다시 시작]' opens 승인, which sa"
+        },
+        {
+          "taskId": "JCAPP-BINDING-HONEST",
+          "scope": "H8: 연결 세부 정보 says '운영 담당 연결 됨 · runtime Claude Team Opus · epoch 3 · pane %1 / 상태: 활성' while pane %1 runs `node lib/directive-loop.mjs` (actl discover: no supported Agent process) and 대화 says '준비 확인 중'. bindingMarkup must say '연결됨' only when the bound pane is discovered as a claude runtime (readAgents/panes data); otherwise '운영 담당이 지금 답할 수 없어요 · 멈춘 작업과 승인은 버튼으로 바로 처리돼요'. runtime/epoch/pane words go inside a closed <details><summary>기술 정보</summary>. Pure helper + test.",
+          "files": [
+            "operator/public/app.js",
+            "operator/server.mjs",
+            "test/binding-honest.test.mjs"
+          ],
+          "tests": [
+            "node --test test/binding-honest.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H8: 연결 세부 정보 says '운영 담당 연결 됨 · runtime Claude Team Opus · e"
+        },
+        {
+          "taskId": "JCAPP-SKILL-DRAFT-ID",
+          "scope": "H9: Skill 만들기 preview writes name: \"JuPlan 검수 도우미\" although the save rule (JCAPP-SKILL-SAVE) needs ^[a-z][a-z0-9-]{2,40}$, and description glues two fields ('…알려줘요 JuPlan 계획을 검수할 때'). Add a '저장용 이름' field auto-suggested from the Korean name (ASCII words lower-cased, Hangul dropped, fallback 'my-skill-<n>'), editable, with an inline hint when invalid; front matter name = that id, '# <Korean name>' as heading; description = '<무엇> — <언제> 쓰세요'. Under the preview one line '다음: 저장 → Agent Relay 탭에서 프로젝트·역할(검수)에 켜기'. Pure draft→markdown helper + test.",
+          "files": [
+            "operator/public/app.js",
+            "test/skill-draft-id.test.mjs"
+          ],
+          "tests": [
+            "node --test test/skill-draft-id.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H9: Skill 만들기 preview writes name: \"JuPlan 검수 도우미\" although "
+        },
+        {
+          "taskId": "JCAPP-STAGE-WORDS-ONE",
+          "scope": "H10: the same stage has different words per screen (relay sentence '지금 Worker 단계예요', home card 'QA 단계.', home list '검토 중', chips '확인/검증'), and phone shows '담당: 확인 중 · 0번째 시도예요.'. One STAGE_KO array (계획/확인/작업/검수/시험/사람 확인/반영) used by relayFlowRow sentence, homeWorking and the 홈 project cards; attempts 0 → '아직 시작 전이에요', missing worker → omit '담당:'. Tests in test/agent-relay-module.test.mjs and test/home-working-line.test.mjs assert no 'Worker'/'QA'/'0번째'.",
+          "files": [
+            "operator/public/app.js",
+            "test/agent-relay-module.test.mjs",
+            "test/home-working-line.test.mjs"
+          ],
+          "tests": [
+            "node --test test/agent-relay-module.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H10: the same stage has different words per screen (relay se"
+        },
+        {
+          "taskId": "JCAPP-JUCEIPT-ROW-TITLE",
+          "scope": "H12: all 14 JuCeipt rows read the same '영수증 m2-0NN 비용 모름이라 확인하고 받아 주세요' so the Founder cannot tell which work each receipt is for. Row primary text = the receipt's work title (request_summary / task title from lib/juceiptReceipts.mjs, Korean if present, else '영수증 <id>'), then the status sentence; when gaps are 0 and only cost is unknown say '비용만 모르고 나머지는 다 있어요'. Detail adds one line '받는 곳: JuCeipt 앱에서 [받기]'. Test in test/juceipt-list.test.mjs.",
+          "files": [
+            "lib/juceiptReceipts.mjs",
+            "operator/public/app.js",
+            "test/juceipt-list.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juceipt-list.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H12: all 14 JuCeipt rows read the same '영수증 m2-0NN 비용 모름이라 확"
+        },
+        {
+          "taskId": "JCAPP-CHAT-EMPTY-ONE-LINE",
+          "scope": "H13: 대화 with 0 records shows '가장 오래된 대화입니다' above a '대화 없음' box. When the archive is empty render only '아직 대화가 없어요. 아래에 편하게 말해 보세요.' (no history-exhausted line). Test in test/conversation-detail-fields.test.mjs.",
+          "files": [
+            "operator/public/app.js",
+            "test/conversation-detail-fields.test.mjs"
+          ],
+          "tests": [
+            "node --test test/conversation-detail-fields.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "H13: 대화 with 0 records shows '가장 오래된 대화입니다' above a '대화 없음' "
         }
       ]
     },
