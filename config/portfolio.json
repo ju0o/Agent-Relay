@@ -57,7 +57,8 @@
           "tests": [
             "npm run build:server",
             "node test/fs.test.mjs"
-          ]
+          ],
+          "title": "중첩된 작업 파일도 안전하게 이동"
         },
         {
           "taskId": "AGENTRELAY-V1-EXPORT-NESTED-PATH",
@@ -69,7 +70,8 @@
           "tests": [
             "npm run build:server",
             "node test/vnext.test.mjs"
-          ]
+          ],
+          "title": "중첩된 작업 경로도 문서로 내보내기"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-RESULT-INBOX",
@@ -84,7 +86,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm test",
             "npm run typecheck"
-          ]
+          ],
+          "title": "네 작업 결과를 한곳에서 확인"
         },
         {
           "taskId": "AGENTRELAY-NR-01-SUPERVISOR",
@@ -100,7 +103,8 @@
             "node --test test/v2/night-run.test.mjs",
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
-          ]
+          ],
+          "title": "밤샘 작업을 감독하고 결과 저장"
         },
         {
           "taskId": "AGENTRELAY-NR-02-LOOP",
@@ -112,7 +116,8 @@
           ],
           "tests": [
             "node --test test/v2/night-run.test.mjs"
-          ]
+          ],
+          "title": "끝날 때까지 작업을 이어서 실행"
         },
         {
           "taskId": "AGENTRELAY-NR-03-DRAIN",
@@ -123,7 +128,8 @@
           ],
           "tests": [
             "node --test test/v2/night-run.test.mjs"
-          ]
+          ],
+          "title": "관리 중인 작업만 안전하게 정리"
         },
         {
           "taskId": "AGENTRELAY-NR-04-RESUME",
@@ -134,7 +140,8 @@
           ],
           "tests": [
             "node --test test/v2/night-run.test.mjs"
-          ]
+          ],
+          "title": "남은 작업을 이어서 진행"
         },
         {
           "taskId": "AGENTRELAY-NR-05-DEADLINE",
@@ -145,7 +152,8 @@
           ],
           "tests": [
             "node --test test/v2/night-run.test.mjs"
-          ]
+          ],
+          "title": "마감과 중간 확인을 정확히 지키기"
         },
         {
           "taskId": "AGENTRELAY-NR-06-ASUS-SHUTDOWN",
@@ -156,7 +164,8 @@
           ],
           "tests": [
             "node --test test/v2/night-run.test.mjs"
-          ]
+          ],
+          "title": "ASUS 작업 뒤 안전하게 종료"
         },
         {
           "taskId": "AGENTRELAY-NR-07-MAINPC-WRAPPER",
@@ -167,7 +176,8 @@
           ],
           "tests": [
             "node --test test/v2/night-run.test.mjs"
-          ]
+          ],
+          "title": "불확실한 완료를 MainPC에서 차단"
         },
         {
           "taskId": "AGENTRELAY-NR-08-SAFETY-QA",
@@ -177,7 +187,8 @@
           ],
           "tests": [
             "node --test test/v2/night-run.test.mjs"
-          ]
+          ],
+          "title": "여러 상황에서도 안전성 확인"
         },
         {
           "taskId": "AGENTRELAY-V1-DEVTOOLS-DEV-ONLY",
@@ -189,7 +200,8 @@
             "npm run build:server",
             "npm run typecheck",
             "npm test"
-          ]
+          ],
+          "title": "개발 중 도구창을 바로 열기"
         },
         {
           "taskId": "AGENTRELAY-V1-DF-SEARCH-TYPE-FILTER",
@@ -201,7 +213,8 @@
           "tests": [
             "npm run typecheck",
             "npm run build:client"
-          ]
+          ],
+          "title": "작업을 검색하고 종류별로 보기"
         },
         {
           "taskId": "AGENTRELAY-V1-UNSAVED-EDIT-WARNING",
@@ -214,7 +227,8 @@
             "npm run typecheck",
             "npm run build",
             "npm test"
-          ]
+          ],
+          "title": "저장하지 않은 내용을 닫기 전 알림"
         },
         {
           "taskId": "AGENTRELAY-V1-QUICK-CAPTURE-FOLLOWUP",
@@ -225,7 +239,8 @@
           "tests": [
             "npm run typecheck"
           ],
-          "ssotEvidence": "BACKLOG.md:37 quote, or Founder direction 2026-09-23"
+          "ssotEvidence": "BACKLOG.md:37 quote, or Founder direction 2026-09-23",
+          "title": "새 기록을 저장 직후 바로 확인"
         },
         {
           "taskId": "AGENTRELAY-V1-KEYBOARD-RESULT-HANDOFF",
@@ -236,7 +251,8 @@
           "tests": [
             "npm run typecheck"
           ],
-          "ssotEvidence": "BACKLOG.md:31 quote, or Founder direction 2026-09-23"
+          "ssotEvidence": "BACKLOG.md:31 quote, or Founder direction 2026-09-23",
+          "title": "키보드로 결과 파일 열기"
         },
         {
           "taskId": "AGENTRELAY-V1-TOUCH-DRAG-REORDER",
@@ -248,7 +264,8 @@
           "tests": [
             "npm run typecheck"
           ],
-          "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23"
+          "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23",
+          "title": "터치로 작업 순서 바꾸기"
         },
         {
           "taskId": "AGENTRELAY-V1-RESTORE-LAST-AGENT",
@@ -260,7 +277,8 @@
             "npm run typecheck",
             "npm run build"
           ],
-          "ssotEvidence": "BACKLOG.md:34 \"마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원\""
+          "ssotEvidence": "BACKLOG.md:34 \"마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원\"",
+          "title": "마지막 작업 담당자를 다시 선택"
         },
         {
           "taskId": "AGENTRELAY-V1-UPDATER-PACKAGE-GUARD",
@@ -273,7 +291,8 @@
             "npm run test:v03",
             "npm run typecheck"
           ],
-          "ssotEvidence": "BACKLOG.md:36 \"electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨\""
+          "ssotEvidence": "BACKLOG.md:36 \"electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨\"",
+          "title": "업데이트 기능 누락을 미리 차단"
         },
         {
           "taskId": "AGENTRELAY-V1-WORK-TAB-ORDER",
@@ -289,7 +308,8 @@
             "node test/v03.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "BACKLOG.md:33 Work Tab 순서 영구 저장 — v0.3은 session-only"
+          "ssotEvidence": "BACKLOG.md:33 Work Tab 순서 영구 저장 — v0.3은 session-only",
+          "title": "작업 탭 순서를 계속 유지"
         },
         {
           "taskId": "AGENTRELAY-V1-DEV-WATCH-HMR",
@@ -304,7 +324,8 @@
             "npm run typecheck",
             "npm test"
           ],
-          "ssotEvidence": "BACKLOG.md:25 `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행"
+          "ssotEvidence": "BACKLOG.md:25 `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행",
+          "title": "저장하면 개발 화면을 즉시 갱신"
         },
         {
           "taskId": "AGENTRELAY-ATOMIC-PERSISTENCE",
@@ -317,7 +338,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "저장 중 꺼져도 기록 보존"
         },
         {
           "taskId": "AGENTRELAY-NIGHT-REPORT-EVIDENCE",
@@ -330,7 +352,8 @@
             "node --test test/v2/night-run.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "밤샘 작업 결과를 자세히 확인"
         },
         {
           "taskId": "AGENTRELAY-CORE-STATUS-JSON",
@@ -343,7 +366,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "현재 상태를 기계가 읽기 쉽게 제공"
         },
         {
           "taskId": "AGENTRELAY-V1-COVER-CORE-TESTS",
@@ -355,7 +379,8 @@
             "npm test",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "자동 실행에서도 전체 안정성 점검"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-CORRUPT-STATE-FAIL-CLOSED",
@@ -368,7 +393,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "손상된 상태에서 안전하게 멈춤"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-NIGHT-STATUS-EVIDENCE",
@@ -381,7 +407,8 @@
             "node --test test/v2/night-run.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "야간 상태 문제를 정확히 구분"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-PM-FILE-CONTRACT",
@@ -395,7 +422,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "qa/CORE_V1_REBASELINE_REPORT.md:66-68 \"Add the repository-backed PM intake/result return contract for the temporary codex-chatgpt-web bootstrap without making it a permanent dependency.\""
+          "ssotEvidence": "qa/CORE_V1_REBASELINE_REPORT.md:66-68 \"Add the repository-backed PM intake/result return contract for the temporary codex-chatgpt-web bootstrap without making it a permanent dependency.\"",
+          "title": "채팅으로 작업을 안전하게 주고받기"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-LIFECYCLE-EVENTS",
@@ -408,7 +436,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay 고도화 우선, reliability and observability"
+          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay 고도화 우선, reliability and observability",
+          "title": "작업 진행 이력을 남겨 원인 확인"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-STALE-LOCK-FAIL-CLOSED",
@@ -421,7 +450,8 @@
             "node --test test/v2/night-run.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay 고도화 우선, reliability and operator UX"
+          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay 고도화 우선, reliability and operator UX",
+          "title": "멈춘 잠금과 실행 중 잠금 구분"
         },
         {
           "taskId": "AGENTRELAY-STATE-SHAPE-FAIL-CLOSED",
@@ -434,7 +464,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "BACKLOG.md:5-8 \"existing CORE V1 PM → Worker → RESULT_PACKET → independent QA → ACCEPT/NEXT runner remains the only execution engine\""
+          "ssotEvidence": "BACKLOG.md:5-8 \"existing CORE V1 PM → Worker → RESULT_PACKET → independent QA → ACCEPT/NEXT runner remains the only execution engine\"",
+          "title": "잘못된 저장 상태를 안전하게 차단"
         },
         {
           "taskId": "AGENTRELAY-CORE-SNAPSHOT-CURRENT-TASK",
@@ -447,7 +478,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: \"Prefer reliability, observability and operator UX items from BACKLOG.md.\""
+          "ssotEvidence": "Founder direction 2026-09-23: \"Prefer reliability, observability and operator UX items from BACKLOG.md.\"",
+          "title": "현재 작업 상태를 정확히 표시"
         },
         {
           "taskId": "AGENTRELAY-CORE-LIFECYCLE-SNAPSHOT",
@@ -460,7 +492,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: \"Prefer reliability, observability and operator UX items from BACKLOG.md.\""
+          "ssotEvidence": "Founder direction 2026-09-23: \"Prefer reliability, observability and operator UX items from BACKLOG.md.\"",
+          "title": "각 작업의 최근 진행 상태 표시"
         },
         {
           "taskId": "AGENTRELAY-NIGHT-REPORT-LIFECYCLE-SUMMARY",
@@ -473,7 +506,8 @@
             "node --test test/v2/night-run.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: \"harden it as the automation core that runs every project's PM → Worker → QA → promotion loop unattended\""
+          "ssotEvidence": "Founder direction 2026-09-23: \"harden it as the automation core that runs every project's PM → Worker → QA → promotion loop unattended\"",
+          "title": "밤샘 작업의 최근 진행 상황 표시"
         },
         {
           "taskId": "AGENTRELAY-CR-01-BOARD-BACKEND",
@@ -489,7 +523,8 @@
             "node test/controlRoom.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23 (chat: 이런 방식 맞음 — Control Room canvas); approval rule A-01"
+          "ssotEvidence": "Founder direction 2026-09-23 (chat: 이런 방식 맞음 — Control Room canvas); approval rule A-01",
+          "title": "작업 현황판을 실시간으로 연결"
         },
         {
           "taskId": "AGENTRELAY-CR-02-CONTROL-ROOM-VIEW",
@@ -503,7 +538,8 @@
             "npm run typecheck",
             "npm run build:client"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23 (Control Room canvas, Main artboard); approval rule A-01"
+          "ssotEvidence": "Founder direction 2026-09-23 (Control Room canvas, Main artboard); approval rule A-01",
+          "title": "현황판에서 작업 진행 단계 확인"
         },
         {
           "taskId": "AGENTRELAY-CR-03-APPROVALS-VIEW",
@@ -521,7 +557,8 @@
             "npm run typecheck",
             "npm run build:client"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23 (chat: 승인 내역 삭제 수정 및 승인 구조); approval rule A-01"
+          "ssotEvidence": "Founder direction 2026-09-23 (chat: 승인 내역 삭제 수정 및 승인 구조); approval rule A-01",
+          "title": "설립자 승인 내역을 쉽게 관리"
         },
         {
           "taskId": "AGENTRELAY-CR-04-PLAN-STUDIO-BACKEND",
@@ -536,7 +573,8 @@
             "node test/controlRoom.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23 (chat: 다이어그램으로 Task 제작 → 승인하면 자동 진행); approval rule A-01"
+          "ssotEvidence": "Founder direction 2026-09-23 (chat: 다이어그램으로 Task 제작 → 승인하면 자동 진행); approval rule A-01",
+          "title": "계획 작성과 승인을 연결"
         },
         {
           "taskId": "AGENTRELAY-CR-05-PLAN-STUDIO-VIEW",
@@ -550,7 +588,8 @@
             "npm run typecheck",
             "npm run build:client"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23 (Plan Studio prototype); approval rule A-01"
+          "ssotEvidence": "Founder direction 2026-09-23 (Plan Studio prototype); approval rule A-01",
+          "title": "계획을 보고 수정해 자동 진행"
         },
         {
           "taskId": "AGENTRELAY-CR-06-CONTROL-ACTIONS-BACKEND",
@@ -566,7 +605,7 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23 (canvas Next artboard items 02/04/05: '더 고도화할 내용있으면 Canvas로 공유해주고 이후 다음 이어서 계속 작업'); approval rule A-01",
-          "title": "Control Room write actions (canvas Next item 02): extend src"
+          "title": "작업 재개와 승인 작업을 연결"
         },
         {
           "taskId": "AGENTRELAY-CR-07-CONTROL-ACTIONS-VIEW",
@@ -580,7 +619,7 @@
             "npm run build:client"
           ],
           "ssotEvidence": "Founder direction 2026-09-23 (canvas Next artboard items 02/04/05: '더 고도화할 내용있으면 Canvas로 공유해주고 이후 다음 이어서 계속 작업'); approval rule A-01",
-          "title": "Control Room buttons (canvas Next item 02) in src/frontend/c"
+          "title": "작업과 검수 담당자를 바꾸고 다시 시작하기"
         },
         {
           "taskId": "AGENTRELAY-CR-08-MODEL-AND-APPROVAL-STATS",
@@ -596,7 +635,7 @@
             "npm run build:client"
           ],
           "ssotEvidence": "Founder direction 2026-09-23 (canvas Next artboard items 02/04/05: '더 고도화할 내용있으면 Canvas로 공유해주고 이후 다음 이어서 계속 작업'); approval rule A-01",
-          "title": "Model quota board and approval learning (canvas Next items 0"
+          "title": "모델 사용량과 승인 규칙 보기"
         },
         {
           "taskId": "AGENTRELAY-CR-09-START-VIEW",
@@ -626,7 +665,8 @@
             "npm run typecheck",
             "node test/v03.test.mjs"
           ],
-          "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23"
+          "ssotEvidence": "BACKLOG.md:35 quote, or Founder direction 2026-09-23",
+          "title": "화면에서 항목을 손가락으로 다시 정렬하기"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-STALE-LOCK-FAIL-CLOSED-R2",
@@ -639,7 +679,8 @@
             "node --test test/v2/night-run.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay 고도화 우선, reliability and operator UX"
+          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay 고도화 우선, reliability and operator UX",
+          "title": "멈춘 작업을 안전하게 다시 실행하기"
         },
         {
           "taskId": "AGENTRELAY-CORE-SNAPSHOT-CURRENT-TASK-R2",
@@ -652,7 +693,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: 'Prefer reliability, observability and operator UX items from BACKLOG.md.'"
+          "ssotEvidence": "Founder direction 2026-09-23: 'Prefer reliability, observability and operator UX items from BACKLOG.md.'",
+          "title": "현재 진행 중인 작업을 먼저 보여주기"
         },
         {
           "taskId": "AGENTRELAY-V1-OFFLINE-E2E",
@@ -666,7 +708,8 @@
             "npm run test:v2:runner",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-24"
+          "ssotEvidence": "Founder direction 2026-09-24",
+          "title": "인터넷 없이 전체 점검 한 번에 실행하기"
         },
         {
           "taskId": "AGENTRELAY-V1-QUICKSTART",
@@ -680,7 +723,8 @@
             "npm run test:v2:runner",
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-24"
+          "ssotEvidence": "Founder direction 2026-09-24",
+          "title": "처음 쓰는 방법을 쉽게 안내하기"
         },
         {
           "taskId": "AGENTRELAY-FIRST-RUN-GUIDE",
@@ -693,7 +737,8 @@
           "tests": [
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "첫 화면에서 저장 폴더를 쉽게 고르기"
         },
         {
           "taskId": "AGENTRELAY-CONTROLROOM-KO",
@@ -704,7 +749,8 @@
           "tests": [
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "관제실에 프로젝트 이름과 목표 보여주기"
         },
         {
           "taskId": "AGENTRELAY-PLANSTUDIO-KO",
@@ -715,7 +761,8 @@
           "tests": [
             "npm run typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "계획에서 프로젝트 이름과 목표 보여주기"
         },
         {
           "taskId": "AGENTRELAY-APP-PROJECT-NAMES-FIX",
@@ -733,7 +780,7 @@
             "npm run build:client"
           ],
           "ssotEvidence": "Supervisor review of the Windows Tester captures of v3 on MainPC (2026-09-24 08:59, C:\\Users\\user\\Desktop\\AgentRelay-0.3.1\\tester-v3); Founder non-developer readability rule",
-          "title": "Fix project labels in the Control Room tabs and the Plan Stu"
+          "title": "프로젝트 이름을 정확하게 표시하기"
         },
         {
           "taskId": "AGENTRELAY-OFFLINE-LOADING-STATES",
@@ -749,7 +796,7 @@
             "node --test test/controlRoom.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "Make the ASUS-unreachable and loading states understandable."
+          "title": "연결이 끊겼을 때 상태를 쉽게 알려주기"
         },
         {
           "taskId": "AGENTRELAY-DEFAULT-START-CONTROLROOM",
@@ -765,7 +812,7 @@
             "node --test test/start-view.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "Open the app on Control Room instead of the log editor. Move"
+          "title": "처음부터 관제실 화면으로 열기"
         },
         {
           "taskId": "AGENTRELAY-FIRSTRUN-COPY",
@@ -782,7 +829,7 @@
             "node --test test/first-run-copy.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "Rewrite the first-run data-folder screen and product name fo"
+          "title": "첫 화면 문구를 쉽게 바꾸기"
         },
         {
           "taskId": "AGENTRELAY-DECISION-BADGES",
@@ -799,7 +846,7 @@
             "node --test test/lane-attention.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "Surface lanes that need the Founder. Add a pure exported hel"
+          "title": "결정이 필요한 작업을 먼저 보여주기"
         },
         {
           "taskId": "AGENTRELAY-APPROVALS-NAV-KO",
@@ -816,7 +863,7 @@
             "node --test test/cr08.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "Make approval rules findable and readable. In src/frontend/A"
+          "title": "승인 규칙을 쉽게 찾아보고 이해하기"
         },
         {
           "taskId": "AGENTRELAY-TOPBAR-SCROLLBAR-POLISH",
@@ -831,7 +878,7 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "CSS-only polish in src/frontend/style.css: (a) topbar: .topb"
+          "title": "상단 메뉴와 화면 표시를 보기 좋게 다듬기"
         },
         {
           "taskId": "AGENTRELAY-A11Y-FOCUS",
@@ -848,7 +895,7 @@
             "node --test test/a11y-guard.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "Accessibility basics. In src/frontend/style.css add a global"
+          "title": "키보드로 현재 위치를 쉽게 알아보기"
         },
         {
           "taskId": "AGENTRELAY-HERMES-RESKIN",
@@ -864,7 +911,7 @@
             "node --test test/reskin-guard.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
-          "title": "Re-skin to the Founder's Hermes style (Founder choice 2026-0"
+          "title": "전체 화면을 차분한 어두운 분위기로 바꾸기"
         },
         {
           "taskId": "AGENTRELAY-TOPBAR-FOUNDER-FIRST",
@@ -880,7 +927,7 @@
             "node --test test/topbar-founder-first.test.mjs"
           ],
           "ssotEvidence": "Supervisor visual review of Agent Relay v6 Linux Tester captures (~/jc-tester/agent-relay-v6/); Founder 2026-09-24 launch-quality request",
-          "title": "The top bar still leads with developer tools. In src/fronten"
+          "title": "필요한 메뉴를 먼저 찾아보기"
         },
         {
           "taskId": "AGENTRELAY-CONTROLROOM-PLAIN-2",
@@ -896,7 +943,7 @@
             "node --test test/controlroom-plain-2.test.mjs"
           ],
           "ssotEvidence": "Supervisor visual review of Agent Relay v6 Linux Tester captures (~/jc-tester/agent-relay-v6/); Founder 2026-09-24 launch-quality request",
-          "title": "Remaining jargon and empty values in the Control Room (src/f"
+          "title": "관제실 문구를 더 쉽게 이해하기"
         },
         {
           "taskId": "AGENTRELAY-PLANSTUDIO-FOUNDER-VIEW",
@@ -912,7 +959,7 @@
             "node --test test/planstudio-founder-view.test.mjs"
           ],
           "ssotEvidence": "Supervisor visual review of Agent Relay v7 Linux Tester captures (~/jc-tester/agent-relay-v7/); Founder 2026-09-24 launch-quality request",
-          "title": "Plan Studio (src/frontend/planStudio.tsx) is still English-h"
+          "title": "계획 화면을 더 쉽게 이해하기"
         },
         {
           "taskId": "AGENTRELAY-CONTROLROOM-LEFTOVERS",
@@ -927,7 +974,7 @@
             "node --test test/controlroom-plain-2.test.mjs"
           ],
           "ssotEvidence": "Supervisor visual review of Agent Relay v7 Linux Tester captures (~/jc-tester/agent-relay-v7/); Founder 2026-09-24 launch-quality request",
-          "title": "Control Room leftovers in src/frontend/controlRoom.tsx: page"
+          "title": "관제실의 어려운 표현을 쉽게 바꾸기"
         }
       ],
       "qaRuntime": [
@@ -987,7 +1034,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"Windows process/handshake counts, fault recovery ... require independent QA\"; Founder direction 2026-09-23"
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"Windows process/handshake counts, fault recovery ... require independent QA\"; Founder direction 2026-09-23",
+          "title": "끊겨도 안전하게 다시 연결"
         },
         {
           "taskId": "ACTL-TUI-EVENT-COALESCE",
@@ -999,7 +1047,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:15-16 \"A refresh expanded into roughly 19 logical remote operations\"; docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:45-46 \"topology notifications ... a 60-second health refresh is the fallback\""
+          "ssotEvidence": "docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:15-16 \"A refresh expanded into roughly 19 logical remote operations\"; docs/incidents/P0_WINDOWS_REMOTE_TRANSPORT_FIX.md:45-46 \"topology notifications ... a 60-second health refresh is the fallback\"",
+          "title": "필요한 변화만 빠르게 갱신"
         },
         {
           "taskId": "ACTL-TMUX-ERROR-FRAME-RECOVERY",
@@ -1011,7 +1060,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "오류 뒤에도 결과를 안전히 전달"
         },
         {
           "taskId": "ACTL-BATCH-PANE-METADATA",
@@ -1027,7 +1077,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "ROOT_CAUSE_REPORT.md:95-102 \"At the measured 19-operation expansion this is\""
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:95-102 \"At the measured 19-operation expansion this is\"",
+          "title": "ASUS 조회를 줄여 더 빠르게 표시"
         },
         {
           "taskId": "ACTL-WINDOWS-CLOCK-FALLBACK",
@@ -1039,7 +1090,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "qa/V2_DOGFOOD_REMOTE_SCHEDULER_REPORT.md:75 \"time.clock_gettime missing\" is a pre-existing Windows failure cluster"
+          "ssotEvidence": "qa/V2_DOGFOOD_REMOTE_SCHEDULER_REPORT.md:75 \"time.clock_gettime missing\" is a pre-existing Windows failure cluster",
+          "title": "컴퓨터에서도 최신 상태 확인"
         },
         {
           "taskId": "ACTL-CODEX-DYNAMIC-PANE-REGRESSION",
@@ -1051,7 +1103,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "여러 화면에서도 결과를 정확히 분리"
         },
         {
           "taskId": "ACTL-RUNTIME-DISCOVERY-BOOT",
@@ -1063,7 +1116,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 \"slow runtime discovery after ASUS boot\""
+          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 \"slow runtime discovery after ASUS boot\"",
+          "title": "ASUS 부팅 후에도 안정적으로 찾기"
         },
         {
           "taskId": "ACTL-PREVIEW-TIMEOUT-BOUND",
@@ -1076,7 +1130,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 \"repeated preview 10s timeout\""
+          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 \"repeated preview 10s timeout\"",
+          "title": "미리보기가 멈춰도 화면 유지"
         },
         {
           "taskId": "ACTL-DISCOVER-JSON",
@@ -1090,7 +1145,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder direction 2026-09-23: 'actl로 tmux pane 모니터링 … 각 프로젝트별 흐름을 실시간으로' (Control Room); canvas Next item 03; approval rule A-01",
-          "title": "Read-only machine output for Agent Relay's Control Room tmux"
+          "title": "에이전트 정보를 읽기 쉽게 제공"
         },
         {
           "taskId": "ACTL-REJECT-NUMERIC-TMUX-SESSION",
@@ -1102,7 +1157,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "ROOT_CAUSE_REPORT.md:272-274 `RemoteTransport now selects only a listed session with a non-numeric session name; numeric auto-numbered sessions such as $0 are rejected fail-closed`"
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:272-274 `RemoteTransport now selects only a listed session with a non-numeric session name; numeric auto-numbered sessions such as $0 are rejected fail-closed`",
+          "title": "잘못된 숫자 이름 연결 차단"
         },
         {
           "taskId": "ACTL-PANE-BOARD-ALIASES",
@@ -1114,7 +1170,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "보기 이름을 내 방식으로 관리"
         },
         {
           "taskId": "ACTL-PREVIEW-TIMEOUT-BOUND-R2",
@@ -1126,7 +1183,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 'repeated preview 10s timeout'"
+          "ssotEvidence": "qa/V2_DOGFOOD_05_SEND_COMMIT_COPY_TRUTH_REPORT.md:101-105 'repeated preview 10s timeout'",
+          "title": "정상 문장 속 오류 오인 방지"
         },
         {
           "taskId": "ACTL-DISPOSABLE-BOARD-E2E",
@@ -1139,7 +1197,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "임시 화면으로 안전하게 결과 확인"
         },
         {
           "taskId": "ACTL-BOARD-OPEN-ON-DEMAND",
@@ -1151,7 +1210,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "필요할 때만 전체 보드 열기"
         },
         {
           "taskId": "ACTL-LIVE-DISPOSABLE-E2E",
@@ -1166,7 +1226,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: actl E2E = Tester가 자동으로, 일회용 tmux 세션·스텁 에이전트); approval rule A-12",
-          "title": "Live Tester script scripts/e2e_disposable.sh [--ssh HOST]: c"
+          "title": "실제 환경에서 전체 흐름 확인"
         },
         {
           "taskId": "ACTL-LIVE-E2E-SSH-QUOTING",
@@ -1179,7 +1239,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder choice 2026-09-23 actl E2E = Tester 자동 (A-12); supervisor live run reproduced the --ssh failure",
-          "title": "Fix scripts/e2e_disposable.sh --ssh mode: the remote wait lo"
+          "title": "원격 실행도 오류 없이 진행"
         },
         {
           "taskId": "ACTL-E2E-SESSION-COLLISION",
@@ -1191,7 +1251,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: fix open defects and reliability problems; add missing regression/integration test coverage for existing behavior"
+          "ssotEvidence": "Founder direction 2026-09-23: fix open defects and reliability problems; add missing regression/integration test coverage for existing behavior",
+          "title": "동시 실행에도 화면 충돌 방지"
         },
         {
           "taskId": "ACTL-TRANSPORT-RECONNECT-REGRESSION",
@@ -1202,7 +1263,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: fix open defects and reliability problems; add missing regression/integration test coverage for existing behavior"
+          "ssotEvidence": "Founder direction 2026-09-23: fix open defects and reliability problems; add missing regression/integration test coverage for existing behavior",
+          "title": "끊겨도 새 연결로 자동 회복"
         },
         {
           "taskId": "ACTL-REMOTE-RUNTIME-FAIL-CLOSED",
@@ -1214,7 +1276,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "원격 오류를 알기 쉽게 안내"
         },
         {
           "taskId": "ACTL-OPENCODE-ACP-CLEANUP",
@@ -1226,7 +1289,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "작업이 끝나면 뒷정리"
         },
         {
           "taskId": "ACTL-WEB-BOARD-LIVE-COUNTS",
@@ -1240,7 +1304,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "actl direction: fix open defects (Founder 2026-09-23); defect observed in ProtoActl recreation of serve.py @ 1a91b42",
-          "title": "Fix the web board (serve.py BOARD_HTML) header counters and "
+          "title": "에이전트 상태를 정확히 표시"
         },
         {
           "taskId": "ACTL-SSH-DISCONNECT-DIAG-DOC",
@@ -1251,7 +1315,8 @@
           "tests": [
             "python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-24: Authorize bounded diagnosis and documentation of the remaining SSH disconnect and DA-response unknowns, with no transport redesign."
+          "ssotEvidence": "Founder direction 2026-09-24: Authorize bounded diagnosis and documentation of the remaining SSH disconnect and DA-response unknowns, with no transport redesign.",
+          "title": "연결 문제와 조치를 쉽게 안내"
         },
         {
           "taskId": "ACTL-DA-RESPONSE-DIAG-DOC",
@@ -1262,7 +1327,8 @@
           "tests": [
             "python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"The Founder interactive SSH disconnect root cause remains UNKNOWN\" and \"The DA/escape response leak remains UNKNOWN\""
+          "ssotEvidence": "ROOT_CAUSE_REPORT.md:232-239 \"The Founder interactive SSH disconnect root cause remains UNKNOWN\" and \"The DA/escape response leak remains UNKNOWN\"",
+          "title": "응답 문제를 근거 있게 점검"
         },
         {
           "taskId": "ACTL-QUICKSTART-E2E",
@@ -1273,7 +1339,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "오프라인 흐름을 쉽게 시작"
         },
         {
           "taskId": "ACTL-TK-SUMMARY-HYDRATED-COUNTS",
@@ -1299,7 +1366,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
-          "title": "Make every SEND/COPY/refresh outcome visible without opening"
+          "title": "보내기와 복사 결과를 바로 확인"
         },
         {
           "taskId": "ACTL-TK-EMPTY-ERROR-STATES",
@@ -1312,7 +1379,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
-          "title": "Give empty and error states a meaning plus a next step in sr"
+          "title": "빈 화면에도 다음 행동 안내"
         },
         {
           "taskId": "ACTL-TK-KOREAN-LABELS",
@@ -1325,7 +1392,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
-          "title": "Replace Founder-facing English and dead controls in src/actl"
+          "title": "화면 문구를 쉬운 한국어로 통일"
         },
         {
           "taskId": "ACTL-TK-PLAIN-CARDS-KEYBOARD",
@@ -1339,7 +1406,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
-          "title": "Simplify cards and inspector and add keyboard basics in src/"
+          "title": "카드를 간결하게 보고 쉽게 이동"
         },
         {
           "taskId": "ACTL-TK-HERMES-RESKIN",
@@ -1352,7 +1419,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
-          "title": "Re-skin the Tk board to the Founder's Hermes hub style (Foun"
+          "title": "창업자 스타일로 화면 통일"
         },
         {
           "taskId": "ACTL-TK-SIDEBAR-BRAND-KO",
@@ -1365,7 +1432,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Supervisor visual review of the updated Tk board (captures ~/jc-tester/actl-review/); Founder 2026-09-24 launch-quality request",
-          "title": "Remaining English in the Tk board chrome (src/actl/gui.py), "
+          "title": "보드 이름과 상태를 한국어로 표시"
         },
         {
           "taskId": "ACTL-TK-UNREACHABLE-LAYOUT",
@@ -1378,7 +1445,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Supervisor visual review of the updated Tk board (captures ~/jc-tester/actl-review/); Founder 2026-09-24 launch-quality request",
-          "title": "When ASUS is unreachable the long error sentence (plus the r"
+          "title": "연결 오류에도 화면 폭 유지"
         },
         {
           "taskId": "ACTL-TK-PLAIN-CARDS-KEYBOARD-R2",
@@ -1390,7 +1457,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)"
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
+          "title": "미리보기에서 방향키 오작동 방지"
         }
       ],
       "qaRuntime": [
@@ -1429,7 +1497,8 @@
             "pnpm --filter @juplan/project-scanner test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:68 DEC-G011: test-directory docs/config files are double-classified"
+          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:68 DEC-G011: test-directory docs/config files are double-classified",
+          "title": "시험 폴더 자료를 올바르게 분류"
         },
         {
           "taskId": "JUPLAN-G013-CLI-ERROR-MESSAGE",
@@ -1442,7 +1511,8 @@
             "pnpm --filter @juplan/agent-provider test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:70 DEC-G013: valid is_error/non-string CLI envelopes receive a misleading parse error"
+          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:70 DEC-G013: valid is_error/non-string CLI envelopes receive a misleading parse error",
+          "title": "잘못된 오류를 구분해 안내"
         },
         {
           "taskId": "JUPLAN-G014-CLI-FAILURE-TESTS",
@@ -1454,7 +1524,8 @@
             "pnpm --filter @juplan/agent-provider test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:71 DEC-G014: default invokeClaudeCli ENOENT/nonzero paths lack vitest coverage"
+          "ssotEvidence": "JuPlan-Private/docs/decisions/DECISION_LOG.md:71 DEC-G014: default invokeClaudeCli ENOENT/nonzero paths lack vitest coverage",
+          "title": "실패 상황도 안전하게 확인"
         },
         {
           "taskId": "JUPLAN-G015-EXPORT-BOUNDARY",
@@ -1469,7 +1540,8 @@
             "pnpm --filter @juplan/agent-provider test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "DECISION_LOG.md:72 \"packages/agent-provider root re-exports ClaudeCodeProvider alongside types; Core depends on types.ts only is convention, not package-export enforced\""
+          "ssotEvidence": "DECISION_LOG.md:72 \"packages/agent-provider root re-exports ClaudeCodeProvider alongside types; Core depends on types.ts only is convention, not package-export enforced\"",
+          "title": "사용 범위를 안전하게 구분"
         },
         {
           "taskId": "JUPLAN-G009-ROOT-ENTRYPOINT",
@@ -1482,7 +1554,8 @@
             "pnpm --filter @juplan/project-scanner test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "DECISION_LOG.md:67 \"P2 scanner's entry-point Gap heuristic checks for index.* anywhere in the scanned tree, not scoped to the root package specifically\""
+          "ssotEvidence": "DECISION_LOG.md:67 \"P2 scanner's entry-point Gap heuristic checks for index.* anywhere in the scanned tree, not scoped to the root package specifically\"",
+          "title": "프로젝트 시작점을 정확히 찾기"
         },
         {
           "taskId": "JUPLAN-G008-WORKSPACE-MANIFESTS",
@@ -1495,7 +1568,8 @@
             "pnpm --filter @juplan/project-scanner test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "DECISION_LOG.md:66 \"DEC-G008 ... workspace member manifests ... are not individually parsed for their own dependencies ... GAP\""
+          "ssotEvidence": "DECISION_LOG.md:66 \"DEC-G008 ... workspace member manifests ... are not individually parsed for their own dependencies ... GAP\"",
+          "title": "구성원별 사용 도구를 확인"
         },
         {
           "taskId": "JUPLAN-SCANNER-SYMLINK-CYCLES",
@@ -1508,7 +1582,8 @@
             "pnpm --filter @juplan/project-scanner test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "순환 폴더로 멈추지 않기"
         },
         {
           "taskId": "JUPLAN-UNDO-HISTORY-CLEANUP",
@@ -1521,7 +1596,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "되돌리기를 깔끔하게 처리"
         },
         {
           "taskId": "JUPLAN-G007-DRAFT-LOCK",
@@ -1534,7 +1610,8 @@
             "pnpm --filter @juplan/runtime test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "docs/decisions/DECISION_LOG.md:65 \"multi-process/concurrent access to `.juplan/plan/draft.json` is unhandled ... file locking deferred\""
+          "ssotEvidence": "docs/decisions/DECISION_LOG.md:65 \"multi-process/concurrent access to `.juplan/plan/draft.json` is unhandled ... file locking deferred\"",
+          "title": "동시 수정으로 덮어쓰기 방지"
         },
         {
           "taskId": "JUPLAN-RUNTIME-SNAPSHOT-LOCK",
@@ -1547,7 +1624,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "확정 중 동시 수정을 막기"
         },
         {
           "taskId": "JUPLAN-PLAN-CORE-EVIDENCE-REGRESSION",
@@ -1559,7 +1637,8 @@
             "pnpm --filter @juplan/plan-core test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "근거 없는 항목을 미리 찾기"
         },
         {
           "taskId": "JUPLAN-SCANNER-MALFORMED-DEPS",
@@ -1572,7 +1651,8 @@
             "pnpm --filter @juplan/project-scanner test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "잘못된 사용 정보는 제외"
         },
         {
           "taskId": "JUPLAN-PLANCORE-VALIDATOR-COVERAGE",
@@ -1584,7 +1664,8 @@
             "pnpm --filter @juplan/plan-core test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "계획 오류를 미리 발견"
         },
         {
           "taskId": "JUPLAN-RUNTIME-HTTP-ERRORS",
@@ -1597,7 +1678,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "문제별 안내 화면 제공"
         },
         {
           "taskId": "JUPLAN-RUNTIME-VALIDATION-DEDUPE",
@@ -1610,7 +1692,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "같은 경고를 한 번만 표시"
         },
         {
           "taskId": "JUPLAN-RUNTIME-STATUS-FAIL-CLOSED",
@@ -1623,7 +1706,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "상태 오류를 숨기지 않기"
         },
         {
           "taskId": "JUPLAN-SCANNER-ROOT-DIRECTORY",
@@ -1636,7 +1720,8 @@
             "pnpm --filter @juplan/project-scanner test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "잘못된 시작 위치를 안내"
         },
         {
           "taskId": "JUPLAN-PROJECT-STATUS-V1",
@@ -1649,7 +1734,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "프로젝트 상태를 파일로 확인"
         },
         {
           "taskId": "JUPLAN-AR-INTAKE-CONTRACT",
@@ -1661,7 +1747,8 @@
             "pnpm test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "CONTROL_TOWER.md:62-64 \"Execute only AR-JUPLAN-001 ... Worker/RESULT_PACKET/independent-QA routing\""
+          "ssotEvidence": "CONTROL_TOWER.md:62-64 \"Execute only AR-JUPLAN-001 ... Worker/RESULT_PACKET/independent-QA routing\"",
+          "title": "작업 전달과 결과 기준 정리"
         },
         {
           "taskId": "JUPLAN-RUNTIME-UNDO-EMPTY-HISTORY",
@@ -1674,7 +1761,8 @@
             "pnpm --filter @juplan/runtime test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "기록 없을 때 바로 안내"
         },
         {
           "taskId": "JUPLAN-RUNTIME-BUILDER-ERRORS",
@@ -1687,7 +1775,8 @@
             "pnpm --filter @juplan/runtime test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "문제별 작업 전달 안내"
         },
         {
           "taskId": "JUPLAN-SCANNER-MANIFEST-SHAPE",
@@ -1700,7 +1789,8 @@
             "pnpm --filter @juplan/project-scanner test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "잘못된 설정 파일을 알려주기"
         },
         {
           "taskId": "JUPLAN-RUNTIME-EDIT-LABEL-GUARD",
@@ -1713,7 +1803,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "빈 수정 이름을 막기"
         },
         {
           "taskId": "JUPLAN-RUNTIME-STUDIO-HTML-ESCAPE",
@@ -1726,7 +1817,8 @@
             "pnpm --filter @juplan/runtime test",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "CONTROL_TOWER.md:18-20 \"Keep JuPlan V1 stable ... does not reopen V1\"; Founder direction 2026-09-23"
+          "ssotEvidence": "CONTROL_TOWER.md:18-20 \"Keep JuPlan V1 stable ... does not reopen V1\"; Founder direction 2026-09-23",
+          "title": "화면 글자가 안전하게 보이기"
         },
         {
           "taskId": "JUPLAN-EXPORT-TEXT-ESCAPE",
@@ -1739,7 +1831,8 @@
             "pnpm --filter @juplan/runtime test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "내보낸 글자를 안전하게 보호"
         },
         {
           "taskId": "JUPLAN-MERGE-ID-CONFLICT",
@@ -1752,7 +1845,8 @@
             "pnpm --filter @juplan/runtime test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "충돌한 계획을 안전하게 막기"
         },
         {
           "taskId": "JUPLAN-PROPOSAL-STRICT-SHAPE",
@@ -1765,7 +1859,8 @@
             "pnpm --filter @juplan/agent-provider test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "작업 결과 형식을 정확히 확인"
         },
         {
           "taskId": "JUPLAN-E2E-OFFLINE-FLOW",
@@ -1778,7 +1873,8 @@
             "pnpm test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-24: E2E = juplan init → scan → plan --offline → validate → snapshot in a temp dir"
+          "ssotEvidence": "Founder direction 2026-09-24: E2E = juplan init → scan → plan --offline → validate → snapshot in a temp dir",
+          "title": "전체 흐름을 한 번에 점검"
         },
         {
           "taskId": "JUPLAN-README-QUICKSTART",
@@ -1791,7 +1887,8 @@
             "pnpm test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-24: README '처음 쓰는 법' Quickstart commands must be exactly what the E2E runs"
+          "ssotEvidence": "Founder direction 2026-09-24: README '처음 쓰는 법' Quickstart commands must be exactly what the E2E runs",
+          "title": "처음 쓰는 법을 쉽게 안내"
         },
         {
           "taskId": "JUPLAN-STUDIO-READABLE",
@@ -1804,7 +1901,8 @@
             "pnpm --filter @juplan/runtime test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "계획 내용을 빠르게 읽기"
         },
         {
           "taskId": "JUPLAN-FOUNDER-PORTFOLIO-DOGFOOD",
@@ -1818,7 +1916,8 @@
             "pnpm --filter @juplan/runtime test:run",
             "pnpm typecheck"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "주요 제품 계획을 한눈에 확인"
         },
         {
           "taskId": "JUPLAN-EXPORT-UTF8",
@@ -1832,7 +1931,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
-          "title": "Fix garbled characters (â€”, Â·) in Studio exports. In serve"
+          "title": "내보낸 한글이 깨지지 않게 보기"
         },
         {
           "taskId": "JUPLAN-STUDIO-KOREAN-COPY",
@@ -1846,7 +1945,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
-          "title": "In packages/runtime/src/index.ts, translate the read-only St"
+          "title": "화면을 한국어로 쉽게 보기"
         },
         {
           "taskId": "JUPLAN-STUDIO-EMPTY-STATES",
@@ -1860,7 +1959,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
-          "title": "In packages/runtime/src/index.ts serve()/renderStudioPage, r"
+          "title": "문제 상황과 다음 할 일 안내"
         },
         {
           "taskId": "JUPLAN-STUDIO-PLAN-MAP",
@@ -1888,7 +1987,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
-          "title": "Restyle the Studio to the Founder's Hermes style (Founder ch"
+          "title": "보기 편한 차분한 화면으로 정리"
         },
         {
           "taskId": "JUPLAN-CLI-INIT-ID",
@@ -1902,7 +2001,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
-          "title": "Let init accept a Korean project name. In packages/runtime/s"
+          "title": "한글 프로젝트 이름으로 시작"
         },
         {
           "taskId": "JUPLAN-STUDIO-KOREAN-COPY-2",
@@ -1916,7 +2015,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Supervisor visual review of JuPlan Studio after launch-UX round 1 (captures ~/jc-tester/juplan-1138/); Founder 2026-09-24 launch-quality request",
-          "title": "Finish the Korean Studio copy in packages/runtime/src/index."
+          "title": "계획 정보를 한국어로 쉽게 읽기"
         },
         {
           "taskId": "JUPLAN-PLAN-MAP-FIT",
@@ -1944,7 +2043,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Supervisor visual review of JuPlan Studio after launch-UX round 1 (captures ~/jc-tester/juplan-1138/); Founder 2026-09-24 launch-quality request",
-          "title": "Documents and diagrams open as raw Markdown/Mermaid text. In"
+          "title": "문서와 그림을 보기 쉽게 열기"
         }
       ],
       "qaRuntime": [
@@ -1989,7 +2088,8 @@
           "tests": [
             "npm run build && npm test"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: surface a newly added runtime dependency as a material impact in the receipt (m2-011)"
+          "ssotEvidence": "Founder direction 2026-09-23: surface a newly added runtime dependency as a material impact in the receipt (m2-011)",
+          "title": "새로운 사용 비용과 영향을 확인"
         },
         {
           "taskId": "JUCEIPT-M2-012-COST-UNKNOWN-GAP",
@@ -2001,7 +2101,8 @@
           "tests": [
             "npm run build && npm test"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: never mark a receipt READY while cost is unknown without an explicit acceptance gap (m2-012)"
+          "ssotEvidence": "Founder direction 2026-09-23: never mark a receipt READY while cost is unknown without an explicit acceptance gap (m2-012)",
+          "title": "비용을 모르면 완료로 표시하지 않음"
         },
         {
           "taskId": "JUCEIPT-M3-DAILY-VALUE-AGGREGATION",
@@ -2013,7 +2114,8 @@
           "tests": [
             "npm test"
           ],
-          "ssotEvidence": "docs/product/MASTER_ROADMAP.md:222-240 \"Does a derived day-level view help a user who delegates many tasks\" and Candidate Daily Report Level 1 sections"
+          "ssotEvidence": "docs/product/MASTER_ROADMAP.md:222-240 \"Does a derived day-level view help a user who delegates many tasks\" and Candidate Daily Report Level 1 sections",
+          "title": "하루 업무 성과를 한눈에 모아보기"
         },
         {
           "taskId": "JUCEIPT-M3-DAILY-VALUE-SCORECARD",
@@ -2024,7 +2126,8 @@
           "tests": [
             "npm test"
           ],
-          "ssotEvidence": "BUSINESS_PRODUCT_WBS.md:129-136 \"Compare Daily view versus reading individual receipts\"; Founder direction 2026-09-23"
+          "ssotEvidence": "BUSINESS_PRODUCT_WBS.md:129-136 \"Compare Daily view versus reading individual receipts\"; Founder direction 2026-09-23",
+          "title": "하루 성과를 비교해 다음 결정을 내림"
         },
         {
           "taskId": "JUCEIPT-E2E-SCRIPT",
@@ -2036,7 +2139,8 @@
             "npm run build",
             "npm test"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "처음부터 끝까지 결과를 확인"
         },
         {
           "taskId": "JUCEIPT-README-QUICKSTART",
@@ -2047,7 +2151,8 @@
           "tests": [
             "npm run build"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "처음 실행하는 방법을 쉽게 안내"
         },
         {
           "taskId": "JUCEIPT-CAPTURE-HEALTH",
@@ -2060,7 +2165,8 @@
           "tests": [
             "npm test"
           ],
-          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:214 \"Capture health UX | ❌\""
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:214 \"Capture health UX | ❌\"",
+          "title": "기록이 잘못되면 안전하게 중단"
         },
         {
           "taskId": "JUCEIPT-M3-KOREAN-DAILY-SUMMARY",
@@ -2072,7 +2178,8 @@
           "tests": [
             "npm test"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "하루 업무 상태를 한국어로 요약"
         },
         {
           "taskId": "JUCEIPT-M3-DAILY-CORPUS-REGRESSION",
@@ -2083,7 +2190,8 @@
           "tests": [
             "npm test"
           ],
-          "ssotEvidence": "docs/qa/M3_DAILY_VALUE_SCORECARD.md:27-30 \"Continue only with another bounded receipt-backed comparison.\""
+          "ssotEvidence": "docs/qa/M3_DAILY_VALUE_SCORECARD.md:27-30 \"Continue only with another bounded receipt-backed comparison.\"",
+          "title": "지난 기록으로 하루 집계를 다시 확인"
         },
         {
           "taskId": "JUCEIPT-M3-M2-CORPUS-REGRESSION",
@@ -2094,7 +2202,8 @@
           "tests": [
             "npm test"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "기존 14개 업무 기록도 함께 검증"
         },
         {
           "taskId": "JUCEIPT-M3-SUMMARY-COVERAGE",
@@ -2106,7 +2215,8 @@
           "tests": [
             "npm test -- tests/daily.test.ts"
           ],
-          "ssotEvidence": "docs/product/MASTER_ROADMAP.md:230-240 \"Candidate Daily Report Level 1\""
+          "ssotEvidence": "docs/product/MASTER_ROADMAP.md:230-240 \"Candidate Daily Report Level 1\"",
+          "title": "확인할 근거와 영향을 함께 안내"
         },
         {
           "taskId": "JUCEIPT-M3-DAILY-SUMMARY-CLI",
@@ -2118,7 +2228,8 @@
           "tests": [
             "npm test -- tests/daily-cli.test.ts"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: continue the bounded M3 daily-value experiment toward a daily summary the Founder can read in plain Korean"
+          "ssotEvidence": "Founder direction 2026-09-23: continue the bounded M3 daily-value experiment toward a daily summary the Founder can read in plain Korean",
+          "title": "기존 기록에서 하루 요약을 바로 보기"
         }
       ]
     },
@@ -2152,7 +2263,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/operator-surface/API_CONTRACT.md:3-5 \"GET /api/status ... return JSON projections ... Clients must display UNKNOWN\""
+          "ssotEvidence": "docs/operator-surface/API_CONTRACT.md:3-5 \"GET /api/status ... return JSON projections ... Clients must display UNKNOWN\"",
+          "title": "안전한 프로젝트 상태 확인 기준"
         },
         {
           "taskId": "JUCONTROLER-STATUS-SCHEMA-SEAM",
@@ -2163,7 +2275,8 @@
           "tests": [
             "node -e \"JSON.parse(require('fs').readFileSync('docs/integration/project-status.schema.json','utf8'))\""
           ],
-          "ssotEvidence": "docs/CONTROL_TOWER_TARGET_ARCHITECTURE.md:200-209 \"Human selection/화면 표시 | Control Tower | source ref + observedAt을 가진 projection. 별도 업무 DB를 만들지 않음\""
+          "ssotEvidence": "docs/CONTROL_TOWER_TARGET_ARCHITECTURE.md:200-209 \"Human selection/화면 표시 | Control Tower | source ref + observedAt을 가진 projection. 별도 업무 DB를 만들지 않음\"",
+          "title": "프로젝트 상태 표시 형식 정리"
         },
         {
           "taskId": "JUCONTROLER-PROJECT-REGISTRY-READONLY",
@@ -2175,7 +2288,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs"
           ],
-          "ssotEvidence": "JuControler-Private/docs/CONTROL_TOWER_INTEGRATION_REBASELINE.md:335 \"Project ID ↔ 승인 workspace/dataRoot binding | Relay project configuration\""
+          "ssotEvidence": "JuControler-Private/docs/CONTROL_TOWER_INTEGRATION_REBASELINE.md:335 \"Project ID ↔ 승인 workspace/dataRoot binding | Relay project configuration\"",
+          "title": "여러 프로젝트 정보 안전하게 불러오기"
         },
         {
           "taskId": "JUCONTROLER-READONLY-STATUS-READER",
@@ -2187,7 +2301,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs"
           ],
-          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory\" with generated current.json projection; docs/vnext/JUCONTROLER_VNEXT_SSOT.md:47-48 \"Unknown is a valid state\""
+          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory\" with generated current.json projection; docs/vnext/JUCONTROLER_VNEXT_SSOT.md:47-48 \"Unknown is a valid state\"",
+          "title": "현재 프로젝트 상태 안전하게 확인하기"
         },
         {
           "taskId": "JUCONTROLER-STATUS-BOARD-READER",
@@ -2199,7 +2314,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "여러 프로젝트 상태 한눈에 보기"
         },
         {
           "taskId": "JUCONTROLER-STATUS-BOARD-CLI",
@@ -2211,7 +2327,8 @@
           "tests": [
             "node --test tests/status-board-cli.test.mjs"
           ],
-          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory ... current.json\""
+          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-204 \"Each project gets a small, boring integration directory ... current.json\"",
+          "title": "프로젝트 상태를 한 번에 확인하기"
         },
         {
           "taskId": "JUCONTROLER-STATUS-STRICT-PROJECTION",
@@ -2223,7 +2340,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs"
           ],
-          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:49-69 source-owned status, UNKNOWN on invalid/ambiguous reads, and read-only projection rules; Founder direction 2026-09-23"
+          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:49-69 source-owned status, UNKNOWN on invalid/ambiguous reads, and read-only projection rules; Founder direction 2026-09-23",
+          "title": "잘못된 상태 정보 차단하기"
         },
         {
           "taskId": "JUCONTROLER-STATUS-SOURCE-IDENTITY",
@@ -2235,7 +2353,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs"
           ],
-          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:53-55 source.id must identify the canonical source and unidentified or unparsable sources produce UNKNOWN; Founder direction 2026-09-23"
+          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:53-55 source.id must identify the canonical source and unidentified or unparsable sources produce UNKNOWN; Founder direction 2026-09-23",
+          "title": "문제 발생 시 출처 함께 확인하기"
         },
         {
           "taskId": "JUCONTROLER-STATUS-CLI-PROJECT",
@@ -2248,7 +2367,8 @@
           "tests": [
             "node --test tests/status-board-cli.test.mjs"
           ],
-          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:73-79 display source, UNKNOWN, and stale distinctly"
+          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:73-79 display source, UNKNOWN, and stale distinctly",
+          "title": "원하는 프로젝트 상태만 확인하기"
         },
         {
           "taskId": "JUCONTROLER-REGISTRY-FRESHNESS",
@@ -2261,7 +2381,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs"
           ],
-          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:56-58 source owner defines the freshness limit"
+          "ssotEvidence": "docs/integration/PROJECT_STATUS_CONTRACT.md:56-58 source owner defines the freshness limit",
+          "title": "오래된 상태 정보 가려내기"
         },
         {
           "taskId": "JUCONTROLER-REGISTRY-STRICT-KEYS",
@@ -2273,7 +2394,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs"
           ],
-          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-205 \"Each project gets a small, boring integration directory rather than its own custom orchestrator\""
+          "ssotEvidence": "docs/vnext/JUCONTROLER_VNEXT_SSOT.md:195-205 \"Each project gets a small, boring integration directory rather than its own custom orchestrator\"",
+          "title": "알 수 없는 정보로 인한 오류 막기"
         },
         {
           "taskId": "JUCONTROLER-STATUS-BOARD-AGENT-RELAY-SOURCE",
@@ -2289,7 +2411,7 @@
             "node --test tests/project-registry.test.mjs"
           ],
           "ssotEvidence": "Founder architecture 2026-09-23 (chat): 'JuControler에 Agent-Relay 통합하면 자동으로 actl도 따라오는 구조' — integrate Agent Relay first; approval rule A-01",
-          "title": "Let scripts/status-board.mjs accept a registry entry with so"
+          "title": "Agent Relay 상태를 함께 확인하기"
         },
         {
           "taskId": "JUCONTROLER-AGENT-RELAY-ADAPTER",
@@ -2302,7 +2424,7 @@
             "node --test tests/agent-relay-adapter.test.mjs"
           ],
           "ssotEvidence": "Founder architecture 2026-09-23 (chat): 'JuControler에 Agent-Relay 통합하면 자동으로 actl도 따라오는 구조' — integrate Agent Relay first; approval rule A-01",
-          "title": "Read-only adapter src/adapters/agent-relay.mjs that turns on"
+          "title": "Agent Relay 진행 상황 쉽게 보기"
         },
         {
           "taskId": "JUCONTROLER-AGENT-RELAY-ADAPTER-DOCS",
@@ -2314,7 +2436,8 @@
           "tests": [
             "node --test tests/agent-relay-adapter.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "Agent Relay 상태 확인 방법 안내"
         },
         {
           "taskId": "JUCONTROLER-TESTER-HARNESS-CONTRACT",
@@ -2326,7 +2449,8 @@
           "tests": [
             "node --test tests/tester-harness-contract.test.mjs"
           ],
-          "ssotEvidence": "JuControler-Private/founder/harness/harness-registry.v1.json:152-191 \"qa-v1\"; JuControler-Private/founder/harness/harness-registry.v1.json:233-271 \"tester-beginner-v1\"; Founder direction 2026-09-23"
+          "ssotEvidence": "JuControler-Private/founder/harness/harness-registry.v1.json:152-191 \"qa-v1\"; JuControler-Private/founder/harness/harness-registry.v1.json:233-271 \"tester-beginner-v1\"; Founder direction 2026-09-23",
+          "title": "검증 담당자 독립 확인 기준 세우기"
         },
         {
           "taskId": "JUCONTROLER-CREATE-SKILL-REGISTRY",
@@ -2339,7 +2463,8 @@
           "tests": [
             "node --test tests/create-skill-registry-contract.test.mjs"
           ],
-          "ssotEvidence": "README.md:10-17 \"Role is not Runtime\" and target agents; Founder direction 2026-09-23"
+          "ssotEvidence": "README.md:10-17 \"Role is not Runtime\" and target agents; Founder direction 2026-09-23",
+          "title": "도구별 안전한 작업 권한 정리"
         },
         {
           "taskId": "JUCONTROLER-JUPLAN-STATUS-ADAPTER",
@@ -2352,7 +2477,8 @@
           "tests": [
             "node --test tests/agent-relay-adapter.test.mjs tests/juplan-adapter.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: integrate Agent Relay first, then JuPlan, then JuCeipt through project-status.v1 exports and read-only adapters"
+          "ssotEvidence": "Founder direction 2026-09-23: integrate Agent Relay first, then JuPlan, then JuCeipt through project-status.v1 exports and read-only adapters",
+          "title": "JuPlan 진행 상태 안전하게 확인하기"
         },
         {
           "taskId": "JUCONTROLER-JUCEIPT-STATUS-ADAPTER",
@@ -2365,7 +2491,8 @@
           "tests": [
             "node --test tests/*.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "JuCeipt 승인 기록 안전하게 확인하기"
         },
         {
           "taskId": "JUCONTROLER-JUPLAN-STATUS-BOARD-SOURCE",
@@ -2379,7 +2506,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs tests/status-board-cli.test.mjs tests/juplan-adapter.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Integrate Agent Relay first, then JuPlan, then JuCeipt, each through project-status.v1 exports and read-only adapters."
+          "ssotEvidence": "Founder direction 2026-09-23: Integrate Agent Relay first, then JuPlan, then JuCeipt, each through project-status.v1 exports and read-only adapters.",
+          "title": "JuPlan 상태를 한눈에 확인하기"
         },
         {
           "taskId": "JUCONTROLER-JUCEIPT-STATUS-BOARD-SOURCE",
@@ -2393,7 +2521,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs tests/status-board-cli.test.mjs tests/juceipt-adapter.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Integrate Agent Relay first, then JuPlan, then JuCeipt, each through project-status.v1 exports and read-only adapters."
+          "ssotEvidence": "Founder direction 2026-09-23: Integrate Agent Relay first, then JuPlan, then JuCeipt, each through project-status.v1 exports and read-only adapters.",
+          "title": "JuCeipt 승인 상태를 한눈에 보기"
         },
         {
           "taskId": "JUCONTROLER-OFFLINE-E2E-QUICKSTART",
@@ -2409,7 +2538,8 @@
           "tests": [
             "node --test tests/project-registry.test.mjs tests/status-board-cli.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-24"
+          "ssotEvidence": "Founder direction 2026-09-24",
+          "title": "오프라인에서 전체 상태 확인하기"
         }
       ],
       "qaRuntime": [
@@ -2456,7 +2586,7 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Founder choice 2026-09-23 (AskUserQuestion: 통합 구현 = 홈 + Agent Relay부터, 위치 = JuControler 운영 화면); approval rules A-13 (glitch D), A-15",
-          "title": "Read-only Agent Relay source for the operator: new lib/relay"
+          "title": "Agent Relay 운영 상태 한눈에 보기"
         },
         {
           "taskId": "JCAPP-AGENT-RELAY-MODULE-VIEW",
@@ -2501,7 +2631,8 @@
           "tests": [
             "node --test test/juplan-module.test.mjs test/home-hub.test.mjs test/agent-relay-module.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Home hub + Agent Relay module first, then JuPlan; read-only views first."
+          "ssotEvidence": "Founder direction 2026-09-23: Home hub + Agent Relay module first, then JuPlan; read-only views first.",
+          "title": "JuPlan 상태 보기"
         },
         {
           "taskId": "JCAPP-JUCEIPT-MODULE",
@@ -2513,7 +2644,8 @@
           "tests": [
             "node --test test/juceipt-module.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "JuCeipt 상태 보기"
         },
         {
           "taskId": "JCAPP-TESTER-MODULE",
@@ -2525,7 +2657,8 @@
           "tests": [
             "node --test test/tester-module.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "시험 상태 보기"
         },
         {
           "taskId": "JCAPP-SKILL-MODULE-VIEW",
@@ -2537,7 +2670,8 @@
           "tests": [
             "node --test test/skill-module.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "사용할 기능 목록 보기"
         },
         {
           "taskId": "JCAPP-APPROVALS-MODULE-VIEW",
@@ -2549,7 +2683,8 @@
           "tests": [
             "node --test test/approvals-module.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "승인 상태 보기"
         },
         {
           "taskId": "JCAPP-RELAY-MODEL-CHAIN-ACTION",
@@ -2563,7 +2698,8 @@
           "tests": [
             "node --test test/agent-relay-module.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay model chain reorder (night lane set), each validated server-side, with a confirmation sentence and no free-form shell."
+          "ssotEvidence": "Founder direction 2026-09-23: Agent Relay model chain reorder (night lane set), each validated server-side, with a confirmation sentence and no free-form shell.",
+          "title": "Agent Relay 담당 순서 바꾸기"
         },
         {
           "taskId": "JCAPP-HUMAN-GATE-RESUME-ACTIONS",
@@ -2577,7 +2713,8 @@
           "tests": [
             "node --test test/control-tower.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: Human Gate multiple-choice answers (night gate answer), lane resume (night roadmap resume), each validated server-side, with a confirmation sentence and no free-form shell."
+          "ssotEvidence": "Founder direction 2026-09-23: Human Gate multiple-choice answers (night gate answer), lane resume (night roadmap resume), each validated server-side, with a confirmation sentence and no free-form shell.",
+          "title": "멈춘 작업 이어가기"
         },
         {
           "taskId": "JCAPP-APPROVAL-RULE-ACTIONS",
@@ -2590,7 +2727,8 @@
           "tests": [
             "node --test test/control-tower.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "승인 규칙 관리하기"
         },
         {
           "taskId": "JCAPP-APPROVALS-MODULE-DATA",
@@ -2621,7 +2759,7 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
-          "title": "Add read-only GET /api/tester in operator/server.mjs backed "
+          "title": "시험 결과와 기록 보기"
         },
         {
           "taskId": "JCAPP-JUCEIPT-MODULE-DATA",
@@ -2637,7 +2775,7 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
-          "title": "Add read-only GET /api/juceipt/receipts backed by new lib/ju"
+          "title": "JuCeipt 영수증 확인하기"
         },
         {
           "taskId": "JCAPP-JUPLAN-MODULE-DATA",
@@ -2653,7 +2791,7 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Supervisor Tester run 2026-09-24 (headless Firefox over staging :8798, Founder choice 'Tester 자동 확인 후 반영'): JuPlan/JuCeipt/Tester/승인 modules render only '아직 이 화면에 연결되지 않았어요' placeholders; 홈 repeats the '오늘의 운영 상태' header; GET /api/skills returns 500 'skills is not defined'. Approved design: canvas UniPlan/UniReceipt/UniTester/UniApprovals; rules A-13, A-15",
-          "title": "Add read-only GET /api/juplan/status backed by new lib/jupla"
+          "title": "JuPlan 진행 상태 보기"
         },
         {
           "taskId": "JCAPP-HOME-HEADER-AND-SKILLS-API",
@@ -2684,7 +2822,7 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Supervisor check 2026-09-24: the fixed export path does not exist; JuPlan writes the export per project in writeProjections (packages/runtime/src/index.ts:249); Founder A-15",
-          "title": "lib/juplanStatus.mjs currently reads one fixed export path t"
+          "title": "JuPlan 프로젝트 찾아보기"
         },
         {
           "taskId": "JCAPP-APPROVALS-ROUTE-AND-PLAIN-TEXT",
@@ -2701,7 +2839,7 @@
             "node --test test/juceipt-receipts.test.mjs"
           ],
           "ssotEvidence": "Supervisor visual Tester 2026-09-24 01:06 (~/jc-tester/run-20260924-0106/06-승인.png shows the Tester view); Founder choice 'Tester 자동 확인 후 반영'; A-15",
-          "title": "Two issues found by the supervisor's visual Tester review of"
+          "title": "승인 화면과 설명 바로잡기"
         },
         {
           "taskId": "JCAPP-SKILL-CREATE-CANVAS",
@@ -2716,7 +2854,8 @@
           "tests": [
             "node --test test/skills-api.test.mjs test/tester-module.test.mjs test/approvals-module.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "기능 안내 미리 만들어 보기"
         },
         {
           "taskId": "JCAPP-OFFLINE-E2E",
@@ -2727,7 +2866,8 @@
           "tests": [
             "node --test test/*.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "전체 화면 한 번에 점검하기"
         },
         {
           "taskId": "JCAPP-QUICKSTART",
@@ -2738,7 +2878,8 @@
           "tests": [
             "node --test test/*.test.mjs"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "처음 사용하는 방법 안내"
         },
         {
           "taskId": "JCAPP-READABLE-NAMES-AND-TIME",
@@ -2752,7 +2893,7 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 08시: 'JuControler는 아직 보기가 너무 불편' — supervisor capture of live 8537f00 (~/jc-tester/now); approved design canvas UniHome/UniRelay (glitch D, A-13); non-developer rule: every state is a Korean sentence",
-          "title": "Founder readability pass 1 in operator/public/app.js: (1) sh"
+          "title": "화면 내용을 쉽게 읽기"
         },
         {
           "taskId": "JCAPP-HOME-GATE-CARDS-SPECIFIC",
@@ -2781,7 +2922,7 @@
             "node --test test/founder-clean-tokens.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 08시: 'JuControler는 아직 보기가 너무 불편' — supervisor capture of live 8537f00 (~/jc-tester/now); approved design canvas UniHome/UniRelay (glitch D, A-13); non-developer rule: every state is a Korean sentence",
-          "title": "Founder readability pass 3 in operator/public/app.css (+ min"
+          "title": "모든 화면 보기 좋게 정리"
         },
         {
           "taskId": "JCAPP-HOME-FOUNDER-FOCUS",
@@ -2813,7 +2954,7 @@
             "node --test test/desktop-logic.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 08시: 'UI/UX도 더 편하게', '웹 기반보다 프로그램 기반' → AskUserQuestion: 별도 JuControler 프로그램; phone access keeps the same web screen; approved design canvas UniHome/UniRelay (A-13, A-15)",
-          "title": "New Windows desktop program for the Founder in desktop/: a m"
+          "title": "MainPC에서 JuControler 열기"
         },
         {
           "taskId": "JCAPP-UX-COMFORT",
@@ -2828,7 +2969,7 @@
             "node --test test/founder-clean-tokens.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 08시: 'UI/UX도 더 편하게', '웹 기반보다 프로그램 기반' → AskUserQuestion: 별도 JuControler 프로그램; phone access keeps the same web screen; approved design canvas UniHome/UniRelay (A-13, A-15)",
-          "title": "Comfort pass on operator/public (keep every feature and endp"
+          "title": "화면을 편하게 사용하기"
         },
         {
           "taskId": "JCAPP-STYLE-HERMES",
@@ -2844,7 +2985,7 @@
             "node --test test/control-tower.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 AskUserQuestion: 디자인 = ② Hermes AI 느낌 (replaces glitch D; ledger A-13 edited)",
-          "title": "Re-skin the operator screen to the Founder's new style 'Herm"
+          "title": "Hermes AI 느낌 화면 적용"
         },
         {
           "taskId": "JCAPP-HERMES-DARK-ALWAYS",
@@ -2860,7 +3001,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-0903 captures of 924705b; Founder chose 'Hermes AI 느낌' (A-21)",
-          "title": "The Founder chose the Hermes dark look, but a light-mode OS/"
+          "title": "어두운 Hermes 화면 유지하기"
         },
         {
           "taskId": "JCAPP-HEADER-TIDY",
@@ -2995,7 +3136,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
-          "title": "Tab switches must never show the previous tab's content. In "
+          "title": "화면 전환 중 내용 바로 표시"
         },
         {
           "taskId": "JCAPP-ACTL-PANES-PLAIN",
@@ -3009,7 +3150,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
-          "title": "Rewrite relayPanesPanel(paneData) in operator/public/app.js "
+          "title": "actl 작업 창 쉽게 보기"
         },
         {
           "taskId": "JCAPP-JUCEIPT-GAP-PLAIN",
@@ -3024,7 +3165,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
-          "title": "JuCeipt must never print raw gap JSON. In lib/juceiptReceipt"
+          "title": "JuCeipt 빠진 부분 쉽게 보기"
         },
         {
           "taskId": "JCAPP-HOME-NO-RAW-TASK-IDS",
@@ -3039,7 +3180,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
-          "title": "In operator/public/app.js homeHub(): replace the card line '"
+          "title": "홈에서 현재 작업 쉽게 보기"
         },
         {
           "taskId": "JCAPP-HOME-ALL-OK-LINE",
@@ -3083,7 +3224,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
-          "title": "Phone fixes in operator/public/app.js and app.css. (1) In bu"
+          "title": "휴대폰 화면 사용성 개선"
         },
         {
           "taskId": "JCAPP-MODULE-EMPTY-STATES-CALM",
@@ -3098,7 +3239,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
-          "title": "Calm, finished-sounding module headers and empty states. In "
+          "title": "비어 있는 화면도 안심하고 보기"
         },
         {
           "taskId": "JCAPP-TESTER-SUMMARY-FIRST",
@@ -3112,7 +3253,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
-          "title": "Tester tab leads with a one-line verdict instead of an unsor"
+          "title": "시험 결과 요약해서 보기"
         },
         {
           "taskId": "JCAPP-MORE-ADVANCED-FOLD",
@@ -3199,7 +3340,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Skill cards English, JuCeipt list bullets, Agent Relay tab jargon",
-          "title": "The JuCeipt receipt list renders as bullet points with a bri"
+          "title": "JuCeipt 영수증 목록 정리"
         },
         {
           "taskId": "JCAPP-RELAY-TAB-PLAIN",
@@ -3213,7 +3354,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Skill cards English, JuCeipt list bullets, Agent Relay tab jargon",
-          "title": "Agent Relay tab polish in operator/public/app.js: flow chips"
+          "title": "Agent Relay 진행 흐름 쉽게 보기"
         },
         {
           "taskId": "JCAPP-JUPLAN-REAL-EXPORT",
@@ -3260,7 +3401,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:240-242 \"independent planning QA of ERD/WBS/HTML | NOW — planning only\""
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:240-242 \"independent planning QA of ERD/WBS/HTML | NOW — planning only\"",
+          "title": "기획 문서 간 충돌을 찾아 정리"
         },
         {
           "taskId": "JUCEIPTPLAN-ERD-SCENARIO-QA",
@@ -3271,7 +3413,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/planning/BUSINESS_PRODUCT_WBS.md:57-76 \"Truth lineage\" and \"Anonymous → account identity\" checks"
+          "ssotEvidence": "docs/planning/BUSINESS_PRODUCT_WBS.md:57-76 \"Truth lineage\" and \"Anonymous → account identity\" checks",
+          "title": "영수증 정보 흐름의 빈틈 점검"
         },
         {
           "taskId": "JUCEIPTPLAN-WBS-ENTITY-GATE-MATRIX",
@@ -3282,7 +3425,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/planning/BUSINESS_PRODUCT_WBS.md:46-55 \"P0 — Business Architecture Planning Gate\" and \"M2 remains current product implementation milestone\"; Founder direction 2026-09-23"
+          "ssotEvidence": "docs/planning/BUSINESS_PRODUCT_WBS.md:46-55 \"P0 — Business Architecture Planning Gate\" and \"M2 remains current product implementation milestone\"; Founder direction 2026-09-23",
+          "title": "단계별 필요한 정보 범위 정리"
         },
         {
           "taskId": "JUCEIPTPLAN-CANONICAL-HTML-TRACEABILITY-QA",
@@ -3293,7 +3437,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:75-84 \"Canonical planning artifacts\" and \"05 is canonical\"; Founder direction 2026-09-23"
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:75-84 \"Canonical planning artifacts\" and \"05 is canonical\"; Founder direction 2026-09-23",
+          "title": "기획 화면의 단계 연결성 점검"
         },
         {
           "taskId": "JUCEIPTPLAN-RECEIPT-ERD-PARITY-QA",
@@ -3304,7 +3449,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:35-37 \"P0 scope | Private planning docs only; no product implementation\""
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:35-37 \"P0 scope | Private planning docs only; no product implementation\"",
+          "title": "영수증 정보 기준의 일치 여부 점검"
         },
         {
           "taskId": "JUCEIPTPLAN-AUTHORITY-PROTOCOL-QA",
@@ -3315,7 +3461,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:9-18 \"Every Juceipt PM response / Handoff follows this order\""
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:9-18 \"Every Juceipt PM response / Handoff follows this order\"",
+          "title": "업무 결정 권한의 충돌 점검"
         },
         {
           "taskId": "JUCEIPTPLAN-DECISION-TRACEABILITY-QA",
@@ -3326,7 +3473,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: independent planning QA of ERD/WBS/HTML — planning only; check consistency, gaps and contradictions against PM_STATUS_BOARD and the decision log"
+          "ssotEvidence": "Founder direction 2026-09-23: independent planning QA of ERD/WBS/HTML — planning only; check consistency, gaps and contradictions against PM_STATUS_BOARD and the decision log",
+          "title": "미결 정책과 결정 기록의 연결 점검"
         },
         {
           "taskId": "JUCEIPTPLAN-ROADMAP-WBS-GATE-QA",
@@ -3337,7 +3485,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "출시 단계 기준과 상태 표현 점검"
         },
         {
           "taskId": "JUCEIPTPLAN-M2-RECEIPT-FINAL-SCORECARD",
@@ -3348,7 +3497,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: score the 14 M2 corpus tasks first (receipt vs claude-final, planning-only output in JuCeipt-Private)"
+          "ssotEvidence": "Founder direction 2026-09-23: score the 14 M2 corpus tasks first (receipt vs claude-final, planning-only output in JuCeipt-Private)",
+          "title": "중간 단계 작업별 결과와 증빙 점수 정리"
         },
         {
           "taskId": "JUCEIPTPLAN-B0-B2-PHASE-RECONCILIATION",
@@ -3361,7 +3511,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "Founder direction 2026-09-24"
+          "ssotEvidence": "Founder direction 2026-09-24",
+          "title": "초기 단계 이름과 순서의 차이 정리"
         },
         {
           "taskId": "JUCEIPTPLAN-ROADMAP-STATUS-REFRESH",
@@ -3372,7 +3523,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/qa/PM_AUTHORITY_PROTOCOL_QA.md:20 \"The checked-out board is stale relative to the newer repository ref\"; docs/planning/BUSINESS_SYSTEM_PLANNING_GATE_01_REPORT.md:232 \"MASTER_ROADMAP operational refresh is a PM editorial task\""
+          "ssotEvidence": "docs/qa/PM_AUTHORITY_PROTOCOL_QA.md:20 \"The checked-out board is stale relative to the newer repository ref\"; docs/planning/BUSINESS_SYSTEM_PLANNING_GATE_01_REPORT.md:232 \"MASTER_ROADMAP operational refresh is a PM editorial task\"",
+          "title": "현재 진행 상태를 최신 내용으로 반영"
         },
         {
           "taskId": "JUCEIPTPLAN-AUTHORITY-ORDER-FIX",
@@ -3383,7 +3535,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "docs/qa/PM_AUTHORITY_PROTOCOL_QA.md:19 \"The Worker hierarchy does not name MASTER_ROADMAP.md or PM_STATUS_BOARD.md\""
+          "ssotEvidence": "docs/qa/PM_AUTHORITY_PROTOCOL_QA.md:19 \"The Worker hierarchy does not name MASTER_ROADMAP.md or PM_STATUS_BOARD.md\"",
+          "title": "결정 권한의 우선순위 기준 보완"
         },
         {
           "taskId": "JUCEIPTPLAN-P0-MORNING-SUMMARY",
@@ -3394,7 +3547,8 @@
           "tests": [
             "git diff --check -- docs/planning/BUSINESS_SYSTEM_PLANNING_GATE_01_REPORT.md"
           ],
-          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:71-73 \"P0 ... ACTIVE — PLANNING ONLY\"; docs/operations/PM_STATUS_BOARD.md:101 \"P0 PASS does not advance M2\""
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:71-73 \"P0 ... ACTIVE — PLANNING ONLY\"; docs/operations/PM_STATUS_BOARD.md:101 \"P0 PASS does not advance M2\"",
+          "title": "아침에 확인할 핵심 결정 사항 요약"
         }
       ]
     }
