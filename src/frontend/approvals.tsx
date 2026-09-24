@@ -21,13 +21,14 @@ export {
   sortRulesByUsage,
 } from '../shared/types.js';
 
-/** '모델 사용량' panel — one row per runtime, quota hits highlighted. */
+/** '모델 사용량' panel — 접힌 details, 한 줄 요약 뒤에 펼치면 runtimes. */
 export function ModelUsagePanel({ models }: { models: unknown }): React.ReactElement | null {
   const rows = normalizeModelUsage(models);
   if (rows.length === 0) return null;
+  const total = rows.reduce((sum, row) => sum + row.runs, 0);
   return (
-    <section className="model-usage" aria-label="모델 사용량">
-      <h3>모델 사용량</h3>
+    <details className="model-usage" aria-label="모델 사용량">
+      <summary>모델 사용량 (실행 {total}회)</summary>
       <ul className="model-usage-list">
         {rows.map(row => (
           <li
@@ -41,6 +42,6 @@ export function ModelUsagePanel({ models }: { models: unknown }): React.ReactEle
           </li>
         ))}
       </ul>
-    </section>
+    </details>
   );
 }

@@ -349,6 +349,225 @@ export async function runControlRoomApprovalAdd(
   );
 }
 
+// ── Control Room "오늘 끝난 일 / 지금 일하는 AI" (R5/R6) ───────────────────
+// Pure helpers — 단위 테스트 대상. board JSON 모양이 바뀌어도 깨지지 않게
+// todayDone 계열 키를 넓게 읽고, 현재 작업은 한국어 title 우선·ID는 원문용으로 분리한다.
+
+export interface TodayDoneItem {
+  lane: string;
+  taskId: string;
+  title: string;
+}
+
+const TODAY_DONE_KEYS = ['todayDone', 'today_done', 'doneToday', 'done_today', 'completedToday', 'completed_today', 'done', 'today'] as const;
+
+const CURRENT_TITLE_KEYS = ['title', 'taskTitle', 'task_title', 'name', 'label', 'subject', 'summary'] as const;
+
+const CURRENT_ID_KEYS = ['taskId', 'task_id', 'id', 'key'] as const;
+
+const CURRENT_START_KEYS = ['startedAt', 'started_at', 'startAt', 'start_at', 'beginAt', 'begin_at', 'since'] as const;
+
+export const CONTROL_ROOM_FLOW = ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'] as const;
+
+function cleanString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function laneIdOf(lane: unknown, fallback = ''): string {
+  if (!lane || typeof lane !== 'object') return fallback;
+  const record = lane as Record<string, unknown>;
+  return cleanString(record.project ?? record.id ?? record.lane) || fallback;
+}
+
+function normalizeTodayEntry(entry: unknown, laneFallback: string): TodayDoneItem | null {
+  if (typeof entry === 'string') {
+    const text = entry.trim();
+    if (!text) return null;
+    return { lane: laneFallback, taskId: text, title: text };
+  }
+  if (!entry || typeof entry !== 'object') return null;
+  const record = entry as Record<string, unknown>;
+  const lane = cleanString(record.lane ?? record.project) || laneFallback;
+  const taskId = cleanString(record.taskId ?? record.task_id ?? record.id ?? record.key);
+  const title = cleanString(record.title ?? record.taskTitle ?? record.name ?? record.label ?? record.summary) || taskId;
+  if (!taskId && !title) return null;
+  return { lane, taskId, title };
+}
+
+/** board.todayDone(계열) 또는 각 lane의 todayDone(계열) 배열을 모아 정규화한다. Pure. */
+export function normalizeTodayDone(board: unknown): TodayDoneItem[] {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return [];
+  const root = board as Record<string, unknown>;
+  const out: TodayDoneItem[] = [];
+  for (const key of TODAY_DONE_KEYS) {
+    const list = root[key];
+    if (Array.isArray(list)) {
+      for (const entry of list) {
+        const fallback = entry && typeof entry === 'object'
+          ? cleanString((entry as Record<string, unknown>).lane ?? (entry as Record<string, unknown>).project)
+          : '';
+        const item = normalizeTodayEntry(entry, fallback);
+        if (item) out.push(item);
+      }
+      if (out.length > 0) return out;
+    }
+  }
+  const lanes = root.lanes;
+  if (!Array.isArray(lanes)) return out;
+  for (const lane of lanes) {
+    if (!lane || typeof lane !== 'object') continue;
+    const record = lane as Record<string, unknown>;
+    const laneId = laneIdOf(lane);
+    for (const key of TODAY_DONE_KEYS) {
+      const list = record[key];
+      if (!Array.isArray(list)) continue;
+      for (const entry of list) {
+        const item = normalizeTodayEntry(entry, laneId);
+        if (item) out.push({ ...item, lane: item.lane || laneId });
+      }
+    }
+  }
+  return out;
+}
+
+/** current 객체에서 한국어 title 후보를 우선 반환, 없으면 taskId로 폴백. Pure. */
+export function currentTaskTitle(current: unknown): string {
+  if (typeof current === 'string') return current.trim();
+  if (!current || typeof current !== 'object') return '';
+  const record = current as Record<string, unknown>;
+  for (const key of CURRENT_TITLE_KEYS) {
+    const text = cleanString(record[key]);
+    if (text) return text;
+  }
+  for (const key of CURRENT_ID_KEYS) {
+    const text = cleanString(record[key]);
+    if (text) return text;
+  }
+  return '';
+}
+
+/** current 객체의 작업 ID (원문 보기용). Pure. */
+export function currentTaskId(current: unknown): string {
+  if (typeof current === 'string') return current.trim();
+  if (!current || typeof current !== 'object') return '';
+  const record = current as Record<string, unknown>;
+  for (const key of CURRENT_ID_KEYS) {
+    const text = cleanString(record[key]);
+    if (text) return text;
+  }
+  return '';
+}
+
+/** 현재 작업이 있으면 true (title 또는 ID 중 하나라도 비어 있지 않음). Pure. */
+export function hasCurrentWork(lane: unknown): boolean {
+  if (!lane || typeof lane !== 'object') return false;
+  const current = (lane as Record<string, unknown>).current;
+  return currentTaskTitle(current) !== '' || currentTaskId(current) !== '';
+}
+
+function parseStartMs(startedAt: unknown): number | null {
+  if (typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt > 0) {
+    return startedAt < 1e12 ? startedAt * 1000 : startedAt;
+  }
+  if (typeof startedAt === 'string' && startedAt.trim()) {
+    const parsed = Date.parse(startedAt.trim());
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+function startOfCurrent(current: unknown): unknown {
+  if (!current || typeof current !== 'object') return undefined;
+  const record = current as Record<string, unknown>;
+  for (const key of CURRENT_START_KEYS) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+    if (cleanString(value) !== '') return value;
+  }
+  return undefined;
+}
+
+/** 시작 시각 → 한국어 경과 ("방금 시작" / "N분째" / "N시간째" / "N시간 M분째" / "N일째"). Pure. */
+export function elapsedKorean(startedAt: unknown, nowMs: number = Date.now()): string {
+  const start = parseStartMs(startedAt);
+  if (start === null || !Number.isFinite(nowMs)) return '';
+  const diff = Math.max(0, nowMs - start);
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return '방금 시작';
+  if (minutes < 60) return `${minutes}분째`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) return rest === 0 ? `${hours}시간째` : `${hours}시간 ${rest}분째`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours === 0 ? `${days}일째` : `${days}일 ${restHours}시간째`;
+}
+
+/** stage 값 → 한국어 단계 라벨 (숫자는 FLOW, 문자열은 그대로). Pure. */
+export function laneStageLabel(stage: unknown): string {
+  if (typeof stage === 'number' && Number.isFinite(stage)) {
+    const index = Math.max(0, Math.min(CONTROL_ROOM_FLOW.length - 1, Math.floor(stage)));
+    return CONTROL_ROOM_FLOW[index] as string;
+  }
+  const text = cleanString(stage);
+  return text || CONTROL_ROOM_FLOW[0] as string;
+}
+
+function firstChainName(value: unknown): string {
+  if (typeof value === 'string') {
+    const parts = value.split(/[,|\s>→]+/).map(part => part.trim()).filter(part => part.length > 0);
+    return parts[0] ?? '';
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string' && item.trim()) return item.trim();
+    }
+    return '';
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const chain = record.chain ?? record.runtimes ?? record.order;
+    if (Array.isArray(chain)) return firstChainName(chain);
+    for (const key of ['name', 'id', 'runtime', 'worker', 'owner']) {
+      const text = cleanString(record[key]);
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+/** lane의 담당 AI 이름 (workerChain → current.worker 순). Pure. */
+export function laneWorkerName(lane: unknown): string {
+  if (!lane || typeof lane !== 'object') return '';
+  const record = lane as Record<string, unknown>;
+  const current = (record.current ?? {}) as Record<string, unknown>;
+  return firstChainName(record.workerChain ?? current.worker ?? record.worker) || cleanString(current.worker);
+}
+
+/** 일하는 lane 1개의 "레인 · 단계 · 경과 · AI" 조각, 쉬는 lane은 null. Pure. */
+export function whoSegmentForLane(lane: unknown, nowMs: number = Date.now()): string | null {
+  if (!hasCurrentWork(lane)) return null;
+  const record = lane as Record<string, unknown>;
+  const current = (record.current ?? {}) as Record<string, unknown>;
+  const laneName = laneIdOf(lane, '알 수 없는 레인');
+  const stage = laneStageLabel(current.stage);
+  const elapsed = elapsedKorean(startOfCurrent(current), nowMs) || '경과 확인 중';
+  const worker = laneWorkerName(lane);
+  return worker ? `${laneName} · ${stage} · ${elapsed} · ${worker}` : `${laneName} · ${stage} · ${elapsed}`;
+}
+
+/** 관제실 맨 위 한 줄: 일하는 AI가 있으면 "지금 일하는 AI: …", 없으면 "…쉬는 중". Pure. */
+export function workingSummary(lanes: unknown, nowMs: number = Date.now()): string {
+  if (!Array.isArray(lanes)) return '지금 일하는 AI: 쉬는 중';
+  const segments: string[] = [];
+  for (const lane of lanes) {
+    const segment = whoSegmentForLane(lane, nowMs);
+    if (segment) segments.push(segment);
+  }
+  if (segments.length === 0) return '지금 일하는 AI: 쉬는 중';
+  return `지금 일하는 AI: ${segments.join(' / ')}`;
+}
+
 // Aliases for relay wiring flexibility.
 export const runLaneSet = runControlRoomLaneSet;
 export const runRoadmapResume = runControlRoomResume;

@@ -39,6 +39,7 @@ export interface ControlRoomLane {
 interface ControlRoomBoard {
   lanes?: ControlRoomLane[];
   models?: Record<string, ControlRoomModelUsage>;
+  todayDone?: unknown;
 }
 type FlowState = 'done' | 'active' | 'blocked' | 'pending';
 type ActionStatus = { state: 'pending' | 'done' | 'error'; text: string } | null;
@@ -158,6 +159,160 @@ function isPaused(lane: ControlRoomLane): boolean {
   if (typeof lane.blocker === 'string' && lane.blocker.trim()) return true;
   // choice가 'skip'인 보류는 보여주지 않으므로 멈춤 판단에서도 제외한다.
   return visibleHoldEntries(lane.holds).length > 0;
+}
+
+// ── R5/R6 "오늘 끝난 일 / 지금 일하는 AI" ───────────────────────────────────
+// 현재 작업은 한국어 title을 보여주고 ID는 원문 보기로만 둔다.
+// current가 비어 있는 레인은 쉬는 중 — 모든 단계 pending.
+
+function cleanStr(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function currentTitleOf(current: unknown): string {
+  if (typeof current === 'string') return current.trim();
+  if (!current || typeof current !== 'object') return '';
+  const record = current as Record<string, unknown>;
+  for (const key of ['title', 'taskTitle', 'task_title', 'name', 'label', 'subject', 'summary'] as const) {
+    const text = cleanStr(record[key]);
+    if (text) return text;
+  }
+  return cleanStr(record.taskId ?? record.task_id ?? record.id ?? record.key);
+}
+
+function currentIdOf(current: unknown): string {
+  if (typeof current === 'string') return current.trim();
+  if (!current || typeof current !== 'object') return '';
+  const record = current as Record<string, unknown>;
+  return cleanStr(record.taskId ?? record.task_id ?? record.id ?? record.key);
+}
+
+function hasWork(lane: ControlRoomLane): boolean {
+  const current = lane.current ?? {};
+  return currentTitleOf(current) !== '' || currentIdOf(current) !== '';
+}
+
+function startOfWork(current: Record<string, unknown>): unknown {
+  for (const key of ['startedAt', 'started_at', 'startAt', 'start_at', 'beginAt', 'begin_at', 'since'] as const) {
+    const value = current[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+    if (cleanStr(value) !== '') return value;
+  }
+  return undefined;
+}
+
+function elapsedKo(startedAt: unknown, nowMs: number): string {
+  let start: number | null = null;
+  if (typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt > 0) {
+    start = startedAt < 1e12 ? startedAt * 1000 : startedAt;
+  } else if (typeof startedAt === 'string' && startedAt.trim()) {
+    const parsed = Date.parse(startedAt.trim());
+    start = Number.isNaN(parsed) ? null : parsed;
+  }
+  if (start === null) return '';
+  const minutes = Math.floor(Math.max(0, nowMs - start) / 60000);
+  if (minutes < 1) return '방금 시작';
+  if (minutes < 60) return `${minutes}분째`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) return rest === 0 ? `${hours}시간째` : `${hours}시간 ${rest}분째`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours === 0 ? `${days}일째` : `${days}일 ${restHours}시간째`;
+}
+
+function workerNameOf(lane: ControlRoomLane): string {
+  const current = lane.current ?? {};
+  const list = chainToList(lane.workerChain ?? current.worker ?? lane.worker);
+  if (list.length > 0) return list[0] as string;
+  return cleanStr(current.worker);
+}
+
+function whoSegment(lane: ControlRoomLane, nowMs: number): string | null {
+  if (!hasWork(lane)) return null;
+  const current = lane.current ?? {};
+  const laneName = projectPresentation(lane).name || projectOf(lane) || '알 수 없는 레인';
+  const stage = FLOW[stageIndex(current.stage ?? 0)] ?? '계획';
+  const elapsed = elapsedKo(startOfWork(current), nowMs) || '경과 확인 중';
+  const worker = workerNameOf(lane);
+  return worker ? `${laneName} · ${stage} · ${elapsed} · ${worker}` : `${laneName} · ${stage} · ${elapsed}`;
+}
+
+interface TodayItem { lane: string; taskId: string; title: string }
+
+function todayItemsOf(board: ControlRoomBoard | null): TodayItem[] {
+  if (!board || typeof board !== 'object') return [];
+  const out: TodayItem[] = [];
+  const pushEntry = (entry: unknown, laneFallback: string): void => {
+    if (typeof entry === 'string') {
+      const text = entry.trim();
+      if (text) out.push({ lane: laneFallback, taskId: text, title: text });
+      return;
+    }
+    if (!entry || typeof entry !== 'object') return;
+    const record = entry as Record<string, unknown>;
+    const lane = cleanStr(record.lane ?? record.project) || laneFallback;
+    const taskId = cleanStr(record.taskId ?? record.task_id ?? record.id ?? record.key);
+    const title = cleanStr(record.title ?? record.taskTitle ?? record.name ?? record.label ?? record.summary) || taskId;
+    if (taskId || title) out.push({ lane, taskId, title });
+  };
+  const root = board as Record<string, unknown>;
+  for (const key of ['todayDone', 'today_done', 'doneToday', 'done_today', 'completedToday', 'completed_today', 'done', 'today'] as const) {
+    const list = root[key];
+    if (Array.isArray(list)) {
+      for (const entry of list) {
+        const fallback = entry && typeof entry === 'object'
+          ? cleanStr((entry as Record<string, unknown>).lane ?? (entry as Record<string, unknown>).project)
+          : '';
+        pushEntry(entry, fallback);
+      }
+      if (out.length > 0) return out;
+    }
+  }
+  for (const lane of board.lanes ?? []) {
+    const laneId = projectOf(lane);
+    const record = lane as Record<string, unknown>;
+    for (const key of ['todayDone', 'today_done', 'doneToday', 'done_today', 'completedToday', 'completed_today', 'done', 'today'] as const) {
+      const list = record[key];
+      if (!Array.isArray(list)) continue;
+      for (const entry of list) pushEntry(entry, laneId);
+    }
+  }
+  return out;
+}
+
+function TodayCard({ board }: { board: ControlRoomBoard | null }): React.ReactElement {
+  const items = todayItemsOf(board);
+  return (
+    <section className="control-card today-card" aria-label="오늘 끝난 일">
+      <h2>오늘 끝난 일 {items.length > 0 ? `${items.length}개` : ''}</h2>
+      {items.length === 0
+        ? <p className="muted">오늘 끝난 일은 아직 없어요.</p>
+        : <ul className="today-list">
+          {items.map((item, index) => (
+            <li key={`${item.lane}-${item.taskId || item.title}-${index}`}>
+              <span><strong>{item.title}</strong></span>
+              {item.lane && <span className="muted"> · {item.lane}</span>}
+            </li>
+          ))}
+        </ul>}
+    </section>
+  );
+}
+
+function WhoLine({ lanes }: { lanes: ControlRoomLane[] }): React.ReactElement {
+  const nowMs = Date.now();
+  const segments: string[] = [];
+  for (const lane of lanes) {
+    const segment = whoSegment(lane, nowMs);
+    if (segment) segments.push(segment);
+  }
+  const text = segments.length === 0 ? '지금 일하는 AI: 쉬는 중' : `지금 일하는 AI: ${segments.join(' / ')}`;
+  return (
+    <section className="control-card who-line" aria-label="지금 일하는 AI">
+      <p className="control-card-value who-text">{text}</p>
+    </section>
+  );
 }
 
 interface ParsedGate {
@@ -464,7 +619,10 @@ function LaneView({ lane, onRefresh }: {
 }): React.ReactElement {
   const current = lane.current ?? {};
   const stageValue = current.stage ?? 0;
-  const stage = FLOW[stageIndex(stageValue)] ?? '계획';
+  const working = hasWork(lane);
+  const taskTitle = currentTitleOf(current);
+  const taskId = currentIdOf(current);
+  const stage = working ? (FLOW[stageIndex(stageValue)] ?? '계획') : '쉬는 중';
   const holds = visibleHoldEntries(lane.holds);
   const gate = lane.humanGate ?? lane.founderGate;
   const worker = lane.workerChain ?? current.worker;
@@ -495,19 +653,20 @@ function LaneView({ lane, onRefresh }: {
         <details>
           <summary>원문 보기</summary>
           <p className="muted mono">{presentation.id || '—'}</p>
+          {taskId && <p className="muted mono">ID: {taskId}</p>}
           <pre className="mono">{rawText(lane)}</pre>
         </details>
       </header>
       <div className="control-flow" aria-label="lane lifecycle">
         {FLOW.map((name, index) => {
-          const state = flowState(stageValue, index);
+          const state = working ? flowState(stageValue, index) : 'pending';
           return <div className={`control-step ${state}`} key={name}><span className="control-step-dot">{state === 'done' ? '✓' : state === 'blocked' ? '!' : state === 'active' ? '●' : '○'}</span><span>{name}</span></div>;
         })}
       </div>
       <div className="control-cards">
         <article className="control-card">
           <h3>현재 작업</h3>
-          <p className="control-card-value">{label(current.taskId, '지금 하는 일 없음')}</p>
+          <p className="control-card-value">{working ? (taskTitle || '지금 하는 일 없음') : '쉬는 중'}</p>
           <p className="muted">단계: {stage}</p>
           {paused && project && <ResumeControl project={project} onRefresh={onRefresh} />}
         </article>
@@ -571,6 +730,11 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
       setBoard({
         lanes: Array.isArray(next?.lanes) ? next.lanes : [],
         models: next?.models && typeof next.models === 'object' ? next.models : undefined,
+        todayDone: (next as Record<string, unknown>)?.todayDone
+          ?? (next as Record<string, unknown>)?.today_done
+          ?? (next as Record<string, unknown>)?.doneToday
+          ?? (next as Record<string, unknown>)?.completedToday
+          ?? (next as Record<string, unknown>)?.done,
       });
       setError('');
     } catch (e) {
@@ -596,6 +760,8 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
   return (
     <main className="control-room">
       <div className="control-room-head"><div><h1>관제실</h1>{decisionCount > 0 && <p className="control-decision-count">결정 대기 {decisionCount}건</p>}<p className="muted">5초마다 자동으로 새로 고쳐요.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      <TodayCard board={board} />
+      <WhoLine lanes={lanes} />
       <ModelUsagePanel models={board?.models} />
       {board === null && !error ? <div className="control-empty">작업 PC에서 불러오는 중…</div>
       : error && lanes.length === 0 ? <div className="control-empty">{error}</div>
