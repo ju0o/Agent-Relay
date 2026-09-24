@@ -547,6 +547,20 @@ export interface PlanStudioOrderTask {
 /** Founder-view group rank: 'active' (진행중/대기) → 'hold' → 'done' (끝남). */
 export type PlanStudioTaskGroup = 'active' | 'hold' | 'done';
 
+/** True when a normalized stage value is explicitly negated (UNDONE/NOT_DONE/INCOMPLETE/NOT_COMPLETE). */
+export function isNegatedPlanStudioDoneValue(value: string): boolean {
+  const stripped = value.replace(/[\s_\-]+/g, '');
+  return stripped.includes('UNDONE')
+    || stripped.includes('NOTDONE')
+    || stripped.includes('INCOMPLETE')
+    || stripped.includes('NOTCOMPLETE')
+    || stripped.includes('NONDONE')
+    || stripped.includes('NONCOMPLETE')
+    || stripped.includes('UNCOMPLETE')
+    || stripped.includes('NOTINTEGRATED')
+    || stripped.includes('NOTVERIFIED');
+}
+
 /** True when the stage string/number means finished (반영/DONE/COMPLETE/통합/INTEGRATED/VERIFIED_DONE). */
 export function isPlanStudioTaskDone(task: PlanStudioOrderTask | null | undefined): boolean {
   if (!task || typeof task !== 'object') return false;
@@ -554,6 +568,7 @@ export function isPlanStudioTaskDone(task: PlanStudioOrderTask | null | undefine
   if (typeof stage === 'number') return Number.isFinite(stage) && stage >= 6;
   const value = String(stage ?? '').toUpperCase();
   if (!value) return false;
+  if (isNegatedPlanStudioDoneValue(value)) return false;
   return value.includes('INTEGR')
     || value.includes('통합')
     || value.includes('반영')

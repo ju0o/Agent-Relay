@@ -65,10 +65,23 @@ function rawText(value: unknown): string {
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
+function isNegatedDoneValue(value: string): boolean {
+  const stripped = value.replace(/[\s_\-]+/g, '');
+  return stripped.includes('UNDONE')
+    || stripped.includes('NOTDONE')
+    || stripped.includes('INCOMPLETE')
+    || stripped.includes('NOTCOMPLETE')
+    || stripped.includes('NONDONE')
+    || stripped.includes('NONCOMPLETE')
+    || stripped.includes('UNCOMPLETE')
+    || stripped.includes('NOTINTEGRATED')
+    || stripped.includes('NOTVERIFIED');
+}
+
 function stageIndex(stage: number | string): number {
   if (typeof stage === 'number' && Number.isFinite(stage)) return Math.max(0, Math.min(FLOW.length - 1, stage));
   const value = String(stage).toUpperCase();
-  if (value.includes('INTEGR') || value.includes('통합') || value.includes('반영') || value.includes('DONE') || value.includes('COMPLETE')) return 6;
+  if (!isNegatedDoneValue(value) && (value.includes('INTEGR') || value.includes('통합') || value.includes('반영') || value.includes('DONE') || value.includes('COMPLETE'))) return 6;
   if (value.includes('HUMAN') || value.includes('FOUNDER') || value.includes('사람 확인')) return 5;
   if (value.includes('GATE') || value.includes('시험')) return 4;
   if (value.includes('QA') || value.includes('검수')) return 3;
