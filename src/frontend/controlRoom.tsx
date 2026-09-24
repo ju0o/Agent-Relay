@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
+import { laneAttention } from '../shared/types.js';
 import { PROJECT_LABELS } from '../shared/projectLabels.js';
 
 export interface ControlRoomLane {
@@ -415,9 +416,32 @@ function LaneView({ lane, onRefresh }: {
   );
 }
 
+/** Stable key for lane selection — lane id first, never a bare index. */
+function laneSelectKey(lane: ControlRoomLane, index: number): string {
+  if (typeof lane.id === 'string' && lane.id) return lane.id;
+  if (typeof lane.project === 'string' && lane.project) return lane.project;
+  return `__index-${index}`;
+}
+
+/** Sort rank for attention badges: decision first, then hold, then the rest. */
+function attentionRank(lane: ControlRoomLane): number {
+  const attn = laneAttention(lane);
+  if (attn === 'decision') return 0;
+  if (attn === 'hold') return 1;
+  return 2;
+}
+
+/** Stable-sort lanes so 'decision' lanes come first, then 'hold', then the rest. */
+function sortLanesByAttention(lanes: ControlRoomLane[]): ControlRoomLane[] {
+  return lanes
+    .map((lane, index) => ({ lane, index }))
+    .sort((a, b) => attentionRank(a.lane) - attentionRank(b.lane) || a.index - b.index)
+    .map(entry => entry.lane);
+}
+
 export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactElement {
   const [board, setBoard] = useState<ControlRoomBoard | null>(null);
-  const [selected, setSelected] = useState(0);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const load = useCallback(async (): Promise<void> => {
@@ -444,15 +468,18 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
   }, [load]);
 
   const lanes = board?.lanes ?? [];
-  const activeLane = lanes[Math.min(selected, Math.max(0, lanes.length - 1))];
+  const sortedLanes = sortLanesByAttention(lanes);
+  const decisionCount = sortedLanes.filter(lane => laneAttention(lane) === 'decision').length;
+  const activeLane = sortedLanes.find((lane, index) => laneSelectKey(lane, index) === selectedId) ?? sortedLanes[0];
+  const activeKey = activeLane ? laneSelectKey(activeLane, sortedLanes.indexOf(activeLane)) : null;
   return (
     <main className="control-room">
-      <div className="control-room-head"><div><h1>Control Room</h1><p className="muted">5초마다 board를 읽습니다 · 액션 실행 후 다시 읽습니다</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      <div className="control-room-head"><div><h1>Control Room</h1>{decisionCount > 0 && <p className="control-decision-count">결정 대기 {decisionCount}건</p>}<p className="muted">5초마다 board를 읽습니다 · 액션 실행 후 다시 읽습니다</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       <ModelUsagePanel models={board?.models} />
       {board === null && !error ? <div className="control-empty">작업 PC에서 불러오는 중…</div>
       : error && lanes.length === 0 ? <div className="control-empty">{error}</div>
-      : !lanes.length ? null : <>
-        <div className="control-tabs" role="tablist">{lanes.map((lane, index) => { const presentation = projectPresentation(lane); return <button className={`control-tab${index === selected ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelected(index)} role="tab" aria-label={`${presentation.name}: ${presentation.goal}`}><span>{presentation.name}</span><small style={{ display: 'block', marginTop: 4 }}>{presentation.goal}</small></button>; })}</div>
+      : !sortedLanes.length ? null : <>
+        <div className="control-tabs" role="tablist">{sortedLanes.map((lane, index) => { const presentation = projectPresentation(lane); const key = laneSelectKey(lane, index); const isActive = key === activeKey; const attn = laneAttention(lane); return <button className={`control-tab${isActive ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelectedId(key)} role="tab" aria-selected={isActive} aria-label={`${presentation.name}: ${presentation.goal}`}><span>{presentation.name}</span>{attn === 'decision' && <span className="attn-badge decision">결정 필요</span>}{attn === 'hold' && <span className="attn-badge hold">보류</span>}<small style={{ display: 'block', marginTop: 4 }}>{presentation.goal}</small></button>; })}</div>
         {activeLane && <LaneView lane={activeLane} onRefresh={load} />}
       </>}
     </main>

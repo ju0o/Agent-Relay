@@ -462,6 +462,34 @@ export function groupRulesByCategory<T extends ApprovalRuleJson>(
     .map(([category, list]) => ({ category, rules: sortRulesByUsage(list) }));
 }
 
+// ── Control Room lane attention (decision badges) ─────────────────────────
+// Surface lanes that need the Founder. Pure — unit-tested.
+
+/** Minimal lane shape needed for attention badges (extra fields ignored). */
+export interface LaneAttentionInput {
+  humanGate?: unknown;
+  founderGate?: unknown;
+  blocker?: unknown;
+  holds?: unknown;
+  [key: string]: unknown;
+}
+
+/** 'decision' = Founder/human gate open · 'hold' = blocked/held · null = clear. */
+export type LaneAttention = 'decision' | 'hold' | null;
+
+/**
+ * Pure helper — 'decision' if lane.humanGate or lane.founderGate is truthy,
+ * else 'hold' if lane.blocker is truthy or lane.holds is a non-empty array,
+ * else null.
+ */
+export function laneAttention(lane: LaneAttentionInput | null | undefined): LaneAttention {
+  if (!lane || typeof lane !== 'object') return null;
+  if (lane.humanGate || lane.founderGate) return 'decision';
+  if (lane.blocker) return 'hold';
+  if (Array.isArray(lane.holds) && lane.holds.length > 0) return 'hold';
+  return null;
+}
+
 // ── Drag reorder helpers ────────────────────────────────────────────────────
 
 /** Return a new array with the element at `from` moved to index `to`. */
