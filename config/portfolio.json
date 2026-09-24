@@ -1868,7 +1868,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 actl collision audit; R2 QA quoting finding",
-          "title": "Third, precise attempt at the cross-process pane lock (super"
+          "title": "메시지 충돌 없이 안전하게 전달"
         }
       ],
       "qaRuntime": [
