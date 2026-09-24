@@ -3,7 +3,7 @@ import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import { InlineConfirm } from './components.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
-import { controlRoomTaskId, controlRoomTaskTitle, controlRoomTodayCount, controlRoomTodayDone, controlRoomWorkingRows, laneAttention } from '../shared/types.js';
+import { controlRoomTaskId, controlRoomTaskTitle, controlRoomHasDoneData, controlRoomTodayCount, controlRoomTodayDone, controlRoomVerifiedDoneTotal, controlRoomWorkingRows, laneAttention } from '../shared/types.js';
 import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
 
 export interface ControlRoomHoldExplain {
@@ -183,19 +183,23 @@ function todayItemsOf(board: ControlRoomBoard | null): TodayItem[] {
 function TodayCard({ board }: { board: ControlRoomBoard | null }): React.ReactElement {
   const items = todayItemsOf(board).slice(0, 3);
   const count = controlRoomTodayCount(board);
+  const hasData = controlRoomHasDoneData(board);
+  const total = controlRoomVerifiedDoneTotal(board);
   return (
     <section className="control-card today-card" aria-label="오늘 끝난 일">
       <h2>오늘 끝난 일</h2>
-      {count === 0
-        ? <p className="muted">오늘 끝난 일은 아직 없어요.</p>
-        : <><p className="control-card-value">오늘 {count}개 끝났어요</p><ul className="today-list">
-          {items.map((item, index) => (
-            <li key={`${item.lane}-${item.taskId || item.title}-${index}`}>
-              <span><strong>{item.lane ? `${PROJECT_LABELS[item.lane]?.name ?? item.lane} · ` : ''}{item.title}</strong></span>
-              {item.taskId && <span className="muted mono"> · ID: {item.taskId}</span>}
-            </li>
-          ))}
-        </ul></>}
+      {!hasData
+        ? <p className="muted">오늘 기록은 아직 안 왔어요 · 지금까지 끝난 작업 {total}개</p>
+        : count === 0
+          ? <p className="muted">오늘 끝난 일은 아직 없어요.</p>
+          : <><p className="control-card-value">오늘 {count}개 끝났어요</p><ul className="today-list">
+            {items.map((item, index) => (
+              <li key={`${item.lane}-${item.taskId || item.title}-${index}`}>
+                <span><strong>{item.lane ? `${PROJECT_LABELS[item.lane]?.name ?? item.lane} · ` : ''}{item.title}</strong></span>
+                {item.taskId && <span className="muted mono"> · ID: {item.taskId}</span>}
+              </li>
+            ))}
+          </ul></>}
     </section>
   );
 }

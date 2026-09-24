@@ -444,10 +444,86 @@ export function controlRoomTodayCount(board: unknown, now: Date = new Date()): n
     const counts = (laneValue as Record<string, unknown>).counts;
     if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue;
     const record = counts as Record<string, unknown>;
+    // NOTE: VERIFIED_DONE is a cumulative total, never a today hint — do not read it here.
     const value = record.today ?? record.todayDone ?? record.doneToday ?? record.completedToday ?? record.finishedToday ?? record.done;
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) hinted += Math.floor(value);
   }
   return Math.max(items.length, hinted);
+}
+
+/**
+ * R2-2 honest fallback — sum of cumulative VERIFIED_DONE totals across lanes.
+ * The real board sends only lanes[].counts (VERIFIED_DONE totals) with no dated
+ * done list, so this total must never be presented as "today". Pure.
+ */
+export function controlRoomVerifiedDoneTotal(board: unknown): number {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return 0;
+  const root = board as Record<string, unknown>;
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  let total = 0;
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const counts = (laneValue as Record<string, unknown>).counts;
+    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue;
+    const record = counts as Record<string, unknown>;
+    const value =
+      record.VERIFIED_DONE ?? record.verified_done ?? record.verifiedDone;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      total += Math.floor(value);
+    }
+  }
+  return total;
+}
+
+const CONTROL_ROOM_TODAY_LIST_KEYS = [
+  'todayDone',
+  'today_done',
+  'doneToday',
+  'done_today',
+  'completedToday',
+  'completed_today',
+] as const;
+
+const CONTROL_ROOM_TODAY_HINT_KEYS = [
+  'today',
+  'todayDone',
+  'doneToday',
+  'completedToday',
+  'finishedToday',
+  'done',
+] as const;
+
+/**
+ * R2-2 — true when the board carries any dated done data:
+ * a non-empty lane.done / lane.todayDone-variant / root.todayDone-variant list,
+ * or an explicit numeric today hint in lanes[].counts (even 0 — an explicit
+ * zero claim is data, not "no record"). A counts-only board with just
+ * VERIFIED_DONE totals returns false. Pure.
+ */
+export function controlRoomHasDoneData(board: unknown): boolean {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return false;
+  const root = board as Record<string, unknown>;
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const lane = laneValue as Record<string, unknown>;
+    if (controlRoomDoneEntries(lane.done).length > 0) return true;
+    for (const key of CONTROL_ROOM_TODAY_LIST_KEYS) {
+      if (controlRoomDoneEntries(lane[key]).length > 0) return true;
+    }
+    const counts = lane.counts;
+    if (counts && typeof counts === 'object' && !Array.isArray(counts)) {
+      const record = counts as Record<string, unknown>;
+      for (const key of CONTROL_ROOM_TODAY_HINT_KEYS) {
+        const value = record[key];
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return true;
+      }
+    }
+  }
+  for (const key of ['todayDone', 'today_done'] as const) {
+    if (controlRoomDoneEntries(root[key]).length > 0) return true;
+  }
+  return false;
 }
 
 export function controlRoomWorkingRows(lanes: unknown): string[] {
