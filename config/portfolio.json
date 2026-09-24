@@ -1006,7 +1006,7 @@
             "npm run typecheck"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
-          "title": "Bring the Agent Relay docs in line with the code (docs only)"
+          "title": "최신 기능과 야간 결과를 쉽게 확인"
         },
         {
           "taskId": "AGENTRELAY-HOLD-OPTION-BUTTONS",
@@ -1684,7 +1684,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder standing order 2026-09-24 (추천대로 자동): ACTL-TK-PLAIN-CARDS-KEYBOARD-R2 held twice on the keyboard part → 범위 줄이기",
-          "title": "Narrowed replacement for ACTL-TK-PLAIN-CARDS-KEYBOARD(-R2) ("
+          "title": "작업 상태를 한눈에 확인"
         },
         {
           "taskId": "ACTL-ACTIVITY-LIVE-CPU",
@@ -1697,7 +1697,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "A1: observe_activity uses ps %cpu (lifetime average) so an i"
+          "title": "작업 상태를 더 정확히 표시"
         },
         {
           "taskId": "ACTL-WAITING-APPROVAL-STATE",
@@ -1713,7 +1713,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "A2: detect agents stuck on an approval/confirm prompt. class"
+          "title": "승인이 필요한 작업을 알려줌"
         },
         {
           "taskId": "ACTL-PREVIEW-TRAILING-BLANKS",
@@ -1726,7 +1726,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "A3: tui._pane_preview slices the last N lines before droppin"
+          "title": "작업 내용을 빠짐없이 보여줌"
         },
         {
           "taskId": "ACTL-CLI-NO-TMUX-FRIENDLY",
@@ -1739,7 +1739,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "A4: with no tmux server, `actl`, `actl discover` and `actl t"
+          "title": "실행 전 필요한 안내를 보여줌"
         },
         {
           "taskId": "ACTL-CLI-KOREAN-SEND-COPY",
@@ -1752,7 +1752,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "A5: Founder CLI send/copy flow in plain Korean: _print_cli_h"
+          "title": "질문과 답변을 쉽게 주고받음"
         },
         {
           "taskId": "ACTL-SEND-STRIP-TRAILING-NEWLINE",
@@ -1765,7 +1765,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "A6: `echo text | actl send AGENT` pastes 'text\\n' with paste"
+          "title": "질문이 중복 전송되지 않게 함"
         },
         {
           "taskId": "ACTL-TUI-ONE-STATE-COLUMN",
@@ -1778,7 +1778,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "A7: actl tui row shows state_ko, busy and raw runtime_state "
+          "title": "작업 상태를 하나로 쉽게 표시"
         }
       ],
       "qaRuntime": [
@@ -3965,7 +3965,7 @@
             "node --test test/docs-truth.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
-          "title": "Status docs stopped at 9/20-21. Update (docs only): CURRENT."
+          "title": "서비스 현황을 최신 내용으로 정리"
         },
         {
           "taskId": "JCAPP-COMPOSER-SURVIVES-TABS",
@@ -4009,7 +4009,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "H3: a HOLD whose recommended retry already runs (lane.curren"
+          "title": "끝난 멈춤 알림을 자동 정리"
         },
         {
           "taskId": "JCAPP-HOLD-GO-CONFIRM",
@@ -4054,7 +4054,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "H6: at 390px the bottom nav holds 10 items (scrollWidth 684)"
+          "title": "휴대폰에서 주요 메뉴를 쉽게 보기"
         },
         {
           "taskId": "JCAPP-HOME-GUIDE-HOLD-TARGET",
@@ -4113,7 +4113,7 @@
             "node --test test/*.test.mjs"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
-          "title": "H10: the same stage has different words per screen (relay se"
+          "title": "작업 진행 상태를 한눈에 이해"
         },
         {
           "taskId": "JCAPP-JUCEIPT-ROW-TITLE",
@@ -4334,7 +4334,7 @@
             "git diff --check"
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
-          "title": "docs/operations/PM_STATUS_BOARD.md (and the 9/24 roadmap/mor"
+          "title": "실제 진행상태로 계획판 바로잡기"
         }
       ]
     }
