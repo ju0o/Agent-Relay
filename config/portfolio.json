@@ -4542,7 +4542,8 @@
           "tests": [
             "node --test tests/results/scenario-a/concise-report.test.mjs"
           ],
-          "ssotEvidence": "docs/BEGINNER_REPORT_SPEC.md:127-133 quote: 단순 작업 보고서는 각 기본 항목을 최대 1~2문장으로 작성하고 전체 보고서는 기본적으로 12문장 이내를 우선한다."
+          "ssotEvidence": "docs/BEGINNER_REPORT_SPEC.md:127-133 quote: 단순 작업 보고서는 각 기본 항목을 최대 1~2문장으로 작성하고 전체 보고서는 기본적으로 12문장 이내를 우선한다.",
+          "title": "간단한 변경 결과를 쉽게 확인"
         }
       ],
       "note": "lane added by night plan request 2026-09-24",
