@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { appendFile, mkdir, readdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -38,6 +38,7 @@ export const QUOTA_ERROR = /rate.?limit|quota|usage limit|limit (reached|exceede
 export const TRANSIENT_ERROR = /\b50[234]\b|overloaded|temporarily unavailable|service unavailable|upstream error|ECONNRESET|ETIMEDOUT|socket hang up|model not found|hook dispatch failed/i; // last two: a misconfigured runtime (cline 2026-09-23) — the next runtime takes over
 // Lane config: runtime / qaRuntime may be one id or an ordered fallback list, e.g. ["opencode", "codex"].
 const chainOf = (value) => [value].flat().filter(Boolean);
+const INTEGRATION_FAILED = new Set(["CONFLICT", "GATE_FAILED", "NOT_INTEGRATED"]);
 // AI 자동 배정 (Founder 2026-09-24, OmniRoute-style): the lane's own chain first, then the rest of the Founder's subscribed
 // AIs (manifest.pool.subscribed), then free models (manifest.pool.free) as the last resort; anything cooling down after a
 // quota/timeout goes behind everything that is ready, keeping that same subscribed-before-free order.
@@ -296,7 +297,7 @@ export class PortfolioRunner {
   async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
   async save(state) { const snapshot = { ...state, ...(this.routing ? { routing: this.routing } : {}), updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => {
     // The continuous loop holds state in memory; a Founder answer written meanwhile by the CLI (founder-response) must not be overwritten.
-    if (this._continuous) { const disk = await this.load(); if ((disk.resolvedFounderGates || []).length > (snapshot.resolvedFounderGates || []).length) for (const key of ["founderDecisions", "resolvedFounderGates"]) { snapshot[key] = disk[key]; state[key] = disk[key]; } } await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
+    if (this._continuous) { const disk = await this.load(); if ((disk.resolvedFounderGates || []).length > (snapshot.resolvedFounderGates || []).length) for (const key of ["founderDecisions", "resolvedFounderGates"]) { snapshot[key] = disk[key]; state[key] = disk[key]; } } await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rename(`${this.statePath}.tmp`, this.statePath); }); return this._saveChain; } // atomic: a power-off mid-save keeps the old or the new file, never none
 
   async reconcileProjects(state) {
     const projects = []; const founderGates = [];
@@ -358,6 +359,7 @@ export class PortfolioRunner {
     state.tasks = state.tasks.map((task) => {
       if (task.state === "HOLD" && String(task.error || "").startsWith("RUNTIME_LAUNCH:")) return { ...task, state: "QUEUED", error: null, reconcile: "REQUEUED_AFTER_RUNTIME_RECOVERY" };
       // an abbreviated builder sha used to fail promotion after QA ACCEPT; promote() now resolves it, so rerun those once
+      if (task.state === "VERIFIED_DONE" && INTEGRATION_FAILED.has(task.integration?.state) && !task.verificationOnly && !task.integrationRecheck) return { ...task, state: "HOLD", error: `INTEGRATION_${task.integration.state}: ${task.integration.reason || ""}`.slice(0, 600), integrationRecheck: true, reconcile: "HOLD_NOT_INTEGRATED" };
       if (task.state === "HOLD" && String(task.error || "").startsWith("invalid promotion commit:") && !task.promotionRequeued) return { ...task, state: "QUEUED", error: null, attempts: 0, promotionRequeued: true, reconcile: "REQUEUED_AFTER_PROMOTION_FIX" };
       if (task.state === "HOLD" && (TRANSIENT_ERROR.test(String(task.error || "")) || QUOTA_ERROR.test(String(task.error || ""))) && (task.outageRequeues || 0) < 2) return { ...task, state: "QUEUED", error: null, attempts: 0, outageRequeues: (task.outageRequeues || 0) + 1, reconcile: "REQUEUED_AFTER_PROVIDER_OUTAGE" };
       if (task.state === "RUNNING" || task.state === "QA") {
@@ -464,7 +466,10 @@ export class PortfolioRunner {
         const failed = gate.results.find((result) => result.code !== 0);
         if (!task.testGate.ok) task.qa = { ...task.qa, verdict: "REQUEST_CHANGES", findings: [...(task.qa.findings || []), failed ? `TEST_GATE: \`${failed.cmd}\` exit ${failed.code}: ${failed.tail}` : "TEST_GATE: tests changed HEAD"] };
       }
-      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; if (this.worktrees.integrate && !task.verificationOnly) task.integration = await this.worktrees.integrate(project, task).catch((error) => ({ state: "NOT_INTEGRATED", reason: String(error.message || error).slice(0, 500) })); task.state = "VERIFIED_DONE"; await this.publishResult(task); if (project.autoContinue === false) { const pause = join(resolve(this.statePath, ".."), "lane-pause"); await mkdir(pause, { recursive: true }); await writeFile(join(pause, project.id), `${task.taskId} done ${new Date().toISOString()}\n`); } break; }
+      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; if (this.worktrees.integrate && !task.verificationOnly) task.integration = await this.worktrees.integrate(project, task).catch((error) => ({ state: "NOT_INTEGRATED", reason: String(error.message || error).slice(0, 500) }));
+        // accepted work that did not land on the integration branch is not done (2026-09-24: 4 tasks were marked done but never merged)
+        if (INTEGRATION_FAILED.has(task.integration?.state)) { task.state = "HOLD"; task.error = `INTEGRATION_${task.integration.state}: ${task.integration.reason || ""}`.slice(0, 600); await this.publishResult(task); break; }
+        task.state = "VERIFIED_DONE"; await this.publishResult(task); if (project.autoContinue === false) { const pause = join(resolve(this.statePath, ".."), "lane-pause"); await mkdir(pause, { recursive: true }); await writeFile(join(pause, project.id), `${task.taskId} done ${new Date().toISOString()}\n`); } break; }
       if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
       if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; await this.publishResult(task); break;
       }
