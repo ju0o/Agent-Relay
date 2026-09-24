@@ -10,6 +10,7 @@ import {
 // Pure helpers live in shared/types.ts (compiled to dist → unit-tested);
 // this module re-exports them so existing `./approvals.js` imports keep working.
 export {
+  approvalCategoryLabel,
   approvalLastUsed,
   approvalStatsLine,
   approvalUsedCount,

@@ -9,7 +9,7 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
-import { approvalStatsLine, dedupeApprovalRules, groupRulesByCategory } from './approvals.js';
+import { approvalCategoryLabel, approvalStatsLine, dedupeApprovalRules, groupRulesByCategory } from './approvals.js';
 import type { ApprovalRuleJson } from '../shared/types.js';
 import { PlanStudio } from './planStudio.js';
 import { renderMd } from './md.js';
@@ -213,14 +213,14 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
   };
   return (
     <main className="control-room">
-      <div className="control-room-head"><div><h1>Founder 승인 내역</h1><p className="muted">읽기 전용 · controlRoom:approvals</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      <div className="control-room-head"><div><h1>Founder 승인 내역</h1><p className="muted">Agent Relay가 묻지 않고 알아서 처리하도록 허락한 규칙입니다.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       {error && <div className="flash err">{error}</div>}
       {items === null && !error ? <div className="control-empty">불러오는 중...</div>
         : list.length === 0 ? <div className="control-empty">표시할 승인 내역이 없습니다.</div>
         : <>
           {groups.map(group => (
-            <section className="approval-group" key={group.category} aria-label={`승인 규칙 ${group.category}`}>
-              <h3 className="approval-category">{group.category}</h3>
+            <section className="approval-group" key={group.category} aria-label={`승인 규칙 ${approvalCategoryLabel(group.category)}`}>
+              <h3 className="approval-category">{approvalCategoryLabel(group.category)}</h3>
               <div className="control-cards">{group.rules.map((rule, i) => (
                 <article className="control-card" key={i}>
                   <p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{ruleLabel(rule)}</p>
@@ -1228,6 +1228,11 @@ function AppInner(): React.ReactElement {
               title="Control Room — lane 상태 보기"
               onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
             >🛰 Control Room</button>
+            <button
+              className={`mini df-toggle${approvalsMode ? ' on' : ''}`}
+              title="승인 규칙 — Agent Relay가 알아서 처리하도록 허락한 규칙"
+              onClick={() => { setApprovalsMode(m => !m); setDfMode(false); setPdMode(false); setControlRoomMode(false); setPlanStudioMode(false); }}
+            >✅ 승인 규칙</button>
             <button
               className={`mini df-toggle${planStudioMode ? ' on' : ''}`}
               title="Plan Studio — Goal · Task chain · PM chat"

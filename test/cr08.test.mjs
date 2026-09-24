@@ -1,11 +1,13 @@
 /* CR-08 model quota board + approval learning — pure helper tests.
    Covers the helpers behind the '모델 사용량' panel and the per-rule
-   '자동 승인 N회 · 마지막 YYYY-MM-DD' stats (missing fields → 0 / '-').
+   approval stats (unused → '아직 자동 적용된 적 없음', else
+   '자동 적용 N회 · 마지막 YYYY-MM-DD') plus approvalCategoryLabel.
    Runs against the compiled shared module (dist/server/shared/types.js),
    mirroring test/v03.test.mjs conventions. */
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  approvalCategoryLabel,
   approvalLastUsed,
   approvalStatsLine,
   approvalUsedCount,
@@ -66,12 +68,23 @@ test("approvalLastUsed — missing/invalid renders as '-', else YYYY-MM-DD", () 
   assert.equal(approvalLastUsed({ lastUsedAt: "2026-09-20T12:34:56Z" }), "2026-09-20");
 });
 
-test("approvalStatsLine — '자동 승인 N회 · 마지막 YYYY-MM-DD' per rule", () => {
-  assert.equal(approvalStatsLine({}), "자동 승인 0회 · 마지막 -");
+test("approvalStatsLine — unused → '아직 자동 적용된 적 없음', else '자동 적용 N회 · 마지막 YYYY-MM-DD'", () => {
+  assert.equal(approvalStatsLine({}), "아직 자동 적용된 적 없음");
+  assert.equal(approvalStatsLine({ usedCount: 0 }), "아직 자동 적용된 적 없음");
   assert.equal(
     approvalStatsLine({ usedCount: 7, lastUsedAt: "2026-09-20T00:00:00Z" }),
-    "자동 승인 7회 · 마지막 2026-09-20",
+    "자동 적용 7회 · 마지막 2026-09-20",
   );
+});
+
+test("approvalCategoryLabel — known categories map to Korean headings, others unchanged", () => {
+  assert.equal(approvalCategoryLabel("agents"), "에이전트 배치");
+  assert.equal(approvalCategoryLabel("git"), "Git·브랜치");
+  assert.equal(approvalCategoryLabel("install"), "설치");
+  assert.equal(approvalCategoryLabel("lanes"), "작업 흐름");
+  assert.equal(approvalCategoryLabel("merge-push"), "병합·올리기");
+  assert.equal(approvalCategoryLabel("기타"), "기타");
+  assert.equal(approvalCategoryLabel("deploy"), "deploy");
 });
 
 test("sortRulesByUsage — desc by usedCount, stable on ties, missing = 0", () => {

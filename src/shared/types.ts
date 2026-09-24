@@ -401,9 +401,26 @@ export function approvalLastUsed(rule: ApprovalRuleJson): string {
   return `${year}-${month}-${day}`;
 }
 
-/** '자동 승인 N회 · 마지막 YYYY-MM-DD' per rule. Pure — unit-tested. */
+/** usedCount 0 → '아직 자동 적용된 적 없음', otherwise '자동 적용 N회 · 마지막 YYYY-MM-DD'. Pure — unit-tested. */
 export function approvalStatsLine(rule: ApprovalRuleJson): string {
-  return `자동 승인 ${approvalUsedCount(rule)}회 · 마지막 ${approvalLastUsed(rule)}`;
+  const used = approvalUsedCount(rule);
+  if (used === 0) return '아직 자동 적용된 적 없음';
+  return `자동 적용 ${used}회 · 마지막 ${approvalLastUsed(rule)}`;
+}
+
+/**
+ * Approval category → Korean group heading label. Pure — unit-tested.
+ * Known keys map to fixed labels; anything else (including '기타') is unchanged.
+ */
+export function approvalCategoryLabel(category: string): string {
+  switch (category) {
+    case 'agents': return '에이전트 배치';
+    case 'git': return 'Git·브랜치';
+    case 'install': return '설치';
+    case 'lanes': return '작업 흐름';
+    case 'merge-push': return '병합·올리기';
+    default: return category;
+  }
 }
 
 /**

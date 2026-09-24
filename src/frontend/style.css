@@ -1049,6 +1049,8 @@ html, body, #app {
 .model-usage-row.quota-hit { border-color: var(--warn); background: rgba(255,159,10,0.08); }
 .model-usage-row.quota-hit .model-usage-nums { color: var(--warn); font-weight: 700; }
 .approval-group { margin-bottom: 18px; }
+.approval-group .control-card { min-height: 0; padding-bottom: 10px; }
+.approval-group .control-card p { margin-bottom: 0; }
 .approval-category { margin: 0 0 8px; font-size: 13px; color: var(--accent); }
 .approval-stats { font-size: 11px; }
 /* ── Plan Studio ─────────────────────────────────────────── */
