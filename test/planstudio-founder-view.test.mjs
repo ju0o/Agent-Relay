@@ -66,6 +66,19 @@ test("planStudio.tsx — English-heavy labels are gone", () => {
   assert.ok(!studioSrc.includes("PLANSTUDIO:CHAT"), "'PLANSTUDIO:CHAT' should be renamed");
   assert.ok(!studioSrc.includes("PM chat (planStudio:chat)"), "'PM chat (planStudio:chat)' should be renamed");
   assert.ok(!studioSrc.includes("gate가 없습니다"), "'gate가 없습니다' should be renamed");
+  assert.ok(!studioSrc.includes("board에 lane이 없습니다."), "board empty copy should be Korean");
+  assert.ok(!studioSrc.includes("표시할 task가 없습니다."), "task empty copy should be Korean");
+  assert.ok(!studioSrc.includes("task를 선택하세요."), "task selection copy should be Korean");
+  assert.ok(!studioSrc.includes("Blocker:"), "blocker label should be Korean");
+  assert.ok(!studioSrc.includes("시작 전 task 삭제"), "delete title should be Korean");
+});
+
+test("planStudio.tsx — raw gate ID is collapsed", () => {
+  assert.match(
+    studioSrc,
+    /<details>\s*<summary>원문 보기<\/summary><p className="muted mono" style=\{\{ fontSize: 11 \}\}>\{gate\.gateId\}<\/p><\/details>/,
+    "gateId should render inside a collapsed raw-value disclosure",
+  );
 });
 
 test("planStudio.tsx — Founder Korean labels present, finished toggle closed by default", () => {

@@ -466,7 +466,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
         <section className="control-card plan-projects" aria-label="project list">
           <h3>프로젝트</h3>
           {projects.length === 0
-            ? <p className="muted">board에 lane이 없습니다.</p>
+            ? <p className="muted">아직 표시할 프로젝트가 없어요.</p>
             : <div className="plan-project-list" role="listbox" aria-label="projects">
               {projects.map(name => {
                 const lane = lanes.find(l => str(l.project ?? l.id) === name);
@@ -502,7 +502,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
           <article className="control-card" aria-label="task chain">
             <h3>작업 순서 ({tasks.length}개)</h3>
             {tasks.length === 0
-              ? <p className="muted">표시할 task가 없습니다.</p>
+              ? <p className="muted">아직 작업이 없어요.</p>
               : <>
                 {remainingCount === 0 && <p className="muted" role="status">모두 끝났어요 — 남은 작업이 없습니다.</p>}
                 <ol className="plan-tasks">
@@ -542,7 +542,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                           >제목 저장</button>
                           <button
                             className="mini"
-                            title="시작 전 task 삭제"
+                            title="시작 전 작업 삭제"
                             disabled={busy === 'save'}
                             onClick={() => requestDelete(task)}
                           >삭제</button>
@@ -655,7 +655,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
           <article className="control-card" aria-label="selected node detail">
             <h3>선택한 작업</h3>
             {!selected
-              ? <p className="muted">task를 선택하세요.</p>
+              ? <p className="muted">왼쪽에서 작업을 골라 주세요.</p>
               : <>
                 <p className="control-card-value" style={{ fontSize: 14 }}>{founderTaskTitle(selected)}</p>
                 <details><summary>원문 보기</summary><p className="muted mono">ID: {selected.id}</p><p className="muted mono">범위: {selected.scope || '—'}</p></details>
@@ -663,7 +663,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                   ? <p>{doneLabel(selected)}</p>
                   : <p>현재 단계: <strong>{FLOW[stageIndex(selected.stage)]}</strong> ({stageIndex(selected.stage) + 1}/7)</p>}
                 {selected.agents.trim() ? <p>담당 AI: <strong>{selected.agents}</strong></p> : null}
-                {selected.blocker.trim() ? <p>Blocker: <strong>{selected.blocker}</strong></p> : null}
+                {selected.blocker.trim() ? <p>막힌 이유: <strong>{selected.blocker}</strong></p> : null}
                 {selected.expectedRisk.trim() ? <p>예상 리스크: <strong>{selected.expectedRisk}</strong></p> : null}
               </>}
           </article>
@@ -676,7 +676,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                 <form key={gate.gateId} onSubmit={e => { e.preventDefault(); void answerGate(gate.gateId); }}>
                   <fieldset className="plan-gate">
                     <legend>{gate.title}</legend>
-                    <p className="muted mono" style={{ fontSize: 11 }}>{gate.gateId}</p>
+                    <details><summary>원문 보기</summary><p className="muted mono" style={{ fontSize: 11 }}>{gate.gateId}</p></details>
                     {gate.options.map((option, index) => (
                       <label key={`${gate.gateId}-${index}`} className="plan-radio">
                         <input
