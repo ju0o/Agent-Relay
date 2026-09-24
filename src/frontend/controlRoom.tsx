@@ -3,7 +3,24 @@ import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
 import { laneAttention } from '../shared/types.js';
-import { PROJECT_LABELS, holdCardMessage } from '../shared/projectLabels.js';
+import { PROJECT_LABELS, holdCardMessage, visibleHoldEntries } from '../shared/projectLabels.js';
+
+export interface ControlRoomHoldExplain {
+  sentence?: unknown;
+  choice?: unknown;
+  recommended?: unknown;
+  [key: string]: unknown;
+}
+
+export interface ControlRoomHold {
+  taskId?: string;
+  reason?: string;
+  step?: string | number;
+  explain?: string | ControlRoomHoldExplain;
+  choice?: string | number;
+  options?: unknown;
+  [key: string]: unknown;
+}
 
 export interface ControlRoomLane {
   id?: string;
@@ -11,7 +28,7 @@ export interface ControlRoomLane {
   current?: { stage?: number | string; taskId?: string; worker?: unknown; qa?: unknown; [key: string]: unknown };
   workerChain?: unknown;
   qaChain?: unknown;
-  holds?: Array<{ taskId?: string; reason?: string } | string>;
+  holds?: Array<ControlRoomHold | string>;
   humanGate?: Record<string, unknown>;
   founderGate?: Record<string, unknown>;
   blocker?: string;
@@ -138,7 +155,8 @@ function isPaused(lane: ControlRoomLane): boolean {
   if (lane.paused === true || current.paused === true) return true;
   if (/paus|hold|stop|block/i.test(String(current.stage ?? ''))) return true;
   if (typeof lane.blocker === 'string' && lane.blocker.trim()) return true;
-  return Array.isArray(lane.holds) && lane.holds.length > 0;
+  // choice가 'skip'인 보류는 보여주지 않으므로 멈춤 판단에서도 제외한다.
+  return visibleHoldEntries(lane.holds).length > 0;
 }
 
 interface ParsedGate {
@@ -362,7 +380,7 @@ function LaneView({ lane, onRefresh }: {
   const current = lane.current ?? {};
   const stageValue = current.stage ?? 0;
   const stage = FLOW[stageIndex(stageValue)] ?? '계획';
-  const holds = Array.isArray(lane.holds) ? lane.holds : [];
+  const holds = visibleHoldEntries(lane.holds);
   const gate = lane.humanGate ?? lane.founderGate;
   const worker = lane.workerChain ?? current.worker;
   const qa = lane.qaChain ?? current.qa;
@@ -374,7 +392,13 @@ function LaneView({ lane, onRefresh }: {
   const qaText = detail(qa);
   const showWorker = workerText !== '' && workerText !== '—';
   const showQa = qaText !== '' && qaText !== '—';
-  const holdText = holdSummary(lane, holds.map(detail).join(', '));
+  const explainedHolds = holds.filter(hold => hold.sentence);
+  const plainReasons = holds.filter(hold => !hold.sentence).map(hold => hold.reason || hold.taskId).filter(text => text.trim().length > 0);
+  const holdText = explainedHolds.length > 0
+    ? holdSummary(lane, plainReasons.join(', '))
+    : holdSummary(lane, holds.map(hold => hold.reason || hold.taskId).join(', '));
+  const rawReasons = holds.map(hold => hold.reason).filter(text => text.trim().length > 0);
+  const showHoldCard = explainedHolds.length > 0 || holdText !== null;
   return (
     <section className="control-lane-view">
       <header className="control-card">
@@ -409,7 +433,17 @@ function LaneView({ lane, onRefresh }: {
             </div>
           )}
         </article>
-        {holdText !== null && <article className="control-card blocked"><h3>보류 / 차단</h3><p>{holdText}</p>{qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
+        {showHoldCard && <article className="control-card blocked"><h3>보류 / 차단</h3>{explainedHolds.map((hold, index) => (
+          <div key={hold.taskId || hold.sentence || index} className="hold-explain">
+            <p>{hold.sentence}</p>
+            {hold.step && <p className="muted">단계: {hold.step}</p>}
+            <ul className="hold-options">{hold.options.map((option, optionIndex) => (
+              <li key={`${index}-${optionIndex}`}>{option}{optionIndex === hold.recommendedIndex ? ' (추천)' : ''}</li>
+            ))}</ul>
+          </div>
+        ))}{holdText !== null && <p>{holdText}</p>}{explainedHolds.length > 0
+          ? <details><summary>원문 보기</summary>{rawReasons.map((reason, index) => <pre key={index} className="mono">{reason}</pre>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>
+          : qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
         {gate && <article className="control-card human"><h3>Human Gate</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
       </div>
     </section>

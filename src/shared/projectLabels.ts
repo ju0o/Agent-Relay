@@ -41,3 +41,130 @@ export function holdCardMessage(blocker: unknown, reason: unknown): string | nul
     ? `작업이 보류되었습니다: ${cleanReason}`
     : '작업이 보류되었습니다.';
 }
+
+// ── 보류 explain (holds/<id>.json → night board step/explain/choice) ──────
+// night board의 lane.holds 항목이 문자열이 아니라
+// { taskId, reason, step, explain: { sentence }, choice } 형태일 수 있다.
+// explain.sentence가 있으면 그 한국어 문장을 보여주고,
+// 원문 영문 reason은 닫힌 <details>원문 보기</details> 안에만 둔다.
+// choice가 'skip'인 항목은 보여주지 않는다. Pure — 단위 테스트 대상.
+
+/** explain.sentence가 없을 때 대신 보여주는 보류 선택지 3개 (순수 한국어 라벨). */
+export const HOLD_OPTION_LABELS: readonly string[] = [
+  '다시 시도',
+  '다음 작업으로 진행',
+  'Founder에게 확인',
+];
+
+/** Control Room 보류 항목 1개의 정규화 결과. */
+export interface NormalizedHold {
+  taskId: string;
+  reason: string;
+  step: string;
+  /** explain.sentence — 한국어 문장. 없으면 '' . */
+  sentence: string;
+  /** holds/<id>.json의 choice 원문 (소문자 비교용으로 다듬지 않은 값). */
+  choice: string;
+  /** 보여줄 선택지 라벨 (holds 항목의 options가 있으면 그것을, 없으면 HOLD_OPTION_LABELS). */
+  options: string[];
+  /** 추천 선택지 index — sentence가 있을 때만 사용, 없으면 -1. */
+  recommendedIndex: number;
+}
+
+function cleanText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function explainSentenceOf(explain: unknown): string {
+  if (typeof explain === 'string') return explain.trim();
+  if (explain && typeof explain === 'object') {
+    const record = explain as Record<string, unknown>;
+    const direct = cleanText(record.sentence ?? record.text ?? record.summary);
+    if (direct) return direct;
+  }
+  return '';
+}
+
+function optionsOf(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [...HOLD_OPTION_LABELS];
+  const labels = raw
+    .map(option => {
+      if (typeof option === 'string') return option.trim();
+      if (option && typeof option === 'object') {
+        const record = option as Record<string, unknown>;
+        return cleanText(record.label ?? record.title ?? record.name);
+      }
+      return '';
+    })
+    .filter(label => label.length > 0);
+  return labels.length > 0 ? labels : [...HOLD_OPTION_LABELS];
+}
+
+/** choice 원문을 options index로 푼다. 못 찾으면 sentence가 있을 때 0, 없으면 -1. */
+function recommendedIndexOf(choice: unknown, options: string[], hasSentence: boolean): number {
+  const normalized = cleanText(choice).toLowerCase();
+  if (!normalized) return hasSentence ? 0 : -1;
+  const byNumber = Number(normalized);
+  if (Number.isInteger(byNumber) && byNumber >= 0 && byNumber < options.length) return byNumber;
+  const hit = options.findIndex(label => label === cleanText(choice) || label.toLowerCase() === normalized);
+  if (hit >= 0) return hit;
+  if (/(retry|reattempt|again|다시)/.test(normalized)) return 0;
+  if (/(next|continue|proceed|다음)/.test(normalized)) return 1;
+  if (/(founder|ask|confirm|확인)/.test(normalized)) return 2;
+  return hasSentence ? 0 : -1;
+}
+
+/** choice가 'skip'이면 true — 대소문자/공백 무시. */
+export function isHoldSkipped(choice: unknown): boolean {
+  return cleanText(choice).toLowerCase() === 'skip';
+}
+
+/**
+ * holds 항목 1개를 정규화한다. 문자열이면 reason만 있는 항목으로 취급.
+ * choice가 'skip'이거나 내용이 완전히 비어 있으면 null.
+ */
+export function normalizeHoldEntry(entry: unknown): NormalizedHold | null {
+  if (typeof entry === 'string') {
+    const reason = entry.trim();
+    if (!reason || isEmptyReasons(reason)) return null;
+    return { taskId: '', reason, step: '', sentence: '', choice: '', options: [...HOLD_OPTION_LABELS], recommendedIndex: -1 };
+  }
+  if (!entry || typeof entry !== 'object') return null;
+  const record = entry as Record<string, unknown>;
+  const explain = record.explain ?? record.explanation;
+  const choiceRaw = record.choice ?? (explain && typeof explain === 'object'
+    ? (explain as Record<string, unknown>).choice ?? (explain as Record<string, unknown>).recommended
+    : undefined);
+  const choice = cleanText(choiceRaw);
+  if (isHoldSkipped(choice)) return null;
+  const sentence = explainSentenceOf(explain);
+  const reason = cleanText(record.reason ?? record.message ?? record.finding ?? record.detail);
+  const taskId = cleanText(record.taskId ?? record.task ?? record.id);
+  const stepValue = record.step ?? record.stage;
+  const step = typeof stepValue === 'number' && Number.isFinite(stepValue) ? String(stepValue) : cleanText(stepValue);
+  if (!sentence && !reason && !taskId && !step) return null;
+  const options = optionsOf(record.options ?? record.choices);
+  return {
+    taskId,
+    reason,
+    step,
+    sentence,
+    choice,
+    options,
+    recommendedIndex: recommendedIndexOf(choiceRaw, options, sentence.length > 0),
+  };
+}
+
+/**
+ * lane.holds 배열에서 보여줄 항목만 골라 정규화한다.
+ * choice 'skip' 항목과 빈 항목은 제외된다. 배열이 아니면 [].
+ */
+export function visibleHoldEntries(holds: unknown): NormalizedHold[] {
+  if (!Array.isArray(holds)) return [];
+  const out: NormalizedHold[] = [];
+  for (const entry of holds) {
+    const normalized = normalizeHoldEntry(entry);
+    if (normalized) out.push(normalized);
+  }
+  return out;
+}
