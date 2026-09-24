@@ -285,9 +285,9 @@ export function App(): React.ReactElement {
 
 // ── 메인 컴포넌트 ─────────────────────────────────────────────────────────────
 function AppInner(): React.ReactElement {
-  // 테마 (light / dark)
+  // 테마 (light / dark) — 저장된 선호가 없으면 다크가 기본
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
-    (localStorage.getItem('theme') as 'dark' | 'light') ?? 'dark'
+    localStorage.getItem('theme') === 'light' ? 'light' : 'dark'
   );
   function toggleTheme(): void {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -1211,13 +1211,13 @@ function AppInner(): React.ReactElement {
               className={`mini df-toggle${dfMode ? ' on' : ''}`}
               title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
               onClick={() => { setDfMode(m => !m); setPdMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
-            >🐾 App Dogfooding</button>
+            >App Dogfooding</button>
             <button
               className={`mini df-toggle${pdMode ? ' on' : ''}`}
               disabled={!project}
               title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
               onClick={() => { setPdMode(m => !m); setDfMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
-            >📋 Project Dogfooding</button>
+            >Project Dogfooding</button>
             <button
               className="mini qdf-toggle"
               disabled={!project}
@@ -1228,22 +1228,22 @@ function AppInner(): React.ReactElement {
               className={`mini df-toggle${controlRoomMode ? ' on' : ''}`}
               title="Control Room — lane 상태 보기"
               onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
-            >🛰 Control Room</button>
+            >Control Room</button>
             <button
               className={`mini df-toggle${approvalsMode ? ' on' : ''}`}
               title="승인 규칙 — Agent Relay가 알아서 처리하도록 허락한 규칙"
               onClick={() => { setApprovalsMode(m => !m); setDfMode(false); setPdMode(false); setControlRoomMode(false); setPlanStudioMode(false); }}
-            >✅ 승인 규칙</button>
+            >승인 규칙</button>
             <button
               className={`mini df-toggle${planStudioMode ? ' on' : ''}`}
               title="Plan Studio — Goal · Task chain · PM chat"
               onClick={() => { setPlanStudioMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setControlRoomMode(false); }}
-            >🧪 Plan Studio</button>
+            >Plan Studio</button>
             <button
               className="mini"
               title="설정 — 저장공간(Storage)"
               onClick={() => setShowSettings(true)}
-            >⚙ 설정</button>
+            >설정</button>
           </header>
 
           {msg && (

@@ -4,16 +4,16 @@
    ═══════════════════════════════════════════════════════════ */
 
 :root {
-  --bg:      #17181c;
-  --bg2:     #1e2026;
-  --bg3:     #26282f;
-  --border:  #33363f;
-  --fg:      #e6e8ec;
-  --muted:   #8b8fa0;
-  --accent:  #4ea1ff;
+  --bg:      #0B0D10;
+  --bg2:     #12151A;
+  --bg3:     #161A20;
+  --border:  #262B33;
+  --fg:      #E6E8EC;
+  --muted:   #9AA3AE;
+  --accent:  #7FD4C1;
   --accent2: #6cc26c;
   --danger:  #e06c5f;
-  --warn:    #ff9f0a;
+  --warn:    #E8C270;
   /* 프로젝트 사이드바 (다크 고정) */
   --sb:        #111113;
   --sb-fg:     rgba(255,255,255,0.85);
@@ -138,11 +138,17 @@ html, body, #app {
   margin: 0;
   height: 100%;
   /* 기본값 — .app 클래스가 올바른 테마 색상을 재정의함 */
-  background: #17181c;
-  color: #e6e8ec;
-  font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
-  font-size: 13px;
+  background: #0B0D10;
+  color: #E6E8EC;
+  font-family: 'IBM Plex Sans KR', 'Malgun Gothic', 'Segoe UI', sans-serif;
+  font-size: 14px;
 }
+
+/* Hermes type + heading style — no layout changes */
+h1, h2, h3, .brand, .control-card h3, .model-usage h3 {
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+}
+h1 { font-size: 22px; }
 
 /* ─────────────────────────────────────────────────────────────
    .app : 모든 테마 색상의 실제 적용 루트.
@@ -1043,8 +1049,8 @@ html, body, #app {
 .control-step.blocked .control-step-dot { color: var(--muted); }
 .control-step.pending .control-step-dot { color: var(--muted); opacity: .65; }
 .control-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-.control-card { min-height: 112px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 9px; }
-.control-card h3 { margin: 0 0 10px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.control-card { min-height: 112px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; }
+.control-card h3 { margin: 0 0 10px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
 .control-card p { margin: 6px 0; }.control-card-value { font-size: 16px; font-weight: 700; word-break: break-word; }
 .control-card.blocked { border-color: var(--danger); }.control-card.human { border-color: var(--warn); }
 .control-empty { display: grid; place-items: center; min-height: 240px; color: var(--muted); }
