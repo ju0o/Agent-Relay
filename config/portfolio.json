@@ -1587,6 +1587,90 @@
             "pnpm typecheck"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUPLAN-EXPORT-UTF8",
+          "scope": "Fix garbled characters (â€”, Â·) in Studio exports. In serve() in packages/runtime/src/index.ts, append '; charset=utf-8' to every content-type chosen for /exports/* files (application/json, image/svg+xml, text/html, text/plain). In generateProjections, add <meta charset=\"utf-8\"> at the start of the generated plan.html. Add one test in runtime.test.ts that serves a project over loopback, fetches /exports/docs/product.md and /exports/plan.html, and asserts the content-type header contains 'charset=utf-8'.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
+          "title": "Fix garbled characters (â€”, Â·) in Studio exports. In serve"
+        },
+        {
+          "taskId": "JUPLAN-STUDIO-KOREAN-COPY",
+          "scope": "In packages/runtime/src/index.ts, translate the read-only Studio into plain Korean without changing any computed data. Headings become 계획 요약 / 검증 결과 / 승인 게이트 / 내보낸 파일 / 계획 항목. Replace GATE_LABELS with Korean text and remove the visible G0–G5 code (keep it only in a title attribute). Add small Korean maps for lifecycle (PLANNING→기획 중, READY_FOR_FINAL_REVIEW→최종 검토 대기, FROZEN→확정됨; fall back to the raw value), node type (Goal→목표, Requirement→요구사항, Feature→기능, UserJourney→사용자 여정, UserFlow→사용자 흐름, Screen→화면, SystemComponent→시스템 구성요소, DataEntity→데이터, WbsTask→작업, AcceptanceCriterion→완료 기준, QaCase→QA 항목, ProjectBrief→프로젝트 개요) and knowledgeStatus (DECLARED→직접 입력, ASSUMED→추정). Show Korean node types as plain text instead of <code>. Set <html lang=\"ko\">. Format updatedAt with toLocaleString('ko-KR'). Replace the English 'N of M nodes' count and the search placeholder with Korean text in both the server markup and STUDIO_SCRIPT. Drop the '0 passes' counter; when gates are blocked word validation as '형식 검사 통과 (게이트는 별도)'. Keep the English type string inside data-text so search still matches both languages. Update the Studio assertions in runtime.test.ts to the new Korean strings.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
+          "title": "In packages/runtime/src/index.ts, translate the read-only St"
+        },
+        {
+          "taskId": "JUPLAN-STUDIO-EMPTY-STATES",
+          "scope": "In packages/runtime/src/index.ts serve()/renderStudioPage, replace raw error text with Korean HTML states that explain what happened and what to do next. (1) When loadPlan fails with ENOENT, return a styled 404 HTML page: 'JuPlan 프로젝트가 아직 없습니다' plus the next-step command 'juplan init --name <이름> --idea <한 문장>'. Do not show the file path. Other errors stay a 500, still without the path. (2) Missing /exports/* files return a Korean HTML 404 with a link back to '/'. (3) renderExportsSection checks which export files exist (a stat under .juplan/exports) and lists only those. When none exist it shows '아직 계획이 생성되지 않았습니다 → juplan plan --offline'. (4) Add a status banner under the header that maps lifecycle to a next step: PLANNING→'juplan plan --offline 실행', READY_FOR_FINAL_REVIEW→'검토 후 juplan snapshot --approval founder-review 로 확정', FROZEN→'확정된 계획입니다'. Keep the 400/404/500 status codes the existing test expects, updating it if bodies change, and add tests for the no-project and init-only pages.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
+          "title": "In packages/runtime/src/index.ts serve()/renderStudioPage, r"
+        },
+        {
+          "taskId": "JUPLAN-STUDIO-PLAN-MAP",
+          "scope": "Add a '계획 지도' section near the top of the Studio in packages/runtime/src/index.ts: a server-rendered inline SVG drawn from plan.nodes and plan.edges, with no external library or CDN. Lay nodes out in fixed columns by type order (ProjectBrief, Goal, Requirement, Feature, UserJourney/UserFlow/Screen, SystemComponent/DataEntity, WbsTask, AcceptanceCriterion, QaCase), with nodes stacked vertically inside each column. Draw each node as a rect with its escaped label, truncated to about 24 characters with the full text in a <title>. Draw each edge as a line or path with an arrow marker. Wrap the SVG in a horizontally scrollable container so a 390px phone stays usable, and give it role=img plus an aria-label summarising the counts. This is a pure view: do not change plan.svg, the exports or any plan data. Add a test asserting the page contains an <svg> with one rect per node and one path per edge, and that a hostile label is escaped.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
+          "title": "Add a '계획 지도' section near the top of the Studio in packages"
+        },
+        {
+          "taskId": "JUPLAN-STUDIO-HERMES-STYLE",
+          "scope": "Restyle the Studio to the Founder's Hermes style (Founder choice 2026-09-24: 전부 Hermes로 통일) by editing only the STUDIO_STYLE constant in packages/runtime/src/index.ts. Define :root tokens: background #0B0D10, surface #12151A, line 1px #262B33, text #E6E8EC, muted #9AA3AE, accent teal #7FD4C1, warning #E8C270. Headings (h1–h3, badges, counts) use 'JetBrains Mono', ui-monospace, monospace. Body uses 'IBM Plex Sans KR', 'Noto Sans KR', system-ui, sans-serif, with local fallbacks only, no network font load. Cards get a 1px line border and a 10px radius. Links and focus outline use teal, with a focus-visible outline of at least 2px. Keep PASS green-teal and BLOCKED red, and keep text contrast at WCAG AA (4.5:1) or better. No markup or behaviour changes. Add a test asserting the served page's style contains '#7FD4C1' and '#262B33'.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
+          "title": "Restyle the Studio to the Founder's Hermes style (Founder ch"
+        },
+        {
+          "taskId": "JUPLAN-CLI-INIT-ID",
+          "scope": "Let init accept a Korean project name. In packages/runtime/src/cli.ts, read an optional --id flag and pass it as projectId to createNewProject (discoverIdea already accepts projectId). Also update the usage string to 'juplan init --name <name> --idea <idea> [--id <english-id>]'. When the error message contains 'Cannot derive a StableId', have the CLI print an extra Korean hint line: '한글 이름은 --id my-project 처럼 영문 id를 함께 주세요'. Do not modify plan-core or ideaDiscover.ts (DEC-G012 stays isolated). Add a test in runtime.test.ts that calls createNewProject with projectName '새 아이디어' and projectId 'new-idea' and asserts the plan loads with meta.projectName '새 아이디어'.",
+          "files": [
+            "packages/runtime/src/cli.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Studio (captures ~/jc-tester/audit-juplan/)",
+          "title": "Let init accept a Korean project name. In packages/runtime/s"
         }
       ],
       "qaRuntime": [
