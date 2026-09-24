@@ -2150,7 +2150,7 @@ function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind
   const line = ((): React.ReactNode => {
     switch (status.phase) {
       case 'idle':
-        return <span className="muted">GitHub Releases에서 최신 버전을 확인할 수 있습니다.</span>;
+        return <span className="muted">새 버전이 있는지 확인할 수 있어요.</span>;
       case 'checking':
         return <span className="muted">확인 중...</span>;
       case 'none':
@@ -2167,14 +2167,17 @@ function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind
         return <span className="update-ready">업데이트가 준비되었습니다.</span>;
       case 'error':
         return (
-          <span className="update-err" title={status.errorMessage}>
-            업데이트 확인 실패
-            <span className="muted" style={{ display: 'block', fontSize: 11 }}>
-              {(status.errorMessage ?? '').slice(0, 160)}
+          <>
+            <span className="update-err">업데이트를 확인하지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.</span>
+            <details>
+              <summary>원문 보기</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>{status.errorMessage}</pre>
               {status.errorMessage && status.errorMessage.match(/40[134]|ENOTFOUND|ETIMEDOUT/) &&
-                ' — Private 저장소는 공개 전환 전까지 앱 내 업데이트 확인이 제한될 수 있습니다.'}
-            </span>
-          </span>
+                <span className="muted" style={{ display: 'block', fontSize: 11 }}>
+                  Private 저장소는 공개 전환 전까지 앱 내 업데이트 확인이 제한될 수 있습니다.
+                </span>}
+            </details>
+          </>
         );
       default:
         return null;
