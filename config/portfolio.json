@@ -1153,6 +1153,21 @@
           ],
           "ssotEvidence": "Supervisor review of the MainPC Tester v10 captures (C:\\Users\\user\\Desktop\\AgentRelay-0.3.1\\tester-v10), board now carries Korean task titles",
           "title": "오늘 끝난 일을 한눈에 보기"
+        },
+        {
+          "taskId": "AGENTRELAY-RECORD-SCREEN-PLAIN",
+          "scope": "The 기록 (home/log editor) screen is a developer tool (GPT prompt paste box, 'PROJECTS', 날짜 (YYYY-MM-DD), agent chips Kiro/Devin/CommandCode that are not configured). In src/frontend/App.tsx: when the app opens on 기록, show a plain-Korean header '작업 기록 — AI에게 준 지시와 받은 결과를 날짜별로 모아 둬요'; rename PROJECTS → '프로젝트', the paste placeholder → '여기에 AI에게 받은 결과를 붙여 넣으세요'; the date field uses a native date input defaulting to today; agent chips list only runtimes that exist in the board/model usage (hide unconfigured ones); keep all existing save/export behaviour. Test in test/record-screen-plain.test.mjs reading App.tsx for the new strings and that 'PROJECTS' and the GPT prompt wording are gone.",
+          "files": [
+            "src/frontend/App.tsx",
+            "test/record-screen-plain.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client",
+            "node --test test/record-screen-plain.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27 (추천대로 자동 진행)",
+          "title": "The 기록 (home/log editor) screen is a developer tool (GPT pro"
         }
       ],
       "qaRuntime": [
