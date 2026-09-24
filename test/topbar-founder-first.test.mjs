@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'frontend', 'App.tsx'), 'utf8');
+const controlRoomSrc = fs.readFileSync(path.join(here, '..', 'src', 'frontend', 'controlRoom.tsx'), 'utf8');
 
 describe('topbar founder-first', () => {
   it("order 관제실 → 승인 규칙 → 계획 appears before '개발 도구'", () => {
@@ -42,5 +43,13 @@ describe('topbar founder-first', () => {
     assert.ok(src.includes("'control-room'") || src.includes('"control-room"') || src.includes('control-room'), 'missing control-room view');
     assert.ok(src.includes("'approvals'") || src.includes('"approvals"') || src.includes('approvals'), 'missing approvals view');
     assert.ok(src.includes("'plan-studio'") || src.includes('"plan-studio"') || src.includes('plan-studio'), 'missing plan-studio view');
+  });
+
+  it('uses Korean topbar tooltips and hides raw control-room values by default', () => {
+    assert.ok(src.includes('관제실 — 프로젝트별 진행 상황 보기'));
+    assert.ok(src.includes('계획 — 목표와 작업 순서 보고 PM에게 요청'));
+    assert.ok(controlRoomSrc.includes('<summary>원문 검수 의견</summary>'));
+    assert.ok(!controlRoomSrc.includes('원문 QA finding'));
+    assert.match(controlRoomSrc, /<details><summary>원문 보기<\/summary><p className="muted mono gate-id">\{parsed\.gateId\}<\/p><\/details>/);
   });
 });

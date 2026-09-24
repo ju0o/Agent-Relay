@@ -410,7 +410,7 @@ function GateForm({ gate, onRefresh }: {
     <form onSubmit={e => void submit(e)}>
       <fieldset className="gate-fieldset">
         <legend>{parsed.title}</legend>
-        <p className="muted mono gate-id">{parsed.gateId}</p>
+        <details><summary>원문 보기</summary><p className="muted mono gate-id">{parsed.gateId}</p></details>
         {parsed.options.map((option, index) => (
           <label key={`${parsed.gateId}-${index}`} className="plan-radio">
             <input
@@ -603,7 +603,7 @@ function LaneView({ lane, onRefresh }: {
           </div>
         ))}{holdText !== null && <p>{holdTitles.join(' · ')}</p>}{explainedHolds.length > 0
           ? <details><summary>원문 보기</summary>{holds.map((hold, index) => <><p key={`id-${index}`} className="muted mono">ID: {hold.taskId || '—'}</p><pre key={`reason-${index}`} className="mono">{rawReasons[index] || hold.reason}</pre></>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>
-          : qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
+          : qaFinding !== undefined && <details><summary>원문 검수 의견</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
         {gate && <article className="control-card human"><h3>사람 확인</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
       </div>
     </section>

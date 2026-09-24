@@ -1245,7 +1245,7 @@ function AppInner(): React.ReactElement {
             <div className="brand">Agent Relay</div>
             <button
               className={`mini df-toggle${controlRoomMode ? ' on' : ''}`}
-              title="관제실 — lane 상태 보기"
+              title="관제실 — 프로젝트별 진행 상황 보기"
               onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
             >관제실</button>
             <button
@@ -1255,7 +1255,7 @@ function AppInner(): React.ReactElement {
             >승인 규칙</button>
             <button
               className={`mini df-toggle${planStudioMode ? ' on' : ''}`}
-              title="계획 — Goal · Task chain · PM chat"
+              title="계획 — 목표와 작업 순서 보고 PM에게 요청"
               onClick={() => { setPlanStudioMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setControlRoomMode(false); }}
             >계획</button>
             <button
