@@ -41,9 +41,14 @@ interface StudioDraft {
   goal: string;
   tasks: StudioTask[];
   runPolicy: 'continue' | 'stop';
+  approved: boolean;
 }
 
-const EMPTY_DRAFT: StudioDraft = { goal: '', tasks: [], runPolicy: 'continue' };
+const EMPTY_DRAFT: StudioDraft = { goal: '', tasks: [], runPolicy: 'continue', approved: false };
+
+export function resetPlanStudioPendingState(): { pendingApprove: false; pendingDeleteId: null; pendingPolicy: null } {
+  return { pendingApprove: false, pendingDeleteId: null, pendingPolicy: null };
+}
 
 function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
@@ -178,7 +183,11 @@ function normalizeDraft(raw: unknown): StudioDraft {
   const tasks = Array.isArray(rawTasks) ? rawTasks.map((t, i) => toTask(t, i)) : [];
   const policyRaw = str(root.runPolicy ?? root.run_policy ?? root.policy ?? root.mode).toLowerCase();
   const runPolicy: 'continue' | 'stop' = /stop|pause|manual|hold|step/.test(policyRaw) ? 'stop' : 'continue';
-  return { goal, tasks, runPolicy };
+  const approval = root.approved ?? root.planApproved ?? root.plan_approved ?? root.approval;
+  const approved = approval === true
+    || (typeof approval === 'object' && approval !== null && Boolean((approval as Record<string, unknown>).approved))
+    || /approved|승인/.test(str(root.phase ?? root.status ?? approval).toLowerCase());
+  return { goal, tasks, runPolicy, approved };
 }
 
 function normalizeGates(raw: unknown): StudioGate[] {
@@ -234,6 +243,13 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   const [lastDeleted, setLastDeleted] = useState<{ task: StudioTask; index: number } | null>(null);
   const [draftLoadError, setDraftLoadError] = useState(false);
   const [draftLoadAttempt, setDraftLoadAttempt] = useState(0);
+
+  useEffect(() => {
+    const reset = resetPlanStudioPendingState();
+    setPendingApprove(reset.pendingApprove);
+    setPendingDeleteId(reset.pendingDeleteId);
+    setPendingPolicy(reset.pendingPolicy);
+  }, [project]);
 
   // Board polling — task progress rows are fed by controlRoom:board.
   useEffect(() => {
@@ -333,6 +349,15 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   const laneGate = gateFromLane(activeLane ?? lanes.find(l => str(l.project ?? l.id) === project));
   const visibleGates = gates.length ? gates : laneGate ? [laneGate] : [];
 
+  useEffect(() => {
+    setSelectedId(prev => {
+      const unfinished = tasks.find(task => !isPlanStudioTaskDone(task));
+      return prev && tasks.some(task => task.id === prev && !isPlanStudioTaskDone(task))
+        ? prev
+        : unfinished?.id ?? tasks[0]?.id ?? null;
+    });
+  }, [tasks]);
+
   function flashInfo(text: string): void {
     setInfo(text);
     setError('');
@@ -382,6 +407,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
     setBusy('approve');
     try {
       await must({ op: 'planStudio:approve', project });
+      setDraft(prev => ({ ...prev, approved: true }));
       flashInfo('계획 승인 → 자동 진행 요청됨');
     } catch (e) { flashError(e); } finally { setBusy(null); setPendingApprove(false); }
   }
@@ -588,9 +614,11 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
               />
             )}
             <div className="modalbtns" style={{ justifyContent: 'flex-start' }}>
-              <button className="btn primary" disabled={busy === 'approve'} onClick={() => setPendingApprove(true)}>
-                {busy === 'approve' ? '승인 중...' : '계획 승인 → 자동 진행'}
-              </button>
+              {draft.approved && remainingCount === 0
+                ? <p className="muted" role="status">승인됨 · 모두 끝났어요</p>
+                : <button className="btn primary" disabled={busy === 'approve'} onClick={() => setPendingApprove(true)}>
+                  {busy === 'approve' ? '승인 중...' : '계획 승인 → 자동 진행'}
+                </button>}
             </div>
             {pendingApprove && (
               <InlineConfirm
