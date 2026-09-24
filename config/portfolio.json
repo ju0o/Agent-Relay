@@ -4494,7 +4494,7 @@
       "active": true,
       "pmState": "NIGHT_PLAN_PM",
       "path": "/home/skkse12/Desktop/Projects/Core/JuTell/jutell_repo",
-      "ssot": "/home/skkse12/Desktop/Projects/Core/JuTell/jutell_repo/README.md",
+      "ssot": "/home/skkse12/Desktop/Projects/Core/JuTell/jutell_repo/docs/PRODUCT_SCOPE.md + /home/skkse12/Desktop/Projects/Core/JuTell/jutell_repo/docs/BEGINNER_REPORT_SPEC.md",
       "owner": "codex",
       "runtime": [
         "codex",
@@ -4518,7 +4518,11 @@
           "ssotEvidence": "Founder direction 2026-09-23"
         }
       ],
-      "note": "lane added by night plan request 2026-09-24"
+      "note": "lane added by night plan request 2026-09-24",
+      "knownFailingTests": [
+        "operator-storage (3 timeouts)",
+        "default-command (2 hangs)"
+      ]
     }
   ],
   "pool": {
