@@ -4516,6 +4516,19 @@
             "git diff --check"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "JUTELL-RELAY-T-DOG-01-PM-JUDGMENTS-FIX",
+          "scope": "Rewrite docs/dogfood/relay-T-DOG-01/PM_JUDGMENTS.md so it judges the T-DOG-01 dogfood evidence in /home/skkse12/Desktop/Projects/Core/JuTell/dogfood/relay-T-DOG-01/ (TASK_CONTRACT.json plus RESULT_PACKET.json, where AC-01, AC-02 and AC-03 are all PASS). Today the file judges its own doc task, uses out-of-enum values (CREATE_TASK, OWNER_REQUIRED) and has a placeholder contract_hash. Replace it with a PM_TASK_DECISION v1 block (decision from DISPATCH/REQUEST_CHANGES/ACCEPT/HUMAN_GATE/MILESTONE_COMPLETE) and a PM_JUDGMENT v1 block (decision from ACCEPT/REQUEST_CHANGES/HUMAN_GATE), each a valid JSON code block containing contract_hash 06980371151059ece5670daa6bde2129c4791cf9f804ded8df3c8c5ad1b6b32c. Keep the Korean confirmed/unconfirmed evidence summary, cite each AC evidence file, and do not mention the retired PM_TO_CHATGPT_*.md packets as inputs. Add a small node:test file that parses both JSON blocks and asserts the enums and the hash.",
+          "files": [
+            "docs/dogfood/relay-T-DOG-01/PM_JUDGMENTS.md",
+            "docs/dogfood/relay-T-DOG-01/pm-judgments.test.mjs"
+          ],
+          "tests": [
+            "node --test docs/dogfood/relay-T-DOG-01/pm-judgments.test.mjs",
+            "git diff --check"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23: relay-T-DOG-01 PM judgments (DISPATCH + JUDGMENT) from the evidence at /home/skkse12/Desktop/Projects/Core/JuTell/dogfood/relay-T-DOG-01/ with contract_hash 06980371151059ece5670daa6bde2129c4791cf9f804ded8df3c8c5ad1b6b32c; allowed PM_TASK_DECISION v1 DISPATCH/REQUEST_CHANGES/ACCEPT/HUMAN_GATE/MILESTONE_COMPLETE, PM_JUDGMENT v1 ACCEPT/REQUEST_CHANGES/HUMAN_GATE; manual ChatGPT paste packets PM_TO_CHATGPT_*.md are retired"
         }
       ],
       "note": "lane added by night plan request 2026-09-24",
