@@ -158,7 +158,7 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { err: stri
 }
 
 // ── 시작 화면 패널 (Automated Tester `--view=` 지원용, App.tsx 내장) ──────────
-// Founder 승인 내역: 기존 controlRoom:approvals 읽기 전용 조회 결과를 그대로 보여준다.
+// 승인 규칙: 기존 controlRoom:approvals 읽기 전용 조회 결과를 그대로 보여준다.
 function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElement {
   const [items, setItems] = useState<unknown>(null);
   const [error, setError] = useState('');
@@ -213,7 +213,7 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
   };
   return (
     <main className="control-room">
-      <div className="control-room-head"><div><h1>Founder 승인 내역</h1><p className="muted">Agent Relay가 묻지 않고 알아서 처리하도록 허락한 규칙입니다.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      <div className="control-room-head"><div><h1>승인 규칙</h1><p className="muted">Agent Relay가 묻지 않고 알아서 처리하도록 허락한 규칙입니다.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       {error && <div className="flash err">{error}</div>}
       {items === null && !error ? <div className="control-empty">불러오는 중...</div>
         : list.length === 0 ? <div className="control-empty">표시할 승인 내역이 없습니다.</div>
@@ -318,6 +318,8 @@ function AppInner(): React.ReactElement {
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
   const [showQuickDf, setShowQuickDf]   = useState(false);
+  // 개발 도구 메뉴 (닫힘 기본 — Founder 항목 우선)
+  const [showDevTools, setShowDevTools] = useState(false);
   // 저장 후 열려있는 Project Dogfooding 목록을 즉시 새로고침하기 위한 신호
   const [pdRefreshSignal, setPdRefreshSignal] = useState(0);
 
@@ -1193,42 +1195,14 @@ function AppInner(): React.ReactElement {
 
       {dataRoot && (
         <>
-          {/* 상단바 */}
+          {/* 상단바 — Founder 우선: 관제실 · 승인 규칙 · 계획 → 설정 → 개발 도구 */}
           <header className="topbar">
             <div className="brand">Agent Relay</div>
-            <div className="topbar-shortcuts">
-              <span title="모두 저장"><kbd>Ctrl+S</kbd> 저장</span>
-              <span title="현재 탭 새 런"><kbd>Ctrl+N</kbd> 새 런</span>
-              <span title="병렬 탭 추가"><kbd>Ctrl+T</kbd> 새 탭</span>
-            </div>
-            <button
-              className="mini theme-toggle"
-              title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
-              aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
-              onClick={toggleTheme}
-            >{theme === 'dark' ? '☀️' : '🌙'}</button>
-            <button
-              className={`mini df-toggle${dfMode ? ' on' : ''}`}
-              title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
-              onClick={() => { setDfMode(m => !m); setPdMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
-            >App Dogfooding</button>
-            <button
-              className={`mini df-toggle${pdMode ? ' on' : ''}`}
-              disabled={!project}
-              title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
-              onClick={() => { setPdMode(m => !m); setDfMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
-            >Project Dogfooding</button>
-            <button
-              className="mini qdf-toggle"
-              disabled={!project}
-              title={project ? '불편한 순간 한 줄 기록 — 현재 프로젝트에 즉시 저장' : '프로젝트를 먼저 선택하세요'}
-              onClick={() => setShowQuickDf(true)}
-            >＋ 피드백</button>
             <button
               className={`mini df-toggle${controlRoomMode ? ' on' : ''}`}
-              title="Control Room — lane 상태 보기"
+              title="관제실 — lane 상태 보기"
               onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
-            >Control Room</button>
+            >관제실</button>
             <button
               className={`mini df-toggle${approvalsMode ? ' on' : ''}`}
               title="승인 규칙 — Agent Relay가 알아서 처리하도록 허락한 규칙"
@@ -1236,14 +1210,54 @@ function AppInner(): React.ReactElement {
             >승인 규칙</button>
             <button
               className={`mini df-toggle${planStudioMode ? ' on' : ''}`}
-              title="Plan Studio — Goal · Task chain · PM chat"
+              title="계획 — Goal · Task chain · PM chat"
               onClick={() => { setPlanStudioMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setControlRoomMode(false); }}
-            >Plan Studio</button>
+            >계획</button>
             <button
               className="mini"
               title="설정 — 저장공간(Storage)"
               onClick={() => setShowSettings(true)}
             >설정</button>
+            <div className="devtools-wrap">
+              <button
+                className="mini devtools-toggle"
+                title="개발자용 도구 모음"
+                aria-expanded={showDevTools}
+                onClick={() => setShowDevTools(v => !v)}
+              >개발 도구 ▾</button>
+              {showDevTools && (
+                <div className="devtools-menu">
+                  <div className="topbar-shortcuts">
+                    <span title="모두 저장"><kbd>Ctrl+S</kbd> 저장</span>
+                    <span title="현재 탭 새 런"><kbd>Ctrl+N</kbd> 새 런</span>
+                    <span title="병렬 탭 추가"><kbd>Ctrl+T</kbd> 새 탭</span>
+                  </div>
+                  <button
+                    className={`mini df-toggle${dfMode ? ' on' : ''}`}
+                    title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
+                    onClick={() => { setDfMode(m => !m); setPdMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
+                  >App Dogfooding</button>
+                  <button
+                    className={`mini df-toggle${pdMode ? ' on' : ''}`}
+                    disabled={!project}
+                    title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
+                    onClick={() => { setPdMode(m => !m); setDfMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
+                  >Project Dogfooding</button>
+                  <button
+                    className="mini qdf-toggle"
+                    disabled={!project}
+                    title={project ? '불편한 순간 한 줄 기록 — 현재 프로젝트에 즉시 저장' : '프로젝트를 먼저 선택하세요'}
+                    onClick={() => setShowQuickDf(true)}
+                  >＋ 피드백</button>
+                </div>
+              )}
+            </div>
+            <button
+              className="mini theme-toggle"
+              title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
+              aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
+              onClick={toggleTheme}
+            >{theme === 'dark' ? '☀️' : '🌙'}</button>
           </header>
 
           {msg && (
