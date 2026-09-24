@@ -775,3 +775,41 @@ export function sortPlanStudioTasks<T extends PlanStudioOrderTask>(tasks: readon
     .sort((a, b) => rank(a.task) - rank(b.task) || a.index - b.index)
     .map(entry => entry.task);
 }
+
+// ── Version per build ───────────────────────────────────────────────────────
+// package.json stayed 0.3.1 across builds v1-v11 so installers could not be
+// told apart. Each build now gets 0.3.<N> where N = the count of commits on
+// agent-relay/integration since the 0.3.1 commit (see scripts/next-version.mjs).
+// The version surfaces in 설정 (settings:get appVersion) and in the window
+// title suffix ('Agent Relay 0.3.N'). Pure — unit-tested.
+
+/** Major.minor line every per-build version is cut from. */
+export const APP_VERSION_MAJOR_MINOR = '0.3';
+
+/** Last fixed version before per-build versioning started. */
+export const APP_BASE_VERSION = '0.3.1';
+
+/** Commit that shipped APP_BASE_VERSION (counting base for N). */
+export const APP_BASE_COMMIT = 'd16c60cfd134e87a75d149acb47a89c81aa32969';
+
+/**
+ * Build number N → '0.3.<N>'. Non-finite/negative input clamps to 0.
+ * Pure — unit-tested.
+ */
+export function versionForBuildCount(count: unknown): string {
+  const n =
+    typeof count === 'number' && Number.isFinite(count)
+      ? Math.max(0, Math.floor(count))
+      : 0;
+  return `${APP_VERSION_MAJOR_MINOR}.${n}`;
+}
+
+/**
+ * Window title suffix helper — 'Agent Relay 0.3.N'.
+ * Blank/non-string input falls back to APP_BASE_VERSION. Pure — unit-tested.
+ */
+export function windowTitleForVersion(version: unknown): string {
+  const v =
+    typeof version === 'string' && version.trim() ? version.trim() : APP_BASE_VERSION;
+  return `Agent Relay ${v}`;
+}

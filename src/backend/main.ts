@@ -30,6 +30,7 @@ import {
   UpdateStatus,
   nextUpdateStatus,
   parseStartView,
+  windowTitleForVersion,
 } from '../shared/types.js';
 
 /** Mutable runtime state. */
@@ -479,6 +480,11 @@ function createWindow(): void {
       // contextIsolation defaults to true in Electron 28 — keep default
     },
   });
+
+  // Per-build version suffix so installers can be told apart ('Agent Relay 0.3.N').
+  // The constructor keeps the plain brand title (pinned by first-run-copy test);
+  // the visible title carries the package.json version via app.getVersion().
+  mainWindow.setTitle(windowTitleForVersion(app.getVersion()));
 
   // ── F12 / Ctrl+Shift+I → DevTools (development only) ──
   if (!app.isPackaged) {

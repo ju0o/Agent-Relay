@@ -1,6 +1,6 @@
 {
   "name": "agent-relay-log",
-  "version": "0.3.1",
+  "version": "0.3.102",
   "private": true,
   "bin": { "agent-relay": "bridge/agent-relay.mjs" },
   "description": "Local portable tool that saves Prompt/Result between GPT and coding agents as Markdown.",
