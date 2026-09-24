@@ -1884,6 +1884,21 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 actl collision audit; R2 QA quoting finding",
           "title": "메시지 충돌 없이 안전하게 전달"
+        },
+        {
+          "taskId": "ACTL-BACKLOG-AND-STATUS-DOCS",
+          "scope": "actl has no in-repo SSOT the PM can read (lane ssot points to a repo that is not on this machine). Create BACKLOG.md (Korean): what actl is (리모컨), what works now (보내기→결과→복사, 보드, 동시 전송 잠금 진행 중), open items from ROOT_CAUSE_REPORT.md with their current status, and the next steps; update README.md 상태/설치 section to the current board (JuActl Board, Hermes, Korean labels) and mark the DA-leak / SSH-disconnect unknowns as '조사 중' with links. Docs only; add tests/test_docs_status.py asserting BACKLOG.md exists and mentions 동시 전송.",
+          "files": [
+            "BACKLOG.md",
+            "README.md",
+            "ROOT_CAUSE_REPORT.md",
+            "tests/test_docs_status.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27 (추천대로 자동 진행)",
+          "title": "actl has no in-repo SSOT the PM can read (lane ssot points t"
         }
       ],
       "qaRuntime": [
