@@ -2838,6 +2838,153 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 10:3x: '멈춘 작업 … 내가 알아듣기 쉬운 언어들로 변환해주고 해석한 뒤 다음 행동제안 및 수정할 수도 있게 … 시각적으로 추상화 되어 있는 걸 수정할 수 있게'; Founder choice (chat): '둘 다 (문장 + 위에 흐름 그림)'; Canvas board HoldRedesign.dc.html; 'JuControler 안에는 … 백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'",
           "title": "When a lane is IDLE the Agent Relay tab says '지금 진행 중인 작업이 없"
+        },
+        {
+          "taskId": "JCAPP-TAB-SWITCH-INSTANT",
+          "scope": "Tab switches must never show the previous tab's content. In operator/public/app.js: (a) in the [data-tab] click handler (buildNav), right after tab changes, synchronously setView a minimal placeholder for the new tab: '<div class=\"page-title\" data-view-key=\"loading-title\"><h2>'+label+'</h2></div><p class=\"empty-state\" role=\"status\">불러오는 중이에요…</p>' (label = the nav label for that tab); (b) in render(), a patch render (patch===true) must not supersede an in-flight non-patch render for the same tab: keep a `pendingFullRender` tab id set while a non-patch render runs and make patch renders return early while it is set (clear it in finally); (c) in operator/public/index.html put the same '불러오는 중이에요…' empty-state paragraph inside #view so first paint is never blank. Keep all endpoints unchanged. Add test/tab-switch-loading.test.mjs that reads app.js/index.html source and asserts: index.html #view contains '불러오는 중이에요', app.js contains the loading placeholder in the nav click path, and render() references pendingFullRender both to set it and to early-return patch renders.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/index.html",
+            "test/tab-switch-loading.test.mjs"
+          ],
+          "tests": [
+            "node --test test/tab-switch-loading.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "Tab switches must never show the previous tab's content. In "
+        },
+        {
+          "taskId": "JCAPP-ACTL-PANES-PLAIN",
+          "scope": "Rewrite relayPanesPanel(paneData) in operator/public/app.js so the actl panel never shows pane ids or UNKNOWN in primary text. Each card's title = a plain window name from pane.command/runtime (claude→'Claude 창', codex→'Codex 창', opencode→'OpenCode 창', grok→'Grok 창', bash/zsh→'터미널 창', node→'앱 창', anything else→'기타 창'); the state line = OFFLINE→'꺼져 있어요', IDLE→'쉬는 중이에요', RUNNING/BUSY/REVIEWING→'일하는 중이에요', anything else→'상태를 확인 중이에요'. Above the cards add one sentence '창 N개 · 일하는 창 M개' (M counts RUNNING/BUSY/REVIEWING). pane.paneId and the raw command go only inside a closed <details><summary>자세히</summary>. Keep the empty/unavailable branches and the section/data-view-key unchanged. Extend test/agent-relay-module.test.mjs (it already extracts relayPanesPanel) with a case using panes [{paneId:'%3',command:'claude',runtime:'UNKNOWN',observedState:'OFFLINE'},{paneId:'%2',command:'node',runtime:'UNKNOWN',observedState:'UNKNOWN'}] asserting the text outside <details> contains 'Claude 창', '꺼져 있어요', '창 2개 · 일하는 창 0개' and contains neither 'UNKNOWN' nor '%3'.",
+          "files": [
+            "operator/public/app.js",
+            "test/agent-relay-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/agent-relay-module.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "Rewrite relayPanesPanel(paneData) in operator/public/app.js "
+        },
+        {
+          "taskId": "JCAPP-JUCEIPT-GAP-PLAIN",
+          "scope": "JuCeipt must never print raw gap JSON. In lib/juceiptReceipts.mjs, when a gap is a JSON string, parse it (try/catch). For an object gap, the display text = title (or summary/description/criterion) plus, when present, ' · 할 일: ' + human_action. Never fall back to JSON.stringify: an unreadable gap becomes '확인할 부분이 있어요'. In operator/public/app.js juceiptView: the detail heading shows the receipt's request_summary when it has Hangul, else '영수증 ' + task_id; the list row's primary text is the sentence only, with task_id moved to a small muted span; the lede becomes '작업 영수증을 확인만 하는 곳이에요. 받아도 되는지 한 줄로 알려줘요.'; gap <li> get overflow-wrap:anywhere so a long line can't push past the phone edge. Extend test/juceipt-receipts.test.mjs with a receipt whose gaps array holds the string '{\"gap_id\":\"gap_00\",\"kind\":\"human_only_check\",\"title\":\"명시적 사람 검토 필요\",\"human_action\":\"명시된 사람 검토/확인을 수행하고 완료 여부를 결정\"}' and assert the output gap is '명시적 사람 검토 필요 · 할 일: 명시된 사람 검토/확인을 수행하고 완료 여부를 결정' and contains no '{' or 'gap_id'.",
+          "files": [
+            "lib/juceiptReceipts.mjs",
+            "operator/public/app.js",
+            "test/juceipt-receipts.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juceipt-receipts.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "JuCeipt must never print raw gap JSON. In lib/juceiptReceipt"
+        },
+        {
+          "taskId": "JCAPP-HOME-NO-RAW-TASK-IDS",
+          "scope": "In operator/public/app.js homeHub(): replace the card line '완료 X/Y · 지금: <taskId>' with '완료 X/Y · ' + (lane.current ? '지금 작업 1개 진행 중' + (Number.isFinite(lane.current.attempts) && lane.current.attempts > 1 ? ' (' + lane.current.attempts + '번째 시도)' : '') : '지금 하는 일 없음'), and put the raw taskId only in the button's title attribute. Stop rendering the HUB_ARCHITECTURE line (do NOT delete the const; tests extract it). In relayLaneView(), move the '.task-chip' raw taskId into a closed <details><summary>작업 번호</summary>…</details> after the flow row. Update test/home-hub.test.mjs: replace the assertions for '· 지금: AGENTRELAY-CR-02' and '· 지금: 없음' with ones for '지금 작업 1개 진행 중' and '지금 하는 일 없음', and assert the rendered text outside attributes does not contain 'AGENTRELAY-CR-02' or '⟵'.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-hub.test.mjs",
+            "test/agent-relay-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-hub.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "In operator/public/app.js homeHub(): replace the card line '"
+        },
+        {
+          "taskId": "JCAPP-HOME-ALL-OK-LINE",
+          "scope": "홈 must answer '다 괜찮나' in one line and never contradict itself. In operator/public/app.js add a pure function homeHealth(board) returning one sentence: board unavailable → '상태를 확인 중이에요.'; total holds (sum of lane.holds.length, excluding holds whose choice is 'skip') > 0 → '멈춘 작업 N건이 있어요 · 해석과 다음 행동을 준비했어요.'; else → '다 괜찮아요. 멈춘 작업이 없어요.'. Render it in home() directly under the top-status line as '<p class=\"next-state home-health\" data-view-key=\"home-health\">…</p>', and when holds>0 add a home-chat-button data-quick-tab=\"relay\" labelled '멈춘 작업 보기'. Remove the 팀 section (home-agents) from home(); leave founderAgentRows in place for other callers. In humanGateActions' empty text on 홈, when board holds>0 do not say '멈춘 레인이 없어요' (say '지금 답할 사람 확인은 없어요.'). Add test/home-all-ok.test.mjs extracting homeHealth from app.js (same extraction technique as test/home-hub.test.mjs) and asserting the three sentences for boards with 0 holds, 1 hold and available:false.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-all-ok.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-all-ok.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "홈 must answer '다 괜찮나' in one line and never contradict itsel"
+        },
+        {
+          "taskId": "JCAPP-RESULTS-RECENT-FIRST",
+          "scope": "결과 must open on what finished recently, not 171 old cards. In operator/public/app.js: the render() data fetch for 'results' also fetches relay/board (catch → {available:false}). resultInbox(data) renders first a section '오늘 끝난 것' built with the existing homeDoneItems(data.recentResults || [], data.board) plus homeDoneLine and projectName (one line each: project · line · humanAgo), with empty text '오늘 끝난 작업은 아직 없어요.'. Then show at most the 20 newest canonical result cards, and put the rest inside a closed <details><summary>예전 기록 N건 더 보기</summary>. Show the '새로 도착' pill only for items received in the last 24h that are unseen. In canonicalResultCard remove the disabled '확인했어요' button and its '아직 준비 중이에요' note, keeping '이 결과에 대해 말하기'. Add test/results-recent.test.mjs reading app.js source and asserting: resultInbox references homeDoneItems, the string '예전 기록' exists, a 20 cap is present in resultInbox, and '확인을 기록하는 기능은 아직 준비 중이에요' no longer appears.",
+          "files": [
+            "operator/public/app.js",
+            "test/results-recent.test.mjs"
+          ],
+          "tests": [
+            "node --test test/results-recent.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "결과 must open on what finished recently, not 171 old cards. I"
+        },
+        {
+          "taskId": "JCAPP-PHONE-MORE-AND-TOPBAR",
+          "scope": "Phone fixes in operator/public/app.js and app.css. (1) In buildNav, when window.matchMedia('(max-width: 720px)').matches, the #secondary-nav popup is shown only while tab === 'more' (after choosing an item it closes); desktop keeps today's behaviour. (2) The slim top bar on module tabs shows the current tab's label (from navItems or the secondary labels) instead of '오늘의 운영 상태'; 홈 keeps '오늘의 운영 상태'. Set document.title to 'JuControler · ' + that label (Korean, never 'Founder Surface'). (3) CSS: at max-width 720px give .topbar h1 white-space: nowrap; overflow: hidden; text-overflow: ellipsis, and hide the '방금' #tower-updated text next to the pill so the row fits 390px. (4) Nav icon glyphs get aria-hidden=\"true\", the selected rail item gets aria-current=\"page\", and the connection dot label 'SSE 상태' becomes '실시간 연결 상태'. Add test/phone-more-menu.test.mjs reading app.js/app.css/index.html source and asserting buildNav contains a max-width: 720px matchMedia check tied to secondary.hidden, app.css has nowrap for .topbar h1 inside the 720px media block, 'aria-current' is set in buildNav, and 'Founder Surface' and 'SSE 상태' no longer appear.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "operator/public/index.html",
+            "test/phone-more-menu.test.mjs"
+          ],
+          "tests": [
+            "node --test test/phone-more-menu.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "Phone fixes in operator/public/app.js and app.css. (1) In bu"
+        },
+        {
+          "taskId": "JCAPP-MODULE-EMPTY-STATES-CALM",
+          "scope": "Calm, finished-sounding module headers and empty states. In operator/public/app.css change '.juplan-unavailable { border-style: dashed; }' to '.juplan-unavailable { border: 1px dashed var(--line-strong); border-radius: var(--radius-block); padding: var(--space-4); }' (use existing tokens; add fallbacks if a token is missing). In operator/public/app.js replace every '…보여줄 자리예요.' lede with a present-tense sentence: JuPlan '여러 프로젝트의 계획을 여기서 확인만 해요.', JuCeipt '작업 영수증을 여기서 확인만 해요.', Tester '자동 시험 결과를 여기서 확인만 해요.', 승인 unavailable '승인 규칙을 여기서 확인해요.'. JuPlan no-projects empty state becomes 'JuPlan에서 만든 계획이 아직 없어요. 계획을 만들면 여기에 자동으로 보여요. (JuPlan 개발 진행은 Agent Relay 탭에서 볼 수 있어요.)' with a home-chat-button data-quick-tab=\"relay\" 'Agent Relay 보기'. Update test/juplan-module.test.mjs to assert the new no-projects sentence and that no '자리예요' string remains in app.js.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/juplan-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juplan-module.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "Calm, finished-sounding module headers and empty states. In "
+        },
+        {
+          "taskId": "JCAPP-TESTER-SUMMARY-FIRST",
+          "scope": "Tester tab leads with a one-line verdict instead of an unsorted list of ~20 reports. In operator/public/app.js testerView: add a pure testerSummary(runs) returning '오늘 시험 N번 · 모두 통과' / '오늘 시험 N번 · M번 확인 필요' / '오늘은 아직 시험이 없어요' (today = local date of each run); render it as the first line in large type. Sort runs failures/skips first, then newest first; show at most 8 and fold the rest into <details><summary>예전 시험 N건 더 보기</summary>. Report titles use exact product names (agent-relay→Agent Relay, juactl/actl→actl, juplan→JuPlan, juceipt→JuCeipt, jucontroler-app→통합 관제 화면, jucontroler→JuControler) via the existing shared project-name map; 'vN' becomes 'N번째 버전'. Add test/tester-summary.test.mjs extracting testerSummary and the title mapping from app.js and asserting the three sentences and that 'agent-relay v5' renders as 'Agent Relay 5번째 버전'.",
+          "files": [
+            "operator/public/app.js",
+            "test/tester-summary.test.mjs"
+          ],
+          "tests": [
+            "node --test test/tester-summary.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "Tester tab leads with a one-line verdict instead of an unsor"
+        },
+        {
+          "taskId": "JCAPP-MORE-ADVANCED-FOLD",
+          "scope": "더보기 is for the Founder's quick checks, so legacy developer screens move out of the way without being deleted (Founder 2026-09-24: '진짜 간편하게 UI/UX로 확인하는 구조'). In operator/public/app.js: keep 기억 and 관리자 as normal 더보기 items; put 작업, 에이전트, 기능, 실행 환경 under one collapsed '고급 (개발용)' group in the secondary nav (closed by default, remembered in localStorage with try/catch). Merge 기능 and 실행 환경 into one item '기능 · 실행 환경' since they render the same screen. Ensure only one rail row is highlighted at a time (the 더보기 row stays highlighted while a secondary item is open, the secondary item gets aria-current). CSS: remove the light scrollbar stripe between rail and content by giving the scroll container scrollbar-color matching the Hermes tokens and color-scheme: dark. Add test/more-advanced.test.mjs reading app.js/app.css and asserting the '고급 (개발용)' group exists, '기능 · 실행 환경' exists, and app.css sets color-scheme: dark.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/more-advanced.test.mjs"
+          ],
+          "tests": [
+            "node --test test/more-advanced.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; '백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'; supervisor UX audit of the hub (captures ~/jc-tester/audit-hub/)",
+          "title": "더보기 is for the Founder's quick checks, so legacy developer s"
         }
       ]
     },
