@@ -3202,6 +3202,20 @@
           ],
           "ssotEvidence": "Supervisor visual review of ~/jc-tester/run-20260924-1215 (c578c69): Skill cards English, JuCeipt list bullets, Agent Relay tab jargon",
           "title": "Agent Relay tab polish in operator/public/app.js: flow chips"
+        },
+        {
+          "taskId": "JCAPP-JUPLAN-REAL-EXPORT",
+          "scope": "The JuPlan tab shows 'JuPlan 상태에 없어요' for every field because juplanView in operator/public/app.js looks for fields (stateSentence, currentGoal, currentMilestone, gates[]) that the real project-status.v1 export does not have. The real export (e.g. ~/Desktop/Projects/Team/JuPlan-Plans/founder-portfolio/.juplan/exports/project-status.v1.json) is {project, lifecycle, nodes, edges, validation:{ok, findings[]}, gates:{ok, gates:{G0..G5: bool}}, diagrams, snapshots[]}. Render it: heading = project (fallback folder name); one state sentence from lifecycle (PLANNING→'계획을 만드는 중이에요', READY_FOR_FINAL_REVIEW→'계획이 다 만들어졌어요 · 대표님 검토 후 확정하면 돼요', FROZEN→'확정된 계획이에요'); '항목 N개 · 연결 M개 · 다이어그램 K개'; 검증 '문제 없음' or '확인할 문제 N개'; 게이트 as 6 small chips with Korean names (G0 프로젝트 개요, G1 요구사항·기능, G2 사용자 흐름·화면, G3 시스템·데이터, G4 작업·완료 기준·QA, G5 최종 검토) ✓/✕; 확정 기록 '아직 확정 전' or the latest snapshot date. Keep the older field names as fallbacks. Remove the raw file path line (move it into a closed <details><summary>파일 위치</summary>) and show fetchedAt as a relative time ('방금', 'N분 전'), never the ISO string. Extend test/juplan-module.test.mjs with the real export fixture above asserting '대표님 포트폴리오', '계획이 다 만들어졌어요', '항목 12개 · 연결 10개' and no '상태에 없어요' / 'T03:' in the output.",
+          "files": [
+            "operator/public/app.js",
+            "test/juplan-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juplan-module.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-1257 (5813083): JuPlan tab cannot read the real project-status.v1 export",
+          "title": "The JuPlan tab shows 'JuPlan 상태에 없어요' for every field becaus"
         }
       ]
     },
