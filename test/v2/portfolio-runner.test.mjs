@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { routeOrder, buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, WorktreeManager, STATES, QA_VERDICTS, TRANSIENT_ERROR } from "../../src/v2/portfolio-runner/index.mjs";
+import { agentContext, routeOrder, buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, WorktreeManager, STATES, QA_VERDICTS, TRANSIENT_ERROR } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter, createRuntimeAdapters } from "../../src/v2/runtime-adapters/index.mjs";
 const passGate = async () => ({ ok: true, results: [] });
 
@@ -412,4 +412,25 @@ test("routeOrder: lane chain, then other subscribed AIs, then free models; cooli
   assert.deepEqual(routeOrder(["opencode", "codex"], pool, {}, 0), ["opencode", "codex", "claude-team", "cursor", "opencode-free"]);
   assert.deepEqual(routeOrder(["opencode", "codex"], pool, { opencode: 10 }, 5), ["codex", "claude-team", "cursor", "opencode-free", "opencode"]);
   assert.deepEqual(routeOrder("codex", undefined, {}, 0), ["codex"]);
+});
+
+test("agentContext adds role skills and only Founder-approved memories, and logs memory use", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR || "/tmp", "ar-ctx-"));
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(join(root, "skills/tidy"), { recursive: true });
+  await writeFile(join(root, "skills/tidy/SKILL.md"), "---\nname: tidy\n---\nKeep diffs small.");
+  await mkdir(join(root, "mem"));
+  await writeFile(join(root, "mem/memories.json"), JSON.stringify({ memories: [
+    { memoryId: "m1", scope: "GLOBAL", title: "한 번에 하나", body: "작업은 하나씩", provenance: "FOUNDER_APPROVED", state: "ACTIVE", version: 1 },
+    { memoryId: "m2", scope: "PROJECT", scopeKey: "other", title: "다른 프로젝트", body: "x", provenance: "FOUNDER_APPROVED", state: "ACTIVE", version: 1 },
+    { memoryId: "m3", scope: "GLOBAL", title: "제안", body: "y", provenance: "AGENT_PROPOSED", state: "ACTIVE", version: 1 } ] }));
+  const ctx = await agentContext({ id: "p", skills: { worker: ["tidy", "missing"] } }, "worker", { taskId: "T", skillsRoot: join(root, "skills"), memoryStore: join(root, "mem") });
+  assert.match(ctx.text, /SKILL tidy:\nKeep diffs small\./);
+  assert.match(ctx.text, /한 번에 하나: 작업은 하나씩/);
+  assert.doesNotMatch(ctx.text, /다른 프로젝트|제안/);
+  assert.deepEqual(ctx.skills.map((x) => x.name), ["tidy"]);
+  assert.match(await readFile(join(root, "mem/uses.jsonl"), "utf8"), /"memoryId":"m1"/);
+  const none = await agentContext({ id: "p" }, "qa", { skillsRoot: join(root, "skills"), memoryStore: join(root, "nope") });
+  assert.equal(none.text, "");
+  await rm(root, { recursive: true, force: true });
 });

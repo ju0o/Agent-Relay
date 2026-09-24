@@ -242,6 +242,42 @@ export function runTestGate(workspace, tests, { timeoutMs = 15 * 60_000, signal 
 // Founder plan harness (Founder 2026-09-23, the most important agent rule): what the Founder already planned is settled.
 export const FOUNDER_PLAN_HARNESS = "Founder plan harness: the SSOT, the Founder direction and this task packet were already planned with the Founder and are settled. Do not ask about them or re-open them. Follow the plan straight through. Before changing anything, check the files, tests and dependencies the task needs, so nothing surprising appears mid-way. Resolve anything inside the plan yourself. The Founder only sees results.";
 
+// Skills + Founder memory for one role (Founder 2026-09-24, A-25/A-26). Skills: lane config skills.{pm,worker,qa} = names of
+// ~/.agents/skills/<name>/SKILL.md (front matter stripped, 4KB each, 12KB total). Memory: the JuControler memory store's
+// ACTIVE memories the Founder approved (GLOBAL + this project), newest version each, 4KB; every delivery is logged to uses.jsonl.
+export async function agentContext(project, role, { taskId = "", skillsRoot = join(homedir(), ".agents/skills"), memoryStore, memory = true } = {}) {
+  const out = []; const skills = []; const memories = []; let budget = 12_000;
+  for (const name of [project?.skills?.[role]].flat().filter((n) => typeof n === "string" && /^[\w.-]+$/.test(n))) {
+    const raw = await readFile(join(skillsRoot, name, "SKILL.md"), "utf8").catch(() => null);
+    if (!raw) continue;
+    const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "").trim().slice(0, Math.min(4_000, budget));
+    if (!body) continue;
+    budget -= body.length; skills.push({ name, sha256: createHash("sha256").update(raw).digest("hex").slice(0, 16) });
+    out.push(`SKILL ${name}:\n${body}`);
+  }
+  const store = memoryStore || join(homedir(), "Desktop/Projects/Core/JuControler-Private/.jucontroler-state/memory");
+  const data = memory ? JSON.parse(await readFile(join(store, "memories.json"), "utf8").catch(() => "{}")) : {};
+  const latest = new Map();
+  for (const m of data.memories || []) {
+    if (m.state !== "ACTIVE" || !["FOUNDER_APPROVED", "VERIFIED"].includes(m.provenance)) continue;
+    if (!(m.scope === "GLOBAL" || (m.scope === "PROJECT" && m.scopeKey === project?.id))) continue;
+    if (!latest.has(m.memoryId) || (latest.get(m.memoryId).version || 0) < (m.version || 0)) latest.set(m.memoryId, m);
+  }
+  let mem = "";
+  for (const m of latest.values()) {
+    const line = `- ${m.title}: ${m.body}`;
+    if (mem.length + line.length > 4_000) break;
+    mem += line + "\n"; memories.push({ memoryId: m.memoryId, version: m.version });
+  }
+  if (mem) {
+    out.push(`Founder memory (approved rules and facts; follow them):\n${mem.trim()}`);
+    const at = new Date().toISOString();
+    const lines = memories.map((m) => JSON.stringify({ entryId: `use-${Date.now()}-${m.memoryId}`, ...m, project: project?.id, taskId, runId: `relay-${role}`, at })).join("\n") + "\n";
+    await appendFile(join(store, "uses.jsonl"), lines).catch(() => {});
+  }
+  return { text: out.length ? out.join("\n\n") + "\n\n" : "", skills, memories };
+}
+
 export function builderPrompt(task) {
   const mode = task.verificationOnly ? "Do not modify files or commit; verify the existing implementation only." : "Implement the bounded task and commit locally.";
   return `${FOUNDER_PLAN_HARNESS}\nYou are the Agent Relay Builder. Execute ONLY this repository-backed authorized task. Do not widen scope, ask the Founder routine questions, touch other repositories, or push.\nTASK_PACKET: ${JSON.stringify({ schema: "agent-relay.task.v1", taskId: task.taskId, projectId: task.projectId, scope: task.scope, files: task.files, tests: task.tests, verificationOnly: Boolean(task.verificationOnly) })}\nRead the repository SSOT first. ${mode} Run the listed tests.${task.qa?.findings?.length ? ` This is a retry: fix these findings from the previous QA/test gate first: ${JSON.stringify(task.qa.findings).slice(0, 3000)}` : ""} End with exactly one line: RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: task.taskId, status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "<git-sha>", summary: "<summary>" })}`;
@@ -407,16 +443,18 @@ export class PortfolioRunner {
     let preserveWorktree = retained;
     try {
       for (;;) {
-      const builderRun = await this.runChain(workerChain, { workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }), signal }, parseResultPacket);
-      task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, base: builder.base, startedAt: builderRun.startedAt, exitCode: builderRun.code, runtime: builderRun.runtime, fallbacks: builderRun.fallbacks };
+      const workerCtx = await agentContext(project, "worker", { taskId: task.taskId, memoryStore: this.manifest?.memoryStore, memory: this.manifest?.memoryDelivery === true });
+      const builderRun = await this.runChain(workerChain, { workspace: builder.path, sandbox: "workspace-write", prompt: workerCtx.text + builderPrompt({ ...task, projectId: project.id }), signal }, parseResultPacket);
+      task.builderEvidence = { skills: workerCtx.skills, memories: workerCtx.memories, pid: builderRun.pid, workspace: builder.path, base: builder.base, startedAt: builderRun.startedAt, exitCode: builderRun.code, runtime: builderRun.runtime, fallbacks: builderRun.fallbacks };
       task.result = parseResultPacket(builderRun.text); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
       await this._acquireQa();
       let qaRun;
       // independent QA: the AI that built this task reviews it only when every other QA AI is unavailable
       const qaOrder = [...qaChain.filter((id) => id !== builderRun.runtime), ...qaChain.filter((id) => id === builderRun.runtime)];
-      try { task.qaAttempts += 1; qaRun = await this.runChain(qaOrder, { workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }, parseQaPacket); }
+      const qaCtx = await agentContext(project, "qa", { taskId: task.taskId, memoryStore: this.manifest?.memoryStore, memory: this.manifest?.memoryDelivery === true });
+      try { task.qaAttempts += 1; qaRun = await this.runChain(qaOrder, { workspace: builder.path, sandbox: "read-only", prompt: qaCtx.text + qaPrompt(task, builder.base), signal }, parseQaPacket); }
       finally { this._releaseQa(); }
-      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: qaRun.runtime, fallbacks: qaRun.fallbacks, ...(qaRun.runtime === builderRun.runtime ? { sameAsBuilder: true } : {}) }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
+      task.qaEvidence = { skills: qaCtx.skills, memories: qaCtx.memories, pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: qaRun.runtime, fallbacks: qaRun.fallbacks, ...(qaRun.runtime === builderRun.runtime ? { sameAsBuilder: true } : {}) }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
       if (task.qa.verdict === "ACCEPT" && !task.verificationOnly && this.testGate) {
         const headOf = () => exec("git", ["-C", builder.path, "rev-parse", "HEAD"]).then((result) => result.stdout.trim(), () => null);
         const head = await headOf();
