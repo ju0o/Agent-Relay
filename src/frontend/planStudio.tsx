@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { must } from './bridge.js';
 import { PROJECT_LABELS } from '../shared/projectLabels.js';
+import { isPlanStudioTaskDone, sortPlanStudioTasks } from '../shared/types.js';
 
-const FLOW = ['PM', '검증', 'WORKER', 'QA', 'GATE', 'HUMAN', '통합'] as const;
+const FLOW = ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'] as const;
 
 interface BoardLane {
   id?: string;
@@ -65,12 +66,12 @@ function rawText(value: unknown): string {
 function stageIndex(stage: number | string): number {
   if (typeof stage === 'number' && Number.isFinite(stage)) return Math.max(0, Math.min(FLOW.length - 1, stage));
   const value = String(stage).toUpperCase();
-  if (value.includes('INTEGR') || value.includes('통합') || value === 'DONE' || value === 'COMPLETE') return 6;
-  if (value.includes('HUMAN') || value.includes('FOUNDER')) return 5;
-  if (value.includes('GATE')) return 4;
-  if (value.includes('QA')) return 3;
-  if (value.includes('WORKER') || value.includes('BUILDER')) return 2;
-  if (value.includes('VERIF') || value.includes('VALID') || value.includes('검증')) return 1;
+  if (value.includes('INTEGR') || value.includes('통합') || value.includes('반영') || value === 'DONE' || value === 'COMPLETE') return 6;
+  if (value.includes('HUMAN') || value.includes('FOUNDER') || value.includes('사람 확인')) return 5;
+  if (value.includes('GATE') || value.includes('시험')) return 4;
+  if (value.includes('QA') || value.includes('검수')) return 3;
+  if (value.includes('WORKER') || value.includes('BUILDER') || value.includes('작업')) return 2;
+  if (value.includes('VERIF') || value.includes('VALID') || value.includes('검증') || value.includes('확인')) return 1;
   return 0;
 }
 
@@ -153,7 +154,7 @@ function gateFromLane(lane: BoardLane | undefined): StudioGate | null {
   if (!gate || typeof gate !== 'object') return null;
   const gateId = str(gate.gateId ?? gate.id);
   if (!gateId) return null;
-  const title = str(gate.ask ?? gate.title ?? gate.question, 'Human Gate 확인 필요');
+  const title = str(gate.ask ?? gate.title ?? gate.question, '사람 확인이 필요해요.');
   const rawOptions = gate.options ?? gate.choices;
   const options = Array.isArray(rawOptions) ? rawOptions.map(o => label(o)).filter(o => o !== '—') : [];
   return { gateId, title, options: options.length ? options : ['승인', '반려'] };
@@ -172,6 +173,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'chat' | 'save' | 'approve' | 'gate' | null>(null);
+  const [showDone, setShowDone] = useState(false);
 
   // Board polling — task progress rows are fed by controlRoom:board.
   useEffect(() => {
@@ -226,9 +228,10 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   }, [lanes]);
 
   // Draft tasks merged with live board stages; board-only tasks fill gaps.
+  // Founder view: 진행중/대기 먼저, HOLD 다음, 끝난 작업 마지막.
   const tasks = useMemo<StudioTask[]>(() => {
     const merged = draft.tasks.map(t => ({ ...t, stage: boardStageByTask.get(t.id) ?? boardStageByTask.get(t.title) ?? t.stage }));
-    if (merged.length > 0) return merged;
+    if (merged.length > 0) return sortPlanStudioTasks(merged);
     const seen = new Set<string>();
     const derived: StudioTask[] = [];
     for (const lane of lanes) {
@@ -245,8 +248,14 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
         expectedRisk: '',
       });
     }
-    return derived;
+    return sortPlanStudioTasks(derived);
   }, [draft.tasks, boardStageByTask, lanes, project]);
+
+  const finishedCount = useMemo(() => tasks.filter(isPlanStudioTaskDone).length, [tasks]);
+  const visibleTasks = useMemo(
+    () => (showDone ? tasks : tasks.filter(t => !isPlanStudioTaskDone(t))),
+    [tasks, showDone],
+  );
 
   const selected = tasks.find(t => t.id === selectedId) ?? tasks[0] ?? null;
   const projectLane = lanes.find(l => str(l.project ?? l.id) === project);
@@ -324,8 +333,8 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
     <main className="control-room plan-studio">
       <div className="control-room-head">
         <div>
-          <h1>Plan Studio</h1>
-          <p className="muted">Goal · Task chain · PM chat · 승인 → 자동 진행</p>
+          <h1>계획</h1>
+          <p className="muted">목표와 작업 순서를 보고, PM에게 바꿔 달라고 말할 수 있어요.</p>
         </div>
         <button className="btn" onClick={onClose}>닫기</button>
       </div>
@@ -356,7 +365,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
 
         <section className="plan-center" aria-label="goal and task chain">
           <article className="control-card" aria-label="goal card">
-            <h3>Goal</h3>
+            <h3>목표</h3>
             {loading
               ? <p className="muted">불러오는 중...</p>
               : <>
@@ -369,11 +378,12 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
           </article>
 
           <article className="control-card" aria-label="task chain">
-            <h3>Task chain ({tasks.length})</h3>
+            <h3>작업 순서 ({tasks.length}개)</h3>
             {tasks.length === 0
               ? <p className="muted">표시할 task가 없습니다.</p>
-              : <ol className="plan-tasks">
-                {tasks.map(task => {
+              : <>
+                <ol className="plan-tasks">
+                {visibleTasks.map(task => {
                   const current = stageIndex(task.stage);
                   const editable = isNotStarted(task);
                   return (
@@ -420,7 +430,17 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                     </li>
                   );
                 })}
-              </ol>}
+                </ol>
+                {finishedCount > 0 && (
+                  <button
+                    className="mini"
+                    aria-expanded={showDone}
+                    onClick={() => setShowDone(prev => !prev)}
+                  >
+                    {showDone ? '끝난 작업 닫기' : `끝난 작업 ${finishedCount}개 보기`}
+                  </button>
+                )}
+              </>}
           </article>
 
           <article className="control-card" aria-label="run policy">
@@ -455,7 +475,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
 
         <aside className="plan-side" aria-label="chat detail gate">
           <article className="control-card" aria-label="pm chat">
-            <h3>PM chat (planStudio:chat)</h3>
+            <h3>PM에게 요청</h3>
             <form onSubmit={e => void sendChat(e)} className="plan-chat-form">
               <textarea
                 aria-label="PM에게 계획 수정 요청"
@@ -468,26 +488,26 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                 {busy === 'chat' ? '전송 중...' : 'PM에게 요청'}
               </button>
             </form>
-            <p className="muted">답변이 오면 draft 다이어그램이 갱신됩니다.</p>
+            <p className="muted">PM이 답하면 작업 순서가 새로 그려져요.</p>
           </article>
 
           <article className="control-card" aria-label="selected node detail">
-            <h3>선택 노드 상세</h3>
+            <h3>선택한 작업</h3>
             {!selected
               ? <p className="muted">task를 선택하세요.</p>
               : <>
                 <p className="control-card-value" style={{ fontSize: 14 }}>{selected.title}</p>
                 <p>현재 단계: <strong>{FLOW[stageIndex(selected.stage)]}</strong> ({stageIndex(selected.stage) + 1}/7)</p>
-                <p>Agents: <strong>{label(selected.agents)}</strong></p>
-                <p>Blocker: <strong>{label(selected.blocker)}</strong></p>
-                <p>예상 리스크: <strong>{label(selected.expectedRisk)}</strong></p>
+                {selected.agents.trim() ? <p>Agents: <strong>{selected.agents}</strong></p> : null}
+                {selected.blocker.trim() ? <p>Blocker: <strong>{selected.blocker}</strong></p> : null}
+                {selected.expectedRisk.trim() ? <p>예상 리스크: <strong>{selected.expectedRisk}</strong></p> : null}
               </>}
           </article>
 
           <article className="control-card human" aria-label="human gate">
-            <h3>Human Gate</h3>
+            <h3>사람 확인</h3>
             {visibleGates.length === 0
-              ? <p className="muted">대기 중인 gate가 없습니다.</p>
+              ? <p className="muted">지금 답할 것이 없어요.</p>
               : visibleGates.map(gate => (
                 <form key={gate.gateId} onSubmit={e => { e.preventDefault(); void answerGate(gate.gateId); }}>
                   <fieldset className="plan-gate">

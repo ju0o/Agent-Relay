@@ -532,3 +532,70 @@ export function applyOrderByKeys<T>(items: readonly T[], keyOf: (x: T) => string
   known.sort((a, b) => rank.get(keyOf(a))! - rank.get(keyOf(b))!);
   return [...known, ...unknown];
 }
+
+// ── Plan Studio founder view ordering ───────────────────────────────────────
+// Founder view shows tasks in progress or queued first, then HOLD, then
+// finished (finished rows collapse behind a '끝난 작업 N개 보기' toggle).
+// Pure — unit-tested.
+
+/** Minimal task shape needed for founder-view ordering (extra fields ignored). */
+export interface PlanStudioOrderTask {
+  stage?: number | string;
+  blocker?: unknown;
+}
+
+/** Founder-view group rank: 'active' (진행중/대기) → 'hold' → 'done' (끝남). */
+export type PlanStudioTaskGroup = 'active' | 'hold' | 'done';
+
+/** True when the stage string/number means finished (반영/DONE/COMPLETE/통합). */
+export function isPlanStudioTaskDone(task: PlanStudioOrderTask | null | undefined): boolean {
+  if (!task || typeof task !== 'object') return false;
+  const stage = (task as PlanStudioOrderTask).stage;
+  if (typeof stage === 'number') return Number.isFinite(stage) && stage >= 6;
+  const value = String(stage ?? '').toUpperCase();
+  if (!value) return false;
+  return value.includes('INTEGR')
+    || value.includes('통합')
+    || value.includes('반영')
+    || value === 'DONE'
+    || value === 'COMPLETE'
+    || value === 'V1_COMPLETE'
+    || value === 'INTEGRATED';
+}
+
+/** True when the task is held/blocked (and not finished — done wins). */
+export function isPlanStudioTaskHold(task: PlanStudioOrderTask | null | undefined): boolean {
+  if (!task || typeof task !== 'object') return false;
+  if (isPlanStudioTaskDone(task)) return false;
+  const blocker = (task as PlanStudioOrderTask).blocker;
+  if (typeof blocker === 'string' ? blocker.trim() : Boolean(blocker)) return true;
+  const stage = (task as PlanStudioOrderTask).stage;
+  if (typeof stage === 'string') {
+    const value = stage.toUpperCase();
+    if (value.includes('HOLD') || value.includes('BLOCK') || value.includes('보류')) return true;
+  }
+  return false;
+}
+
+/** Group a task for founder-view ordering. Pure. */
+export function planStudioTaskGroup(task: PlanStudioOrderTask | null | undefined): PlanStudioTaskGroup {
+  if (isPlanStudioTaskDone(task)) return 'done';
+  if (isPlanStudioTaskHold(task)) return 'hold';
+  return 'active';
+}
+
+/**
+ * Sort tasks for the founder view: active (in progress or queued) first,
+ * then HOLD, then finished. Stable — ties keep their original relative order.
+ * Pure — unit-tested.
+ */
+export function sortPlanStudioTasks<T extends PlanStudioOrderTask>(tasks: readonly T[]): T[] {
+  const rank = (task: T): number => {
+    const group = planStudioTaskGroup(task);
+    return group === 'active' ? 0 : group === 'hold' ? 1 : 2;
+  };
+  return tasks
+    .map((task, index) => ({ task, index }))
+    .sort((a, b) => rank(a.task) - rank(b.task) || a.index - b.index)
+    .map(entry => entry.task);
+}
