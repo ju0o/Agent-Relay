@@ -60,8 +60,30 @@ export interface RunFolderResult {
   run: string;
 }
 
-/** Launch-time start view selected via `--view=<name>` (invalid/missing = home). */
+/** Launch-time start view selected via `--view=<name>` (invalid/missing = control-room). */
 export type StartView = 'home' | 'control-room' | 'approvals' | 'plan-studio';
+
+/**
+ * Launch-time start view for Automated Tester support (`--view=<name>`).
+ *
+ * Only 'home' | 'control-room' | 'approvals' | 'plan-studio' are accepted —
+ * anything else (including a missing argument) resolves to 'control-room' and
+ * never raises an error dialog. An explicit '--view=home' still returns 'home'.
+ * The last '--view=' argument wins. Pure — unit-tested.
+ */
+const START_VIEW_PREFIX = '--view=';
+export function parseStartView(argv: readonly string[]): StartView {
+  let found: string | null = null;
+  for (const arg of argv) {
+    if (typeof arg === 'string' && arg.startsWith(START_VIEW_PREFIX)) {
+      found = arg.slice(START_VIEW_PREFIX.length).trim();
+    }
+  }
+  if (found === 'control-room' || found === 'approvals' || found === 'plan-studio' || found === 'home') {
+    return found;
+  }
+  return 'control-room';
+}
 
 /** app:startView response — which view the app should open on launch. */
 export interface StartViewResult {
