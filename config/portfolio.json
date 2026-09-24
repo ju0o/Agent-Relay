@@ -1841,6 +1841,18 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
           "title": "동시에 보내도 안전하게 처리"
+        },
+        {
+          "taskId": "ACTL-RESULT-READY-COPY-CTA-R2",
+          "scope": "After a successful send, arm the 답이 왔어요 and primary 결과 복사 CTA only when hydration or refresh proves a real post-send result via prior RUNNING activity or a hash differing from previous_result_hash, and add test_result_ready_waits_for_real_post_send_change in tests/test_gui_visible_feedback.py so it fails on the old false-arm path and passes on the fix while preserving fresh-board copying and truthful 이미 복사한 결과예요 wording.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_visible_feedback.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments"
         }
       ],
       "qaRuntime": [
