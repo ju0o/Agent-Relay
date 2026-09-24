@@ -4505,7 +4505,19 @@
         "codex",
         "cline"
       ],
-      "tasks": [],
+      "tasks": [
+        {
+          "taskId": "JUTELL-RELAY-T-DOG-01-PM-JUDGMENTS",
+          "scope": "기존 dogfood 증거를 기준으로 PM_TASK_DECISION v1과 PM_JUDGMENT v1 JSON 코드블록 및 한국어 근거 요약을 새 문서에 기록한다.",
+          "files": [
+            "docs/dogfood/relay-T-DOG-01/PM_JUDGMENTS.md"
+          ],
+          "tests": [
+            "git diff --check"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
+        }
+      ],
       "note": "lane added by night plan request 2026-09-24"
     }
   ],
