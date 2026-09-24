@@ -2483,6 +2483,37 @@
           ],
           "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-1008 captures of 1124e4b",
           "title": "승인 > 승인 규칙 cards use a red border and red body text, which r"
+        },
+        {
+          "taskId": "JCAPP-NO-NATIVE-DIALOGS",
+          "scope": "Every write action (승인 규칙 고치기/지우기/추가, gate answers, lane resume, Worker/QA 순서 바꾸기) uses window.prompt/window.confirm and reports through commandState far from the button, so on the desktop shell (Electron has no prompt) and some browsers a tap looks like nothing happens. Replace all native dialogs with inline UI: 고치기 turns the card into an editable text field with 저장/취소; destructive or state-changing actions show an inline two-step confirm row ('정말 지울까요? [지우기] [취소]'); a pressed button immediately shows '처리 중…' and the result (성공/실패 + 이유) right under that card. No window.prompt/confirm/alert left in operator/public (test asserts). Endpoints unchanged.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/inline-actions.test.mjs"
+          ],
+          "tests": [
+            "node --test test/inline-actions.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 10:2x: '승인에서도 내가 뭐 눌러도 아무 반응 없음', 'skill만들기도 카테고리별로 그리고 정리되어 있게'; supervisor capture review run-20260924-1008 (Skill tab shows the Tester view)",
+          "title": "Every write action (승인 규칙 고치기/지우기/추가, gate answers, lane res"
+        },
+        {
+          "taskId": "JCAPP-SKILL-TAB-FIX-AND-CATEGORIES",
+          "scope": "Skill 만들기 tab currently renders the Tester view (routing bug, same class as the old 승인→Tester bug) — fix the route so each rail item renders its own view, with a test that every tab's heading matches its label. Then render /api/skills grouped by category (e.g. 다이어그램·시각화, 리뷰·검증, 기획·문서, 자동화·운영, 기타 — derive from name/description keywords in one small pure map), each skill as a card with its name, a short Korean one-line purpose (Korean map for known skills; else the first sentence trimmed), and a count per category; categories collapsible, search box on top. Keep the create-skill flow; no endpoint changes.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/skill-categories.test.mjs",
+            "test/layout-consistency.test.mjs"
+          ],
+          "tests": [
+            "node --test test/skill-categories.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 10:2x: '승인에서도 내가 뭐 눌러도 아무 반응 없음', 'skill만들기도 카테고리별로 그리고 정리되어 있게'; supervisor capture review run-20260924-1008 (Skill tab shows the Tester view)",
+          "title": "Skill 만들기 tab currently renders the Tester view (routing bug"
         }
       ]
     },
