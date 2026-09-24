@@ -116,7 +116,7 @@ const pidPath = join(root, "runner.pid");
 const nightPath = join(root, "LAST_NIGHT_RUN.json");
 const nightPidPath = join(root, "night-run.pid");
 const [area, command, project, decision] = process.argv.slice(2);
-if (!["portfolio", "project", "core-v1", "night-run"].includes(area)) { console.error("usage: agent-relay core-v1 status|results [--json]|start|resume | night-run once|up|status|stop | portfolio ... | project ..."); process.exit(2); }
+if (!["portfolio", "project", "core-v1", "night-run"].includes(area)) { console.error("usage: agent-relay core-v1 status|results [--json]|start|resume | night-run once|up|status|stop | portfolio pm-intake|result-return|... | project ..."); process.exit(2); }
 const instance = await runner();
 const night = ({ deferPoweroff = false } = {}) => {
   const supervisor = new NightRunSupervisor({ runner: instance, checkpointPath: nightPath });
@@ -157,7 +157,9 @@ if (area === "night-run" && command === "stop") { const outcome = await stopPidL
 if (area === "portfolio" && command === "status") { console.log(JSON.stringify(await instance.load(), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "reconcile") { console.log(JSON.stringify(await instance.reconcile(), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "intake" && project) { const packet = parseTaskPacket(await readFile(project, "utf8")); console.log(JSON.stringify(await instance.acceptTaskPacket(packet), null, 2)); process.exit(0); }
+if (area === "portfolio" && command === "pm-intake" && project) { console.log(JSON.stringify(await instance.acceptTaskPacketFile(project), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "result" && project) { console.log(await readFile(join(instance.resultRoot, `${project}.json`), "utf8")); process.exit(0); }
+if (area === "portfolio" && command === "result-return" && project) { console.log(JSON.stringify(await instance.readResultReturn(project), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "founder-response" && project && decision) { console.log(JSON.stringify(await instance.resolveFounderGate(project, decision), null, 2)); process.exit(0); }
 if (area === "portfolio" && command === "stop") { const outcome = await stopPidLock({ pidPath: pidPath, label: "portfolio runner" }); if (!outcome.signaled) console.error(JSON.stringify({ pidLock: outcome })); const state = await instance.load(); state.service = "STOPPED"; await instance.save(state); await rm(pidPath, { force: true }); console.log("STOPPED"); process.exit(0); }
 if (area === "project" && command === "run" && project) { console.log(JSON.stringify(await instance.enqueue(project), null, 2)); process.exit(0); }
