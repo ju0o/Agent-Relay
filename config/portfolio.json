@@ -1852,7 +1852,8 @@
           "tests": [
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
-          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments"
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
+          "title": "진짜 답이 온 뒤 결과 복사"
         }
       ],
       "qaRuntime": [
