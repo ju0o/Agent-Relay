@@ -3383,6 +3383,91 @@
           ],
           "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-1310 (38f02dc): JuPlan counts read as 0",
           "title": "The JuPlan tab shows '항목 0개 · 연결 0개 · 다이어그램 0개' for the real"
+        },
+        {
+          "taskId": "JCAPP-HOME-HOLD-JUMP",
+          "scope": "Home '멈춘 작업 보기' button targets the first lane that has holds (data-hub-lane=<lane id>) instead of plain data-quick-tab=relay, so the Relay tab opens on the lane whose hold card is shown; with no holds the button is absent.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-hold-jump.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-hold-jump.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x capability checklist (orchestration/skills/context/UX) + A-22 AI 자동 배정; supervisor capability audit",
+          "title": "Home '멈춘 작업 보기' button targets the first lane that has holds"
+        },
+        {
+          "taskId": "JCAPP-HOME-CALM-TRUTH",
+          "scope": "Home top line never says '지금 하실 일이 없어요' while a hold (not skipped) or open gate exists; with holds it reads '멈춘 작업 N건 — 30분 안에 고르지 않으면 추천대로 진행해요.' and the separate hold box is dropped. Update test/home-all-ok.test.mjs.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-all-ok.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-all-ok.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x capability checklist (orchestration/skills/context/UX) + A-22 AI 자동 배정; supervisor capability audit",
+          "title": "Home top line never says '지금 하실 일이 없어요' while a hold (not sk"
+        },
+        {
+          "taskId": "JCAPP-RELAY-WHO-WORKS",
+          "scope": "Relay lane header and Home '지금 일하는 중' show who does each step in plain Korean from board lane.current (e.g. 'actl · 검수 중 — codex가 만든 것을 grok이 확인해요'); missing worker/qa falls back to the step name only. Update test/home-working-line.test.mjs.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-working-line.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-working-line.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x capability checklist (orchestration/skills/context/UX) + A-22 AI 자동 배정; supervisor capability audit",
+          "title": "Relay lane header and Home '지금 일하는 중' show who does each ste"
+        },
+        {
+          "taskId": "JCAPP-AI-ROUTING-VIEW",
+          "scope": "New 'AI 자동 배정' card on the Agent Relay tab (and a one-line summary on 홈 under 지금 일하는 중) from /api/relay/board routing {pool:{subscribed[],free[]}, cooling:{id: untilISO}, last:{runtime, fallbacks[]}} plus models {id:{runs,quota,failed}}: one row per AI in pool order — name, '구독' or '무료' chip, state '사용 가능' or '쉬는 중 · HH:MM까지 (한도)', today's runs and failures; a one-line explanation '구독 AI를 먼저 쓰고, 한도가 차면 다음 AI로, 마지막에 무료 모델을 써요.'; the last pick as '방금 <AI>가 맡았어요'. Missing routing → hide the card. Pure render helper + test/ai-routing-view.test.mjs.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "test/ai-routing-view.test.mjs"
+          ],
+          "tests": [
+            "node --test test/ai-routing-view.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x capability checklist (orchestration/skills/context/UX) + A-22 AI 자동 배정; supervisor capability audit",
+          "title": "New 'AI 자동 배정' card on the Agent Relay tab (and a one-line s"
+        },
+        {
+          "taskId": "JCAPP-MEMORY-HONEST",
+          "scope": "기억 page and 더보기 card state whether memories reach agents: when /api/studio/memory/uses has no entry in the last 7 days the lede reads '지금은 AI 작업에 전달되지 않아요 (보관만 돼요).', otherwise '승인한 기억은 다음 작업부터 AI에게 전달돼요.'; the 더보기 card text follows.",
+          "files": [
+            "operator/public/app.js",
+            "test/memory-studio.test.mjs"
+          ],
+          "tests": [
+            "node --test test/memory-studio.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x capability checklist (orchestration/skills/context/UX) + A-22 AI 자동 배정; supervisor capability audit",
+          "title": "기억 page and 더보기 card state whether memories reach agents: wh"
+        },
+        {
+          "taskId": "JCAPP-CHAT-HONEST",
+          "scope": "대화 tab: when supervisor readiness is CHECKING/UNKNOWN for over 10 minutes or the last 3 directives are BLOCKED, show one calm line '운영 담당이 지금 답하지 못해요. 멈춘 작업과 승인은 버튼으로 바로 처리돼요.' with buttons to relay and approvals; 보내기 stays enabled.",
+          "files": [
+            "operator/public/app.js",
+            "test/conversation-ready.test.mjs"
+          ],
+          "tests": [
+            "node --test test/conversation-ready.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x capability checklist (orchestration/skills/context/UX) + A-22 AI 자동 배정; supervisor capability audit",
+          "title": "대화 tab: when supervisor readiness is CHECKING/UNKNOWN for ov"
         }
       ]
     },
