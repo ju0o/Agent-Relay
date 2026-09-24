@@ -975,6 +975,22 @@
           ],
           "ssotEvidence": "Supervisor visual review of Agent Relay v7 Linux Tester captures (~/jc-tester/agent-relay-v7/); Founder 2026-09-24 launch-quality request",
           "title": "관제실의 어려운 표현을 쉽게 바꾸기"
+        },
+        {
+          "taskId": "AGENTRELAY-HOLD-PLAIN-SENTENCE",
+          "scope": "Control Room hold card (src/frontend/controlRoom.tsx): when the board hold has explain.sentence (night board now includes step/explain/choice from holds/<id>.json), show that Korean sentence plus the 3 option labels with the recommended one marked, instead of the raw English QA finding; keep the raw reason inside the closed 원문 보기. Holds with choice 'skip' are not shown. Extend test/controlroom-plain-2.test.mjs for a hold with explain and one without.",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/shared/projectLabels.ts",
+            "test/controlroom-plain-2.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/controlroom-plain-2.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor capability audit 2026-09-24: hold cards show raw English though plain-Korean explanations exist",
+          "title": "Control Room hold card (src/frontend/controlRoom.tsx): when "
         }
       ],
       "qaRuntime": [
