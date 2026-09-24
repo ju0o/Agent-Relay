@@ -4219,6 +4219,20 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
           "title": "H13: 대화 with 0 records shows '가장 오래된 대화입니다' above a '대화 없음' "
+        },
+        {
+          "taskId": "JCAPP-TASK-TITLES",
+          "scope": "The board now includes a plain-Korean title for lane.current (current.title) and each hold (hold.title). In operator/public/app.js show that title wherever a task appears (Agent Relay tab current task, hold cards, 홈 지금 일하는 중, 오늘 끝난 것 when available) instead of the raw taskId; the taskId stays only in a title attribute or a closed '작업 번호' details. Fallback to the existing plain line when no title. Extend test/home-working-line.test.mjs.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-working-line.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-working-line.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Board now carries Korean task titles (night-titles.py, Founder 쉬운 용어)",
+          "title": "The board now includes a plain-Korean title for lane.current"
         }
       ]
     },
