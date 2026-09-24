@@ -1475,6 +1475,88 @@
           ],
           "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
           "title": "미리보기에서 방향키 오작동 방지"
+        },
+        {
+          "taskId": "ACTL-CROSS-PROCESS-PANE-LOCK",
+          "scope": "Messages from two boards (or a board plus Agent Relay/CLI) sent at the same time get interleaved in the agent's input (19 of 20 in an isolated test: 'B0A0'). Wrap send_prompt_staged's load→paste→enter in a per-pane tmux server lock (tmux wait-for -L/-U actl-<pane id>, with a timeout that fails closed with a Korean message '다른 곳에서 보내는 중이에요. 잠시 뒤 다시 보내 주세요.'), and allow only one board instance at a time (a lock file in the user state dir; a second launch focuses/exits with a message). Test with an isolated tmux server (TMUX_TMPDIR temp dir) that two concurrent sends never interleave.",
+          "files": [
+            "src/actl/core/tmux.py",
+            "src/juactl-board.py",
+            "tests/test_transport_socket.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
+          "title": "Messages from two boards (or a board plus Agent Relay/CLI) s"
+        },
+        {
+          "taskId": "ACTL-BUSY-SEND-STALE-GUARD",
+          "scope": "Sending to an agent that is still working (activity RUNNING) asks first ('작업 중이에요. 끝나면 보낼까요, 지금 보낼까요?' inline, no native dialog). If sent while busy, begin_send records busy_at_send and classify_result does not accept a NEW_RESULT until the result changes once more, so the previous job's answer can never be copied as the new result. Tests in tests/test_send_commit_copy_truth.py reproduce ['RESULT::JOB1','NEW_RESULT'] and assert it is now not NEW_RESULT.",
+          "files": [
+            "src/actl/gui.py",
+            "src/actl/core/send_truth.py",
+            "tests/test_send_commit_copy_truth.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
+          "title": "Sending to an agent that is still working (activity RUNNING)"
+        },
+        {
+          "taskId": "ACTL-SEND-AMBIGUOUS-NO-RESEND",
+          "scope": "When a send ends as DELIVERY_AMBIGUOUS (sideEffect POSSIBLE/INPUT_OBSERVED, e.g. SSH dropped before Enter) the board shows '보냈는지 확실하지 않아요 — ASUS 화면 전환으로 확인하세요' instead of '전송 실패', and re-sending the same text asks once more inline to prevent double input. Tests for the message mapping and the re-send guard.",
+          "files": [
+            "src/actl/gui.py",
+            "src/actl/core/send_truth.py",
+            "tests/test_send_commit_copy_truth.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
+          "title": "When a send ends as DELIVERY_AMBIGUOUS (sideEffect POSSIBLE/"
+        },
+        {
+          "taskId": "ACTL-RESULT-READY-COPY-CTA",
+          "scope": "After a send, when the agent goes from working to idle or its result changes, the card and status show '답이 왔어요' and the 결과 복사 button is highlighted (primary style). A freshly opened board with no send record allows '지금 화면 결과 복사' instead of refusing, and the untrue '이전 결과와 같아서' wording becomes '이미 복사한 결과예요' only when it really was copied. Tests in tests/test_gui_visible_feedback.py.",
+          "files": [
+            "src/actl/gui.py",
+            "src/actl/core/send_truth.py",
+            "tests/test_gui_visible_feedback.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
+          "title": "After a send, when the agent goes from working to idle or it"
+        },
+        {
+          "taskId": "ACTL-STALE-LEASE-GUARD",
+          "scope": "guard_tmux_writer treats an EXPIRED_HELD lease as not blocking when the lease's recorded pane process differs from the current pane's process (tmux restarted and reused the pane id); today 4 such leases (%5, %13, %18) would wrongly block future panes with those ids. Test with a copied fixture DB.",
+          "files": [
+            "src/actl/core/runtime.py",
+            "tests/test_writer_guard_cli.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
+          "title": "guard_tmux_writer treats an EXPIRED_HELD lease as not blocki"
+        },
+        {
+          "taskId": "ACTL-TEST-STATE-ISOLATION",
+          "scope": "tests/run_tests.py points ACTL_AUDIT_PATH, ACTL_STATE_PATH and the runtime state dir at a temporary folder before importing tests, so the suite never writes the real ~/.local/state/actl/audit.jsonl or state.json (today 3500 of 3508 audit lines are test noise). Test that after a run the real paths are untouched (use a fake HOME).",
+          "files": [
+            "tests/run_tests.py",
+            "tests/test_runner_isolation.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments",
+          "title": "tests/run_tests.py points ACTL_AUDIT_PATH, ACTL_STATE_PATH a"
         }
       ],
       "qaRuntime": [
