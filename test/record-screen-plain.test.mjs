@@ -7,6 +7,30 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'frontend', 'App.tsx'), 'utf8');
 
+// App.tsx is TSX — extract the pure visibleRecordAgents helper and evaluate it
+// with a minimal normalizeModelUsage stub (keys → runtimeId), mirroring
+// test/v03.test.mjs conventions.
+function loadVisibleRecordAgents() {
+  const m = src.match(/export function visibleRecordAgents[\s\S]*?\n\}/);
+  assert.ok(m, 'visibleRecordAgents not found in App.tsx source');
+  const ts = m[0].replace(/^export\s+/, '');
+  const js = ts
+    .replace(/activeAgent\?:/g, 'activeAgent:')
+    .replace(/:\s*string\[\]/g, '')
+    .replace(/:\s*unknown/g, '')
+    .replace(/:\s*string/g, '')
+    .replace(/<string>/g, '');
+  function normalizeModelUsage(models) {
+    if (!models || typeof models !== 'object' || Array.isArray(models)) return [];
+    return Object.entries(models).map(([runtimeId]) => ({ runtimeId }));
+  }
+  const fn = new Function('normalizeModelUsage', `${js}; return visibleRecordAgents;`)(normalizeModelUsage);
+  assert.equal(typeof fn, 'function', 'visibleRecordAgents did not evaluate to a function');
+  return fn;
+}
+
+const visibleRecordAgents = loadVisibleRecordAgents();
+
 describe('record screen plain Korean', () => {
   it('shows plain-Korean header on 기록', () => {
     assert.ok(
@@ -51,5 +75,49 @@ describe('record screen plain Korean', () => {
     assert.ok(src.includes('prompt:save'), 'missing prompt:save');
     assert.ok(src.includes('result:save'), 'missing result:save');
     assert.ok(src.includes('run:export'), 'missing run:export');
+  });
+
+  it('visibleRecordAgents filters to configured board runtimes only', () => {
+    const all = ['Claude Code', 'Kiro', 'Devin', 'CommandCode'];
+    // board says only Claude Code is configured → unconfigured chips hidden
+    assert.deepEqual(
+      visibleRecordAgents(all, { 'Claude Code': { runs: 2 } }, []),
+      ['Claude Code'],
+    );
+  });
+
+  it('visibleRecordAgents includes history runtimes', () => {
+    const all = ['Claude Code', 'Kiro', 'Devin'];
+    assert.deepEqual(
+      visibleRecordAgents(all, null, ['Kiro']),
+      ['Kiro'],
+    );
+  });
+
+  it('visibleRecordAgents keeps full list on first run (board and history empty)', () => {
+    const all = ['Claude Code', 'Kiro', 'Devin'];
+    assert.deepEqual(visibleRecordAgents(all, null, []), all);
+    assert.deepEqual(visibleRecordAgents(all, {}, []), all);
+  });
+
+  it('visibleRecordAgents returns empty (not allAgents) on non-overlap', () => {
+    const all = ['Claude Code', 'Kiro'];
+    // configured runtime does not exist in the chip list → must not fall back to allAgents
+    assert.deepEqual(
+      visibleRecordAgents(all, { UnknownRuntime: { runs: 1 } }, []),
+      [],
+    );
+  });
+
+  it('visibleRecordAgents keeps active agent on non-overlap without restoring allAgents', () => {
+    const all = ['Claude Code', 'Kiro'];
+    assert.deepEqual(
+      visibleRecordAgents(all, { UnknownRuntime: { runs: 1 } }, [], 'Kiro'),
+      ['Kiro'],
+    );
+  });
+
+  it('visibleRecordAgents never falls back to allAgents when filtered', () => {
+    assert.doesNotMatch(src, /visible\.length > 0 \? visible :/);
   });
 });

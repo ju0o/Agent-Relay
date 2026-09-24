@@ -143,6 +143,7 @@ function copyText(text: string): void { void navigator.clipboard.writeText(text)
  * 현재 파일 기록(history)에 없을 때 칩에서 숨긴다.
  * board도 history도 비어 있으면(첫 실행) 전체 목록을 그대로 둔다.
  * 현재 선택된 에이전트는 항상 포함해 선택이 사라지지 않게 한다.
+ * configured와 겹치지 않아도 전체 목록으로 되돌리지 않는다 (빈 목록 + 선택 유지).
  */
 export function visibleRecordAgents(
   allAgents: string[],
@@ -156,7 +157,7 @@ export function visibleRecordAgents(
   if (configured.size === 0) return [...allAgents];
   const visible = allAgents.filter(a => configured.has(a));
   if (activeAgent && !visible.includes(activeAgent)) visible.push(activeAgent);
-  return visible.length > 0 ? visible : [...allAgents];
+  return visible;
 }
 
 // ── 모달 타입 ─────────────────────────────────────────────────────────────────
