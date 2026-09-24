@@ -813,3 +813,39 @@ export function windowTitleForVersion(version: unknown): string {
     typeof version === 'string' && version.trim() ? version.trim() : APP_BASE_VERSION;
   return `Agent Relay ${v}`;
 }
+
+// ── Friendly fs error messages ────────────────────────────────────────────
+// Raw Node fs errors (e.g. "ENOENT: no such file or directory, open 'C:\…'")
+// must never reach the UI — they leak codes/paths and are not Korean.
+// This pure helper maps common errno codes to one plain Korean sentence
+// (no code, no path); anything else passes through unchanged.
+
+const FRIENDLY_ERRNO_MESSAGES: Record<string, string> = {
+  ENOENT: '파일 또는 폴더를 찾을 수 없습니다.',
+  EACCES: '접근 권한이 없어 처리할 수 없습니다.',
+  EPERM: '허용되지 않은 동작이라 처리할 수 없습니다.',
+  EEXIST: '이미 같은 이름의 파일 또는 폴더가 있습니다.',
+  ENOSPC: '저장 공간이 부족하여 저장할 수 없습니다.',
+  EBUSY: '파일이 사용 중이라 지금 처리할 수 없습니다.',
+};
+
+const FRIENDLY_ERRNO_PATTERN = /\b(ENOENT|EACCES|EPERM|EEXIST|ENOSPC|EBUSY)\b/;
+
+/**
+ * Map a Node fs errno failure to one plain Korean sentence.
+ * Reads `err.code` first, then falls back to scanning the message text.
+ * Unmapped messages are returned unchanged. Pure — unit-tested.
+ */
+export function friendlyErrorMessage(err: unknown): string {
+  const fallback =
+    err instanceof Error ? err.message : typeof err === 'string' ? err : String(err);
+  let code = '';
+  if (err && typeof err === 'object' && typeof (err as { code?: unknown }).code === 'string') {
+    code = ((err as { code: string }).code || '').toUpperCase();
+  }
+  if (!code && typeof fallback === 'string') {
+    const hit = FRIENDLY_ERRNO_PATTERN.exec(fallback.toUpperCase());
+    if (hit?.[1]) code = hit[1];
+  }
+  return FRIENDLY_ERRNO_MESSAGES[code] ?? fallback;
+}

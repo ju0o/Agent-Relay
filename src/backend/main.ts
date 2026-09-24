@@ -28,6 +28,7 @@ import {
   StartView,
   UpdateEvent,
   UpdateStatus,
+  friendlyErrorMessage,
   nextUpdateStatus,
   parseStartView,
   windowTitleForVersion,
@@ -418,7 +419,7 @@ function registerIpc(): void {
       const value = await handleRequest(req);
       return { ok: true, value };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = friendlyErrorMessage(err);
       return { ok: false, error: message };
     }
   });
