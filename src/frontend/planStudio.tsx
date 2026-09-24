@@ -26,6 +26,7 @@ interface StudioTask {
   agents: string;
   blocker: string;
   expectedRisk: string;
+  completedAt: string;
 }
 
 interface StudioGate {
@@ -67,13 +68,32 @@ function rawText(value: unknown): string {
 function stageIndex(stage: number | string): number {
   if (typeof stage === 'number' && Number.isFinite(stage)) return Math.max(0, Math.min(FLOW.length - 1, stage));
   const value = String(stage).toUpperCase();
-  if (value.includes('INTEGR') || value.includes('통합') || value.includes('반영') || value === 'DONE' || value === 'COMPLETE') return 6;
+  if (value.includes('INTEGR') || value.includes('통합') || value.includes('반영') || value.includes('DONE') || value.includes('COMPLETE')) return 6;
   if (value.includes('HUMAN') || value.includes('FOUNDER') || value.includes('사람 확인')) return 5;
   if (value.includes('GATE') || value.includes('시험')) return 4;
   if (value.includes('QA') || value.includes('검수')) return 3;
   if (value.includes('WORKER') || value.includes('BUILDER') || value.includes('작업')) return 2;
   if (value.includes('VERIF') || value.includes('VALID') || value.includes('검증') || value.includes('확인')) return 1;
   return 0;
+}
+
+function formatDoneDate(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const text = value.trim();
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime()) && /^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+  if (!Number.isNaN(parsed.getTime())) {
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  return text;
+}
+
+function doneLabel(task: StudioTask): string {
+  const date = formatDoneDate(task.completedAt);
+  return date ? `완료 · ${date}` : '완료';
 }
 
 function agentsText(record: Record<string, unknown>): string {
@@ -104,10 +124,10 @@ function unwrapDraft(raw: unknown): Record<string, unknown> {
 function toTask(item: unknown, index: number): StudioTask {
   const fallbackId = `task-${index + 1}`;
   if (typeof item === 'string') {
-    return { id: fallbackId, title: item, stage: 0, agents: '', blocker: '', expectedRisk: '' };
+    return { id: fallbackId, title: item, stage: 0, agents: '', blocker: '', expectedRisk: '', completedAt: '' };
   }
   if (!item || typeof item !== 'object') {
-    return { id: fallbackId, title: fallbackId, stage: 0, agents: '', blocker: '', expectedRisk: '' };
+    return { id: fallbackId, title: fallbackId, stage: 0, agents: '', blocker: '', expectedRisk: '', completedAt: '' };
   }
   const r = item as Record<string, unknown>;
   const id = str(r.id ?? r.taskId ?? r.key, fallbackId);
@@ -115,7 +135,11 @@ function toTask(item: unknown, index: number): StudioTask {
   const stage = (r.stage ?? r.status ?? r.state ?? r.step ?? r.phase ?? 0) as number | string;
   const blocker = str(r.blocker ?? r.blockedReason ?? r.holdReason);
   const expectedRisk = str(r.expectedRisk ?? r.risk ?? r.expected_risk ?? r.danger);
-  return { id, title, stage, agents: agentsText(r), blocker, expectedRisk };
+  const completedAt = str(
+    r.completedAt ?? r.completed_at ?? r.doneAt ?? r.done_at ?? r.finishedAt ?? r.finished_at
+    ?? r.closedAt ?? r.closed_at ?? r.verifiedAt ?? r.updatedAt ?? r.updated_at ?? r.date,
+  );
+  return { id, title, stage, agents: agentsText(r), blocker, expectedRisk, completedAt };
 }
 
 function normalizeDraft(raw: unknown): StudioDraft {
@@ -251,12 +275,14 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
         agents: agentsText({ worker: lane.workerChain ?? lane.current?.worker, qa: lane.qaChain ?? lane.current?.qa }),
         blocker: str(lane.blocker),
         expectedRisk: '',
+        completedAt: '',
       });
     }
     return sortPlanStudioTasks(derived);
   }, [draft.tasks, boardStageByTask, lanes, project]);
 
   const finishedCount = useMemo(() => tasks.filter(isPlanStudioTaskDone).length, [tasks]);
+  const remainingCount = tasks.length - finishedCount;
   const visibleTasks = useMemo(
     () => (showDone ? tasks : tasks.filter(t => !isPlanStudioTaskDone(t))),
     [tasks, showDone],
@@ -413,19 +439,21 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
             {tasks.length === 0
               ? <p className="muted">표시할 task가 없습니다.</p>
               : <>
+                {remainingCount === 0 && <p className="muted" role="status">모두 끝났어요 — 남은 작업이 없습니다.</p>}
                 <ol className="plan-tasks">
                 {visibleTasks.map(task => {
                   const current = stageIndex(task.stage);
-                  const editable = isNotStarted(task);
+                  const done = isPlanStudioTaskDone(task);
+                  const editable = isNotStarted(task) && !done;
                   return (
                     <li key={task.id} className={`plan-task${selected?.id === task.id ? ' selected' : ''}`}>
                       <button className="plan-task-head" onClick={() => setSelectedId(task.id)} title="상세 보기">
                         <span className="plan-task-title">{task.title}</span>
-                        <span className="muted">{FLOW[current]} · {current + 1}/7</span>
+                        <span className="muted">{done ? doneLabel(task) : `${FLOW[current]} · ${current + 1}/7`}</span>
                       </button>
                       <div className="control-flow plan-steps" aria-label={`${task.title} progress`}>
                         {FLOW.map((name, index) => {
-                          const state = task.blocker && index === current ? 'blocked' : index < current ? 'done' : index === current ? 'active' : 'pending';
+                          const state = done ? 'done' : task.blocker && index === current ? 'blocked' : index < current ? 'done' : index === current ? 'active' : 'pending';
                           return (
                             <div className={`control-step ${state}`} key={name} title={name}>
                               <span className="control-step-dot">{state === 'done' ? '✓' : state === 'blocked' ? '!' : state === 'active' ? '●' : '○'}</span>
@@ -562,7 +590,9 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
               ? <p className="muted">task를 선택하세요.</p>
               : <>
                 <p className="control-card-value" style={{ fontSize: 14 }}>{selected.title}</p>
-                <p>현재 단계: <strong>{FLOW[stageIndex(selected.stage)]}</strong> ({stageIndex(selected.stage) + 1}/7)</p>
+                {isPlanStudioTaskDone(selected)
+                  ? <p>{doneLabel(selected)}</p>
+                  : <p>현재 단계: <strong>{FLOW[stageIndex(selected.stage)]}</strong> ({stageIndex(selected.stage) + 1}/7)</p>}
                 {selected.agents.trim() ? <p>Agents: <strong>{selected.agents}</strong></p> : null}
                 {selected.blocker.trim() ? <p>Blocker: <strong>{selected.blocker}</strong></p> : null}
                 {selected.expectedRisk.trim() ? <p>예상 리스크: <strong>{selected.expectedRisk}</strong></p> : null}

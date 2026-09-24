@@ -547,7 +547,7 @@ export interface PlanStudioOrderTask {
 /** Founder-view group rank: 'active' (진행중/대기) → 'hold' → 'done' (끝남). */
 export type PlanStudioTaskGroup = 'active' | 'hold' | 'done';
 
-/** True when the stage string/number means finished (반영/DONE/COMPLETE/통합). */
+/** True when the stage string/number means finished (반영/DONE/COMPLETE/통합/INTEGRATED/VERIFIED_DONE). */
 export function isPlanStudioTaskDone(task: PlanStudioOrderTask | null | undefined): boolean {
   if (!task || typeof task !== 'object') return false;
   const stage = (task as PlanStudioOrderTask).stage;
@@ -557,10 +557,11 @@ export function isPlanStudioTaskDone(task: PlanStudioOrderTask | null | undefine
   return value.includes('INTEGR')
     || value.includes('통합')
     || value.includes('반영')
-    || value === 'DONE'
-    || value === 'COMPLETE'
+    || value.includes('DONE')
+    || value.includes('COMPLETE')
     || value === 'V1_COMPLETE'
-    || value === 'INTEGRATED';
+    || value === 'INTEGRATED'
+    || value === 'VERIFIED_DONE';
 }
 
 /** True when the task is held/blocked (and not finished — done wins). */
