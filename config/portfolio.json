@@ -4294,6 +4294,20 @@
           ],
           "ssotEvidence": "Founder 2026-09-24: '메뉴를 토스처럼', 대화 채널 dead since 9/21 (retro); standing order A-27 (추천대로)",
           "title": "The 대화 tab's supervisor pane has been dead since 9/21, so ro"
+        },
+        {
+          "taskId": "JCAPP-JUTELL-NAME-PLAN-ORDER",
+          "scope": "(1) The new jutell lane shows as lowercase 'jutell' in the 진행 tab and home lines: add jutell → 'JuTell' to the shared project-name map (and any lane label map). (2) 계획 (JuPlan) tab: sort discovered plans by content — plans with the most nodes first, and plans with ≤1 node fold into a closed <details><summary>아직 비어 있는 계획 N개</summary> at the bottom, so the Founder first sees plans that have content. Tests: name map has JuTell; juplanView orders a 75-node plan before a 1-node plan and folds the 1-node one.",
+          "files": [
+            "operator/public/app.js",
+            "test/juplan-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juplan-module.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor capture review run-20260924-1824 (7a87015)",
+          "title": "(1) The new jutell lane shows as lowercase 'jutell' in the 진"
         }
       ]
     },
