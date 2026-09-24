@@ -4515,7 +4515,8 @@
           "tests": [
             "git diff --check"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23"
+          "ssotEvidence": "Founder direction 2026-09-23",
+          "title": "기존 사용 결과로 진행 여부 판단"
         },
         {
           "taskId": "JUTELL-RELAY-T-DOG-01-PM-JUDGMENTS-FIX",
@@ -4528,7 +4529,8 @@
             "node --test docs/dogfood/relay-T-DOG-01/pm-judgments.test.mjs",
             "git diff --check"
           ],
-          "ssotEvidence": "Founder direction 2026-09-23: relay-T-DOG-01 PM judgments (DISPATCH + JUDGMENT) from the evidence at /home/skkse12/Desktop/Projects/Core/JuTell/dogfood/relay-T-DOG-01/ with contract_hash 06980371151059ece5670daa6bde2129c4791cf9f804ded8df3c8c5ad1b6b32c; allowed PM_TASK_DECISION v1 DISPATCH/REQUEST_CHANGES/ACCEPT/HUMAN_GATE/MILESTONE_COMPLETE, PM_JUDGMENT v1 ACCEPT/REQUEST_CHANGES/HUMAN_GATE; manual ChatGPT paste packets PM_TO_CHATGPT_*.md are retired"
+          "ssotEvidence": "Founder direction 2026-09-23: relay-T-DOG-01 PM judgments (DISPATCH + JUDGMENT) from the evidence at /home/skkse12/Desktop/Projects/Core/JuTell/dogfood/relay-T-DOG-01/ with contract_hash 06980371151059ece5670daa6bde2129c4791cf9f804ded8df3c8c5ad1b6b32c; allowed PM_TASK_DECISION v1 DISPATCH/REQUEST_CHANGES/ACCEPT/HUMAN_GATE/MILESTONE_COMPLETE, PM_JUDGMENT v1 ACCEPT/REQUEST_CHANGES/HUMAN_GATE; manual ChatGPT paste packets PM_TO_CHATGPT_*.md are retired",
+          "title": "사용 결과를 바르게 평가해 다음 단계 결정"
         }
       ],
       "note": "lane added by night plan request 2026-09-24",
