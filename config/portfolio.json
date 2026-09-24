@@ -2454,6 +2454,35 @@
           ],
           "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-0903 captures of 924705b; Founder chose 'Hermes AI 느낌' (A-21)",
           "title": "홈 '오늘 끝난 것' only counts ACCEPTED result-inbox items, so it s"
+        },
+        {
+          "taskId": "JCAPP-DONE-SUMMARY-NO-HOLES",
+          "scope": "홈 '오늘 끝난 것' lines drop English words out of mixed summaries and leave holes ('기존 디렉터리를 읽어 의 한국어 평문 요약을', '에 오프라인 2 를 처음 실행하는'). Never strip words mid-sentence: when a summary is mostly Korean show it whole (trimmed to ~60 chars at a word boundary with …); when it is mostly English use the Korean project-level line ('작업을 마쳤어요'). Pure helper + unit cases for both inputs above.",
+          "files": [
+            "operator/public/app.js",
+            "test/home-done-today.test.mjs"
+          ],
+          "tests": [
+            "node --test test/home-done-today.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-1008 captures of 1124e4b",
+          "title": "홈 '오늘 끝난 것' lines drop English words out of mixed summaries "
+        },
+        {
+          "taskId": "JCAPP-APPROVAL-RULES-CALM",
+          "scope": "승인 > 승인 규칙 cards use a red border and red body text, which reads as errors although these are standing rules. Use the neutral Hermes card (1px line #262B33, body text in the normal secondary color); keep warning/red only for real problems (HOLD, failures). CSS/markup only; extend the token/contrast test.",
+          "files": [
+            "operator/public/app.css",
+            "operator/public/app.js",
+            "test/founder-clean-tokens.test.mjs"
+          ],
+          "tests": [
+            "node --test test/founder-clean-tokens.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-1008 captures of 1124e4b",
+          "title": "승인 > 승인 규칙 cards use a red border and red body text, which r"
         }
       ]
     },
