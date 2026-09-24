@@ -3215,6 +3215,17 @@
             "git diff --check"
           ],
           "ssotEvidence": "docs/qa/PM_AUTHORITY_PROTOCOL_QA.md:19 \"The Worker hierarchy does not name MASTER_ROADMAP.md or PM_STATUS_BOARD.md\""
+        },
+        {
+          "taskId": "JUCEIPTPLAN-P0-MORNING-SUMMARY",
+          "scope": "Add a concise P0 morning decision summary to the existing planning-gate report, preserving PASS_WITH_BOUNDED_FIXES evidence while leaving P0 and M2 decisions to PM/Founder.",
+          "files": [
+            "docs/planning/BUSINESS_SYSTEM_PLANNING_GATE_01_REPORT.md"
+          ],
+          "tests": [
+            "git diff --check -- docs/planning/BUSINESS_SYSTEM_PLANNING_GATE_01_REPORT.md"
+          ],
+          "ssotEvidence": "docs/operations/PM_STATUS_BOARD.md:71-73 \"P0 ... ACTIVE — PLANNING ONLY\"; docs/operations/PM_STATUS_BOARD.md:101 \"P0 PASS does not advance M2\""
         }
       ]
     }
