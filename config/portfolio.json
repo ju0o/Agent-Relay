@@ -1810,6 +1810,20 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
           "title": "작업 상태를 하나로 쉽게 표시"
+        },
+        {
+          "taskId": "ACTL-CROSS-PROCESS-PANE-LOCK-R2",
+          "scope": "From base 9b6a01293b4c9dfddcdb35dc0dc83124c86d0a75, implement per-pane tmux serialization and single-board ownership so local and REMOTE_SSH_TARGET paths enforce a 2.0-second fail-closed lock timeout with the exact Korean PANE_LOCK_ERROR message, and add isolated concurrent-send, timeout, and single-instance tests that fail on the prior implementation and pass offline.",
+          "files": [
+            "src/actl/core/tmux.py",
+            "src/juactl-board.py",
+            "tests/test_transport_socket.py",
+            "tests/test_tmux.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'actl은 지금 충돌이나 또는 리모컨 역할 잘 되는지'; supervisor capability audit with isolated tmux experiments"
         }
       ],
       "qaRuntime": [
