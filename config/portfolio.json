@@ -1685,6 +1685,100 @@
           ],
           "ssotEvidence": "Founder standing order 2026-09-24 (추천대로 자동): ACTL-TK-PLAIN-CARDS-KEYBOARD-R2 held twice on the keyboard part → 범위 줄이기",
           "title": "Narrowed replacement for ACTL-TK-PLAIN-CARDS-KEYBOARD(-R2) ("
+        },
+        {
+          "taskId": "ACTL-ACTIVITY-LIVE-CPU",
+          "scope": "A1: observe_activity uses ps %cpu (lifetime average) so an idle agent that once worked hard stays RUNNING forever. Replace with a delta sample: sum `ps -o times= -g <pgid>` (works via _remote_args), keep {pane_id: (cpu_seconds, monotonic)} in a module dict, cpu% = delta/elapsed*100; first sample classifies from pane tail only (tail prompt → IDLE). Test: two samples with no cpu delta and prompt tail → IDLE even when lifetime %cpu would be 20; delta 1s over 1s → RUNNING.",
+          "files": [
+            "src/actl/core/activity.py",
+            "tests/test_activity_live_cpu.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "A1: observe_activity uses ps %cpu (lifetime average) so an i"
+        },
+        {
+          "taskId": "ACTL-WAITING-APPROVAL-STATE",
+          "scope": "A2: detect agents stuck on an approval/confirm prompt. classify_activity returns WAITING_INPUT when the last ~8 non-blank pane lines contain approval phrases (would you like to run, do you want to, proceed?, press enter to confirm, (y/n), allow this) — checked before the CPU/prompt rules. projection maps WAITING_INPUT→BLOCKED (counted as 확인 필요); tui busy dicts (tui.py:173, 440) get '승인 기다림' so no KeyError; gui card/summary show '승인 기다림' in the attention list. Test: Codex-style approval text → WAITING_INPUT; runtime_state BLOCKED; tui label '승인 기다림'.",
+          "files": [
+            "src/actl/core/activity.py",
+            "src/actl/core/projection.py",
+            "src/actl/tui.py",
+            "src/actl/gui.py",
+            "tests/test_activity_waiting_input.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "A2: detect agents stuck on an approval/confirm prompt. class"
+        },
+        {
+          "taskId": "ACTL-PREVIEW-TRAILING-BLANKS",
+          "scope": "A3: tui._pane_preview slices the last N lines before dropping trailing blank rows, so a tall pane whose content sits at the top previews as '(빈 pane)' in both TUI and Tk board. Strip trailing blank lines before taking the tail (rows = text.rstrip().splitlines()[-lines:]). Test: capture with 3 content lines + 30 blank lines returns the 3 lines.",
+          "files": [
+            "src/actl/tui.py",
+            "tests/test_pane_preview_blank.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "A3: tui._pane_preview slices the last N lines before droppin"
+        },
+        {
+          "taskId": "ACTL-CLI-NO-TMUX-FRIENDLY",
+          "scope": "A4: with no tmux server, `actl`, `actl discover` and `actl tui` crash with a TmuxError traceback. Catch actl.core.tmux.TmuxError once around main()'s dispatch (not runtime --request-stdin, which has its own envelope) and print one Korean line 'AI 작업창(tmux)이 켜져 있지 않아요 — ASUS에서 AI를 먼저 실행한 뒤 다시 시도하세요' plus the short reason, exit 1. Test: monkeypatch list_panes to raise TmuxError; main(['actl','discover']) exits 1, stderr has the Korean line and no 'Traceback'.",
+          "files": [
+            "src/actl/cli.py",
+            "tests/test_cli_no_tmux.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "A4: with no tmux server, `actl`, `actl discover` and `actl t"
+        },
+        {
+          "taskId": "ACTL-CLI-KOREAN-SEND-COPY",
+          "scope": "A5: Founder CLI send/copy flow in plain Korean: _print_cli_help lists `echo \"질문\" | actl send AGENT`; 'Unknown agent: X' appends '— 쓸 수 있는 이름: …' from AGENTS; send prints '<display>에게 보냈어요 · 답이 오면: actl copy <agent>' instead of 'sent to %0'; copy with no result prints '아직 새 답이 없어요 — 작업이 끝나면 다시 해 보세요' (English reason only in audit); OSC52 notice becomes '터미널 클립보드로 보냈어요 (안 붙여지면 actl copy <agent> --print)'; `actl status` adds an activity column (작업 중/대기/미확인) via observe_activity for mapped UP rows. Test: captured output contains the Korean strings and not 'sent to', 'No response text found'.",
+          "files": [
+            "src/actl/cli.py",
+            "tests/test_cli_korean_messages.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "A5: Founder CLI send/copy flow in plain Korean: _print_cli_h"
+        },
+        {
+          "taskId": "ACTL-SEND-STRIP-TRAILING-NEWLINE",
+          "scope": "A6: `echo text | actl send AGENT` pastes 'text\\n' with paste-buffer -r and then presses Enter, double-submitting in non-bracketed-paste agents. In cli.py send branch strip trailing CR/LF from stdin before sending (inner newlines kept). Test: monkeypatch _send_to_selected to capture prompt; stdin 'a\\nb\\n' → 'a\\nb'.",
+          "files": [
+            "src/actl/cli.py",
+            "tests/test_cli_send_strip.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "A6: `echo text | actl send AGENT` pastes 'text\\n' with paste"
+        },
+        {
+          "taskId": "ACTL-TUI-ONE-STATE-COLUMN",
+          "scope": "A7: actl tui row shows state_ko, busy and raw runtime_state ('작업 중 실행중 WORKING') plus English extractor diagnostics as the preview. Keep one Korean state column (drop the raw runtime_state token); with no result show '아직 답 없음' instead of the extractor detail (detail stays in the selected-row preview/log). Test: a WORKING row contains '작업 중' once and no 'WORKING'; a row with detail 'No Codex rollout…' and no result renders '아직 답 없음'.",
+          "files": [
+            "src/actl/tui.py",
+            "tests/test_tui_state_column.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "A7: actl tui row shows state_ko, busy and raw runtime_state "
         }
       ],
       "qaRuntime": [
