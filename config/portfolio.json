@@ -2060,6 +2060,109 @@
           ],
           "ssotEvidence": "Supervisor visual review of JuPlan Studio after launch-UX round 1 (captures ~/jc-tester/juplan-1138/); Founder 2026-09-24 launch-quality request",
           "title": "문서와 그림을 보기 쉽게 열기"
+        },
+        {
+          "taskId": "JUPLAN-APPLY-PROPOSAL-CLI",
+          "scope": "New command `juplan apply-proposal --file <json>` (or stdin with --file -) in packages/runtime: parse with the existing strict parseGraphChangeProposal, run selfCheckProposal + merge + validateV1Plan, and only if there are no blockers apply it inside the draft lock after saving history (so `juplan undo` reverts it), then regenerate exports (generateProjections). Lifecycle is not changed; provenance of new nodes = planning_conversation. Also support `--preview`: validate and print the would-be diff {ok, added:{nodes,edges}, blockers} without writing. Output one JSON line {ok, added, blockers}; on failure the draft is untouched. No AI calls. Tests: apply adds nodes and undo removes them; a malformed proposal is rejected with blockers and draft unchanged; --preview writes nothing.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/src/cli.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
+          "title": "New command `juplan apply-proposal --file <json>` (or stdin "
+        },
+        {
+          "taskId": "JUPLAN-PRD-EXPORT",
+          "scope": "New docs/prd.md built by a pure function in a new packages/runtime/src/documents.ts and wired into generateProjections: 개요 (ProjectBrief summary), 문제, 사용자 유형, 목표·비목표 (polarity), 요구사항 by priority (must/should/could/wont), 기능 (scope), 성공 기준 (metric/target), 제약, 로드맵 (RoadmapItem now/next/later), 빠진 정보 (Gap); empty sections say '아직 없음'. Headings in Korean. Tests in packages/runtime/test/documents.test.ts with a small fixture plan.",
+          "files": [
+            "packages/runtime/src/documents.ts",
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/documents.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
+          "title": "New docs/prd.md built by a pure function in a new packages/r"
+        },
+        {
+          "taskId": "JUPLAN-ERD-FROM-GRAPH",
+          "scope": "diagrams/erd.mmd and plan.dbml come from the real DataEntity and DataField nodes (includes edges, dataType/nullable) and entity-to-entity edges (dependsOn/relatesTo) instead of the fixed JuPlan self-diagram; no entities → an empty diagram with a '데이터 개체 없음' comment. Labels escaped with the existing escapeMermaidLabel. Pure functions in packages/runtime/src/documents.ts; tests in documents.test.ts.",
+          "files": [
+            "packages/runtime/src/documents.ts",
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/documents.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
+          "title": "diagrams/erd.mmd and plan.dbml come from the real DataEntity"
+        },
+        {
+          "taskId": "JUPLAN-WBS-EXPORT",
+          "scope": "New docs/wbs.md: a Korean table 작업 | 단계(level) | 먼저 할 작업(dependsOn) | 완료 기준(satisfies) | QA(verifiedBy) | 상태; diagrams/wbs-dependency.mmd draws only WbsTask nodes with dependsOn/deliveredBy edges. Pure functions in packages/runtime/src/documents.ts; tests in documents.test.ts.",
+          "files": [
+            "packages/runtime/src/documents.ts",
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/documents.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
+          "title": "New docs/wbs.md: a Korean table 작업 | 단계(level) | 먼저 할 작업(dep"
+        },
+        {
+          "taskId": "JUPLAN-API-QA-DOCS",
+          "scope": "New docs/api.md (ApiEndpoint method·path table, Event emits/consumes, which component exposes each) and docs/qa-plan.md (완료 기준 → QA 항목(kind) traceability table, plus the list of acceptance criteria with no QA). Pure functions in packages/runtime/src/documents.ts; tests in documents.test.ts.",
+          "files": [
+            "packages/runtime/src/documents.ts",
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/documents.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
+          "title": "New docs/api.md (ApiEndpoint method·path table, Event emits/"
+        },
+        {
+          "taskId": "JUPLAN-DIAGRAM-TYPE-FILTER",
+          "scope": "Each diagram type exports only its node types and the edges between them, and /view/diagrams/<type> passes the same filtered subgraph to renderPlanMapSvg so every diagram looks different (architecture=SystemComponent/ExternalSystem/Storage/Runtime, user-flow/screen-flow=UserFlow/Screen, feature-tree=Goal/Requirement/Feature, wbs-dependency=WbsTask, traceability=all). The full 계획 지도 stays. Tests: architecture view contains only component nodes; feature-tree excludes WbsTask.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
+          "title": "Each diagram type exports only its node types and the edges "
+        },
+        {
+          "taskId": "JUPLAN-STUDIO-LIVE-REFRESH",
+          "scope": "Founder decision A-24: serve gets GET /events (SSE, 127.0.0.1 only) that sends an event when draft.json's contentHash changes (1s poll); the Studio script re-fetches the plan map SVG and swaps it in, giving newly appeared node ids a CSS fade-in + teal glow and new edges a stroke-dashoffset draw-in; prefers-reduced-motion disables animation; no external CDN; still read-only. Tests: /events responds with text/event-stream and emits after a draft change; the page script references EventSource and prefers-reduced-motion.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:2x: 'JuPlan은 다이어그램(실시간 모션) 그리고 ERD|WBS|PRD|SSOT 등 기획문서 전부, Worker 연동하고 거기에 이야기하면 되는지'; decisions A-23 (AI proposals, JuPlan validates/applies), A-24 (live refresh + gentle motion); DOCUMENT_FACTORY.md V1 outputs",
+          "title": "Founder decision A-24: serve gets GET /events (SSE, 127.0.0."
         }
       ],
       "qaRuntime": [
