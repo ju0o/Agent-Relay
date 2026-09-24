@@ -1007,6 +1007,105 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
           "title": "Bring the Agent Relay docs in line with the code (docs only)"
+        },
+        {
+          "taskId": "AGENTRELAY-HOLD-OPTION-BUTTONS",
+          "scope": "R1: 보류 카드 선택지를 버튼으로(추천 강조, 인라인 확인 후 controlRoom:resume/gates:answer), 'Founder에게 확인'→'내가 직접 볼게요', 단계 용어 '검수'로 통일",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/backend/controlRoom.ts",
+            "src/frontend/style.css",
+            "test/hold-option-buttons.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/hold-option-buttons.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "R1: 보류 카드 선택지를 버튼으로(추천 강조, 인라인 확인 후 controlRoom:resume/gates"
+        },
+        {
+          "taskId": "AGENTRELAY-INLINE-CONFIRM-DESTRUCTIVE",
+          "scope": "R2/R3/R7: 계획 [삭제]·[계획 승인 → 자동 진행]·Run policy 라디오·관제실 [다시 시작]에 인라인 확인(네이티브 dialog 금지), 삭제 후 되돌리기, flashInfo에서 op 이름 제거, 'RUN POLICY'→'진행 방식'",
+          "files": [
+            "src/frontend/planStudio.tsx",
+            "src/frontend/controlRoom.tsx",
+            "src/frontend/components.tsx",
+            "test/inline-confirm.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/inline-confirm.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "R2/R3/R7: 계획 [삭제]·[계획 승인 → 자동 진행]·Run policy 라디오·관제실 [다시 시작]"
+        },
+        {
+          "taskId": "AGENTRELAY-PLANSTUDIO-DONE-STEPS",
+          "scope": "R4: 끝난 작업(DONE/COMPLETE/INTEGRATED/VERIFIED_DONE)은 모든 단계 ✓와 '완료 · 날짜', 남은 작업 0개면 '모두 끝났어요' 안내",
+          "files": [
+            "src/frontend/planStudio.tsx",
+            "test/planstudio-done-steps.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/planstudio-done-steps.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "R4: 끝난 작업(DONE/COMPLETE/INTEGRATED/VERIFIED_DONE)은 모든 단계 ✓와 "
+        },
+        {
+          "taskId": "AGENTRELAY-CONTROLROOM-TODAY-WHO",
+          "scope": "R5/R6: 관제실 맨 위 '오늘 끝난 일' 카드와 '지금 일하는 AI(레인·단계·경과)' 한 줄, 모델 사용량은 접힌 details로, 현재 작업은 한국어 title(ID는 원문 보기), 현재 작업이 없는 레인은 모든 단계 pending과 '쉬는 중'",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/backend/controlRoom.ts",
+            "test/controlroom-today.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/controlroom-today.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "R5/R6: 관제실 맨 위 '오늘 끝난 일' 카드와 '지금 일하는 AI(레인·단계·경과)' 한 줄, 모델 사"
+        },
+        {
+          "taskId": "AGENTRELAY-APPROVALS-CATEGORY-KO",
+          "scope": "R8: approvalCategoryLabel에 permissions/physical-e2e/product-decision/scope/visual-decision 한국어 추가, 모르는 키는 '기타', (바뀜)으로 대체된 규칙은 접힌 '지난 결정'으로",
+          "files": [
+            "src/shared/types.ts",
+            "src/frontend/approvals.tsx",
+            "test/approvals-category-ko.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/approvals-category-ko.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "R8: approvalCategoryLabel에 permissions/physical-e2e/product-"
+        },
+        {
+          "taskId": "AGENTRELAY-FOUNDER-COPY-KO-2",
+          "scope": "R9/R10/R11: 'Human Gate'→'사람 확인', 'Worker:/QA:'→'만드는 AI/검수하는 AI', 'Agent 바꾸기'→'AI 순서 저장', 설정 'Storage — Current Data Root'/'About'→'저장 폴더'/'앱 정보', 설정 경로는 백엔드 path.join 값, 레인 목표 중복 제거(통합 관제 화면·JuCeipt 기획), 라이트 모드 활성 탭·primary 버튼 대비 4.5:1",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/frontend/App.tsx",
+            "src/shared/projectLabels.ts",
+            "src/frontend/style.css",
+            "test/founder-copy-ko.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/founder-copy-ko.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: '너가 나라고 생각하고 직접 사용하면서 테스트하고 … 버그 리포트 작성하면서 고치고'; dogfood report reports/bugs/BUGS_dogfood_20260924.md",
+          "title": "R9/R10/R11: 'Human Gate'→'사람 확인', 'Worker:/QA:'→'만드는 AI/검수하는"
         }
       ],
       "qaRuntime": [
