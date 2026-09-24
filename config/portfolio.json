@@ -1137,6 +1137,22 @@
           ],
           "ssotEvidence": "qa/CORE_V1_REBASELINE_REPORT.md:66-68 'Add the repository-backed PM intake/result return contract for the temporary codex-chatgpt-web bootstrap without making it a permanent dependency.'",
           "title": "Agent Relay 작업을 안전하게 주고받음"
+        },
+        {
+          "taskId": "AGENTRELAY-CONTROLROOM-TITLES-TODAY",
+          "scope": "Control Room (src/frontend/controlRoom.tsx) as seen in the MainPC Tester v10 capture: (1) '오늘 끝난 일' says '오늘 끝난 일은 아직 없어요' while 100+ tasks finished today — compute today's finished tasks from the board data the view already loads (lanes[].counts / done list with local-date timestamps) and show '오늘 N개 끝났어요' + the last 3 as '<project> · <title>'; (2) wherever a task is shown (현재 작업, 보류 카드, 오늘 끝난 일) show the board's plain-Korean title (lane.current.title, hold.title) and keep the raw taskId only in a small muted line or tooltip; (3) the '지금 일하는 AI' line becomes one short row per lane '<project> · <단계> · <AI>' without repeated words. Pure helpers in src/shared/types.ts with test/controlroom-titles-today.test.mjs.",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "src/shared/types.ts",
+            "test/controlroom-titles-today.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/controlroom-titles-today.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of the MainPC Tester v10 captures (C:\\Users\\user\\Desktop\\AgentRelay-0.3.1\\tester-v10), board now carries Korean task titles",
+          "title": "Control Room (src/frontend/controlRoom.tsx) as seen in the M"
         }
       ],
       "qaRuntime": [
