@@ -1899,6 +1899,21 @@
           ],
           "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27 (추천대로 자동 진행)",
           "title": "actl has no in-repo SSOT the PM can read (lane ssot points t"
+        },
+        {
+          "taskId": "ACTL-VERSION-ONE",
+          "scope": "Three version numbers disagree (pyproject 0.1.1-managed, src/actl/__init__.py 0.1.0). Make src/actl/__init__.py read the version from one place (pyproject via importlib.metadata with a fallback constant equal to pyproject), set both to 0.2.0 for the launch-UX work, show it in the board's title ('actl 0.2.0'). Test tests/test_version_one.py asserting __version__ equals the pyproject version.",
+          "files": [
+            "pyproject.toml",
+            "src/actl/__init__.py",
+            "src/actl/gui.py",
+            "tests/test_version_one.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27",
+          "title": "Three version numbers disagree (pyproject 0.1.1-managed, src"
         }
       ],
       "qaRuntime": [
