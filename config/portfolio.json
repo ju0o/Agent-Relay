@@ -1120,7 +1120,8 @@
             "npm run typecheck",
             "npm test"
           ],
-          "ssotEvidence": "BACKLOG.md:25 `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행"
+          "ssotEvidence": "BACKLOG.md:25 `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행",
+          "title": "Agent Relay 화면이 바로 반영됨"
         },
         {
           "taskId": "AGENTRELAY-CORE-V1-PM-FILE-CONTRACT-R2",
@@ -1134,7 +1135,8 @@
             "node --test test/v2/portfolio-runner.test.mjs",
             "npm run typecheck"
           ],
-          "ssotEvidence": "qa/CORE_V1_REBASELINE_REPORT.md:66-68 'Add the repository-backed PM intake/result return contract for the temporary codex-chatgpt-web bootstrap without making it a permanent dependency.'"
+          "ssotEvidence": "qa/CORE_V1_REBASELINE_REPORT.md:66-68 'Add the repository-backed PM intake/result return contract for the temporary codex-chatgpt-web bootstrap without making it a permanent dependency.'",
+          "title": "Agent Relay 작업을 안전하게 주고받음"
         }
       ],
       "qaRuntime": [
