@@ -3745,6 +3745,21 @@
           ],
           "ssotEvidence": "Founder decision A-25 (2026-09-24 13:3x): Skill 장착 프로젝트·역할별 켜기/끄기, Skill 만들기 저장; engine side done (night lane skills, runner agentContext)",
           "title": "Founder A-25: Skill 만들기 can save. POST /api/skills {name, de"
+        },
+        {
+          "taskId": "JCAPP-DOCS-TRUTH-REFRESH",
+          "scope": "Status docs stopped at 9/20-21. Update (docs only): CURRENT.md → the unified hub (홈/Agent Relay/JuPlan/JuCeipt/Tester/Skill/승인, Hermes, desktop shell) as the current version; founder/VERSION_WBS.md → the real engine (Agent Relay portfolio runner + night notifier; PM per lane, AI 자동 배정 A-22) instead of the idle supervisor-loop design, marking founder/harness/* and PHASE_B_SUPERVISOR_PACKET as '예전 설계 (지금은 안 씀)'; append Founder decisions A-15 and A-19..A-26 (from ~/.agents/skills/auto-night-orchestrator/assets/founder-approvals.json, summarised in Korean with dates) to founder/DECISION_LOG.md. Add test/docs-truth.test.mjs asserting CURRENT.md no longer names V0.2 as current and DECISION_LOG contains 'A-26'.",
+          "files": [
+            "CURRENT.md",
+            "founder/VERSION_WBS.md",
+            "founder/DECISION_LOG.md",
+            "test/docs-truth.test.mjs"
+          ],
+          "tests": [
+            "node --test test/docs-truth.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
+          "title": "Status docs stopped at 9/20-21. Update (docs only): CURRENT."
         }
       ]
     },
