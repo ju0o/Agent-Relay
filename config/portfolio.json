@@ -2615,6 +2615,20 @@
           ],
           "ssotEvidence": "Founder direction 2026-09-23",
           "title": "실행 취소 기록을 안전하게 한 건씩 처리"
+        },
+        {
+          "taskId": "JUPLAN-GATES-HONEST-NAME",
+          "scope": "Gates G0-G5 are automatic presence checks (does a node of that kind exist), not human approvals, but the Studio calls them 승인 게이트 and shows ✓ as if approved. In packages/runtime/src/index.ts rename the section to '자동 체크 (필요한 항목이 있는지)' with a one-line note '사람 승인은 확정(snapshot) 때 따로 받아요', and add per gate the count of nodes that satisfied it (e.g. '요구사항·기능 ✓ 12개'). No change to gate logic or exports. Update runtime.test.ts Studio assertions.",
+          "files": [
+            "packages/runtime/src/index.ts",
+            "packages/runtime/test/runtime.test.ts"
+          ],
+          "tests": [
+            "pnpm --filter @juplan/runtime typecheck",
+            "pnpm --filter @juplan/runtime test:run"
+          ],
+          "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27 (추천대로 자동 진행)",
+          "title": "Gates G0-G5 are automatic presence checks (does a node of th"
         }
       ],
       "qaRuntime": [
