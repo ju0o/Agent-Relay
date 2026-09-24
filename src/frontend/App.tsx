@@ -171,9 +171,12 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { err: stri
   render(): React.ReactNode {
     if (this.state.err) return (
       <div style={{ padding: 40, color: 'var(--danger)', fontFamily: 'monospace', background: 'var(--bg)', minHeight: '100vh' }}>
-        <strong style={{ color: 'var(--fg)' }}>렌더 오류</strong>
-        <pre style={{ whiteSpace: 'pre-wrap', marginTop: 12, color: 'var(--danger)' }}>{this.state.err}</pre>
-        <p style={{ color: 'var(--muted)', fontSize: 12 }}>DevTools → Console에서 자세한 내용을 확인하세요.</p>
+        <p style={{ color: 'var(--fg)' }}>문제가 생겼어요. 앱을 다시 시작해 보세요. 계속되면 이 화면을 캡처해 알려주세요.</p>
+        <button className="btn primary" onClick={() => window.location.reload()}>다시 시작</button>
+        <details style={{ marginTop: 12 }}>
+          <summary>원문 보기</summary>
+          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 12, color: 'var(--danger)' }}>{this.state.err}</pre>
+        </details>
       </div>
     );
     return this.props.children;
@@ -1178,8 +1181,12 @@ function AppInner(): React.ReactElement {
     <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
         <div className="splash-logo">Agent Relay</div>
-        <div className="splash-err">{initError}</div>
-        <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>DevTools (F12) → Console에서 자세한 내용을 확인하세요.</p>
+        <p className="splash-err">문제가 생겼어요. 앱을 다시 시작해 보세요. 계속되면 이 화면을 캡처해 알려주세요.</p>
+        <button className="btn primary" onClick={() => window.location.reload()}>다시 시작</button>
+        <details style={{ marginTop: 12 }}>
+          <summary>원문 보기</summary>
+          <pre className="splash-err" style={{ whiteSpace: 'pre-wrap' }}>{initError}</pre>
+        </details>
       </div>
     </div>
   );
