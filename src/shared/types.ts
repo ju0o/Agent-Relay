@@ -410,7 +410,7 @@ export function approvalStatsLine(rule: ApprovalRuleJson): string {
 
 /**
  * Approval category → Korean group heading label. Pure — unit-tested.
- * Known keys map to fixed labels; anything else (including '기타') is unchanged.
+ * Known keys map to fixed labels; anything else is '기타'.
  */
 export function approvalCategoryLabel(category: string): string {
   switch (category) {
@@ -419,8 +419,47 @@ export function approvalCategoryLabel(category: string): string {
     case 'install': return '설치';
     case 'lanes': return '작업 흐름';
     case 'merge-push': return '병합·올리기';
-    default: return category;
+    case 'permissions': return '권한';
+    case 'physical-e2e': return '실물 E2E';
+    case 'product-decision': return '제품 결정';
+    case 'scope': return '범위';
+    case 'visual-decision': return '화면 결정';
+    case '기타': return '기타';
+    default: return '기타';
   }
+}
+
+/**
+ * Marker that flags a rule as superseded — "(바뀜)" in the display text
+ * means a newer rule replaced it. Such rules fold into '지난 결정'.
+ * Pure — unit-tested.
+ */
+export const SUPERSEDED_APPROVAL_MARKER = '(바뀜)';
+
+/** True when the rule's display text carries the '(바뀜)' marker. Pure — unit-tested. */
+export function isSupersededApprovalRule(rule: ApprovalRuleJson): boolean {
+  if (!rule || typeof rule !== 'object') return false;
+  const record = rule as Record<string, unknown>;
+  const candidates = [rule.summary, record.title, record.ask, record.name];
+  return candidates.some(
+    (value) => typeof value === 'string' && value.includes(SUPERSEDED_APPROVAL_MARKER),
+  );
+}
+
+/**
+ * Split rules into active vs superseded (rules carrying '(바뀜)').
+ * Order-preserving — superseded rules render folded under '지난 결정'.
+ * Pure — unit-tested.
+ */
+export function partitionSupersededApprovalRules<T extends ApprovalRuleJson>(
+  rules: readonly T[],
+): { active: T[]; superseded: T[] } {
+  const active: T[] = [];
+  const superseded: T[] = [];
+  for (const rule of rules) {
+    (isSupersededApprovalRule(rule) ? superseded : active).push(rule);
+  }
+  return { active, superseded };
 }
 
 /**
