@@ -991,6 +991,22 @@
           ],
           "ssotEvidence": "Supervisor capability audit 2026-09-24: hold cards show raw English though plain-Korean explanations exist",
           "title": "보류 이유와 선택지를 쉽게 확인"
+        },
+        {
+          "taskId": "AGENTRELAY-DOCS-TRUTH-REFRESH",
+          "scope": "Bring the Agent Relay docs in line with the code (docs only): README.md describes the current app (관제실 · 승인 규칙 · 계획, first-run, how to build/install) instead of only the v0.3.0 logger; BACKLOG.md '남은 개선 후보' items that are done get checked with the commit/task id (10 of 13 per the 2026-09-24 retrospective); docs/CORE_V1_AUTO_NIGHT_RUN.md says the real deadline 05:00 and ASUS→MainPC push delivery (as night-run code does). Add test/docs-truth.test.mjs asserting README mentions 관제실 and the night doc says 05:00.",
+          "files": [
+            "README.md",
+            "BACKLOG.md",
+            "docs/CORE_V1_AUTO_NIGHT_RUN.md",
+            "test/docs-truth.test.mjs"
+          ],
+          "tests": [
+            "node --test test/docs-truth.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 13:4x: 'WBS PRD 전부 기획문서들 그리고 소스들 전부 복기한다는 생각으로 전부 정리'; supervisor retrospective reports/retro/*.md",
+          "title": "Bring the Agent Relay docs in line with the code (docs only)"
         }
       ],
       "qaRuntime": [
