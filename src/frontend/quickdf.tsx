@@ -73,7 +73,7 @@ export function QuickDogfood(props: QuickDogfoodProps): React.ReactElement {
       <div
         className="qdf-card"
         role="dialog"
-        aria-label="Quick Dogfooding"
+        aria-label="빠른 피드백"
         onKeyDown={e => { if (e.key === 'Escape') props.onClose(); }}
       >
         <div className="qdf-head">
@@ -94,7 +94,7 @@ export function QuickDogfood(props: QuickDogfoodProps): React.ReactElement {
           <button className="mini" onClick={() => setDetailOpen(o => !o)}>
             {detailOpen ? '상세 옵션 닫기 ▴' : '상세 옵션 ▾'}
           </button>
-          <span className="muted qdf-ctx mono" title="자동 첨부 Context">{ctxParts.join(' · ')}</span>
+          <span className="muted qdf-ctx mono" title="함께 기록된 정보">{ctxParts.join(' · ')}</span>
           <button className="btn primary qdf-save" disabled={saving || !content.trim()} onClick={() => void save()}>
             {saving ? '저장 중...' : '저장'}
           </button>
@@ -104,13 +104,13 @@ export function QuickDogfood(props: QuickDogfoodProps): React.ReactElement {
           <div className="qdf-detail">
             <div className="df-form-row">
               <label className="field">
-                <span className="flabel">Type</span>
+                <span className="flabel">종류</span>
                 <select value={type} onChange={e => setType(e.target.value as DfType)}>
                   {PROJECT_DF_TYPE_LABELS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </label>
               <label className="field">
-                <span className="flabel">Priority</span>
+                <span className="flabel">중요도</span>
                 <select value={priority} onChange={e => setPriority(e.target.value as DfPriority)}>
                   {DF_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -126,7 +126,7 @@ export function QuickDogfood(props: QuickDogfoodProps): React.ReactElement {
               </label>
             </div>
             <p className="muted" style={{ fontSize: 11, margin: '6px 0 0' }}>
-              Status는 OPEN으로, Project/Date/Agent/Run은 현재 작업 상태로 자동 기록됩니다.
+              Status는 열림으로, Project/Date/Agent/Run은 현재 작업 상태로 자동 기록됩니다.
             </p>
           </div>
         )}
