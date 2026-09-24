@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
+import { PROJECT_LABELS } from '../shared/projectLabels.js';
 
 export interface ControlRoomLane {
   id?: string;
@@ -46,14 +47,6 @@ const NEVER_AUTO_CATEGORIES: ReadonlySet<string> = new Set([
   'destructive',
 ]);
 
-const PROJECT_PRESENTATION: Record<string, { name: string; goal: string }> = {
-  'agent-relay': { name: '에이전트 릴레이', goal: 'CORE V1 자동 실행과 결과 수집' },
-  actl: { name: '액틀', goal: '안전한 작업 전달과 Windows Board 검증' },
-  juplan: { name: '주플랜', goal: '계획 기반 프로젝트 실행과 릴리스 검증' },
-  juceipt: { name: '주싯', goal: '영수증 처리 재시도와 안정성 검증' },
-  jucontroler: { name: '주컨트롤러', goal: '프로젝트 통합 제어와 운영 가시성' },
-};
-
 function label(value: unknown, fallback = '—'): string {
   return typeof value === 'string' && value.trim() ? value : fallback;
 }
@@ -95,7 +88,7 @@ function projectOf(lane: ControlRoomLane): string {
 
 function projectPresentation(lane: ControlRoomLane): { id: string; name: string; goal: string } {
   const id = projectOf(lane);
-  const known = PROJECT_PRESENTATION[id];
+  const known = PROJECT_LABELS[id];
   const current = lane.current ?? {};
   return {
     id,
@@ -458,7 +451,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
       {error && <div className="flash err">{error}</div>}
       <ModelUsagePanel models={board.models} />
       {!lanes.length ? <div className="control-empty">표시할 lane이 없습니다.</div> : <>
-        <div className="control-tabs" role="tablist">{lanes.map((lane, index) => { const presentation = projectPresentation(lane); return <button className={`control-tab${index === selected ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelected(index)} role="tab" aria-label={`${presentation.name}: ${presentation.goal}`}><span>{presentation.name}</span><small>{presentation.goal}</small></button>; })}</div>
+        <div className="control-tabs" role="tablist">{lanes.map((lane, index) => { const presentation = projectPresentation(lane); return <button className={`control-tab${index === selected ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelected(index)} role="tab" aria-label={`${presentation.name}: ${presentation.goal}`}><span>{presentation.name}</span><small style={{ display: 'block', marginTop: 4 }}>{presentation.goal}</small></button>; })}</div>
         {activeLane && <LaneView lane={activeLane} onRefresh={load} />}
       </>}
     </main>

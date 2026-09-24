@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { must } from './bridge.js';
+import { PROJECT_LABELS } from '../shared/projectLabels.js';
 
 const FLOW = ['PM', '검증', 'WORKER', 'QA', 'GATE', 'HUMAN', '통합'] as const;
 
@@ -39,14 +40,6 @@ interface StudioDraft {
 
 const EMPTY_DRAFT: StudioDraft = { goal: '', tasks: [], runPolicy: 'continue' };
 
-const PROJECT_PRESENTATION: Record<string, { name: string; goal: string }> = {
-  'agent-relay': { name: '에이전트 릴레이', goal: 'CORE V1 자동 실행과 결과 수집' },
-  actl: { name: '액틀', goal: '안전한 작업 전달과 Windows Board 검증' },
-  juplan: { name: '주플랜', goal: '계획 기반 프로젝트 실행과 릴리스 검증' },
-  juceipt: { name: '주싯', goal: '영수증 처리 재시도와 안정성 검증' },
-  jucontroler: { name: '주컨트롤러', goal: '프로젝트 통합 제어와 운영 가시성' },
-};
-
 function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
@@ -56,7 +49,7 @@ function label(value: unknown, fallback = '—'): string {
 }
 
 function projectPresentation(project: string, lane?: BoardLane): { name: string; goal: string } {
-  const known = PROJECT_PRESENTATION[project];
+  const known = PROJECT_LABELS[project];
   const current = lane?.current ?? {};
   return {
     name: known?.name ?? label(project, '알 수 없는 프로젝트'),
@@ -354,7 +347,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                   aria-selected={name === project}
                   className={`plan-project${name === project ? ' active' : ''}`}
                   onClick={() => setProject(name)}
-                ><span>{item.name}</span><small>{item.goal}</small></button>
+                ><span>{item.name}</span><small style={{ display: 'block', marginTop: 4 }}>{item.goal}</small></button>
                 );
               })}
             </div>}
