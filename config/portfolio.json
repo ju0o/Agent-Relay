@@ -2514,6 +2514,36 @@
           ],
           "ssotEvidence": "Founder 2026-09-24 10:2x: '승인에서도 내가 뭐 눌러도 아무 반응 없음', 'skill만들기도 카테고리별로 그리고 정리되어 있게'; supervisor capture review run-20260924-1008 (Skill tab shows the Tester view)",
           "title": "Skill 만들기 tab currently renders the Tester view (routing bug"
+        },
+        {
+          "taskId": "JCAPP-HOLD-CARD-EXPLAINED",
+          "scope": "Redesign every 멈춘 작업 (HOLD) card from /api/relay/board lanes[].holds[] which now carry optional step (PM|Worker|QA|Tester|반영), explain {what, why, sentence, options:[{id:retry|narrow|skip,label,detail}], recommended}, choice, note, heldSeen, waitMin. Top: a one-row flow diagram PM→Worker→QA→Tester→반영 with done steps teal ✓, the stuck step amber ⚠, later steps grey. Below: explain.sentence in large type; then '그래서 [<recommended label>] 할게요.' where the bracketed words are an underlined tappable chip that opens an inline list of the 3 options (radio) plus an optional one-line note field; buttons [이대로 진행] and [원문 보기] (raw reason collapsed). 이대로 진행 POSTs /api/relay/hold-choice {taskId, option, note} → server runs `night hold choose <taskId> <option> [note]` via execFile (validate taskId against the current board holds and option in retry|narrow|skip; no shell) and the card shows the saved choice inline ('선택했어요: … · 곧 다시 설계해요'). Show '아무것도 안 고르면 <heldSeen+waitMin 시각>에 추천대로 진행해요.' Holds with choice=skip move to 승인 > 예전 기록. No explain yet → '해석 중이에요…' with 원문 보기. No window.prompt/confirm. Tests for the pure render helpers and the server validation.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "operator/server.mjs",
+            "test/hold-card.test.mjs"
+          ],
+          "tests": [
+            "node --test test/hold-card.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 10:3x: '멈춘 작업 … 내가 알아듣기 쉬운 언어들로 변환해주고 해석한 뒤 다음 행동제안 및 수정할 수도 있게 … 시각적으로 추상화 되어 있는 걸 수정할 수 있게'; Founder choice (chat): '둘 다 (문장 + 위에 흐름 그림)'; Canvas board HoldRedesign.dc.html; 'JuControler 안에는 … 백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'",
+          "title": "Redesign every 멈춘 작업 (HOLD) card from /api/relay/board lanes"
+        },
+        {
+          "taskId": "JCAPP-IDLE-LANE-MEANING",
+          "scope": "When a lane is IDLE the Agent Relay tab says '지금 진행 중인 작업이 없어요' and the Founder reads it as broken. Say what it means from board data: '계획된 일을 다 끝내고 쉬는 중이에요 · 오늘 N개 끝남 · 마지막: <last done task in plain words, 몇 분 전>' (counts.VERIFIED_DONE/RESOLVED and the done list the board already returns); treat counts.RESOLVED as done ('멈췄다가 다시 설계해서 해결'), never show the raw word RESOLVED. Also on 홈 '지금 일하는 중' when nothing runs: '모두 쉬는 중 — 계획된 일을 끝냈어요.' Pure helper + unit test.",
+          "files": [
+            "operator/public/app.js",
+            "test/idle-lane-meaning.test.mjs"
+          ],
+          "tests": [
+            "node --test test/idle-lane-meaning.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 10:3x: '멈춘 작업 … 내가 알아듣기 쉬운 언어들로 변환해주고 해석한 뒤 다음 행동제안 및 수정할 수도 있게 … 시각적으로 추상화 되어 있는 걸 수정할 수 있게'; Founder choice (chat): '둘 다 (문장 + 위에 흐름 그림)'; Canvas board HoldRedesign.dc.html; 'JuControler 안에는 … 백그라운드에서 자동으로 … 진짜 간편하게 UI/UX로 확인하는 구조'",
+          "title": "When a lane is IDLE the Agent Relay tab says '지금 진행 중인 작업이 없"
         }
       ]
     },
