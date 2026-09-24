@@ -1204,13 +1204,13 @@
       "repository": "https://github.com/ju0o/JuActl",
       "ref": "feat/v2-founder-ux-closeout-dogfood-06",
       "expectedHeadSha": "5ffaeb4d2be97521421256378786fe08eab5da9d",
-      "ssot": "external:ju0o/JuActl-private",
+      "ssot": "/home/skkse12/Desktop/Projects/Core/actl-v0.1.1-managed/BACKLOG.md + /home/skkse12/Desktop/Projects/Core/actl-v0.1.1-managed/README.md + /home/skkse12/Desktop/Projects/Core/actl-v0.1.1-managed/ROOT_CAUSE_REPORT.md",
       "owner": "codex",
       "runtime": [
         "codex",
         "opencode"
       ],
-      "state": "FOUNDER_GATE",
+      "state": "ACTIVE",
       "founderRequired": true,
       "founderGate": {
         "type": "FOUNDER_E2E_REQUIRED",
@@ -1229,10 +1229,7 @@
           "Founder Windows Board E2E"
         ]
       },
-      "blockers": [
-        "Founder Windows Board E2E required: SEND -> RESULT -> COPY",
-        "No additional actl Product task is authorized"
-      ],
+      "blockers": [],
       "tasks": [
         {
           "taskId": "ACTL-TRANSPORT-RECOVERY",
