@@ -734,6 +734,137 @@
           ],
           "ssotEvidence": "Supervisor review of the Windows Tester captures of v3 on MainPC (2026-09-24 08:59, C:\\Users\\user\\Desktop\\AgentRelay-0.3.1\\tester-v3); Founder non-developer readability rule",
           "title": "Fix project labels in the Control Room tabs and the Plan Stu"
+        },
+        {
+          "taskId": "AGENTRELAY-OFFLINE-LOADING-STATES",
+          "scope": "Make the ASUS-unreachable and loading states understandable. In src/backend/controlRoom.ts change the ControlRoomError messages (keep codes unchanged): EXEC_FAILED -> '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.'; INVALID_JSON -> '작업 PC의 응답을 읽지 못했습니다. 잠시 후 자동으로 다시 시도합니다.' In src/frontend/controlRoom.tsx initialise board state as null and render '작업 PC에서 불러오는 중…' in .control-empty until the first load resolves; when error is set and there are no lanes, render only the error explanation in .control-empty (drop the separate red flash and the '표시할 lane이 없습니다' line) and keep the 5s retry. Extend test/controlRoom.test.mjs failure tests to assert failed.message matches /연결할 수 없습니다/ and invalid JSON matches /응답을 읽지 못했습니다/.",
+          "files": [
+            "src/backend/controlRoom.ts",
+            "src/frontend/controlRoom.tsx",
+            "test/controlRoom.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/controlRoom.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "Make the ASUS-unreachable and loading states understandable."
+        },
+        {
+          "taskId": "AGENTRELAY-DEFAULT-START-CONTROLROOM",
+          "scope": "Open the app on Control Room instead of the log editor. Move parseStartView from src/backend/main.ts into src/shared/types.ts (exported, pure) and import it in main.ts. When no --view= argument is present, or its value is unknown, return 'control-room'; an explicit --view=home still returns 'home' and the other values are unchanged. Update the doc comment accordingly. Add test/start-view.test.mjs importing parseStartView from ../dist/server/shared/types.js and asserting: [] -> 'control-room', ['--view=home'] -> 'home', ['--view=plan-studio'] -> 'plan-studio', ['--view=bogus'] -> 'control-room', and the last --view wins.",
+          "files": [
+            "src/backend/main.ts",
+            "src/shared/types.ts",
+            "test/start-view.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:server",
+            "node --test test/start-view.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "Open the app on Control Room instead of the log editor. Move"
+        },
+        {
+          "taskId": "AGENTRELAY-FIRSTRUN-COPY",
+          "scope": "Rewrite the first-run data-folder screen and product name for a non-developer. In src/frontend/App.tsx setup card: h1 'Agent Relay'; body in three short lines: 'Agent Relay는 여러 프로젝트의 기획(PM) → 작업(Worker) → 검수(QA)를 자동으로 이어서 실행합니다.' / '사용자는 결과를 확인하고, 꼭 필요한 결정에만 답하면 됩니다.' / '먼저 결과와 기록을 저장할 폴더를 정해 주세요.'; primary button '기본 폴더 사용 (문서 › Agent Relay)' with the full path shown under it in muted text (settings.defaultDataRoot), secondary '다른 폴더 고르기'. Replace every 'Agent Relay Log · V0' (splash, missing-root screen, topbar brand) with 'Agent Relay'; missing-root text should say '저장 폴더를 찾을 수 없습니다 (외장 드라이브가 빠졌거나 폴더가 옮겨졌을 수 있어요).' Set <title> in index.html and BrowserWindow title in src/backend/main.ts to 'Agent Relay'. Add test/first-run-copy.test.mjs that reads App.tsx, index.html and main.ts and asserts no 'Agent Relay Log', 'GPT →' or 'Markdown' remains and that the '결정' wording is present.",
+          "files": [
+            "src/frontend/App.tsx",
+            "index.html",
+            "src/backend/main.ts",
+            "test/first-run-copy.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/first-run-copy.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "Rewrite the first-run data-folder screen and product name fo"
+        },
+        {
+          "taskId": "AGENTRELAY-DECISION-BADGES",
+          "scope": "Surface lanes that need the Founder. Add a pure exported helper laneAttention(lane) in src/shared/types.ts returning 'decision' if lane.humanGate or lane.founderGate is truthy, else 'hold' if lane.blocker is truthy or lane.holds is a non-empty array, else null. In src/frontend/controlRoom.tsx stable-sort lanes so 'decision' lanes come first, then 'hold', then the rest (selection keyed by lane id, not index); render a small badge in each tab ('결정 필요' in the warning colour, '보류' in muted red) and add aria-selected on tabs; under the page title show '결정 대기 N건' when N>0. Add .attn-badge styles in src/frontend/style.css. Add test/lane-attention.test.mjs covering gate, founderGate, blocker, holds, and empty lanes against ../dist/server/shared/types.js.",
+          "files": [
+            "src/shared/types.ts",
+            "src/frontend/controlRoom.tsx",
+            "src/frontend/style.css",
+            "test/lane-attention.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/lane-attention.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "Surface lanes that need the Founder. Add a pure exported hel"
+        },
+        {
+          "taskId": "AGENTRELAY-APPROVALS-NAV-KO",
+          "scope": "Make approval rules findable and readable. In src/frontend/App.tsx add a topbar button '승인 규칙' toggling approvalsMode (clearing the other modes, same pattern as Control Room); change the ApprovalsPanel subtitle to 'Agent Relay가 묻지 않고 알아서 처리하도록 허락한 규칙입니다.'; render group headings through a new pure exported approvalCategoryLabel(category) in src/shared/types.ts (agents→'에이전트 배치', git→'Git·브랜치', install→'설치', lanes→'작업 흐름', merge-push→'병합·올리기', others unchanged). Change approvalStatsLine so a rule with usedCount 0 returns '아직 자동 적용된 적 없음' and otherwise '자동 적용 N회 · 마지막 YYYY-MM-DD'. In src/frontend/style.css remove the extra bottom padding / min-height on approval cards. Update test/cr08.test.mjs expectations for approvalStatsLine and add approvalCategoryLabel cases.",
+          "files": [
+            "src/frontend/App.tsx",
+            "src/shared/types.ts",
+            "src/frontend/style.css",
+            "test/cr08.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/cr08.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "Make approval rules findable and readable. In src/frontend/A"
+        },
+        {
+          "taskId": "AGENTRELAY-TOPBAR-SCROLLBAR-POLISH",
+          "scope": "CSS-only polish in src/frontend/style.css: (a) topbar: .topbar flex-wrap:nowrap; .brand and topbar buttons white-space:nowrap; word-break:keep-all on buttons/labels app-wide so Korean never breaks mid-word; @media (max-width:1200px) hide .topbar-shortcuts; (b) dark scrollbars: add color-scheme:dark on .app[data-theme=dark] (color-scheme:light on light) plus ::-webkit-scrollbar rules for the dark theme mirroring the existing light ones; (c) align banners: .control-room .flash { margin:0 0 16px; } so the banner's left edge matches the h1. Add test/style-guard.test.mjs that reads style.css and asserts the presence of 'color-scheme: dark', a dark ::-webkit-scrollbar-thumb rule, 'keep-all', and the .topbar-shortcuts media rule.",
+          "files": [
+            "src/frontend/style.css",
+            "test/style-guard.test.mjs"
+          ],
+          "tests": [
+            "npm run build:client",
+            "node --test test/style-guard.test.mjs",
+            "npm run typecheck"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "CSS-only polish in src/frontend/style.css: (a) topbar: .topb"
+        },
+        {
+          "taskId": "AGENTRELAY-A11Y-FOCUS",
+          "scope": "Accessibility basics. In src/frontend/style.css add a global ':focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }' and replace the 5 'outline: none' focus rules with :focus:not(:focus-visible) equivalents so keyboard focus is always visible. In src/frontend/App.tsx give the theme toggle an aria-label ('라이트 모드로 전환'/'다크 모드로 전환') and give the icon-only '+' tab/new-project buttons aria-labels. In src/frontend/controlRoom.tsx add aria-selected={index===selected} to control tabs and aria-label '프로젝트 목록' on the tablist. Add test/a11y-guard.test.mjs asserting style.css contains ':focus-visible' and no bare 'outline: none;' outside a :not(:focus-visible) selector, and controlRoom.tsx contains 'aria-selected'.",
+          "files": [
+            "src/frontend/style.css",
+            "src/frontend/App.tsx",
+            "src/frontend/controlRoom.tsx",
+            "test/a11y-guard.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client",
+            "node --test test/a11y-guard.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "Accessibility basics. In src/frontend/style.css add a global"
+        },
+        {
+          "taskId": "AGENTRELAY-HERMES-RESKIN",
+          "scope": "Re-skin to the Founder's Hermes style (Founder choice 2026-09-24: 전부 Hermes로 통일), dark default, no layout changes. In src/frontend/style.css dark tokens: --bg #0B0D10, --bg2 #12151A, --bg3 #161A20, --border #262B33, text #E6E8EC, muted #9AA3AE, --accent #7FD4C1, warning #E8C270 (keep --accent2 for success); body font-family 'IBM Plex Sans KR','Malgun Gothic','Segoe UI',sans-serif; h1/h2/h3, .brand and card headings 'JetBrains Mono','Cascadia Mono',Consolas,monospace; 10px card radius and 1px borders; a 4-step type scale (12/14/16/22px) applied to .control-card h3, body, .control-card-value and h1; make dark the default theme when no preference is stored. In src/frontend/App.tsx drop the emoji prefixes from topbar nav labels. Fonts fall back gracefully; bundling woff2 is out of scope. Keep text contrast ≥4.5:1. Add test/reskin-guard.test.mjs asserting '#7FD4C1', '#262B33', 'IBM Plex Sans KR' and 'JetBrains Mono' appear in style.css.",
+          "files": [
+            "src/frontend/style.css",
+            "src/frontend/App.tsx",
+            "test/reskin-guard.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build:client",
+            "node --test test/reskin-guard.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Electron app (captures ~/jc-tester/audit-ar/)",
+          "title": "Re-skin to the Founder's Hermes style (Founder choice 2026-0"
         }
       ],
       "qaRuntime": [
