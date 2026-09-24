@@ -3927,5 +3927,6 @@
       "opencode-free"
     ],
     "note": "AI 자동 배정 (Founder 2026-09-24, A-22): lane chain first, then other subscribed AIs, free models last"
-  }
+  },
+  "memoryDelivery": true
 }
