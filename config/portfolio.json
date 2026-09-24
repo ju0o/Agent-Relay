@@ -4233,6 +4233,22 @@
           ],
           "ssotEvidence": "Board now carries Korean task titles (night-titles.py, Founder 쉬운 용어)",
           "title": "The board now includes a plain-Korean title for lane.current"
+        },
+        {
+          "taskId": "JCAPP-JUPLAN-CHAT",
+          "scope": "Founder A-23 JuPlan 기획 대화창 in the JuPlan tab. Per discovered JuPlan project (from /api/juplan/status entries; planDir = entry.path up to '/.juplan/'), add a chat box '이 계획을 어떻게 바꿀까요?' with an example placeholder ('예: 결제 화면을 추가해줘'). Server: POST /api/juplan/propose {project, message} → validate project against the discovered list (never accept a raw path), message 1-1500 chars, then execFile night ['juplan','propose',planDir,message] (no shell, 15 min timeout) and return its JSON {ok, proposalId, summary, preview:{added:{nodes,edges}}}; POST /api/juplan/apply {project, proposalId, confirm} with proposalId ^p-\\d{8,}$ and confirm === '이 제안을 계획에 적용할게요.' → execFile night ['juplan','apply',planDir,proposalId]. UI: while waiting show 'AI가 제안을 만드는 중이에요… (1~5분)'; then the summary sentence + '항목 N개 · 연결 M개를 더해요' with [적용] (inline confirm) and [취소]; after 적용 show '적용했어요 · 그림이 곧 바뀌어요' and refresh the JuPlan status; errors as one Korean line. Tests with injected exec for both endpoints (bad project, bad id, wrong confirm rejected).",
+          "files": [
+            "operator/server.mjs",
+            "lib/juplanChat.mjs",
+            "operator/public/app.js",
+            "test/juplan-chat.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juplan-chat.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder decision A-23 (2026-09-24): JuPlan 기획 대화 via AI 자동 배정, JuPlan validates/applies; engine bridge night juplan propose|apply verified end-to-end on a plan copy",
+          "title": "Founder A-23 JuPlan 기획 대화창 in the JuPlan tab. Per discovered"
         }
       ]
     },
