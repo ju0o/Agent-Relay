@@ -27,16 +27,22 @@ test("explain hold options keep labels, ids, and recommendation", () => {
 });
 
 test("hold choice sends allow-listed retry, narrow, and skip options", async () => {
-  for (const option of ["retry", "narrow", "skip"]) {
-    let call;
-    await runControlRoomHoldChoose("task-real", option, async (...args) => {
-      call = args;
-      return { stdout: '{"ok":true}', stderr: "" };
-    });
-    assert.deepEqual(call[1], ["asus", "night", "hold", "choose", "'task-real'", option, "--json"]);
+  for (const taskId of ["T-1", "AGENTRELAY-NR-01"]) {
+    for (const option of ["retry", "narrow", "skip"]) {
+      let call;
+      await runControlRoomHoldChoose(taskId, option, async (...args) => {
+        call = args;
+        return { stdout: '{"ok":true}', stderr: "" };
+      });
+      assert.deepEqual(call[1], [
+        "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "asus",
+        "~/.agents/skills/auto-night-orchestrator/scripts/night",
+        "hold", "choose", `'${taskId}'`, option, "--json",
+      ]);
+    }
   }
 
-  const invalid = await runControlRoomHoldChoose("task-real", "resume", async () => ({ stdout: "{}", stderr: "" })).catch(error => error);
+  const invalid = await runControlRoomHoldChoose("bad task", "retry", async () => ({ stdout: "{}", stderr: "" })).catch(error => error);
   assert.ok(invalid instanceof ControlRoomError);
   assert.equal(invalid.code, "INVALID_INPUT");
 });

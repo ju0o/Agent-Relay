@@ -31,6 +31,7 @@ export type ControlRoomExec = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export const PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{1,40}$/;
+export const TASK_ID_PATTERN = /^[A-Za-z][A-Za-z0-9-]{1,40}$/;
 export const HOLD_OPTIONS = ['retry', 'narrow', 'skip'] as const;
 export type HoldOption = (typeof HOLD_OPTIONS)[number];
 export const GATE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -143,6 +144,12 @@ function invalidInput(operation: ControlRoomOperation, message: string): Control
 function assertProjectId(operation: ControlRoomOperation, project: unknown): asserts project is string {
   if (!isValidProjectId(project)) {
     throw invalidInput(operation, '프로젝트 ID가 올바르지 않습니다.');
+  }
+}
+
+function assertTaskId(operation: ControlRoomOperation, taskId: unknown): asserts taskId is string {
+  if (typeof taskId !== 'string' || !TASK_ID_PATTERN.test(taskId)) {
+    throw invalidInput(operation, '작업 ID가 올바르지 않습니다.');
   }
 }
 
@@ -349,9 +356,9 @@ export async function runControlRoomHoldChoose(
   execFileImpl: ControlRoomExec = execFile,
 ): Promise<unknown> {
   const operation: ControlRoomOperation = 'controlRoom:holdChoose';
-  assertProjectId(operation, taskId);
+  assertTaskId(operation, taskId);
   assertHoldOption(operation, option);
-  return runSshJson(operation, ['asus', 'night', 'hold', 'choose', shQuote(taskId), option, '--json'], execFileImpl);
+  return runSshJson(operation, [...SSH_BASE_ARGS, 'hold', 'choose', shQuote(taskId), option, '--json'], execFileImpl);
 }
 
 export async function runControlRoomApprovalAdd(
