@@ -5,7 +5,6 @@
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { must, hasBridge, dragLocalFile, onUpdateStatus } from './bridge.js';
-import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
@@ -27,6 +26,7 @@ import {
   TAG_PRESETS,
   UpdateStatus,
   applyOrderByKeys,
+  normalizeModelUsage,
   reorderArray,
 } from '../shared/types.js';
 
@@ -136,6 +136,28 @@ function todayLocal(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 function copyText(text: string): void { void navigator.clipboard.writeText(text); }
+
+/**
+ * 기록 화면 에이전트 칩 필터 — board/model usage에 존재하는 런타임만 보여준다.
+ * 설정되지 않은 에이전트(Kiro/Devin/CommandCode 등)는 board models와
+ * 현재 파일 기록(history)에 없을 때 칩에서 숨긴다.
+ * board도 history도 비어 있으면(첫 실행) 전체 목록을 그대로 둔다.
+ * 현재 선택된 에이전트는 항상 포함해 선택이 사라지지 않게 한다.
+ */
+export function visibleRecordAgents(
+  allAgents: string[],
+  boardModels: unknown,
+  historyAgents: string[],
+  activeAgent?: string,
+): string[] {
+  const configured = new Set<string>();
+  for (const row of normalizeModelUsage(boardModels)) configured.add(row.runtimeId);
+  for (const name of historyAgents) configured.add(name);
+  if (configured.size === 0) return [...allAgents];
+  const visible = allAgents.filter(a => configured.has(a));
+  if (activeAgent && !visible.includes(activeAgent)) visible.push(activeAgent);
+  return visible.length > 0 ? visible : [...allAgents];
+}
 
 // ── 모달 타입 ─────────────────────────────────────────────────────────────────
 interface ModalState   { title: string; placeholder: string; onOk: (v: string) => void; }
@@ -306,6 +328,8 @@ function AppInner(): React.ReactElement {
   const [projects, setProjects]   = useState<ProjectInfo[]>([]);
   const [agents, setAgents]       = useState<string[]>([...DEFAULT_AGENTS]);
   const [date, setDate]           = useState(todayLocal());
+  // board/model usage — 설정된 런타임만 에이전트 칩에 보여주기 위한 원본
+  const [boardModels, setBoardModels] = useState<unknown>(null);
   const [msg, setMsg]             = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
   const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [modal, setModal]         = useState<ModalState | null>(null);
@@ -376,6 +400,22 @@ function AppInner(): React.ReactElement {
   const sortedProjects = useMemo(
     () => applyOrderByKeys(projects, p => p.name, settings?.projectOrder ?? []),
     [projects, settings?.projectOrder],
+  );
+
+  // board/model usage 조회 — 에이전트 칩에 설정된 런타임만 보여주기 위한 원본
+  useEffect(() => {
+    let alive = true;
+    void must<{ models?: unknown }>({ op: 'controlRoom:board' }).then(next => {
+      if (alive) setBoardModels(next?.models ?? null);
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+
+  // 기록 화면 에이전트 칩 — board/model usage + 파일 기록에 있는 런타임만 표시
+  const visibleAgents = useMemo(
+    () => visibleRecordAgents(agents, boardModels, history.map(h => h.agent), activeTab?.agent),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agents, boardModels, history.map(h => h.agent).join('|'), activeTab?.agent],
   );
 
   // 가장 최근 날짜 자동 펼침 (세션 전환 또는 새 날짜 추가 시)
@@ -1301,6 +1341,10 @@ function AppInner(): React.ReactElement {
             />
           ) : (
             <>
+          {/* ── 기록 화면 쉬운 우리말 안내 ── */}
+          <div className="record-head">
+            <h2>작업 기록 — AI에게 준 지시와 받은 결과를 날짜별로 모아 둬요</h2>
+          </div>
           {/* ── 프로젝트 세션 탭 바 (Drag Reorder — 순서는 settings에 저장) ── */}
           <div className="proj-tab-bar">
             {sessions.map((sess, i) => {
@@ -1387,7 +1431,10 @@ function AppInner(): React.ReactElement {
 
           {/* 글로벌 필드 (날짜 + 저장위치) */}
           <section className="fields">
-            <FieldText label="날짜 (YYYY-MM-DD)" value={date} onChange={v => void editDate(v)} />
+            <div className="field">
+              <label className="flabel" htmlFor="record-date">날짜</label>
+              <input id="record-date" type="date" value={date} onChange={e => void editDate(e.target.value)} />
+            </div>
             <div className="field breadcrumb-field">
               <span className="flabel">저장 위치</span>
               <span className="fvalue breadcrumb mono">
@@ -1523,7 +1570,7 @@ function AppInner(): React.ReactElement {
                       <span className="flabel">에이전트 {activeTab.run && <span style={{ color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>— 런 #{activeTab.run}</span>}</span>
                       <div className="agent-pills-row">
                         <div className="agent-pills">
-                          {agents.map((a, i) => (
+                          {visibleAgents.map((a, i) => (
                             <button
                               key={a}
                               data-reorder-group="agent-pill"
@@ -1538,7 +1585,27 @@ function AppInner(): React.ReactElement {
                               }}
                               onDragOver={e => { if (agentDragFrom.current !== null) { e.preventDefault(); setAgentDragOver(i); } }}
                               onDragLeave={() => setAgentDragOver(prev => prev === i ? null : prev)}
-                              onDrop={e => { e.preventDefault(); e.stopPropagation(); onAgentPillDrop(i); }}
+                              onDrop={e => {
+                                e.preventDefault(); e.stopPropagation();
+                                const fromVisible = agentDragFrom.current;
+                                if (fromVisible === null) return;
+                                const fromName = visibleAgents[fromVisible];
+                                const toName = visibleAgents[i];
+                                if (!fromName || !toName || fromName === toName) {
+                                  agentDragFrom.current = null;
+                                  setAgentDragOver(null);
+                                  return;
+                                }
+                                const fromFull = agents.indexOf(fromName);
+                                const toFull = agents.indexOf(toName);
+                                if (fromFull === -1 || toFull === -1) {
+                                  agentDragFrom.current = null;
+                                  setAgentDragOver(null);
+                                  return;
+                                }
+                                agentDragFrom.current = fromFull;
+                                onAgentPillDrop(toFull);
+                              }}
                               onDragEnd={() => { agentDragFrom.current = null; setAgentDragOver(null); }}
                               onPointerDown={e => {
                                 if (!shouldStartPointerReorder(e.pointerType)) return;
@@ -1550,15 +1617,34 @@ function AppInner(): React.ReactElement {
                               }}
                               onPointerMove={e => {
                                 if (!pointerAgentActive.current || agentDragFrom.current === null) return;
-                                const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', agents.length);
+                                const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', visibleAgents.length);
                                 setAgentDragOver(at ?? i);
                               }}
                               onPointerUp={e => {
                                 if (!pointerAgentActive.current) return;
                                 pointerAgentActive.current = false;
-                                const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', agents.length) ?? i;
-                                const to = resolvePointerDropIndex(agentDragFrom.current, over, agents.length);
-                                if (to !== null) { pointerSuppressClick.current = true; onAgentPillDrop(to); }
+                                const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', visibleAgents.length) ?? i;
+                                const toVisible = resolvePointerDropIndex(agentDragFrom.current, over, visibleAgents.length);
+                                if (toVisible !== null) {
+                                  pointerSuppressClick.current = true;
+                                  const fromVisible = agentDragFrom.current;
+                                  const fromName = fromVisible !== null ? visibleAgents[fromVisible] : undefined;
+                                  const toName = visibleAgents[toVisible];
+                                  if (!fromName || !toName) {
+                                    agentDragFrom.current = null;
+                                    setAgentDragOver(null);
+                                    return;
+                                  }
+                                  const fromFull = agents.indexOf(fromName);
+                                  const toFull = agents.indexOf(toName);
+                                  if (fromFull === -1 || toFull === -1) {
+                                    agentDragFrom.current = null;
+                                    setAgentDragOver(null);
+                                    return;
+                                  }
+                                  agentDragFrom.current = fromFull;
+                                  onAgentPillDrop(toFull);
+                                }
                                 else { agentDragFrom.current = null; setAgentDragOver(null); }
                               }}
                               onPointerCancel={() => {
@@ -1652,7 +1738,7 @@ function AppInner(): React.ReactElement {
                       : <textarea
                           value={activeTab.prompt}
                           onChange={e => updateTab(activeTab.id, { prompt: e.target.value, promptSaved: false })}
-                          placeholder={'# GPT에게 받은 다음 프롬프트를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
+                          placeholder={'여기에 AI에게 준 지시를 붙여 넣으세요'}
                           spellCheck={false}
                         />
                     }
@@ -1703,7 +1789,7 @@ function AppInner(): React.ReactElement {
                       : <textarea
                           value={activeTab.result}
                           onChange={e => updateTab(activeTab.id, { result: e.target.value, resultSaved: false })}
-                          placeholder={'# 에이전트 실행 결과 보고서를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
+                          placeholder={'여기에 AI에게 받은 결과를 붙여 넣으세요'}
                           spellCheck={false}
                         />
                     }
@@ -1864,7 +1950,7 @@ function FileTree({
     <div className="filetree">
       {/* ── 프로젝트 사이드바 (다크) ── */}
       <div className="proj-sidebar">
-        <span className="proj-sidebar-label">Projects</span>
+        <span className="proj-sidebar-label">프로젝트</span>
         {projects.length === 0 && (
           <div style={{ fontSize: 11, color: 'var(--sb-muted)', padding: '4px 8px' }}>
             폴더를 선택하면<br />프로젝트가 표시됩니다
