@@ -1184,7 +1184,7 @@
             "node --test test/version-per-build.test.mjs"
           ],
           "ssotEvidence": "Supervisor retrospective 2026-09-24; Founder standing order A-27",
-          "title": "The app version stays 0.3.1 across builds v1-v11 so installe"
+          "title": "빌드마다 Agent Relay 버전 구분"
         }
       ],
       "qaRuntime": [
@@ -1912,7 +1912,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27 (추천대로 자동 진행)",
-          "title": "actl has no in-repo SSOT the PM can read (lane ssot points t"
+          "title": "현재 상태와 다음 일을 한눈에"
         },
         {
           "taskId": "ACTL-VERSION-ONE",
@@ -1927,7 +1927,7 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27",
-          "title": "Three version numbers disagree (pyproject 0.1.1-managed, src"
+          "title": "화면에서 정확한 버전 확인"
         }
       ],
       "qaRuntime": [
@@ -2657,7 +2657,7 @@
             "pnpm --filter @juplan/runtime test:run"
           ],
           "ssotEvidence": "Supervisor retrospective 2026-09-24 추천 다음 단계; Founder standing order A-27 (추천대로 자동 진행)",
-          "title": "Gates G0-G5 are automatic presence checks (does a node of th"
+          "title": "필요한 항목을 자동으로 확인해요"
         }
       ],
       "qaRuntime": [
