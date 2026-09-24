@@ -36,7 +36,7 @@ export function ModelUsagePanel({ models }: { models: unknown }): React.ReactEle
           >
             <span className="model-usage-id">{row.runtimeId}</span>
             <span className="model-usage-nums">
-              실행 {row.runs} · quota {row.quota} · 실패 {row.failed}
+              실행 {row.runs} · 한도 초과 {row.quota} · 실패 {row.failed}
             </span>
           </li>
         ))}

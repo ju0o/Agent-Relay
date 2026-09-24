@@ -3,7 +3,7 @@ import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
 import { laneAttention } from '../shared/types.js';
-import { PROJECT_LABELS } from '../shared/projectLabels.js';
+import { PROJECT_LABELS, holdCardMessage } from '../shared/projectLabels.js';
 
 export interface ControlRoomLane {
   id?: string;
@@ -25,9 +25,9 @@ interface ControlRoomBoard {
 type FlowState = 'done' | 'active' | 'blocked' | 'pending';
 type ActionStatus = { state: 'pending' | 'done' | 'error'; text: string } | null;
 
-const FLOW = ['PM', '검증', 'WORKER', 'QA', 'GATE', 'HUMAN', '통합'];
+const FLOW = ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'];
 
-/** 8 runtime ids offered by the night orchestrator (first = preferred, rest = quota fallback). */
+/** 8 runtime ids offered by the night orchestrator (first = preferred, rest = 예비). */
 const RUNTIMES: readonly string[] = [
   'codex',
   'opencode',
@@ -55,12 +55,12 @@ function label(value: unknown, fallback = '—'): string {
 function stageIndex(stage: number | string): number {
   if (typeof stage === 'number' && Number.isFinite(stage)) return Math.max(0, Math.min(FLOW.length - 1, stage));
   const value = String(stage).toUpperCase();
-  if (value.includes('INTEGR') || value.includes('통합') || value === 'DONE' || value === 'COMPLETE') return 6;
-  if (value.includes('HUMAN') || value.includes('FOUNDER')) return 5;
-  if (value.includes('GATE')) return 4;
-  if (value.includes('QA')) return 3;
-  if (value.includes('WORKER') || value.includes('BUILDER')) return 2;
-  if (value.includes('VERIF') || value.includes('VALID') || value.includes('검증')) return 1;
+  if (value.includes('INTEGR') || value.includes('통합') || value.includes('반영') || value === 'DONE' || value === 'COMPLETE') return 6;
+  if (value.includes('HUMAN') || value.includes('FOUNDER') || value.includes('사람 확인')) return 5;
+  if (value.includes('GATE') || value.includes('시험')) return 4;
+  if (value.includes('QA') || value.includes('검수')) return 3;
+  if (value.includes('WORKER') || value.includes('BUILDER') || value.includes('작업')) return 2;
+  if (value.includes('VERIF') || value.includes('VALID') || value.includes('검증') || value.includes('확인')) return 1;
   return 0;
 }
 
@@ -111,12 +111,8 @@ function qaFindingOf(lane: ControlRoomLane): unknown {
   return undefined;
 }
 
-function holdSummary(lane: ControlRoomLane, reason: string): string {
-  const text = `${lane.blocker ?? ''} ${reason}`.toUpperCase();
-  if (text.includes('FOUNDER')) return 'Founder 확인이 필요해 작업을 보류했습니다.';
-  if (text.includes('SCOPE')) return '승인된 작업 범위가 없어 작업을 보류했습니다.';
-  if (text.includes('NOT_CONNECTED')) return 'PM 연결이 없어 다음 작업을 대기 중입니다.';
-  return reason ? `작업이 보류되었습니다: ${reason}` : '작업이 보류되었습니다.';
+function holdSummary(lane: ControlRoomLane, reason: string): string | null {
+  return holdCardMessage(lane.blocker, reason);
 }
 
 /** Normalize a worker/QA chain value (string | string[] | {chain|name|...}) to an ordered id list. */
@@ -230,7 +226,7 @@ function ChainEditor({ project, role, initial, onRefresh }: {
   return (
     <form className="chain-editor" onSubmit={e => void submit(e)} aria-label={`${role} agent 바꾸기`}>
       <h4>{role === 'worker' ? 'Worker Agent 바꾸기' : 'QA Agent 바꾸기'}</h4>
-      <p className="muted">순서대로 선택 — 첫 번째가 우선, 나머지는 quota fallback (최대 4개)</p>
+      <p className="muted">순서대로 선택 — 첫 번째가 우선, 나머지는 예비 (최대 4개)</p>
       <div className="chain-picks" role="group" aria-label={`${role} runtime 순서 선택`}>
         {RUNTIMES.map(runtime => {
           const order = picked.indexOf(runtime);
@@ -365,7 +361,7 @@ function LaneView({ lane, onRefresh }: {
 }): React.ReactElement {
   const current = lane.current ?? {};
   const stageValue = current.stage ?? 0;
-  const stage = typeof stageValue === 'number' ? FLOW[stageIndex(stageValue)] : label(stageValue, 'PM');
+  const stage = FLOW[stageIndex(stageValue)] ?? '계획';
   const holds = Array.isArray(lane.holds) ? lane.holds : [];
   const gate = lane.humanGate ?? lane.founderGate;
   const worker = lane.workerChain ?? current.worker;
@@ -374,6 +370,11 @@ function LaneView({ lane, onRefresh }: {
   const presentation = projectPresentation(lane);
   const qaFinding = qaFindingOf(lane);
   const paused = isPaused(lane);
+  const workerText = detail(worker);
+  const qaText = detail(qa);
+  const showWorker = workerText !== '' && workerText !== '—';
+  const showQa = qaText !== '' && qaText !== '—';
+  const holdText = holdSummary(lane, holds.map(detail).join(', '));
   return (
     <section className="control-lane-view">
       <header className="control-card">
@@ -394,14 +395,14 @@ function LaneView({ lane, onRefresh }: {
       <div className="control-cards">
         <article className="control-card">
           <h3>현재 작업</h3>
-          <p className="control-card-value">{label(current.taskId, label(lane.id ?? lane.project))}</p>
+          <p className="control-card-value">{label(current.taskId, '지금 하는 일 없음')}</p>
           <p className="muted">단계: {stage}</p>
           {paused && project && <ResumeControl project={project} onRefresh={onRefresh} />}
         </article>
         <article className="control-card wide">
           <h3>WORKER → QA</h3>
-          <p>Worker: <strong>{detail(worker)}</strong></p>
-          <p>QA: <strong>{detail(qa)}</strong></p>
+          {showWorker && <p>Worker: <strong>{workerText}</strong></p>}
+          {showQa && <p>QA: <strong>{qaText}</strong></p>}
           {project && (
             <div className="control-actions">
               <ChainEditor key={`${project}-worker`} project={project} role="worker" initial={chainToList(worker)} onRefresh={onRefresh} />
@@ -409,7 +410,7 @@ function LaneView({ lane, onRefresh }: {
             </div>
           )}
         </article>
-        {(lane.blocker || holds.length > 0) && <article className="control-card blocked"><h3>보류 / 차단</h3><p>{holdSummary(lane, holds.map(detail).join(', '))}</p>{qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
+        {holdText !== null && <article className="control-card blocked"><h3>보류 / 차단</h3><p>{holdText}</p>{qaFinding !== undefined && <details><summary>원문 QA finding</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
         {gate && <article className="control-card human"><h3>Human Gate</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
       </div>
     </section>
@@ -474,7 +475,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
   const activeKey = activeLane ? laneSelectKey(activeLane, sortedLanes.indexOf(activeLane)) : null;
   return (
     <main className="control-room">
-      <div className="control-room-head"><div><h1>Control Room</h1>{decisionCount > 0 && <p className="control-decision-count">결정 대기 {decisionCount}건</p>}<p className="muted">5초마다 board를 읽습니다 · 액션 실행 후 다시 읽습니다</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      <div className="control-room-head"><div><h1>Control Room</h1>{decisionCount > 0 && <p className="control-decision-count">결정 대기 {decisionCount}건</p>}<p className="muted">5초마다 자동으로 새로 고쳐요.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
       <ModelUsagePanel models={board?.models} />
       {board === null && !error ? <div className="control-empty">작업 PC에서 불러오는 중…</div>
       : error && lanes.length === 0 ? <div className="control-empty">{error}</div>
