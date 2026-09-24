@@ -1,9 +1,9 @@
 /**
- * Agent Relay Log V0 — Electron main process.
+ * Agent Relay — Electron main process.
  *
  * No database, no API, no cloud. This process only:
  *   - creates the branded window (React UI from dist/client)
- *   - answers single 'relay' IPC operations that read/write Markdown under
+ *   - answers single 'relay' IPC operations that read/write result records under
  *     the user-chosen DATA_ROOT.
  */
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
@@ -210,7 +210,7 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       const agentBase = path.basename(path.dirname(req.folder));
       const { canceled, filePath } = await dialog.showSaveDialog({
         defaultPath: `${agentBase}-run-${runBase}.md`,
-        filters: [{ name: 'Markdown', extensions: ['md'] }],
+        filters: [{ name: '문서', extensions: ['md'] }],
       });
       if (canceled || !filePath) return { saved: false };
       fs.writeFileSync(filePath, content, 'utf8');
@@ -450,7 +450,7 @@ function createWindow(): void {
     height: 820,
     minWidth: 940,
     minHeight: 640,
-    title: 'Agent Relay Log',
+    title: 'Agent Relay',
     backgroundColor: '#17181c',
     autoHideMenuBar: true,
     webPreferences: {
@@ -477,7 +477,7 @@ function createWindow(): void {
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
     dialog.showErrorBox(
-      'Agent Relay Log — 페이지 로드 실패',
+      'Agent Relay — 페이지 로드 실패',
       `오류 코드: ${code}\n설명: ${desc}\n\n시도한 경로:\n${clientPath}\n\n경로가 존재하는지 확인하세요.`,
     );
   });
@@ -498,7 +498,7 @@ function createWindow(): void {
   // ── Load UI ──
   if (!fs.existsSync(clientPath)) {
     dialog.showErrorBox(
-      'Agent Relay Log — index.html 없음',
+      'Agent Relay — index.html 없음',
       `다음 경로에 index.html이 없습니다:\n${clientPath}\n\n앱을 다시 빌드하거나 재설치하세요.`,
     );
     return;

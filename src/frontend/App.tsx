@@ -1,5 +1,5 @@
 /**
- * Agent Relay Log V0 — 메인 UI
+ * Agent Relay — 메인 UI
  *
  * 프로젝트 세션 탭 + 에디터 탭 기반 병렬 편집 + 파일 트리 + 한국어 UI
  */
@@ -1121,7 +1121,7 @@ function AppInner(): React.ReactElement {
   if (loading) return (
     <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
-        <div className="splash-logo">Agent Relay Log · V0</div>
+        <div className="splash-logo">Agent Relay</div>
         <div className="splash-spin" />
         <div className="splash-hint">설정을 불러오는 중...</div>
       </div>
@@ -1130,7 +1130,7 @@ function AppInner(): React.ReactElement {
   if (initError) return (
     <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
-        <div className="splash-logo">Agent Relay Log · V0</div>
+        <div className="splash-logo">Agent Relay</div>
         <div className="splash-err">{initError}</div>
         <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>DevTools (F12) → Console에서 자세한 내용을 확인하세요.</p>
       </div>
@@ -1141,9 +1141,9 @@ function AppInner(): React.ReactElement {
   if (missingRoot && settings) return (
     <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
-        <div className="splash-logo">Agent Relay Log · V0</div>
+        <div className="splash-logo">Agent Relay</div>
         <div className="splash-err" style={{ whiteSpace: 'pre-line' }}>
-          {'기존 저장공간을 찾을 수 없습니다.\n\n'}
+          {'저장 폴더를 찾을 수 없습니다 (외장 드라이브가 빠졌거나 폴더가 옮겨졌을 수 있어요).\n\n'}
           {settings.dataRoot}
           {'\n\n새 저장공간을 선택하세요.'}
         </div>
@@ -1172,20 +1172,21 @@ function AppInner(): React.ReactElement {
       {!dataRoot && settings && (
         <div className="setup">
           <div className="setupcard">
-            <h1>Agent Relay Log · V0</h1>
+            <h1>Agent Relay</h1>
             <p>
-              GPT → 에이전트 작업 결과를 체계적으로 기록하는 툴입니다.<br /><br />
-              데이터 폴더에는 GPT 프롬프트와 에이전트 결과가 날짜·에이전트·런별 Markdown 파일로 저장됩니다.<br />
-              기본 폴더를 사용하거나 원하는 폴더를 직접 선택하세요.
+              Agent Relay는 여러 프로젝트의 기획(PM) → 작업(Worker) → 검수(QA)를 자동으로 이어서 실행합니다.<br />
+              사용자는 결과를 확인하고, 꼭 필요한 결정에만 답하면 됩니다.<br />
+              먼저 결과와 기록을 저장할 폴더를 정해 주세요.
             </p>
             <div className="modalbtns" style={{ justifyContent: 'center' }}>
               <button className="btn primary" onClick={() => void setDataRoot(settings.defaultDataRoot)}>
-                📁 Documents/Agent Relay 사용
+                기본 폴더 사용 (문서 › Agent Relay)
               </button>
               <button className="btn" onClick={() => void changeDataRoot()}>
-                다른 폴더 직접 선택
+                다른 폴더 고르기
               </button>
             </div>
+            <div className="muted" style={{ marginTop: 8, fontSize: 12, textAlign: 'center' }}>{settings.defaultDataRoot}</div>
           </div>
         </div>
       )}
@@ -1194,7 +1195,7 @@ function AppInner(): React.ReactElement {
         <>
           {/* 상단바 */}
           <header className="topbar">
-            <div className="brand">Agent Relay Log · <span style={{ color: 'var(--muted)' }}>V0</span></div>
+            <div className="brand">Agent Relay</div>
             <div className="topbar-shortcuts">
               <span title="모두 저장"><kbd>Ctrl+S</kbd> 저장</span>
               <span title="현재 탭 새 런"><kbd>Ctrl+N</kbd> 새 런</span>
