@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   type ApprovalRuleJson,
+  approvalStatsLine,
   isModelQuotaHit,
   isSupersededApprovalRule,
   normalizeModelUsage,
@@ -25,6 +26,49 @@ export {
   sortRulesByUsage,
   SUPERSEDED_APPROVAL_MARKER,
 } from '../shared/types.js';
+
+const APPROVAL_PLAIN_WORDS: readonly [string, string][] = [
+  ['fast-forward 병합', '그대로 합치기'],
+  ['SSOT', '기준 문서'],
+  ['worktree', '작업용 복사본'],
+  ['OmniRoute', '전체 경로'],
+  ['push merge', '올리기·합치기'],
+  ['E2E', '실제 사용 시험'],
+];
+
+/** Display-only wording; the original approval text remains available below it. */
+export function approvalReadableLabel(rule: ApprovalRuleJson): string {
+  const record = rule as Record<string, unknown>;
+  const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
+  const text = typeof raw === 'string' && raw.trim() ? raw : JSON.stringify(rule);
+  return APPROVAL_PLAIN_WORDS.reduce((label, [developerWord, plainWord]) => label.replaceAll(developerWord, plainWord), text);
+}
+
+export function ApprovalRuleCard({ rule }: { rule: ApprovalRuleJson }): React.ReactElement {
+  const record = rule as Record<string, unknown>;
+  const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
+  const original = typeof raw === 'string' && raw.trim() ? raw : JSON.stringify(rule);
+  return (
+    <article className="control-card">
+      <p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{approvalReadableLabel(rule)}</p>
+      <p className="muted approval-stats">{approvalStatsLine(rule)}</p>
+      <details className="approval-original">
+        <summary>원문 보기</summary>
+        <p className="muted" style={{ whiteSpace: 'pre-wrap' }}>{original}</p>
+      </details>
+    </article>
+  );
+}
+
+export function UnusedApprovalRules({ rules }: { rules: readonly ApprovalRuleJson[] }): React.ReactElement | null {
+  if (rules.length === 0) return null;
+  return (
+    <details className="approval-unused" aria-label="아직 안 쓰인 규칙">
+      <summary>아직 안 쓰인 규칙 {rules.length}개</summary>
+      <div className="control-cards">{rules.map((rule, i) => <ApprovalRuleCard key={i} rule={rule} />)}</div>
+    </details>
+  );
+}
 
 /** '모델 사용량' panel — 접힌 details, 한 줄 요약 뒤에 펼치면 runtimes. */
 export function ModelUsagePanel({ models }: { models: unknown }): React.ReactElement | null {

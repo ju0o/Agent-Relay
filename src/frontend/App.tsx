@@ -8,7 +8,7 @@ import { must, hasBridge, dragLocalFile, onUpdateStatus } from './bridge.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
-import { approvalCategoryLabel, approvalStatsLine, dedupeApprovalRules, groupRulesByCategory, partitionSupersededApprovalRules, SupersededApprovals } from './approvals.js';
+import { approvalCategoryLabel, approvalUsedCount, dedupeApprovalRules, groupRulesByCategory, partitionSupersededApprovalRules, ApprovalRuleCard, SupersededApprovals, UnusedApprovalRules } from './approvals.js';
 import type { ApprovalRuleJson } from '../shared/types.js';
 import { PlanStudio } from './planStudio.js';
 import { renderMd } from './md.js';
@@ -234,12 +234,9 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
   // '(바뀜)'으로 대체된 규칙은 그룹에서 빼고 접힌 '지난 결정'으로 둔다.
   const allRules = dedupeApprovalRules([...directRules, ...unwrapped]);
   const { active: activeRules } = partitionSupersededApprovalRules(allRules);
-  const groups = groupRulesByCategory(activeRules);
-  const ruleLabel = (rule: ApprovalRuleJson): string => {
-    const record = rule as Record<string, unknown>;
-    const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
-    return typeof raw === 'string' && raw.trim() ? raw : JSON.stringify(rule);
-  };
+  const usedRules = activeRules.filter(rule => approvalUsedCount(rule) > 0);
+  const unusedRules = activeRules.filter(rule => approvalUsedCount(rule) === 0);
+  const groups = groupRulesByCategory(usedRules);
   return (
     <main className="control-room">
       <div className="control-room-head"><div><h1>승인 규칙</h1><p className="muted">Agent Relay가 묻지 않고 알아서 처리하도록 허락한 규칙입니다.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
@@ -250,14 +247,10 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
           {groups.map(group => (
             <section className="approval-group" key={group.category} aria-label={`승인 규칙 ${approvalCategoryLabel(group.category)}`}>
               <h3 className="approval-category">{approvalCategoryLabel(group.category)}</h3>
-              <div className="control-cards">{group.rules.map((rule, i) => (
-                <article className="control-card" key={i}>
-                  <p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{ruleLabel(rule)}</p>
-                  <p className="muted approval-stats">{approvalStatsLine(rule)}</p>
-                </article>
-              ))}</div>
+              <div className="control-cards">{group.rules.map((rule, i) => <ApprovalRuleCard key={i} rule={rule} />)}</div>
             </section>
           ))}
+          <UnusedApprovalRules rules={unusedRules} />
           <SupersededApprovals rules={allRules} />
           {otherEntries.length > 0 && <div className="control-cards">{otherEntries.map((item, i) => (
             <article className="control-card" key={`other-${i}`}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</p></article>
