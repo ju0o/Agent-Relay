@@ -3369,6 +3369,20 @@
           ],
           "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-1257 (5813083): JuPlan tab cannot read the real project-status.v1 export",
           "title": "The JuPlan tab shows 'JuPlan 상태에 없어요' for every field becaus"
+        },
+        {
+          "taskId": "JCAPP-JUPLAN-COUNTS-NUMBERS",
+          "scope": "The JuPlan tab shows '항목 0개 · 연결 0개 · 다이어그램 0개' for the real export, whose nodes, edges and diagrams are plain numbers (e.g. {\"nodes\": 12, \"edges\": 10, \"diagrams\": 15}), not arrays. In operator/public/app.js juplanView, count = typeof v === 'number' ? v : Array.isArray(v) ? v.length : 0 for nodes/edges/diagrams (and snapshots when it is an array). Extend test/juplan-module.test.mjs with the real fixture asserting '항목 12개 · 연결 10개 · 다이어그램 15개'.",
+          "files": [
+            "operator/public/app.js",
+            "test/juplan-module.test.mjs"
+          ],
+          "tests": [
+            "node --test test/juplan-module.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor review of ~/jc-tester/run-20260924-1310 (38f02dc): JuPlan counts read as 0",
+          "title": "The JuPlan tab shows '항목 0개 · 연결 0개 · 다이어그램 0개' for the real"
         }
       ]
     },
