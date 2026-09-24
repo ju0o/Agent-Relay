@@ -211,7 +211,11 @@ async function runSshJson(
   try {
     ({ stdout } = await execFileImpl('ssh', args, { shell: false, timeout: EXEC_TIMEOUT, ...options }));
   } catch (cause) {
-    throw new ControlRoomError('EXEC_FAILED', operation, '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.', cause);
+    const exitCode = cause && typeof cause === 'object' && 'code' in cause ? cause.code : undefined;
+    const message = exitCode === 255 || typeof exitCode !== 'number'
+      ? '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.'
+      : '작업 PC가 요청을 처리하지 못했어요.';
+    throw new ControlRoomError('EXEC_FAILED', operation, message, cause);
   }
 
   try {

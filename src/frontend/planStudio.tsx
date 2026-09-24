@@ -22,6 +22,8 @@ interface BoardLane {
 interface StudioTask {
   id: string;
   title: string;
+  scope: string;
+  registered: boolean;
   stage: number | string;
   agents: string;
   blocker: string;
@@ -137,14 +139,16 @@ function unwrapDraft(raw: unknown): Record<string, unknown> {
 function toTask(item: unknown, index: number): StudioTask {
   const fallbackId = `task-${index + 1}`;
   if (typeof item === 'string') {
-    return { id: fallbackId, title: item, stage: 0, agents: '', blocker: '', expectedRisk: '', completedAt: '' };
+    return { id: fallbackId, title: item, scope: item, registered: false, stage: 0, agents: '', blocker: '', expectedRisk: '', completedAt: '' };
   }
   if (!item || typeof item !== 'object') {
-    return { id: fallbackId, title: fallbackId, stage: 0, agents: '', blocker: '', expectedRisk: '', completedAt: '' };
+    return { id: fallbackId, title: fallbackId, scope: fallbackId, registered: false, stage: 0, agents: '', blocker: '', expectedRisk: '', completedAt: '' };
   }
   const r = item as Record<string, unknown>;
-  const id = str(r.id ?? r.taskId ?? r.key, fallbackId);
+  const taskId = str(r.taskId ?? r.task_id);
+  const id = taskId || str(r.id ?? r.key, fallbackId);
   const title = str(r.title ?? r.name ?? r.label ?? r.taskId ?? r.id, id);
+  const scope = str(r.scope ?? r.description, title);
   const stage = (r.stage ?? r.status ?? r.state ?? r.step ?? r.phase ?? 0) as number | string;
   const blocker = str(r.blocker ?? r.blockedReason ?? r.holdReason);
   const expectedRisk = str(r.expectedRisk ?? r.risk ?? r.expected_risk ?? r.danger);
@@ -152,7 +156,19 @@ function toTask(item: unknown, index: number): StudioTask {
     r.completedAt ?? r.completed_at ?? r.doneAt ?? r.done_at ?? r.finishedAt ?? r.finished_at
     ?? r.closedAt ?? r.closed_at ?? r.verifiedAt ?? r.updatedAt ?? r.updated_at ?? r.date,
   );
-  return { id, title, stage, agents: agentsText(r), blocker, expectedRisk, completedAt };
+  return { id, title, scope, registered: Boolean(taskId), stage, agents: agentsText(r), blocker, expectedRisk, completedAt };
+}
+
+export function toRoadmapPayload(draft: StudioDraft): { goal: string; policy: 'continue' | 'stop'; tasks: Array<{ taskId: string; title: string; scope: string }> } {
+  return {
+    goal: draft.goal,
+    policy: draft.runPolicy,
+    tasks: draft.tasks.filter(task => !task.registered).slice(0, 12).map(task => ({
+      taskId: task.id,
+      title: task.title,
+      scope: task.scope || task.title,
+    })),
+  };
 }
 
 function normalizeDraft(raw: unknown): StudioDraft {
@@ -216,6 +232,8 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   const [pendingApprove, setPendingApprove] = useState(false);
   const [pendingPolicy, setPendingPolicy] = useState<'continue' | 'stop' | null>(null);
   const [lastDeleted, setLastDeleted] = useState<{ task: StudioTask; index: number } | null>(null);
+  const [draftLoadError, setDraftLoadError] = useState(false);
+  const [draftLoadAttempt, setDraftLoadAttempt] = useState(0);
 
   // Board polling — task progress rows are fed by controlRoom:board.
   useEffect(() => {
@@ -245,19 +263,20 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
     let alive = true;
     setLoading(true);
     setError('');
+    setDraftLoadError(false);
     void must<unknown>({ op: 'planStudio:get', project }).then(raw => {
       if (!alive) return;
       const next = normalizeDraft(raw);
       setDraft(next);
       setSelectedId(prev => (prev && next.tasks.some(t => t.id === prev) ? prev : next.tasks[0]?.id ?? null));
-    }).catch(e => {
-      if (alive) { setDraft(EMPTY_DRAFT); setError(e instanceof Error ? e.message : String(e)); }
+    }).catch(() => {
+      if (alive) { setDraft(EMPTY_DRAFT); setDraftLoadError(true); }
     }).finally(() => { if (alive) setLoading(false); });
     void must<unknown>({ op: 'gates:list' }).then(raw => {
       if (alive) setGates(normalizeGates(raw));
     }).catch(() => undefined);
     return () => { alive = false; };
-  }, [project]);
+  }, [project, draftLoadAttempt]);
 
   const boardStageByTask = useMemo(() => {
     const map = new Map<string, number | string>();
@@ -272,6 +291,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   // Draft tasks merged with live board stages; board-only tasks fill gaps.
   // Founder view: 진행중/대기 먼저, HOLD 다음, 끝난 작업 마지막.
   const tasks = useMemo<StudioTask[]>(() => {
+    if (draftLoadError) return [];
     const merged = draft.tasks.map(t => ({ ...t, stage: boardStageByTask.get(t.id) ?? boardStageByTask.get(t.title) ?? t.stage }));
     if (merged.length > 0) return sortPlanStudioTasks(merged);
     const seen = new Set<string>();
@@ -284,6 +304,8 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
       derived.push({
         id,
         title: id,
+        scope: id,
+        registered: true,
         stage: (lane.current?.stage ?? 0) as number | string,
         agents: agentsText({ worker: lane.workerChain ?? lane.current?.worker, qa: lane.qaChain ?? lane.current?.qa }),
         blocker: str(lane.blocker),
@@ -292,7 +314,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
       });
     }
     return sortPlanStudioTasks(derived);
-  }, [draft.tasks, boardStageByTask, lanes, project]);
+  }, [draft.tasks, boardStageByTask, lanes, project, draftLoadError]);
 
   const finishedCount = useMemo(() => tasks.filter(isPlanStudioTaskDone).length, [tasks]);
   const remainingCount = tasks.length - finishedCount;
@@ -323,7 +345,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
   async function persist(next: StudioDraft, what: 'chat' | 'save' | 'approve' | 'gate'): Promise<void> {
     setBusy(what);
     try {
-      const payload = JSON.stringify({ goal: next.goal, tasks: next.tasks, runPolicy: next.runPolicy });
+      const payload = JSON.stringify(toRoadmapPayload(next));
       await must({ op: 'planStudio:save', project, draft: payload });
       setDraft(next);
       flashInfo('초안 저장됨');
@@ -408,6 +430,10 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
         </div>
         <button className="btn" onClick={onClose}>닫기</button>
       </div>
+      {draftLoadError && <div className="flash err" role="alert">
+        <span>이 계획을 읽지 못했어요</span>{' '}
+        <button className="mini" onClick={() => setDraftLoadAttempt(value => value + 1)}>다시 불러오기</button>
+      </div>}
       {error && <div className="flash err">{error}</div>}
       {info && <div className="flash ok">{info}</div>}
       <div className="plan-studio-grid">
@@ -457,7 +483,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                 {visibleTasks.map(task => {
                   const current = stageIndex(task.stage);
                   const done = isPlanStudioTaskDone(task);
-                  const editable = isNotStarted(task) && !done;
+                  const editable = isNotStarted(task) && !done && !task.registered;
                   return (
                     <li key={task.id} className={`plan-task${selected?.id === task.id ? ' selected' : ''}`}>
                       <button className="plan-task-head" onClick={() => setSelectedId(task.id)} title="상세 보기">
