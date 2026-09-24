@@ -2844,6 +2844,21 @@
           ],
           "ssotEvidence": "Founder direction 2026-09-23: continue the bounded M3 daily-value experiment toward a daily summary the Founder can read in plain Korean",
           "title": "기존 기록에서 하루 요약을 바로 보기"
+        },
+        {
+          "taskId": "JUCEIPT-MERGE-FOUNDER-WIP",
+          "scope": "Founder decision 2026-09-24 (A-16 follow-up, he ran the merge himself): bring the Founder's WIP snapshot branch founder/wip-20260924 (48 files: reconciler changes + regenerated M2 receipts) into this worktree with `git merge --no-ff founder/wip-20260924`. Two conflicts are known: src/reconciler/index.ts and m2/tasks/m2-011/receipt.html. Resolve by keeping BOTH sides' intent — the Founder's reconciler changes AND the integrated M2-011 fix (new-dependency impact shown) / M2-012 fix (no READY when cost unknown); then regenerate the affected m2 receipts with the repo's own receipt command so receipt.html/json match the merged reconciler, and update test expectations that pin old receipt counts (tests/reconciler.test.ts and the M3 daily corpus regression) to the regenerated corpus. Commit the merge. Do not touch the primary checkout.",
+          "files": [
+            "src/reconciler/index.ts",
+            "m2/tasks/m2-011/receipt.html",
+            "m2/tasks/m2-011/receipt.json",
+            "tests/reconciler.test.ts"
+          ],
+          "tests": [
+            "npm test"
+          ],
+          "ssotEvidence": "Founder 2026-09-24 19:4x: '그거 전부 진행' + ran the JuCeipt WIP merge (2 conflicts)",
+          "title": "Founder decision 2026-09-24 (A-16 follow-up, he ran the merg"
         }
       ]
     },
