@@ -257,6 +257,29 @@ test("controlRoom write actions reject invalid input before spawning", async () 
   assert.equal(spawned, 0);
 });
 
+test("each input-validating operation returns a Korean INVALID_INPUT message", async () => {
+  const fake = async () => ({ stdout: "{}", stderr: "" });
+  const cases = [
+    ["planStudio:get", () => runPlanStudioGet("", fake)],
+    ["planStudio:save", () => runPlanStudioSave("agent-relay", "", fake)],
+    ["planStudio:chat", () => runPlanStudioChat("agent-relay", "", fake)],
+    ["planStudio:approve", () => runPlanStudioApprove("", fake)],
+    ["gates:answer", () => runGateAnswer("bad id!", 0, fake)],
+    ["controlRoom:laneSet", () => runControlRoomLaneSet("agent-relay", "admin", ["codex"], fake)],
+    ["controlRoom:resume", () => runControlRoomResume("", fake)],
+    ["controlRoom:approvalAdd", () => runControlRoomApprovalAdd("", "summary", fake)],
+  ];
+
+  for (const [operation, invoke] of cases) {
+    const error = await invoke().catch((e) => e);
+    assert.ok(error instanceof ControlRoomError, operation);
+    assert.equal(error.code, "INVALID_INPUT");
+    assert.equal(error.operation, operation);
+    assert.match(error.message, /[가-힣]/);
+    assert.doesNotMatch(error.message, /INVALID_INPUT|agent-relay|bad id/);
+  }
+});
+
 test("controlRoom write actions surface EXEC_FAILED and INVALID_JSON", async () => {
   const failed = await runControlRoomLaneSet("agent-relay", "worker", ["codex"], async () => { throw new Error("offline"); }).catch((e) => e);
   assert.ok(failed instanceof ControlRoomError);

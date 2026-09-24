@@ -139,49 +139,49 @@ function invalidInput(operation: ControlRoomOperation, message: string): Control
 
 function assertProjectId(operation: ControlRoomOperation, project: unknown): asserts project is string {
   if (!isValidProjectId(project)) {
-    throw invalidInput(operation, `Invalid project id: ${String(project)}`);
+    throw invalidInput(operation, '프로젝트 ID가 올바르지 않습니다.');
   }
 }
 
 function assertGateId(operation: ControlRoomOperation, gateId: unknown): asserts gateId is string {
   if (!isValidGateId(gateId)) {
-    throw invalidInput(operation, `Invalid gate id: ${String(gateId)}`);
+    throw invalidInput(operation, '게이트 ID가 올바르지 않습니다.');
   }
 }
 
 function assertOptionIndex(operation: ControlRoomOperation, optionIndex: unknown): asserts optionIndex is number {
   if (!isValidOptionIndex(optionIndex)) {
-    throw invalidInput(operation, `Invalid option index: ${String(optionIndex)}`);
+    throw invalidInput(operation, '선택 번호가 올바르지 않습니다.');
   }
 }
 
 function assertPayloadString(operation: ControlRoomOperation, name: string, value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw invalidInput(operation, `Invalid ${name}: expected a non-empty string`);
+    throw invalidInput(operation, '입력값이 올바르지 않습니다.');
   }
 }
 
 function assertLaneRole(operation: ControlRoomOperation, role: unknown): asserts role is LaneRole {
   if (!isValidLaneRole(role)) {
-    throw invalidInput(operation, `Invalid role: ${String(role)}`);
+    throw invalidInput(operation, '역할이 올바르지 않습니다.');
   }
 }
 
 function assertRuntimes(operation: ControlRoomOperation, runtimes: unknown): asserts runtimes is string[] {
   if (!isValidRuntimes(runtimes)) {
-    throw invalidInput(operation, `Invalid runtimes: ${String(runtimes)}`);
+    throw invalidInput(operation, '실행 환경이 올바르지 않습니다.');
   }
 }
 
 function assertApprovalCategory(operation: ControlRoomOperation, category: unknown): asserts category is string {
   if (!isValidApprovalCategory(category)) {
-    throw invalidInput(operation, `Invalid category: ${String(category)}`);
+    throw invalidInput(operation, '승인 분류가 올바르지 않습니다.');
   }
 }
 
 function assertApprovalSummary(operation: ControlRoomOperation, summary: unknown): asserts summary is string {
   if (!isValidApprovalSummary(summary)) {
-    throw invalidInput(operation, `Invalid summary: expected 1-${MAX_APPROVAL_SUMMARY_LENGTH} chars`);
+    throw invalidInput(operation, '요약을 입력해 주세요.');
   }
 }
 
