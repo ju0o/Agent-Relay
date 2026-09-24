@@ -4262,6 +4262,38 @@
           ],
           "ssotEvidence": "Founder decision A-23 (2026-09-24): JuPlan 기획 대화 via AI 자동 배정, JuPlan validates/applies; engine bridge night juplan propose|apply verified end-to-end on a plan copy",
           "title": "Founder A-23 JuPlan 기획 대화창 in the JuPlan tab. Per discovered"
+        },
+        {
+          "taskId": "JCAPP-MENU-FIVE",
+          "scope": "Toss-style navigation (Founder: 토스처럼 4~5개): the rail and the phone bottom bar show exactly five items — 홈, 진행 (the current Agent Relay tab, with Tester results as a section/sub-tab inside it), 계획 (JuPlan), 승인, 더보기 (JuCeipt 영수증, Skill 만들기, 결과, 대화, 기억, 관리자, 고급). Keep every existing view reachable and every existing data-tab id working (old ids map to the new home of the view) so links/tests keep working; the phone bar fits 390px with ≥44px targets and no horizontal scroll. Update test/layout-consistency.test.mjs (or add test/menu-five.test.mjs) asserting five primary items and that every old tab id still renders.",
+          "files": [
+            "operator/public/app.js",
+            "operator/public/app.css",
+            "operator/public/index.html",
+            "test/menu-five.test.mjs"
+          ],
+          "tests": [
+            "node --test test/menu-five.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '메뉴를 토스처럼', 대화 채널 dead since 9/21 (retro); standing order A-27 (추천대로)",
+          "title": "Toss-style navigation (Founder: 토스처럼 4~5개): the rail and the"
+        },
+        {
+          "taskId": "JCAPP-CHAT-TO-PM",
+          "scope": "The 대화 tab's supervisor pane has been dead since 9/21, so route the Founder's message to something that answers: when supervisor readiness is not READY, the 보내기 button sends the message to the project PM via the existing Plan Studio chat (server: POST /api/relay/pm-chat {project, message} → execFile night ['roadmap','chat',project,message], project validated against board lanes, message 1-1500 chars, 15 min timeout) and shows the PM's reply plus the drafted plan change in the conversation ('PM이 이렇게 바꾸자고 해요: …' with [계획 화면에서 보기]). A project picker (default: 전체 → the jucontroler-app lane) sits above the box. No native dialogs; errors in one Korean line. Tests with injected exec (bad project, empty message, success).",
+          "files": [
+            "operator/server.mjs",
+            "lib/relayBoard.mjs",
+            "operator/public/app.js",
+            "test/chat-to-pm.test.mjs"
+          ],
+          "tests": [
+            "node --test test/chat-to-pm.test.mjs",
+            "node --test test/*.test.mjs"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '메뉴를 토스처럼', 대화 채널 dead since 9/21 (retro); standing order A-27 (추천대로)",
+          "title": "The 대화 tab's supervisor pane has been dead since 9/21, so ro"
         }
       ]
     },
