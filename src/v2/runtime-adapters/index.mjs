@@ -18,6 +18,8 @@ export const CLI_ARGS = {
   opencode: ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["run", "--dir", workspace, "--agent", "plan", "--auto", "-m", OPENCODE_FREE, prompt] : ["run", "--dir", workspace, "--auto", prompt],
   cursor: ({ prompt, sandbox }) => sandbox === "read-only" ? ["-p", "--trust", "--mode", "ask", "--output-format", "text", prompt] : ["-p", "--force", "--trust", "--output-format", "text", prompt],
   cline: ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["--cwd", workspace, "-p", prompt] : ["--cwd", workspace, "--auto-approve", "true", prompt],
+  // Free model through the installed OpenCode (Founder 2026-09-24: 무료 모델은 보조, 이미 있는 도구부터) — builds and reviews.
+  "opencode-free": ({ prompt, workspace, sandbox }) => sandbox === "read-only" ? ["run", "--dir", workspace, "--agent", "plan", "--auto", "-m", OPENCODE_FREE, prompt] : ["run", "--dir", workspace, "--auto", "-m", OPENCODE_FREE, prompt],
   grok: ({ prompt, workspace, sandbox }) => ["--cwd", workspace, "--permission-mode", sandbox === "read-only" ? "plan" : "acceptEdits", "-p", prompt],
 };
 
@@ -84,6 +86,7 @@ export function createRuntimeAdapters({ codex, commands = {} } = {}) {
   return {
     codex: new CodexRuntimeAdapter(codex),
     opencode: cli("opencode", commands.opencode || process.env.OPENCODE_BIN || "/usr/local/bin/opencode"),
+    "opencode-free": new CommandRuntimeAdapter({ id: "opencode-free", owner: "opencode", runtime: "opencode-free", command: commands.opencode || process.env.OPENCODE_BIN || "/usr/local/bin/opencode", probeArgs: ["--version"], safeNonInteractive: true, buildArgs: CLI_ARGS["opencode-free"] }),
     cline: cli("cline", commands.cline || process.env.CLINE_BIN || "/usr/local/bin/cline"),
     grok: cli("grok", commands.grok || process.env.GROK_BIN || `${homedir()}/.grok/bin/grok`),
     cursor: new CommandRuntimeAdapter({ id: "cursor", owner: "cursor", runtime: "cursor", command: commands.cursor || process.env.CURSOR_BIN || known("cursor-agent"), probeArgs: ["--version"], safeNonInteractive: true, buildArgs: CLI_ARGS.cursor }),

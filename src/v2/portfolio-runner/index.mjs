@@ -38,6 +38,13 @@ export const QUOTA_ERROR = /rate.?limit|quota|usage limit|limit (reached|exceede
 export const TRANSIENT_ERROR = /\b50[234]\b|overloaded|temporarily unavailable|service unavailable|upstream error|ECONNRESET|ETIMEDOUT|socket hang up|model not found|hook dispatch failed/i; // last two: a misconfigured runtime (cline 2026-09-23) — the next runtime takes over
 // Lane config: runtime / qaRuntime may be one id or an ordered fallback list, e.g. ["opencode", "codex"].
 const chainOf = (value) => [value].flat().filter(Boolean);
+// AI 자동 배정 (Founder 2026-09-24, OmniRoute-style): the lane's own chain first, then the rest of the Founder's subscribed
+// AIs (manifest.pool.subscribed), then free models (manifest.pool.free) as the last resort; anything cooling down after a
+// quota/timeout goes behind everything that is ready, keeping that same subscribed-before-free order.
+export function routeOrder(chain, pool = {}, cooldown = {}, now = Date.now()) {
+  const all = [...new Set([...chainOf(chain), ...chainOf(pool?.subscribed), ...chainOf(pool?.free)])];
+  return [...all.filter((id) => !(cooldown[id] > now)), ...all.filter((id) => cooldown[id] > now)];
+}
 
 const SETTLED = new Set(["VERIFIED_DONE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
 
@@ -251,7 +258,7 @@ export class PortfolioRunner {
   }
 
   async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
-  async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => {
+  async save(state) { const snapshot = { ...state, ...(this.routing ? { routing: this.routing } : {}), updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => {
     // The continuous loop holds state in memory; a Founder answer written meanwhile by the CLI (founder-response) must not be overwritten.
     if (this._continuous) { const disk = await this.load(); if ((disk.resolvedFounderGates || []).length > (snapshot.resolvedFounderGates || []).length) for (const key of ["founderDecisions", "resolvedFounderGates"]) { snapshot[key] = disk[key]; state[key] = disk[key]; } } await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
 
@@ -368,7 +375,7 @@ export class PortfolioRunner {
   async runChain(chain, request, validate = null) {
     const tried = []; const now = Date.now(); this._cooldown ??= {};
     // A model that just hit quota / timed out / was down goes to the back of the chain for COOLDOWN_MS instead of being tried first again.
-    const ordered = [...chain.filter((id) => !(this._cooldown[id] > now)), ...chain.filter((id) => this._cooldown[id] > now)];
+    const ordered = routeOrder(chain, this.manifest?.pool, this._cooldown, now);
     const cool = (id) => { this._cooldown[id] = Date.now() + (this.cooldownMs ?? 30 * 60_000); };
     for (const id of ordered) {
       const adapter = this.runtimeAdapters[id];
@@ -379,8 +386,10 @@ export class PortfolioRunner {
       try { result = await adapter.run(request); }
       catch (error) { const message = String(error.message || error); if (request.signal?.aborted || !(QUOTA_ERROR.test(message) || TRANSIENT_ERROR.test(message) || /exit null/.test(message))) throw error; cool(id); tried.push(`${id}: ${QUOTA_ERROR.test(message) ? "quota" : TRANSIENT_ERROR.test(message) ? "unavailable" : "timeout"}`); continue; }
       if (validate) { try { validate(result.text); } catch { tried.push(`${id}: invalid output`); if (id !== ordered.at(-1)) continue; } }
+      this.routing = { cooldown: { ...this._cooldown }, last: { runtime: id, at: new Date().toISOString(), fallbacks: tried } };
       return { ...result, runtime: id, fallbacks: tried };
     }
+    this.routing = { cooldown: { ...this._cooldown }, last: { runtime: null, at: new Date().toISOString(), fallbacks: tried } };
     throw new Error(`NO_RUNTIME_AVAILABLE: ${tried.join("; ")}`);
   }
 
@@ -403,9 +412,11 @@ export class PortfolioRunner {
       task.result = parseResultPacket(builderRun.text); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
       await this._acquireQa();
       let qaRun;
-      try { task.qaAttempts += 1; qaRun = await this.runChain(qaChain, { workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }, parseQaPacket); }
+      // independent QA: the AI that built this task reviews it only when every other QA AI is unavailable
+      const qaOrder = [...qaChain.filter((id) => id !== builderRun.runtime), ...qaChain.filter((id) => id === builderRun.runtime)];
+      try { task.qaAttempts += 1; qaRun = await this.runChain(qaOrder, { workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }, parseQaPacket); }
       finally { this._releaseQa(); }
-      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: qaRun.runtime, fallbacks: qaRun.fallbacks }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
+      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: qaRun.runtime, fallbacks: qaRun.fallbacks, ...(qaRun.runtime === builderRun.runtime ? { sameAsBuilder: true } : {}) }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
       if (task.qa.verdict === "ACCEPT" && !task.verificationOnly && this.testGate) {
         const headOf = () => exec("git", ["-C", builder.path, "rev-parse", "HEAD"]).then((result) => result.stdout.trim(), () => null);
         const head = await headOf();

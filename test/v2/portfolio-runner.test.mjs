@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, WorktreeManager, STATES, QA_VERDICTS, TRANSIENT_ERROR } from "../../src/v2/portfolio-runner/index.mjs";
+import { routeOrder, buildCoreV1Snapshot, discoverCodexCommand, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, WorktreeManager, STATES, QA_VERDICTS, TRANSIENT_ERROR } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter, createRuntimeAdapters } from "../../src/v2/runtime-adapters/index.mjs";
 const passGate = async () => ({ ok: true, results: [] });
 
@@ -405,4 +405,11 @@ test("promote resolves an abbreviated builder sha to the full commit", async () 
   assert.equal(git("rev-parse", ref), full);
   await assert.rejects(new WorktreeManager(repo).promote({ path: repo }, "P-BAD", "zzz"), /invalid promotion commit/);
   await rm(repo, { recursive: true, force: true });
+});
+
+test("routeOrder: lane chain, then other subscribed AIs, then free models; cooling-down AIs go last", () => {
+  const pool = { subscribed: ["codex", "claude-team", "cursor"], free: ["opencode-free"] };
+  assert.deepEqual(routeOrder(["opencode", "codex"], pool, {}, 0), ["opencode", "codex", "claude-team", "cursor", "opencode-free"]);
+  assert.deepEqual(routeOrder(["opencode", "codex"], pool, { opencode: 10 }, 5), ["codex", "claude-team", "cursor", "opencode-free", "opencode"]);
+  assert.deepEqual(routeOrder("codex", undefined, {}, 0), ["codex"]);
 });
