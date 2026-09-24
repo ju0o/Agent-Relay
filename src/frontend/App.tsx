@@ -1204,6 +1204,7 @@ function AppInner(): React.ReactElement {
             <button
               className="mini theme-toggle"
               title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
+              aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
               onClick={toggleTheme}
             >{theme === 'dark' ? '☀️' : '🌙'}</button>
             <button
@@ -1362,6 +1363,7 @@ function AppInner(): React.ReactElement {
               className="proj-tab-add"
               onClick={addSession}
               title="새 프로젝트 탭 추가"
+              aria-label="새 프로젝트 탭 추가"
             >+</button>
           </div>
 
@@ -1491,6 +1493,7 @@ function AppInner(): React.ReactElement {
                   className="tab-btn add"
                   onClick={() => void addTab()}
                   title="새 병렬 탭 추가 (Ctrl+T)"
+                  aria-label="새 탭 추가"
                 >+ 새 탭</button>
               </div>
 
@@ -1556,6 +1559,7 @@ function AppInner(): React.ReactElement {
                         <button
                           className="agent-pill-add"
                           title="에이전트 추가"
+                          aria-label="에이전트 추가"
                           onClick={() => setModal({
                             title: '새 에이전트',
                             placeholder: '에이전트 이름',
@@ -1877,7 +1881,7 @@ function FileTree({
             </div>
           );
         })}
-        <button className="proj-add" onClick={onAddProject}>+ 새 프로젝트</button>
+        <button className="proj-add" onClick={onAddProject} aria-label="새 프로젝트 추가">+ 새 프로젝트</button>
       </div>
 
       {/* 헤더 */}

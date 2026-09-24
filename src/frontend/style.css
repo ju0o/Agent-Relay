@@ -130,6 +130,8 @@
 /* 탑바 */
 .app[data-theme="light"] .topbar { background: #f5f5f7; border-bottom-color: rgba(0,0,0,0.08); }
 
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 * { box-sizing: border-box; }
 
 html, body, #app {
@@ -251,7 +253,7 @@ html, body, #app {
   border: 1px solid var(--border);
   padding: 5px 8px; border-radius: 6px; min-width: 140px;
 }
-.field select:focus, .field input:focus { outline: none; border-color: var(--accent); }
+.field select:focus:not(:focus-visible), .field input:focus:not(:focus-visible) { outline: none; border-color: var(--accent); }
 .fgrow { display: flex; gap: 4px; align-items: stretch; }
 .fgrow .add { flex: none; }
 .fvalue { padding: 5px 8px; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; }
@@ -437,8 +439,9 @@ html, body, #app {
   border: 0; resize: none;
   padding: 10px 12px;
   font-family: 'Cascadia Mono', 'Consolas', 'Malgun Gothic', monospace;
-  font-size: 13px; line-height: 1.55; outline: none;
+  font-size: 13px; line-height: 1.55;
 }
+.pane textarea:focus:not(:focus-visible) { outline: none; }
 .pane textarea:focus { box-shadow: inset 3px 0 0 var(--accent); }
 .pane textarea::placeholder { color: var(--muted); opacity: 0.7; }
 
@@ -496,8 +499,9 @@ html, body, #app {
 .hist-search {
   flex: 1; background: var(--bg3); color: var(--fg);
   border: 1px solid var(--border); border-radius: 5px;
-  padding: 5px 8px; font-size: 12px; outline: none;
+  padding: 5px 8px; font-size: 12px;
 }
+.hist-search:focus:not(:focus-visible) { outline: none; }
 .hist-search:focus { border-color: var(--accent); }
 .hist-search::placeholder { color: var(--muted); }
 
@@ -542,8 +546,9 @@ html, body, #app {
   width: 100%; background: var(--bg3); color: var(--fg);
   border: 1px solid var(--border);
   padding: 8px 10px; border-radius: 6px;
-  margin: 10px 0 4px; outline: none;
+  margin: 10px 0 4px;
 }
+.modcard input:focus:not(:focus-visible) { outline: none; }
 .modcard input:focus { border-color: var(--accent); }
 .modalbtns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
 
@@ -975,7 +980,7 @@ html, body, #app {
   background: var(--bg);
   color: var(--fg);
 }
-.qdf-card textarea:focus { outline: none; border-color: var(--accent); }
+.qdf-card textarea:focus:not(:focus-visible) { outline: none; border-color: var(--accent); }
 .qdf-foot { display: flex; align-items: center; gap: 8px; }
 .qdf-ctx {
   flex: 1;
