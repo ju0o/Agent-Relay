@@ -1647,6 +1647,17 @@
             "npm test"
           ],
           "ssotEvidence": "docs/qa/M3_DAILY_VALUE_SCORECARD.md:27-30 \"Continue only with another bounded receipt-backed comparison.\""
+        },
+        {
+          "taskId": "JUCEIPT-M3-M2-CORPUS-REGRESSION",
+          "scope": "Extend the offline daily-report regression to the committed 14-task M2 receipt corpus and preserve acceptance, review, evidence, outcome, impact, and unknown-cost signals without adding product surface.",
+          "files": [
+            "tests/daily-m2-corpus.test.ts"
+          ],
+          "tests": [
+            "npm test"
+          ],
+          "ssotEvidence": "Founder direction 2026-09-23"
         }
       ]
     },
