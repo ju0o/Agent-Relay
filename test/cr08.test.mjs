@@ -77,14 +77,14 @@ test("approvalStatsLine — unused → '아직 자동 적용된 적 없음', els
   );
 });
 
-test("approvalCategoryLabel — known categories map to Korean headings, others unchanged", () => {
+test("approvalCategoryLabel — known categories map to Korean headings, unknown → '기타'", () => {
   assert.equal(approvalCategoryLabel("agents"), "에이전트 배치");
   assert.equal(approvalCategoryLabel("git"), "Git·브랜치");
   assert.equal(approvalCategoryLabel("install"), "설치");
   assert.equal(approvalCategoryLabel("lanes"), "작업 흐름");
   assert.equal(approvalCategoryLabel("merge-push"), "병합·올리기");
   assert.equal(approvalCategoryLabel("기타"), "기타");
-  assert.equal(approvalCategoryLabel("deploy"), "deploy");
+  assert.equal(approvalCategoryLabel("deploy"), "기타");
 });
 
 test("sortRulesByUsage — desc by usedCount, stable on ties, missing = 0", () => {

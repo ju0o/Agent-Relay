@@ -9,7 +9,7 @@ import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
 import { ControlRoom } from './controlRoom.js';
-import { approvalCategoryLabel, approvalStatsLine, dedupeApprovalRules, groupRulesByCategory } from './approvals.js';
+import { approvalCategoryLabel, approvalStatsLine, dedupeApprovalRules, groupRulesByCategory, partitionSupersededApprovalRules, SupersededApprovals } from './approvals.js';
 import type { ApprovalRuleJson } from '../shared/types.js';
 import { PlanStudio } from './planStudio.js';
 import { renderMd } from './md.js';
@@ -205,7 +205,10 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
   const directRules = ruleEntries.filter(rule => !hasNestedRules(rule));
   // Envelope { rules: [A, B] } listed alongside the same A/B as top-level
   // entries must not render twice — dedupe by identity + content first.
-  const groups = groupRulesByCategory(dedupeApprovalRules([...directRules, ...unwrapped]));
+  // '(바뀜)'으로 대체된 규칙은 그룹에서 빼고 접힌 '지난 결정'으로 둔다.
+  const allRules = dedupeApprovalRules([...directRules, ...unwrapped]);
+  const { active: activeRules } = partitionSupersededApprovalRules(allRules);
+  const groups = groupRulesByCategory(activeRules);
   const ruleLabel = (rule: ApprovalRuleJson): string => {
     const record = rule as Record<string, unknown>;
     const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
@@ -229,6 +232,7 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
               ))}</div>
             </section>
           ))}
+          <SupersededApprovals rules={allRules} />
           {otherEntries.length > 0 && <div className="control-cards">{otherEntries.map((item, i) => (
             <article className="control-card" key={`other-${i}`}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</p></article>
           ))}</div>}
