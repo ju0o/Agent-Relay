@@ -1080,6 +1080,85 @@
             "PYTHONPATH=src python3 tests/run_tests.py"
           ],
           "ssotEvidence": "Founder direction 2026-09-23"
+        },
+        {
+          "taskId": "ACTL-TK-SUMMARY-HYDRATED-COUNTS",
+          "scope": "Fix the '작업 중 0 while agents work' bug in the Tk board. In src/actl/gui.py add a pure helper `_summary_text(rows)` that uses actl.core.projection.board_counts plus runtime_counts and returns Korean text like '에이전트 3 · 작업 중 1 · 대기 1 · 문제 1 · 확인 중 0'. Call it from both Board._refresh_done (replace gui.py:744-746) and Board._hydration_done (currently never updates summary_var); in _hydration_done also recompute refresh_interval_ms from the hydrated rows. Change the initial summary_var text to the same Korean format with zeros. Add tests: hydrated rows with one RUNNING row give '작업 중 1'; a stubbed Board (object.__new__) whose _hydration_done receives WORKING rows updates summary_var.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_summary_counts.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
+          "title": "Fix the '작업 중 0 while agents work' bug in the Tk board. In s"
+        },
+        {
+          "taskId": "ACTL-TK-VISIBLE-FEEDBACK",
+          "scope": "Make every SEND/COPY/refresh outcome visible without opening the log. In src/actl/gui.py add a Korean notice label (self.notice_var, wrap 330px, colored by level ok/warn/bad) under the action bar and a method `notify(text, level)` that sets notice_var and status_var and also calls self.log. Route through notify: copy results (복사 완료 N자 / 아직 새 결과가 없습니다 — 작업이 끝나면 다시 눌러 주세요 / 이전 결과와 같아서 복사하지 않았습니다 / 클립보드 복사 실패), send outcomes (제출 완료, 작업 시작 확인, 전송 실패 + short reason), and disabled or empty clicks ('보낼 내용을 입력하세요', '에이전트를 먼저 선택하세요'). Also stop the live preview from overwriting the copy confirmation: set self.preview_hold_until = monotonic()+8 in the COPY success path, and have _request_preview.done skip rewriting the preview while held. Tests: stubbed Board on_copy done-paths set notice_var for each result class, and _request_preview does not rewrite during a hold.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_visible_feedback.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
+          "title": "Make every SEND/COPY/refresh outcome visible without opening"
+        },
+        {
+          "taskId": "ACTL-TK-EMPTY-ERROR-STATES",
+          "scope": "Give empty and error states a meaning plus a next step in src/actl/gui.py. Add a pure `_state_message(kind, detail='')` for kinds 'loading' ('ASUS에서 에이전트를 찾는 중…'), 'unreachable' ('ASUS에 연결할 수 없습니다. ASUS 전원과 네트워크를 확인한 뒤 [다시 시도]를 누르세요.' plus a short detail), and 'empty' ('ASUS에서 실행 중인 에이전트가 없습니다. ASUS tmux에서 에이전트를 시작하면 자동으로 나타납니다.'). In _refresh_done's exception branch and whenever rows are empty, write this message into the preview, set project_counts accordingly (never leave '프로젝트를 검색 중…'), replace the misleading '조건에 맞는 에이전트 없음' with the empty message when there is no filter, and set status to 'ASUS 연결 안 됨' or 'ASUS 연결됨 · 에이전트 0'. Call _update_action_state unconditionally in _refresh_done and make it disable SEND/COPY/FOCUS when current() is None. Add a visible '다시 시도' button next to the log toggle that calls refresh(). Tests: _state_message texts; a stubbed Board with a failed refresh and with empty rows disables actions and sets the Korean status.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_empty_error_states.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
+          "title": "Give empty and error states a meaning plus a next step in sr"
+        },
+        {
+          "taskId": "ACTL-TK-KOREAN-LABELS",
+          "scope": "Replace Founder-facing English and dead controls in src/actl/gui.py with plain Korean. PROJECTS→'프로젝트', ALL PROJECTS→'전체', NEEDS ATTENTION→'확인 필요', LIVE RUNTIME INSTANCES→'에이전트', 'RUNTIME INSPECTOR — select a runtime'→'에이전트를 선택하세요', SEND PROMPT→'보내기', COPY RESULT→'결과 복사', FOCUS→'ASUS 화면 전환', PANE BOARD→'pane 관리(고급)', '▸ diagnostics' and '▸/▾ 로그' unified as '▸ 자세한 기록', and '◉ 이벤트 감시 ON (health 60s)'→'● 자동 갱신 켜짐'. Remove the always-disabled COLLECT RESULT button and the duplicate SEND PROMPT in the send row, keeping one primary '보내기' next to the prompt. Raise the prompt height from 2 to 5 lines with a grey placeholder '에이전트에게 보낼 내용 (Ctrl+Enter로 보내기)'. The send confirm dialog should show the display name only, not the raw pane id. Keep the action_buttons dict keys stable, or update _update_action_state accordingly. Test: a source or AST check that the removed English labels no longer appear as Tk text and that only one send button is created.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_korean_labels.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
+          "title": "Replace Founder-facing English and dead controls in src/actl"
+        },
+        {
+          "taskId": "ACTL-TK-PLAIN-CARDS-KEYBOARD",
+          "scope": "Simplify cards and inspector and add keyboard basics in src/actl/gui.py. Add a pure `_card_line(row)` returning '<Korean phase> · <project unless UNASSIGNED/UNKNOWN> · <first 60 chars of preview>'. Phase uses STATE_KO and _phase mapped to 작업 중/결과 도착/대기/연결 끊김/확인 중, never the literals UNKNOWN or RUNNING and no pane ids. Render it with wraplength so long text cannot widen the centre column (this fixes the clipped filter dropdown and PANE BOARD button). Replace inspector_truth detail with 2 Korean lines (상태 · 프로젝트 · 역할 if known) and log the raw Machine/PID/Command block to the log instead; keep runtime_key/target semantics unchanged. Make cards focusable (takefocus=1, visible focus highlight), bind Up/Down on the root to select the previous or next visible card, and bind Ctrl+Shift+C to on_copy. Tests: _card_line never contains 'UNKNOWN', 'RUNNING' or '%', and caps its length; inspector_truth detail has no 'PID'; the existing inspector tests still pass.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_plain_cards.py",
+            "tests/test_founder_ux_closeout.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
+          "title": "Simplify cards and inspector and add keyboard basics in src/"
+        },
+        {
+          "taskId": "ACTL-TK-HERMES-RESKIN",
+          "scope": "Re-skin the Tk board to the Founder's Hermes hub style (Founder choice 2026-09-24: 전부 Hermes로 통일) by changing only the theme constants and the few hardcoded colors in src/actl/gui.py. Set BG #0B0D10, PANEL #12151A, PANEL2 #161A20, LINE #262B33, TXT #E6E8EC, DIM #9AA3AE, ACC/NEON #7FD4C1 with dark text (#0B0D10) on primary buttons, OK #7FD4C1, WARN #E8C270, BAD #E0726C. FONT_HDR/FONT_BIG use a monospace family ('JetBrains Mono', falling back to 'Cascadia Mono', 'Consolas'), body stays 'Segoe UI' at 10pt minimum (drop the 9pt usages). Use 1px LINE borders everywhere (card highlightthickness 1, selected card 1px ACC instead of 2px). Replace the hardcoded '#005bb5', '#fff7ed', '#fafafa' and fg='white' in _btn, attention buttons, prompt, send button and palette with the constants. Keep text contrast of at least 4.5:1 for TXT and DIM on BG and PANEL. Test: parse the constants and assert WCAG contrast ≥4.5 for TXT/DIM on BG/PANEL and for the primary button text on ACC, and assert that no raw '#fff7ed', '#005bb5' or '#fafafa' literals remain.",
+          "files": [
+            "src/actl/gui.py",
+            "tests/test_gui_theme.py"
+          ],
+          "tests": [
+            "PYTHONPATH=src python3 tests/run_tests.py"
+          ],
+          "ssotEvidence": "Founder 2026-09-24: '내 니즈에 맞게 제대로 런칭 가능한 수준 … ui/ux 전부 다 확실하게'; Founder choice '전부 Hermes로 통일'; supervisor UX audit of the Tk board (captures ~/jc-tester/audit-actl/)",
+          "title": "Re-skin the Tk board to the Founder's Hermes hub style (Foun"
         }
       ],
       "qaRuntime": [
