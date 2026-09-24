@@ -897,6 +897,37 @@
           ],
           "ssotEvidence": "Supervisor visual review of Agent Relay v6 Linux Tester captures (~/jc-tester/agent-relay-v6/); Founder 2026-09-24 launch-quality request",
           "title": "Remaining jargon and empty values in the Control Room (src/f"
+        },
+        {
+          "taskId": "AGENTRELAY-PLANSTUDIO-FOUNDER-VIEW",
+          "scope": "Plan Studio (src/frontend/planStudio.tsx) is still English-heavy and shows 62 finished tasks first. (1) Title 'Plan Studio' → '계획', subtitle 'Goal · Task chain · PM chat · 승인 → 자동 진행' → '목표와 작업 순서를 보고, PM에게 바꿔 달라고 말할 수 있어요.' (2) Section labels GOAL → '목표', TASK CHAIN (N) → '작업 순서 (N개)', 'PM CHAT (PLANSTUDIO:CHAT)' → 'PM에게 요청', '선택 노드 상세' → '선택한 작업', HUMAN GATE → '사람 확인', '대기 중인 gate가 없습니다.' → '지금 답할 것이 없어요.', '답변이 오면 draft 다이어그램이 갱신됩니다.' → 'PM이 답하면 작업 순서가 새로 그려져요.' (3) Step labels reuse the Control Room Korean steps (계획/확인/작업/검수/시험/사람 확인/반영). (4) Ordering: tasks in progress or queued first, then HOLD, then finished; finished tasks are collapsed behind a '끝난 작업 N개 보기' toggle (closed by default). (5) In 선택한 작업, rows with no value (Agents: —, Blocker: —, 예상 리스크: —) are hidden. Add test/planstudio-founder-view.test.mjs covering the ordering helper (pure, exported from src/shared/types.ts) and asserting 'TASK CHAIN', 'PLANSTUDIO:CHAT' and 'gate가 없습니다' no longer appear in planStudio.tsx.",
+          "files": [
+            "src/frontend/planStudio.tsx",
+            "src/shared/types.ts",
+            "test/planstudio-founder-view.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/planstudio-founder-view.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of Agent Relay v7 Linux Tester captures (~/jc-tester/agent-relay-v7/); Founder 2026-09-24 launch-quality request",
+          "title": "Plan Studio (src/frontend/planStudio.tsx) is still English-h"
+        },
+        {
+          "taskId": "AGENTRELAY-CONTROLROOM-LEFTOVERS",
+          "scope": "Control Room leftovers in src/frontend/controlRoom.tsx: page title 'Control Room' → '관제실' (matching the top bar); the 'WORKER → QA' card title → '담당 AI'; 'Worker Agent 바꾸기' / 'QA Agent 바꾸기' → '만드는 AI 바꾸기' / '검수하는 AI 바꾸기'; the lane goal line that repeats the tab subtitle (e.g. 'CORE V1 자동 실행과 결과 수집' shown twice) is shown once. Extend test/controlroom-plain-2.test.mjs asserting 'WORKER → QA' and the English title are gone.",
+          "files": [
+            "src/frontend/controlRoom.tsx",
+            "test/controlroom-plain-2.test.mjs"
+          ],
+          "tests": [
+            "npm run typecheck",
+            "npm run build",
+            "node --test test/controlroom-plain-2.test.mjs"
+          ],
+          "ssotEvidence": "Supervisor visual review of Agent Relay v7 Linux Tester captures (~/jc-tester/agent-relay-v7/); Founder 2026-09-24 launch-quality request",
+          "title": "Control Room leftovers in src/frontend/controlRoom.tsx: page"
         }
       ],
       "qaRuntime": [
