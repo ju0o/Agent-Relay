@@ -32,3 +32,12 @@ test("Control Room and Plan Studio consume the shared map and render goals separ
   assert.match(controlRoom, /<span>\{presentation\.name\}<\/span>[\s\S]*?<small[^>]*>\{presentation\.goal\}<\/small>/);
   assert.match(planStudio, /<span>\{item\.name\}<\/span>[\s\S]*?<small[^>]*>\{item\.goal\}<\/small>/);
 });
+
+test("QA editor blocks self-review by the first worker AI", async () => {
+  const [labels, controlRoom] = await Promise.all([read("src/shared/projectLabels.ts"), read("src/frontend/controlRoom.tsx")]);
+  assert.match(labels, /export function isSelfReviewChain\s*\(/);
+  assert.match(controlRoom, /isSelfReviewChain/);
+  assert.match(controlRoom, /workerChain/);
+  assert.match(controlRoom, /만든 AI가 스스로 검수할 수 없어요\. 다른 AI를 첫 번째로 골라 주세요\./);
+  assert.match(controlRoom, /disabled=\{[^}]*selfReview/);
+});

@@ -144,6 +144,24 @@ export function isHoldSkipped(choice: unknown): boolean {
 }
 
 /**
+ * QA 체인이 작업자 체인과 겹치는지(스스로 검수) 판별 — 첫 번째 QA AI가 첫 번째 작업자 AI와 같으면 true.
+ * Control Room 검수하는 AI 바꾸기 editor와 단위 테스트가 공유하는 순수 함수.
+ */
+export function isSelfReviewChain(worker: unknown, qa: unknown): boolean {
+  const firstOf = (value: unknown): string => {
+    if (Array.isArray(value)) {
+      const first = value[0];
+      return typeof first === 'string' ? first.trim() : '';
+    }
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    return '';
+  };
+  const firstWorker = firstOf(worker);
+  const firstQa = firstOf(qa);
+  return firstWorker !== '' && firstWorker === firstQa;
+}
+
+/**
  * holds 항목 1개를 정규화한다. 문자열이면 reason만 있는 항목으로 취급.
  * choice가 'skip'이거나 내용이 완전히 비어 있으면 null.
  */

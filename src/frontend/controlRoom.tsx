@@ -4,7 +4,7 @@ import { ModelUsagePanel } from './approvals.js';
 import { InlineConfirm } from './components.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
 import { controlRoomTaskId, controlRoomTaskTitle, founderTaskTitle, controlRoomHasDoneData, controlRoomTodayCount, controlRoomTodayDone, controlRoomVerifiedDoneTotal, controlRoomWorkingRows, laneAttention } from '../shared/types.js';
-import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
+import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewChain, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
 
 export interface ControlRoomHoldExplain {
   sentence?: unknown;
@@ -263,15 +263,17 @@ function statusText(status: ActionStatus): string {
   return `${prefix}${status.text}`;
 }
 
-function ChainEditor({ project, role, initial, onRefresh }: {
+function ChainEditor({ project, role, initial, workerChain, onRefresh }: {
   project: string;
   role: 'worker' | 'qa';
   initial: string[];
+  workerChain?: string[];
   onRefresh: () => Promise<void>;
 }): React.ReactElement {
   const [picked, setPicked] = useState<string[]>(initial);
   const [status, setStatus] = useState<ActionStatus>(null);
   const [busy, setBusy] = useState(false);
+  const selfReview = role === 'qa' ? isSelfReviewChain(workerChain ?? [], picked) : false;
 
   function toggle(runtime: string): void {
     setPicked(prev => {
@@ -319,7 +321,8 @@ function ChainEditor({ project, role, initial, onRefresh }: {
         })}
       </div>
       <p className="chain-current">현재 순서: <strong>{picked.length ? picked.join(' → ') : '—'}</strong></p>
-      <button className="btn" type="submit" disabled={busy || picked.length < 1}>
+      {selfReview && <p className="muted">만든 AI가 스스로 검수할 수 없어요. 다른 AI를 첫 번째로 골라 주세요.</p>}
+      <button className="btn" type="submit" disabled={busy || picked.length < 1 || selfReview}>
         {busy ? '저장 중…' : 'AI 순서 저장'}
       </button>
       {status && <p className={`control-status ${status.state}`} role="status">{statusText(status)}</p>}
@@ -590,7 +593,7 @@ function LaneView({ lane, onRefresh }: {
           {project && (
             <div className="control-actions">
               <ChainEditor key={`${project}-worker`} project={project} role="worker" initial={chainToList(worker)} onRefresh={onRefresh} />
-              <ChainEditor key={`${project}-qa`} project={project} role="qa" initial={chainToList(qa)} onRefresh={onRefresh} />
+              <ChainEditor key={`${project}-qa`} project={project} role="qa" initial={chainToList(qa)} workerChain={chainToList(worker)} onRefresh={onRefresh} />
             </div>
           )}
         </article>
