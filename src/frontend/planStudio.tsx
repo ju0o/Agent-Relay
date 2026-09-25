@@ -463,11 +463,11 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
       {error && <div className="flash err">{error}</div>}
       {info && <div className="flash ok">{info}</div>}
       <div className="plan-studio-grid">
-        <section className="control-card plan-projects" aria-label="project list">
+        <section className="control-card plan-projects" aria-label="프로젝트 목록">
           <h3>프로젝트</h3>
           {projects.length === 0
             ? <p className="muted">아직 표시할 프로젝트가 없어요.</p>
-            : <div className="plan-project-list" role="listbox" aria-label="projects">
+            : <div className="plan-project-list" role="listbox" aria-label="프로젝트">
               {projects.map(name => {
                 const lane = lanes.find(l => str(l.project ?? l.id) === name);
                 const item = projectPresentation(name, lane);
@@ -486,7 +486,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
         </section>
 
         <section className="plan-center" aria-label="목표와 작업 순서">
-          <article className="control-card" aria-label="goal card">
+          <article className="control-card" aria-label="목표">
             <h3>목표</h3>
             {loading
               ? <p className="muted">불러오는 중...</p>
@@ -582,7 +582,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
               </>}
           </article>
 
-          <article className="control-card" aria-label="run policy">
+          <article className="control-card" aria-label="진행 방식">
             <h3>진행 방식</h3>
             <label className="plan-radio">
               <input
@@ -635,14 +635,14 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
         </section>
 
         <aside className="plan-side" aria-label="PM 요청과 작업 상세">
-          <article className="control-card" aria-label="pm chat">
+          <article className="control-card" aria-label="PM에게 요청">
             <h3>PM에게 요청</h3>
             <form onSubmit={e => void sendChat(e)} className="plan-chat-form">
               <textarea
                 aria-label="PM에게 계획 수정 요청"
                 value={chat}
                 onChange={e => setChat(e.target.value)}
-                placeholder="예: 3번 작업을 QA 먼저로 바꿔줘"
+                placeholder="예: 3번 작업을 먼저 검수해 줘"
                 rows={3}
               />
               <button className="btn primary" type="submit" disabled={!chat.trim() || busy === 'chat'}>
@@ -652,7 +652,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
             <p className="muted">PM이 답하면 작업 순서가 새로 그려져요.</p>
           </article>
 
-          <article className="control-card" aria-label="selected node detail">
+          <article className="control-card" aria-label="선택한 작업 상세">
             <h3>선택한 작업</h3>
             {!selected
               ? <p className="muted">왼쪽에서 작업을 골라 주세요.</p>
