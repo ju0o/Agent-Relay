@@ -72,6 +72,13 @@ export interface McpTool {
 export interface PmServerContext {
   dataRoot: string;
   project: string;
+  /** Optional process-bound runtime for the explicit AUTO Goal Loop tool. */
+  goalLoop?: {
+    workerId: string;
+    workspaceRoot: string;
+    transport?: 'internal' | 'actl';
+    actlAgent?: string;
+  };
 }
 
 /**

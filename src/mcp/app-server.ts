@@ -86,6 +86,7 @@ export interface McpAppServerOptions {
   authToken?: string;
   /** Display name shown to the MCP Apps host. */
   serverName?: string;
+  goalLoop?: PmServerContext['goalLoop'];
 }
 
 /** Constant-time token compare; never throws, never leaks length via timing beyond the length check itself. */
@@ -202,7 +203,11 @@ function newAppServer(tools: AppTool[]): SdkServerInstance {
 }
 
 export async function startMcpAppServer(opts: McpAppServerOptions): Promise<http.Server> {
-  const ctx: PmServerContext = { dataRoot: opts.dataRoot, project: opts.project };
+  const ctx: PmServerContext = {
+    dataRoot: opts.dataRoot,
+    project: opts.project,
+    ...(opts.goalLoop ? { goalLoop: opts.goalLoop } : {}),
+  };
   const tools = buildAppTools(ctx);
 
   const app = http.createServer(async (req, res) => {

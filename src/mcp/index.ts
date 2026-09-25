@@ -28,6 +28,10 @@ interface ParsedArgs {
   clientId?: string;
   agentId?: string;
   sessionId?: string;
+  goalWorker?: string;
+  goalWorkspace?: string;
+  goalTransport?: 'internal' | 'actl';
+  goalActlAgent?: string;
 }
 
 function parseArgs(): ParsedArgs {
@@ -40,6 +44,10 @@ function parseArgs(): ParsedArgs {
   let clientId = '';
   let agentId = '';
   let sessionId = '';
+  let goalWorker = '';
+  let goalWorkspace = '';
+  let goalTransport = '';
+  let goalActlAgent = '';
 
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
@@ -51,6 +59,10 @@ function parseArgs(): ParsedArgs {
       case '--clientId':  if (i + 1 < argv.length) clientId  = argv[++i]; break;
       case '--agentId':   if (i + 1 < argv.length) agentId   = argv[++i]; break;
       case '--sessionId': if (i + 1 < argv.length) sessionId = argv[++i]; break;
+      case '--goalWorker': if (i + 1 < argv.length) goalWorker = argv[++i]; break;
+      case '--goalWorkspace': if (i + 1 < argv.length) goalWorkspace = argv[++i]; break;
+      case '--goalTransport': if (i + 1 < argv.length) goalTransport = argv[++i]; break;
+      case '--goalActlAgent': if (i + 1 < argv.length) goalActlAgent = argv[++i]; break;
     }
   }
 
@@ -74,6 +86,10 @@ function parseArgs(): ParsedArgs {
     clientId:  clientId  || undefined,
     agentId:   agentId   || undefined,
     sessionId: sessionId || undefined,
+    goalWorker: goalWorker || undefined,
+    goalWorkspace: goalWorkspace || undefined,
+    goalTransport: goalTransport === 'actl' ? 'actl' : goalTransport === 'internal' ? 'internal' : undefined,
+    goalActlAgent: goalActlAgent || undefined,
   };
 }
 
@@ -84,7 +100,21 @@ async function main(): Promise<void> {
 
   let tools;
   if (args.surface === 'pm') {
-    tools = buildAllPmTools({ dataRoot: args.dataRoot, project: args.project });
+    if ((args.goalWorker && !args.goalWorkspace) || (!args.goalWorker && args.goalWorkspace)) {
+      throw new Error('--goalWorker and --goalWorkspace must be provided together');
+    }
+    tools = buildAllPmTools({
+      dataRoot: args.dataRoot,
+      project: args.project,
+      ...(args.goalWorker && args.goalWorkspace ? {
+        goalLoop: {
+          workerId: args.goalWorker,
+          workspaceRoot: args.goalWorkspace,
+          ...(args.goalTransport ? { transport: args.goalTransport } : {}),
+          ...(args.goalActlAgent ? { actlAgent: args.goalActlAgent } : {}),
+        },
+      } : {}),
+    });
   } else {
     // surface === 'worker' — taskId and runId are guaranteed non-empty by parseArgs
     tools = buildAllWorkerTools({

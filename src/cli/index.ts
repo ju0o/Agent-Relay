@@ -213,6 +213,7 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
         worker = next;
       } else if (a === '--data-root') {
         dataRootOpt = next;
+        dataRoot = next;
       } else if (a === '--goal-brief-dir') {
         goalBriefDir = next;
       } else if (a === '--pattern') {
@@ -239,8 +240,6 @@ function parseArgs(argv: string[]): { command: string | null; sub: string | null
         actlAgent = next;
       } else if (a === '--project-name') {
         projectName = next;
-      } else if (a === '--data-root') {
-        dataRoot = next;
       } else {
         hostConfig = next;
       }

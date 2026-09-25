@@ -22,6 +22,10 @@ interface Args {
   host: string;
   authTokenFile?: string;
   allowUnauthenticated: boolean;
+  goalWorker?: string;
+  goalWorkspace?: string;
+  goalTransport?: 'internal' | 'actl';
+  goalActlAgent?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -31,6 +35,10 @@ function parseArgs(argv: string[]): Args {
   let host = '127.0.0.1';
   let authTokenFile: string | undefined;
   let allowUnauthenticated = false;
+  let goalWorker = '';
+  let goalWorkspace = '';
+  let goalTransport = '';
+  let goalActlAgent = '';
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--dataRoot': if (i + 1 < argv.length) dataRoot = argv[++i]; break;
@@ -39,11 +47,26 @@ function parseArgs(argv: string[]): Args {
       case '--host':     if (i + 1 < argv.length) host = argv[++i]; break;
       case '--auth-token-file': if (i + 1 < argv.length) authTokenFile = argv[++i]; break;
       case '--allow-unauthenticated': allowUnauthenticated = true; break;
+      case '--goal-worker': if (i + 1 < argv.length) goalWorker = argv[++i]; break;
+      case '--goal-workspace': if (i + 1 < argv.length) goalWorkspace = argv[++i]; break;
+      case '--goal-transport': if (i + 1 < argv.length) goalTransport = argv[++i]; break;
+      case '--goal-actl-agent': if (i + 1 < argv.length) goalActlAgent = argv[++i]; break;
     }
   }
   if (!dataRoot) throw new Error('--dataRoot is required');
   if (!project) throw new Error('--project is required');
-  return { dataRoot, project, port, host, authTokenFile, allowUnauthenticated };
+  if ((goalWorker && !goalWorkspace) || (!goalWorker && goalWorkspace)) {
+    throw new Error('--goal-worker and --goal-workspace must be provided together');
+  }
+  return {
+    dataRoot, project, port, host, authTokenFile, allowUnauthenticated,
+    ...(goalWorker && goalWorkspace ? {
+      goalWorker,
+      goalWorkspace,
+      ...(goalTransport === 'actl' ? { goalTransport: 'actl' as const } : {}),
+      ...(goalActlAgent ? { goalActlAgent } : {}),
+    } : {}),
+  };
 }
 
 async function main(): Promise<void> {
@@ -67,6 +90,14 @@ async function main(): Promise<void> {
     port: args.port,
     host: args.host,
     authToken,
+    ...(args.goalWorker && args.goalWorkspace ? {
+      goalLoop: {
+        workerId: args.goalWorker,
+        workspaceRoot: args.goalWorkspace,
+        ...(args.goalTransport ? { transport: args.goalTransport } : {}),
+        ...(args.goalActlAgent ? { actlAgent: args.goalActlAgent } : {}),
+      },
+    } : {}),
   });
   console.log(`Agent Relay MCP App listening on http://${args.host}:${args.port}/mcp (project=${args.project})`);
   const shutdown = (): void => {

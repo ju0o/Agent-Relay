@@ -29,6 +29,7 @@ import * as retryDispatch from '../backend/retry-dispatch.js';
 import * as orphanResolution from '../backend/orphan-resolution.js';
 import * as completedRunRecovery from '../backend/completed-run-recovery.js';
 import * as taskActions from '../backend/task-actions.js';
+import { startGoalLoop } from '../backend/goal-loop.js';
 import { authorizeEffect, PermissionDeniedError } from '../backend/permission-gate.js';
 import type { GoalStatus, EventDeliveryStatus } from '../shared/types.js';
 import {
@@ -301,7 +302,7 @@ export function buildPmReadTools(ctx: PmServerContext): McpTool[] {
  */
 export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
   const { dataRoot, project } = ctx;
-  return [
+  const tools: McpTool[] = [
     ...buildExecutionPlanWriteTools(ctx),
     {
       name: 'relay_pm_create_task',
@@ -883,6 +884,52 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
       },
     },
   ];
+  if (ctx.goalLoop) {
+    tools.unshift({
+      name: 'relay_pm_start_goal_loop',
+      description:
+        'Founder-confirmed automatic PM loop: creates or resolves a Goal, dispatches bounded Worker tasks, ' +
+        'captures results, sends them to the configured ChatGPT reviewer, retries the same Task on CHANGES, ' +
+        'and stops fail-closed on REVIEW_BLOCKED. Worker and workspace are process-bound, never tool inputs.',
+      inputSchema: objectSchema(
+        {
+          goalId: { type: 'string' },
+          goalTitle: { type: 'string' },
+          goalStatement: { type: 'string' },
+          ownerConfirmed: { type: 'boolean' },
+        },
+        ['ownerConfirmed'],
+      ),
+      handler: async (args) => {
+        rejectUnknownFields(args, ['goalId', 'goalTitle', 'goalStatement', 'ownerConfirmed']);
+        if (args.ownerConfirmed !== true) {
+          throw new McpError('FORBIDDEN', '자동 Goal Loop은 Founder 확인(ownerConfirmed=true)이 필요합니다.');
+        }
+        const goalId = optionalString(args, 'goalId');
+        const goalTitle = optionalString(args, 'goalTitle');
+        const goalStatement = optionalString(args, 'goalStatement');
+        if (!goalId && (!goalTitle || !goalStatement)) {
+          throw new McpError('INVALID_ARGUMENT', 'goalId 또는 goalTitle+goalStatement이 필요합니다.');
+        }
+        try {
+          return await startGoalLoop({
+            dataRoot,
+            project,
+            ...(goalId ? { goalId } : {}),
+            ...(goalTitle ? { goalTitle } : {}),
+            ...(goalStatement ? { goalStatement } : {}),
+            workerId: ctx.goalLoop!.workerId,
+            workspaceRoot: ctx.goalLoop!.workspaceRoot,
+            transport: ctx.goalLoop!.transport ?? 'internal',
+            ...(ctx.goalLoop!.actlAgent ? { actlAgent: ctx.goalLoop!.actlAgent } : {}),
+          });
+        } catch (err) {
+          throw mapCoreError(err);
+        }
+      },
+    });
+  }
+  return tools;
 }
 
 /** All PM tools (read + write + wake). No Worker tools included. */
