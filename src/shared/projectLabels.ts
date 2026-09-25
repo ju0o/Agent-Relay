@@ -102,6 +102,14 @@ export interface NormalizedHold {
   options: string[];
   /** Backend option ids matching options by index. */
   optionIds: string[];
+  /** 선택지 설명 (options와 같은 index). 없으면 ''. */
+  optionDetails: string[];
+  /** 이미 저장된 choice의 라벨 (choice가 없으면 ''). */
+  choiceLabel: string;
+  /** holds 항목의 heldSeen (epoch 초/ms 또는 날짜 문자열) — 없으면 null. */
+  heldSeen: string | number | null;
+  /** 아무것도 안 고르면 추천대로 진행하기까지 기다리는 분 — 없으면 null. */
+  waitMin: number | null;
   /** 추천 선택지 index — sentence가 있을 때만 사용, 없으면 -1. */
   recommendedIndex: number;
 }
@@ -120,21 +128,31 @@ function explainSentenceOf(explain: unknown): string {
   return '';
 }
 
-function optionsOf(raw: unknown): { labels: string[]; ids: string[] } {
-  if (!Array.isArray(raw)) return { labels: [...HOLD_OPTION_LABELS], ids: ['retry', 'narrow', 'skip'] };
+const DEFAULT_HOLD_OPTION_DETAILS: readonly string[] = [
+  '같은 방법으로 한 번 더 해봐요.',
+  '범위를 좁혀서 다음 단계로 넘어가요.',
+  '자동으로 하지 않고 제가 직접 확인해요.',
+];
+
+function defaultOptions(): { labels: string[]; ids: string[]; details: string[] } {
+  return { labels: [...HOLD_OPTION_LABELS], ids: ['retry', 'narrow', 'skip'], details: [...DEFAULT_HOLD_OPTION_DETAILS] };
+}
+
+function optionsOf(raw: unknown): { labels: string[]; ids: string[]; details: string[] } {
+  if (!Array.isArray(raw)) return defaultOptions();
   const parsed = raw
     .map(option => {
-      if (typeof option === 'string') return { id: '', label: option.trim() };
+      if (typeof option === 'string') return { id: '', label: option.trim(), detail: '' };
       if (option && typeof option === 'object') {
         const record = option as Record<string, unknown>;
-        return { id: cleanText(record.id), label: cleanText(record.label ?? record.title ?? record.name) };
+        return { id: cleanText(record.id), label: cleanText(record.label ?? record.title ?? record.name), detail: cleanText(record.detail ?? record.description) };
       }
-      return { id: '', label: '' };
+      return { id: '', label: '', detail: '' };
     })
     .filter(option => option.label.length > 0);
   return parsed.length > 0
-    ? { labels: parsed.map(option => option.label), ids: parsed.map(option => option.id) }
-    : { labels: [...HOLD_OPTION_LABELS], ids: ['retry', 'narrow', 'skip'] };
+    ? { labels: parsed.map(option => option.label), ids: parsed.map(option => option.id), details: parsed.map(option => option.detail) }
+    : defaultOptions();
 }
 
 /** choice 원문을 options index로 푼다. 못 찾으면 sentence가 있을 때 0, 없으면 -1. */
@@ -184,7 +202,7 @@ export function normalizeHoldEntry(entry: unknown): NormalizedHold | null {
   if (typeof entry === 'string') {
     const reason = entry.trim();
     if (!reason || isEmptyReasons(reason)) return null;
-    return { taskId: '', reason, step: '', sentence: '', choice: '', options: [...HOLD_OPTION_LABELS], optionIds: ['retry', 'narrow', 'skip'], recommendedIndex: -1 };
+    return { taskId: '', reason, step: '', sentence: '', choice: '', options: [...HOLD_OPTION_LABELS], optionIds: ['retry', 'narrow', 'skip'], optionDetails: [...DEFAULT_HOLD_OPTION_DETAILS], choiceLabel: '', heldSeen: null, waitMin: null, recommendedIndex: -1 };
   }
   if (!entry || typeof entry !== 'object') return null;
   const record = entry as Record<string, unknown>;
@@ -209,6 +227,9 @@ export function normalizeHoldEntry(entry: unknown): NormalizedHold | null {
   const recommended = explain && typeof explain === 'object'
     ? (explain as Record<string, unknown>).recommended ?? record.recommended ?? (Array.isArray(record.options) ? choiceRaw : record.options ?? choiceRaw) ?? HOLD_OPTION_LABELS[0]
     : record.recommended ?? (Array.isArray(record.options) ? choiceRaw : record.options ?? choiceRaw) ?? HOLD_OPTION_LABELS[0];
+  const choiceIndex = choice ? recommendedIndexOf(choice, options, optionIds, false) : -1;
+  const heldSeenRaw = record.heldSeen ?? record.held_seen;
+  const waitRaw = Number(record.waitMin ?? record.wait_min);
   return {
     taskId,
     reason,
@@ -217,6 +238,10 @@ export function normalizeHoldEntry(entry: unknown): NormalizedHold | null {
     choice,
     options,
     optionIds,
+    optionDetails: parsedOptions.details,
+    choiceLabel: choice ? options[choiceIndex] ?? choice : '',
+    heldSeen: typeof heldSeenRaw === 'string' || typeof heldSeenRaw === 'number' ? heldSeenRaw : null,
+    waitMin: Number.isFinite(waitRaw) && waitRaw > 0 ? waitRaw : null,
     recommendedIndex: recommendedIndexOf(recommended, options, optionIds, sentence.length > 0),
   };
 }
@@ -233,4 +258,58 @@ export function visibleHoldEntries(holds: unknown): NormalizedHold[] {
     if (normalized) out.push(normalized);
   }
   return out;
+}
+
+// ── 멈춘 작업 카드 helper (Control Room 쉬운 카드) ─────────────────────────
+
+/** 카드 제목 — '보류/차단' 같은 말 없이 멈춘 작업 수만 알려준다. */
+export function holdHeadingText(count: number): string {
+  return `멈춘 작업 ${Math.max(0, Math.trunc(count) || 0)}개`;
+}
+
+export const HOLD_FLOW_STEPS: readonly string[] = ['PM', 'Worker', 'QA', 'Tester', '반영'];
+export type HoldFlowState = 'done' | 'hold' | 'pending';
+
+/** hold.step을 HOLD_FLOW_STEPS index로 푼다. 숫자는 Control Room FLOW(계획~반영 7칸) 기준. 모르면 -1. */
+export function holdFlowIndex(step: unknown): number {
+  const text = (typeof step === 'number' ? String(step) : cleanText(step)).toLowerCase();
+  if (!text) return -1;
+  if (/^\d+$/.test(text)) {
+    const at = [0, 0, 1, 2, 3, 4, 4][Number(text)];
+    return at ?? -1;
+  }
+  if (/사람|human|반영|apply|merge|deploy|ship/.test(text)) return 4;
+  if (/시험|테스트|test/.test(text)) return 3;
+  if (/qa|검수|검증|확인|review/.test(text)) return 2;
+  if (/작업|구현|work|build|code/.test(text)) return 1;
+  if (/pm|plan|계획|설계/.test(text)) return 0;
+  return -1;
+}
+
+/** PM → Worker → QA → Tester → 반영 한 줄 흐름: hold 앞은 done, hold 단계는 hold, 뒤는 pending. 단계를 모르면 전부 pending. */
+export function holdFlowStates(step: unknown): Array<{ name: string; state: HoldFlowState }> {
+  const at = holdFlowIndex(step);
+  return HOLD_FLOW_STEPS.map((name, index) => ({
+    name,
+    state: at < 0 ? 'pending' : index < at ? 'done' : index === at ? 'hold' : 'pending',
+  }));
+}
+
+function toEpochMs(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? (value < 1e12 ? value * 1000 : value) : null;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return toEpochMs(numeric);
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/** '아무것도 안 고르면 HH:MM에 추천대로 진행해요' (로컬 시각). heldSeen/waitMin 중 하나라도 없으면 ''. */
+export function holdAutoProceedText(heldSeen: unknown, waitMin: unknown): string {
+  const start = toEpochMs(heldSeen);
+  const wait = Number(waitMin);
+  if (start === null || !Number.isFinite(wait) || wait <= 0) return '';
+  const at = new Date(start + wait * 60_000);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `아무것도 안 고르면 ${pad(at.getHours())}:${pad(at.getMinutes())}에 추천대로 진행해요`;
 }

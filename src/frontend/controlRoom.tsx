@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useState } from 'react';
 import { must } from './bridge.js';
 import { ModelUsagePanel } from './approvals.js';
 import { InlineConfirm } from './components.js';
 import type { ControlRoomModelUsage } from '../shared/types.js';
 import { controlRoomTaskId, controlRoomTaskTitle, founderTaskTitle, controlRoomHasDoneData, controlRoomTodayCount, controlRoomTodayDone, controlRoomVerifiedDoneTotal, controlRoomWorkingRows, laneAttention } from '../shared/types.js';
-import { PROJECT_LABELS, holdCardMessage, holdStepLabel, isSelfReviewChain, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
+import { PROJECT_LABELS, holdAutoProceedText, holdCardMessage, holdFlowStates, holdHeadingText, holdStepLabel, isSelfReviewChain, isSelfReviewOption, visibleHoldEntries } from '../shared/projectLabels.js';
+import type { NormalizedHold } from '../shared/projectLabels.js';
 
 export interface ControlRoomHoldExplain {
   sentence?: unknown;
@@ -446,20 +447,23 @@ function GateForm({ gate, onRefresh }: {
 }
 
 function HoldOptionButtons({ hold, gateId, taskTitle, onRefresh }: {
-  hold: { options: string[]; optionIds: string[]; recommendedIndex: number; taskId?: string };
+  hold: Pick<NormalizedHold, 'options' | 'optionIds' | 'optionDetails' | 'recommendedIndex' | 'choiceLabel'> & { taskId?: string };
   gateId: string | null;
   taskTitle: string;
   onRefresh: () => Promise<void>;
 }): React.ReactElement {
-  const [pending, setPending] = useState<number | null>(null);
+  const groupName = useId();
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState(Math.max(0, hold.recommendedIndex));
   const [status, setStatus] = useState<ActionStatus>(null);
   const [busy, setBusy] = useState(false);
+  const [doneLabel, setDoneLabel] = useState('');
 
   async function confirm(optionIndex: number, optionLabel: string): Promise<void> {
     if (busy) return;
     const optionId = hold.optionIds[optionIndex];
     if (isSelfReviewOption(optionLabel)) {
-      setPending(null);
+      setOpen(false);
       setStatus({ state: 'done', text: '직접 확인할게요 — 아래 원문 보기에서 증거를 확인하세요.' });
       return;
     }
@@ -469,11 +473,12 @@ function HoldOptionButtons({ hold, gateId, taskTitle, onRefresh }: {
       if (gateId) {
         await must({ op: 'gates:answer', gateId, optionIndex });
       } else {
-        if (!hold.taskId || !optionId) throw new Error('보류 작업 정보가 없어 실행할 수 없습니다.');
+        if (!hold.taskId || !optionId) throw new Error('멈춘 작업 정보가 없어 실행할 수 없습니다.');
         await must({ op: 'controlRoom:holdChoose', taskId: hold.taskId, option: optionId as 'retry' | 'narrow' | 'skip' });
       }
-      setStatus({ state: 'done', text: `실행됨 (${optionLabel})` });
-      setPending(null);
+      setStatus(null);
+      setOpen(false);
+      setDoneLabel(optionLabel);
       await onRefresh();
     } catch (err) {
       setStatus({ state: 'error', text: err instanceof Error ? err.message : String(err) });
@@ -482,40 +487,102 @@ function HoldOptionButtons({ hold, gateId, taskTitle, onRefresh }: {
     }
   }
 
+  const savedLabel = doneLabel || hold.choiceLabel;
+  if (savedLabel) return <p className="hold-saved" role="status">선택했어요: {savedLabel} · 곧 다시 설계해요</p>;
+
+  const recommendedLabel = hold.options[hold.recommendedIndex] ?? hold.options[0] ?? '';
+  const option = hold.options[selected] ?? recommendedLabel;
   return (
-    <div className="hold-options" role="group" aria-label="보류 선택지">
-      {hold.options.map((option, optionIndex) => {
-        const recommended = optionIndex === hold.recommendedIndex;
-        const isPending = pending === optionIndex;
-        return (
-          <div key={`${hold.taskId ?? 'hold'}-${optionIndex}`} className="hold-option-row">
-            <button
-              type="button"
-              className={`hold-option${recommended ? ' recommended' : ''}`}
-              aria-pressed={isPending}
-              disabled={busy}
-              onClick={() => setPending(isPending ? null : optionIndex)}
-            >
-              {option}{recommended ? ' (추천)' : ''}
-            </button>
-            {isPending && (
-              <div className="hold-confirm">
-                <p>‘{taskTitle}’을 ‘{option}’로 진행할게요</p>
-                <div className="hold-confirm-actions">
-                  <button className="btn primary" type="button" disabled={busy} onClick={() => void confirm(optionIndex, option)}>
-                    {busy ? '실행 중…' : '확인'}
-                  </button>
-                  <button className="btn subtle" type="button" disabled={busy} onClick={() => setPending(null)}>
-                    취소
-                  </button>
-                </div>
-              </div>
-            )}
+    <div className="hold-options" role="group" aria-label="선택지">
+      <p className="hold-so">
+        그래서{' '}
+        <button type="button" className="hold-recommend-link" aria-expanded={open} disabled={busy} onClick={() => setOpen(!open)}>{recommendedLabel}</button>
+        {' '}할게요.
+      </p>
+      {open && (
+        <div className="hold-confirm">
+          <div role="radiogroup" aria-label="어떻게 할까요">
+            {hold.options.map((label, optionIndex) => {
+              const recommended = optionIndex === hold.recommendedIndex;
+              const detail = hold.optionDetails[optionIndex];
+              return (
+                <label key={`${hold.taskId ?? 'hold'}-${optionIndex}`} className={`hold-option hold-option-row${recommended ? ' recommended' : ''}${selected === optionIndex ? ' selected' : ''}`}>
+                  <input type="radio" name={groupName} checked={selected === optionIndex} disabled={busy} onChange={() => setSelected(optionIndex)} />
+                  <span className="hold-option-text">
+                    <strong>{label}{recommended ? ' (추천)' : ''}</strong>
+                    {detail && <small>{detail}</small>}
+                  </span>
+                </label>
+              );
+            })}
           </div>
-        );
-      })}
+          <p>‘{taskTitle}’을 ‘{option}’로 진행할게요</p>
+          <div className="hold-confirm-actions">
+            <button className="btn primary" type="button" disabled={busy} onClick={() => void confirm(selected, option)}>
+              {busy ? '실행 중…' : '이대로 진행'}
+            </button>
+            <button className="btn subtle" type="button" disabled={busy} onClick={() => setOpen(false)}>
+              취소
+            </button>
+          </div>
+        </div>
+      )}
       {status && <p className={`control-status ${status.state}`} role="status">{statusText(status)}</p>}
     </div>
+  );
+}
+
+const HOLD_PAGE = 3;
+
+function HoldCards({ holds, titleOf, gateId, qaFinding, hasBlocker, onRefresh }: {
+  holds: NormalizedHold[];
+  titleOf: (hold: NormalizedHold) => string;
+  gateId: string | null;
+  qaFinding: unknown;
+  hasBlocker: boolean;
+  onRefresh: () => Promise<void>;
+}): React.ReactElement {
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? holds : holds.slice(0, HOLD_PAGE);
+  // 보류 항목 없이 blocker만 있을 때도 멈춘 작업 1개로 보여준다.
+  const count = Math.max(holds.length, hasBlocker ? 1 : 0);
+  return (
+    <article className="control-card hold-warn wide">
+      <h3><span aria-hidden="true">⚠ </span>{holdHeadingText(count)}</h3>
+      {shown.map((hold, index) => {
+        const autoText = holdAutoProceedText(hold.heldSeen, hold.waitMin);
+        return (
+          <section key={hold.taskId || hold.sentence || index} className="hold-card">
+            <p className="hold-card-title">{titleOf(hold)}</p>
+            <ol className="hold-flow" aria-label="진행 단계">
+              {holdFlowStates(hold.step).map(({ name, state }) => (
+                <li key={name} className={`hold-flow-step ${state}`}>
+                  <span className="hold-flow-mark" aria-hidden="true">{state === 'done' ? '✓' : state === 'hold' ? '⚠' : '○'}</span>
+                  <span>{name}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="hold-sentence">{hold.sentence || '쉬운 말로 바꾸는 중이에요…'}</p>
+            {hold.sentence && <HoldOptionButtons hold={hold} gateId={gateId} taskTitle={titleOf(hold)} onRefresh={onRefresh} />}
+            {hold.sentence && !hold.choice && autoText && <p className="muted hold-auto">{autoText}</p>}
+            <details>
+              <summary>원문 보기</summary>
+              <p className="muted mono">ID: {hold.taskId || '—'}</p>
+              <pre className="mono">{hold.reason}</pre>
+            </details>
+          </section>
+        );
+      })}
+      {holds.length === 0 && (
+        <section className="hold-card">
+          <p className="hold-sentence">쉬운 말로 바꾸는 중이에요…</p>
+        </section>
+      )}
+      {qaFinding !== undefined && <details><summary>원문 검수 의견</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}
+      {!showAll && holds.length > HOLD_PAGE && (
+        <button className="btn subtle" type="button" onClick={() => setShowAll(true)}>더 보기 ({holds.length - HOLD_PAGE}개)</button>
+      )}
+    </article>
   );
 }
 
@@ -545,19 +612,12 @@ function LaneView({ lane, onRefresh }: {
   const qaText = detail(qa);
   const showWorker = workerText !== '' && workerText !== '—';
   const showQa = qaText !== '' && qaText !== '—';
-  const explainedHolds = holds.filter(hold => hold.sentence);
-  const plainReasons = holds.filter(hold => !hold.sentence).map(hold => hold.reason || hold.taskId).filter(text => text.trim().length > 0);
-  const holdText = explainedHolds.length > 0
-    ? holdSummary(lane, plainReasons.join(', '))
-    : holdSummary(lane, holds.map(hold => hold.reason || hold.taskId).join(', '));
-  const rawReasons = holds.map(hold => hold.reason).filter(text => text.trim().length > 0);
   const holdTitle = (hold: { taskId?: string; reason?: string }): string => {
     const raw = lane.holds?.find(entry => entry && typeof entry === 'object' &&
       controlRoomTaskId(entry) === hold.taskId);
     return founderTaskTitle(raw ?? hold);
   };
-  const holdTitles = holds.map(hold => holdTitle(hold));
-  const showHoldCard = explainedHolds.length > 0 || holdText !== null;
+  const showHoldCard = holds.length > 0 || holdSummary(lane, '') !== null;
   const gateRecord = (lane.humanGate ?? lane.founderGate) as Record<string, unknown> | undefined;
   const gateIdForHold = typeof gateRecord?.gateId === 'string' && gateRecord.gateId
     ? gateRecord.gateId
@@ -598,16 +658,7 @@ function LaneView({ lane, onRefresh }: {
             </div>
           )}
         </article>
-        {showHoldCard && <article className="control-card blocked"><h3>보류 / 차단</h3>{explainedHolds.map((hold, index) => (
-          <div key={hold.taskId || hold.sentence || index} className="hold-explain">
-            <p><strong>{founderTaskTitle(lane.holds?.find(entry => entry && typeof entry === 'object' && controlRoomTaskId(entry) === hold.taskId) ?? hold)}</strong></p>
-            <p>{hold.sentence}</p>
-            {hold.step && <p className="muted">단계: {holdStepLabel(hold.step)}</p>}
-            <HoldOptionButtons hold={hold} gateId={gateIdForHold} taskTitle={holdTitle(hold)} onRefresh={onRefresh} />
-          </div>
-        ))}{holdText !== null && <p>{holdTitles.join(' · ')}</p>}{explainedHolds.length > 0
-          ? <details><summary>원문 보기</summary>{holds.map((hold, index) => <><p key={`id-${index}`} className="muted mono">ID: {hold.taskId || '—'}</p><pre key={`reason-${index}`} className="mono">{rawReasons[index] || hold.reason}</pre></>)}{qaFinding !== undefined && <pre className="mono">{rawText(qaFinding)}</pre>}</details>
-          : qaFinding !== undefined && <details><summary>원문 검수 의견</summary><pre className="mono">{rawText(qaFinding)}</pre></details>}</article>}
+        {showHoldCard && <HoldCards holds={holds} titleOf={holdTitle} gateId={gateIdForHold} qaFinding={qaFinding} hasBlocker={holds.length === 0} onRefresh={onRefresh} />}
         {gate && <article className="control-card human"><h3>사람 확인</h3><GateForm gate={gate} onRefresh={onRefresh} /></article>}
       </div>
     </section>

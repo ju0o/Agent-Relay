@@ -1071,7 +1071,7 @@ h1 { font-size: 22px; }
 .control-card { min-height: 112px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; }
 .control-card h3 { margin: 0 0 10px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
 .control-card p { margin: 6px 0; }.control-card-value { font-size: 16px; font-weight: 700; word-break: break-word; }
-.control-card.blocked { border-color: var(--danger); }.control-card.human { border-color: var(--warn); }
+.control-card.hold-warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--bg2)); }.control-card.human { border-color: var(--warn); }
 .control-empty { display: grid; place-items: center; min-height: 240px; color: var(--muted); }
 /* ── Control Room actions (CR-07) ─────────────────────────── */
 .control-card.wide { grid-column: span 2; }
@@ -1104,21 +1104,43 @@ h1 { font-size: 22px; }
 .gate-fieldset legend { font-weight: 700; padding: 0 6px; }
 .gate-id { font-size: 11px; }
 .save-rule { display: flex; align-items: center; gap: 8px; padding: 8px 0; cursor: pointer; font-size: 12px; }
-/* ── Hold option buttons (R1: 보류 선택지 버튼, 추천 강조 + 인라인 확인) ── */
-.hold-explain { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-.hold-options { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0; }
-.hold-option-row { display: flex; flex-direction: column; gap: 6px; }
+/* ── 멈춘 작업 카드 (쉬운 말 카드: 흐름 한 줄 + 큰 문장 + 추천 선택) ── */
+.control-card.hold-warn h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 12px; font-size: 16px; color: var(--fg); text-transform: none; letter-spacing: 0; }
+.control-card.hold-warn h3 span { color: var(--warn); }
+.hold-card { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; padding: 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; }
+.hold-card p { margin: 0; }
+.hold-card-title { font-weight: 700; word-break: break-word; }
+.hold-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.hold-flow-step { display: inline-flex; align-items: center; gap: 4px; }
+.hold-flow-step + .hold-flow-step::before { content: "→"; margin-right: 2px; color: var(--muted); }
+.hold-flow-mark { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border); border-radius: 50%; font-size: 11px; font-weight: 700; }
+.hold-flow-step.done { color: var(--fg); }
+.hold-flow-step.done .hold-flow-mark { background: var(--accent2); border-color: var(--accent2); color: #101114; }
+.hold-flow-step.hold { color: var(--fg); font-weight: 700; }
+.hold-flow-step.hold .hold-flow-mark { background: var(--warn); border-color: var(--warn); color: #101114; }
+.hold-flow-step.pending { opacity: .65; }
+.hold-sentence { font-size: 18px; line-height: 1.5; font-weight: 600; word-break: keep-all; }
+.hold-so { font-size: 15px; }
+.hold-recommend-link { background: none; border: 0; padding: 0; font: inherit; font-weight: 700; color: var(--accent); text-decoration: underline; cursor: pointer; }
+.hold-recommend-link:disabled { opacity: .5; cursor: default; }
+.hold-auto { font-size: 12px; }
+.hold-saved { font-size: 14px; font-weight: 700; color: var(--fg); }
+.hold-options { display: flex; flex-direction: column; gap: 8px; }
 .hold-option {
-  text-align: left;
+  display: flex; align-items: flex-start; gap: 10px; text-align: left;
   background: var(--bg3); color: var(--fg);
   border: 1px solid var(--border); border-radius: 8px;
-  padding: 8px 12px; cursor: pointer; font-size: 13px;
+  padding: 10px 12px; cursor: pointer; font-size: 14px;
   word-break: keep-all;
 }
 .hold-option:hover { border-color: var(--accent); }
-.hold-option:disabled { opacity: 0.5; cursor: default; }
-.hold-option.recommended { border-color: var(--accent); border-width: 2px; font-weight: 700; background: rgba(78,161,255,0.12); }
-.hold-confirm { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+.hold-option.recommended { border-color: var(--accent); border-width: 2px; }
+.hold-option.selected { background: color-mix(in srgb, var(--accent) 12%, var(--bg3)); }
+.hold-option input { margin-top: 3px; }
+.hold-option-text { display: flex; flex-direction: column; gap: 2px; }
+.hold-option-text small { color: var(--muted); font-size: 12px; }
+.hold-confirm { border: 1px dashed var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.hold-confirm [role="radiogroup"] { display: flex; flex-direction: column; gap: 6px; }
 .hold-confirm p { margin: 0; font-size: 12px; }
 .hold-confirm-actions { display: flex; gap: 6px; }
 /* ── Inline confirm (R2/R3/R7: destructive actions, native dialog 금지) ── */
