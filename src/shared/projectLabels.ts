@@ -10,8 +10,8 @@ export const PROJECT_LABELS: Record<string, ProjectLabel> = {
   juplan: { name: 'JuPlan', goal: '계획 기반 프로젝트 실행과 릴리스 검증' },
   juceipt: { name: 'JuCeipt', goal: '영수증 처리 재시도와 안정성 검증' },
   jucontroler: { name: 'JuControler', goal: '프로젝트 통합 제어와 운영 가시성' },
-  'jucontroler-app': { name: '통합 관제 화면', goal: '여러 프로젝트 진행 상황을 한눈에 확인' },
-  'juceipt-planning': { name: 'JuCeipt 기획', goal: 'JuCeipt 기획안 정리와 실행 준비' },
+  'jucontroler-app': { name: '통합 관제 화면 (jucontroler-app)', goal: '여러 프로젝트 진행 상황을 한눈에 확인' },
+  'juceipt-planning': { name: 'JuCeipt 기획 (juceipt-planning)', goal: 'JuCeipt 기획안 정리와 실행 준비' },
 };
 
 /** Joined hold reasons that count as "no hold" (empty, dash placeholder, or only separators). */
