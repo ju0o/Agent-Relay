@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { isSelfReviewChain } from "../dist/server/shared/projectLabels.js";
 
 const root = new URL("..", import.meta.url);
 const read = file => readFile(new URL(file, root), "utf8");
@@ -40,4 +41,30 @@ test("QA editor blocks self-review by the first worker AI", async () => {
   assert.match(controlRoom, /workerChain/);
   assert.match(controlRoom, /만든 AI가 스스로 검수할 수 없어요\. 다른 AI를 첫 번째로 골라 주세요\./);
   assert.match(controlRoom, /disabled=\{[^}]*selfReview/);
+});
+
+test("isSelfReviewChain is true only when the first QA AI equals the first worker AI", () => {
+  assert.equal(isSelfReviewChain(["codex", "opencode"], ["codex", "claude"]), true);
+  assert.equal(isSelfReviewChain(["codex"], ["codex"]), true);
+  assert.equal(isSelfReviewChain(["codex"], ["opencode"]), false);
+  assert.equal(isSelfReviewChain(["codex", "claude"], ["claude", "codex"]), false);
+  assert.equal(isSelfReviewChain([], ["codex"]), false);
+  assert.equal(isSelfReviewChain(["codex"], []), false);
+  assert.equal(isSelfReviewChain([], []), false);
+});
+
+test("QA editor save stays blocked while self-review is true, including submit re-check", async () => {
+  const controlRoom = await read("src/frontend/controlRoom.tsx");
+  // selfReview derives from the lane worker chain + the picked QA chain, QA role only.
+  assert.match(controlRoom, /role === 'qa' \? isSelfReviewChain\(workerChain[^)]*picked\)/);
+  // warning + disabled save are both gated on selfReview.
+  assert.match(controlRoom, /\{selfReview && <p[^>]*>만든 AI가 스스로 검수할 수 없어요/);
+  assert.match(controlRoom, /disabled=\{[^}]*selfReview/);
+  // submit re-checks the same helper so a bypassed disabled button cannot save.
+  assert.match(controlRoom, /async function submit\([\s\S]*?isSelfReviewChain\(workerChain[\s\S]*?picked\)[\s\S]*?return/);
+  // real helper drives the same blocking decision the UI uses.
+  const blocked = isSelfReviewChain(["codex"], ["codex", "claude"]);
+  const allowed = isSelfReviewChain(["codex"], ["opencode", "codex"]);
+  assert.equal(blocked, true);
+  assert.equal(allowed, false);
 });

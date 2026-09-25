@@ -286,6 +286,7 @@ function ChainEditor({ project, role, initial, workerChain, onRefresh }: {
   async function submit(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     if (busy || picked.length < 1) return;
+    if (role === 'qa' && isSelfReviewChain(workerChain ?? [], picked)) return;
     setBusy(true);
     setStatus({ state: 'pending', text: '저장 중…' });
     try {
