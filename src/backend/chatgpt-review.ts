@@ -289,9 +289,19 @@ export async function reviewRunWithChatGpt(
   // Layer 2: ask the external tool for a review completion.
   // Try Responses-style endpoints in order; treat 404 as connector/model issue, not PASS.
   const prompt = buildReviewPrompt(ctx);
+  let selectedModel = model;
+  if (selectedModel === 'auto') {
+    try {
+      const catalog = JSON.parse(modelsText) as { models?: Array<{ slug?: unknown }> };
+      const slug = catalog.models?.find((candidate) => typeof candidate.slug === 'string')?.slug;
+      if (typeof slug === 'string' && slug.trim()) selectedModel = slug.trim();
+    } catch {
+      selectedModel = 'gpt-6-astra';
+    }
+  }
   const bodies: Array<{ path: string; body: unknown }> = [
-    { path: '/responses', body: { model, input: prompt } },
-    { path: '/chat/completions', body: { model, messages: [{ role: 'user', content: prompt }] } },
+    { path: '/responses', body: { model: selectedModel, input: [{ role: 'user', content: prompt }], store: false, stream: true } },
+    { path: '/chat/completions', body: { model: selectedModel, messages: [{ role: 'user', content: prompt }] } },
   ];
   let lastDetail = '';
   for (const b of bodies) {
@@ -332,6 +342,21 @@ export async function reviewRunWithChatGpt(
 }
 
 function extractCompletionText(raw: string): string {
+  if (raw.includes('event:') && raw.includes('data:')) {
+    const deltas: string[] = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const event = JSON.parse(data) as { type?: unknown; delta?: unknown };
+        if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') deltas.push(event.delta);
+      } catch {
+        // Ignore non-JSON SSE keepalives.
+      }
+    }
+    if (deltas.join('').trim()) return deltas.join('');
+  }
   try {
     const j = JSON.parse(raw) as Record<string, unknown>;
     const choice = (j['choices'] as Array<Record<string, unknown>> | undefined)?.[0];
