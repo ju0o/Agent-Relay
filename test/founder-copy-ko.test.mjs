@@ -92,9 +92,11 @@ test('light mode active tab + primary button meet 4.5:1', () => {
   assert.ok(contrast('#ffffff', '#0066cc') >= 4.5, 'primary button contrast < 4.5:1');
   // Order badge in light mode must also use white text (#08121f on #0066cc is 3.38:1).
   assert.match(css, /\.app\[data-theme="light"\] \.chain-order\s*\{[^}]*#fff[^}]*\}/);
-  // Active tabs: dark text on near-white surfaces.
-  assert.match(css, /\.app\[data-theme="light"\] \.tab-btn\.active\s*\{[^}]*#1d1d1f[^}]*\}/);
-  assert.match(css, /\.app\[data-theme="light"\] \.control-tab\.active\s*\{[^}]*#1d1d1f[^}]*\}/);
-  assert.ok(contrast('#1d1d1f', '#ffffff') >= 4.5, 'active tab contrast < 4.5:1');
-  assert.ok(contrast('#1d1d1f', '#fafafa') >= 4.5, 'control active tab contrast < 4.5:1');
+  // Active tabs: dark text (light-theme --tab-active-fg) on near-white surfaces.
+  assert.match(css, /\.app\[data-theme="light"\] \.tab-btn\.active\s*\{[^}]*var\(--tab-active-fg\)[^}]*\}/);
+  assert.match(css, /\.app\[data-theme="light"\] \.control-tab\.active\s*\{[^}]*var\(--tab-active-fg\)[^}]*\}/);
+  const tabFg = css.match(/\.app\[data-theme="light"\][^{]*\{[^}]*--tab-active-fg:\s*(#[0-9a-fA-F]{6})/)?.[1];
+  assert.ok(tabFg, 'light --tab-active-fg not defined');
+  assert.ok(contrast(tabFg, '#ffffff') >= 4.5, 'active tab contrast < 4.5:1');
+  assert.ok(contrast(tabFg, '#fafafa') >= 4.5, 'control active tab contrast < 4.5:1');
 });
