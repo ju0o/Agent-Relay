@@ -19,22 +19,23 @@ JuPlan, and JuCeipt. JuControler is not active.
 Safety setup is intentionally Founder-run: see `docs/CORE_V1_AUTO_NIGHT_RUN.md`.
 
 우선순위 없는 단순 목록. 코드상 확인되는 사실만 기록한다.
+2026-09-24 회고 기준 13개 중 10개 완료 — 완료 항목은 증거 커밋/위치를 함께 남긴다.
 
 ## 남은 개선 후보
 
-- [ ] `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행 (package.json)
-- [ ] DevTools가 production에서도 F12로 열림 (src/backend/main.ts)
-- [ ] `moveRun`이 런 폴더의 **최상위 파일만** 복사함 — 하위 폴더는 이동하지 않음 (src/backend/fs.ts)
-- [ ] `exportRunMarkdown`이 폴더 경로 깊이(4세그먼트)를 가정해 헤더를 파싱함 (src/backend/fs.ts)
-- [ ] 편집 탭 미저장 내용이 프로젝트 세션 전환/앱 종료 시 유실됨 — 종료 경고 없음
-- [ ] Dogfooding 피드백 검색/Type 필터는 미지원 (Status 필터만 있음)
-- [ ] drag-out은 사용자 제스처(mousedown)가 필요 — 키보드만으로는 불가
-- [ ] 앱 아이콘 미설정 — electron-builder 기본 Electron 아이콘 사용 중 (build/ 리소스 필요)
-- [ ] Work Tab 순서 영구 저장 — v0.3은 session-only (App.tsx onWorkTabDrop 주석 참조)
-- [ ] 마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원 — lastProject만 복원됨
-- [ ] Drag Reorder 터치 지원 — v0.3은 HTML5 mouse DnD만 (Windows Desktop 우선 원칙)
-- [ ] electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨
-- [ ] Quick Capture 저장 직후 pdMode가 닫혀있으면 알림만 표시 — 목록 확인은 다시 열어야 함
+- [ ] `npm run dev`에 watch/HMR 없음 — 매번 전체 빌드 후 electron 실행 (package.json:11)
+- [x] DevTools가 production에서도 F12로 열림 → development 전용으로 제한 (17afb3b, src/backend/main.ts:462-473 `if (!app.isPackaged)`)
+- [ ] `moveRun`이 런 폴더의 **최상위 파일만** 복사함 — 하위 폴더는 이동하지 않음 (src/backend/fs.ts:381-384; 후속 AGENTRELAY-V1-MOVE-RUN-RECURSIVE가 config/portfolio.json에 대기 중)
+- [x] `exportRunMarkdown`이 폴더 경로 깊이(4세그먼트)를 가정해 헤더를 파싱함 → 끝에서부터 상대 인덱싱 + `?? ''` 폴백으로 앱이 만드는 레이아웃에서 충돌 없이 동작 (src/backend/fs.ts:298-303; 희귀 중첩 경로 하드닝은 AGENTRELAY-V1-EXPORT-NESTED-PATH로 추적)
+- [x] 편집 탭 미저장 내용이 프로젝트 세션 전환/앱 종료 시 유실됨 → 세션 전환 확인 + 앱 종료 경고 (`will-prevent-unload` + `beforeunload`) (778c6ab, src/frontend/App.tsx:896-918, src/backend/main.ts:485-494)
+- [x] Dogfooding 피드백 검색/Type 필터는 미지원 → 검색 + Type 필터 추가 (06a212f, src/frontend/dogfooding.tsx)
+- [x] drag-out은 사용자 제스처(mousedown)가 필요 — 키보드만으로는 불가 → 키보드(Enter/Space)로 결과 전달 폴백 실행 가능 (ca0052f, src/frontend/App.tsx GPT로 드래그 버튼 onKeyDown)
+- [ ] 앱 아이콘 미설정 — electron-builder 기본 Electron 아이콘 사용 중 (build/ 리소스 필요; electron.builder.yml에 icon 없음)
+- [x] Work Tab 순서 영구 저장 — v0.3은 session-only → `settings:setWorkTabOrder`로 영구 저장 (96436e2, src/backend/main.ts:133-138, src/shared/types.ts:31)
+- [x] 마지막 작업 탭(active tab)/선택 Agent까지 재실행 시 복원 — lastProject만 복원됨 → 마지막 선택 Agent 저장 + workTabOrder로 탭 복원 (25103eb + 96436e2, `agent-relay:last-agent` in src/frontend/App.tsx:125-131, 적용은 applySettings)
+- [x] Drag Reorder 터치 지원 — v0.3은 HTML5 mouse DnD만 → Pointer Events fallback으로 터치/펜 지원 (b80232b + 80f08c5, src/frontend/App.tsx shouldStartPointerReorder/resolvePointerDropIndex)
+- [x] electron-updater 의존성 트리 자동 점검 — packaged app에 production deps 수집 누락 시 빌드만으로 감지 안 됨 → `npm test`가 production dep + `dist/server` 포함을 검사 (9832a4f, test/v03.test.mjs P1/P2)
+- [x] Quick Capture 저장 직후 pdMode가 닫혀있으면 알림만 표시 → 저장 후 Project Dogfooding 목록을 바로 열어 보여줌 (e09b3f2, src/frontend/App.tsx:1723-1727 onSaved)
 
 ## 완료된 것 (v0.2.0)
 

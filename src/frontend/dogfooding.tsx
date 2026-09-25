@@ -31,8 +31,23 @@ const PRIORITY_COLORS: Record<DfPriority, string> = {
   HIGH: '#FF453A',
 };
 
+/** 표시 전용 상태 라벨 — 저장값(OPEN/FIXED/HOLD)은 그대로 둔다. */
+const STATUS_LABELS: Record<DfStatus, string> = {
+  OPEN: '열림',
+  FIXED: '고침',
+  HOLD: '보류',
+};
+
+const FILTER_LABELS: Record<Filter, string> = {
+  ALL: '전체',
+  OPEN: '열림',
+  FIXED: '고침',
+  HOLD: '보류',
+};
+
 type Filter = 'ALL' | DfStatus;
 const FILTERS: Filter[] = ['ALL', 'OPEN', 'FIXED', 'HOLD'];
+type TypeFilter = 'ALL' | DfType;
 
 export function nextDfStatus(s: DfStatus): DfStatus {
   const i = DF_STATUSES.indexOf(s);
@@ -60,6 +75,8 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
   const project = isProject ? (props.project ?? '') : '';
   const [items, setItems] = useState<DfItem[]>([]);
   const [filter, setFilter] = useState<Filter>('ALL');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
+  const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [type, setType] = useState<DfType>(isProject ? 'UX' : 'UX');
   const [priority, setPriority] = useState<DfPriority>('MEDIUM');
@@ -165,7 +182,15 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
     void must({ op: 'file:reveal', path: item.folder }).catch(() => props.notify('err', '파일을 열 수 없습니다.'));
   }
 
-  const shown = filter === 'ALL' ? items : items.filter(i => i.status === filter);
+  const query = search.trim().toLowerCase();
+  const shown = items.filter(item => {
+    if (filter !== 'ALL' && item.status !== filter) return false;
+    if (typeFilter !== 'ALL' && item.type !== typeFilter) return false;
+    if (!query) return true;
+    return [item.id, item.feedback, item.desired, item.project, item.context.project, item.context.agent, item.context.run]
+      .filter(Boolean)
+      .some(value => value!.toLowerCase().includes(query));
+  });
   const countOf = (s: DfStatus): number => items.filter(i => i.status === s).length;
 
   return (
@@ -177,15 +202,31 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
         </div>
         <div className="df-filters">
           {FILTERS.map(f => (
-            <button key={f} className={`df-filter${filter === f ? ' on' : ''}`} onClick={() => setFilter(f)}>{f}</button>
+            <button key={f} className={`df-filter${filter === f ? ' on' : ''}`} onClick={() => setFilter(f)}>{FILTER_LABELS[f]}</button>
           ))}
         </div>
+        <input
+          className="df-search"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="검색"
+          aria-label="피드백 검색"
+        />
+        <select
+          className="df-type-filter"
+          value={typeFilter}
+          onChange={e => setTypeFilter(e.target.value as TypeFilter)}
+          aria-label="종류 필터"
+        >
+          <option value="ALL">모든 종류</option>
+          {typeOptions.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
         <div style={{ flex: 1 }} />
         {isProject && (
           <span className="df-counts" title="상태별 개수">
-            <span style={{ color: STATUS_COLORS.OPEN }}>OPEN {countOf('OPEN')}</span>
-            <span style={{ color: STATUS_COLORS.FIXED }}>FIXED {countOf('FIXED')}</span>
-            <span style={{ color: STATUS_COLORS.HOLD }}>HOLD {countOf('HOLD')}</span>
+            <span style={{ color: STATUS_COLORS.OPEN }}>열림 {countOf('OPEN')}</span>
+            <span style={{ color: STATUS_COLORS.FIXED }}>고침 {countOf('FIXED')}</span>
+            <span style={{ color: STATUS_COLORS.HOLD }}>보류 {countOf('HOLD')}</span>
           </span>
         )}
         <button className="btn primary" onClick={() => setFormOpen(o => !o)}>
@@ -198,19 +239,19 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
         <div className="df-form">
           <div className="df-form-row">
             <label className="field">
-              <span className="flabel">Type</span>
+              <span className="flabel">종류</span>
               <select value={type} onChange={e => setType(e.target.value as DfType)}>
                 {typeOptions.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </label>
             <label className="field">
-              <span className="flabel">Priority</span>
+              <span className="flabel">중요도</span>
               <select value={priority} onChange={e => setPriority(e.target.value as DfPriority)}>
                 {DF_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             </label>
             <div className="field" style={{ flex: 2 }}>
-              <span className="flabel">자동 첨부 Context</span>
+              <span className="flabel">함께 기록된 정보</span>
               <span className={`fvalue mono${contextLine() ? '' : ' muted'}`}>{contextLine() || '(현재 작업 Context 없음)'}</span>
             </div>
           </div>
@@ -263,9 +304,9 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
               <button
                 className="df-status"
                 style={{ color: '#fff', background: STATUS_COLORS[item.status] }}
-                title="클릭하면 상태가 순환합니다 (OPEN → FIXED → HOLD)"
+                title="클릭하면 상태가 순환합니다 (열림 → 고침 → 보류)"
                 onClick={() => void cycleStatus(item)}
-              >{item.status}</button>
+              >{STATUS_LABELS[item.status]}</button>
               {!expanded ? (
                 <>
                   <span className="muted df-created">{item.created}</span>
@@ -279,7 +320,7 @@ export function DogfoodPanel(props: DogfoodPanelProps): React.ReactElement {
                   <div className="df-detail-block"><b>발견 내용</b><pre>{item.feedback}</pre></div>
                   {item.desired && <div className="df-detail-block"><b>기대했던 동작 / 원하는 방향</b><pre>{item.desired}</pre></div>}
                   <div className="df-detail-block muted">
-                    <b>Context</b>
+                    <b>함께 기록된 정보</b>
                     <pre>{[
                       (item.project ?? item.context.project) ? `Project: ${item.project ?? item.context.project}` : '',
                       item.context.date ? `Date: ${item.context.date}` : '',

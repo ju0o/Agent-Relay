@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, parseQaPacket, parseResultPacket, parseTaskPacket, PortfolioRunner, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
+import { promisify } from "node:util";
+import { buildCoreV1Snapshot, formatCoreV1Results, formatCoreV1Text, isCorruptStateError, lastLifecycleEvent, LIFECYCLE_EVENT_TYPES, MAX_LIFECYCLE_EVENTS, parseQaPacket, parseResultPacket, parseResultReturn, parseTaskPacket, PM_FILE_CONTRACT, PORTFOLIO_STATE_CORRUPT, PortfolioRunner, readResultReturnFile, readTaskPacketFile, recordLifecycleEvent, STATES, QA_VERDICTS } from "../../src/v2/portfolio-runner/index.mjs";
 import { CommandRuntimeAdapter, RuntimeAdapter } from "../../src/v2/runtime-adapters/index.mjs";
 
 test("packet parsers are strict and exit-zero without a packet is not completion", () => {
@@ -27,10 +29,42 @@ test("repository TASK_PACKET intake is exact and rejects unauthorized scope", as
 });
 
 test("CORE V1 Result Inbox keeps lane fields machine-readable and pipeable", () => {
-  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }, { service: "IDLE", updatedAt: "now", tasks: [{ projectId: "p", taskId: "P-1", state: "VERIFIED_DONE", attempts: 2, result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } }] });
+  const latest = { type: "TASK_COMPLETED", taskId: "P-1", projectId: "p", state: "VERIFIED_DONE" };
+  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }, { service: "IDLE", updatedAt: "now", events: [{ type: "TASK_DISPATCHED", taskId: "P-1", projectId: "p" }, latest], tasks: [{ projectId: "p", taskId: "P-1", state: "VERIFIED_DONE", attempts: 2, result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } }] });
   assert.equal(snapshot.lanes[0].next, null);
+  assert.equal(snapshot.lanes[0].lifecycleEventCount, 2);
+  assert.deepEqual(snapshot.lanes[0].latestLifecycleEvent, latest);
   assert.match(formatCoreV1Text(snapshot), /p \| PM=READY pm\/p/);
+  assert.match(formatCoreV1Text(snapshot), /lifecycle=2 latest=TASK_COMPLETED/);
   assert.equal(JSON.parse(formatCoreV1Results(snapshot, true)).schema, "agent-relay.core-v1.inbox.v1");
+  assert.equal(formatCoreV1Results(snapshot, false), formatCoreV1Text(snapshot));
+});
+
+test("CORE V1 snapshot prefers active task over historical completed task", () => {
+  const snapshot = buildCoreV1Snapshot({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", tasks: [{ taskId: "P-CURRENT", scope: "bounded", files: [], tests: [] }, { taskId: "P-OLD", scope: "bounded", files: [], tests: [] }] }] }, { service: "IDLE", updatedAt: "now", events: [], tasks: [{ projectId: "p", taskId: "P-CURRENT", state: "QA", attempts: 1 }, { projectId: "p", taskId: "P-OLD", state: "VERIFIED_DONE", attempts: 1 }] });
+  assert.equal(snapshot.lanes[0].currentTask, "P-CURRENT");
+  assert.equal(snapshot.lanes[0].next, null);
+});
+
+test("core-v1 status supports --json and preserves text default", async () => {
+  const execFileAsync = promisify(execFile);
+  const root = await mkdtemp("/tmp/agent-relay-core-status-json-");
+  const manifestPath = join(root, "portfolio.json");
+  await writeFile(manifestPath, JSON.stringify({ projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", runtime: "codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] }));
+  const bridgePath = new URL("../../bridge/agent-relay.mjs", import.meta.url).pathname;
+  const env = { ...process.env, AGENT_RELAY_DATA_ROOT: root, AGENT_RELAY_PORTFOLIO_MANIFEST: manifestPath };
+  try {
+    const { stdout: jsonOut } = await execFileAsync(process.execPath, [bridgePath, "core-v1", "status", "--json"], { env });
+    const parsed = JSON.parse(jsonOut);
+    assert.equal(parsed.schema, "agent-relay.core-v1.inbox.v1");
+    assert.equal(parsed.lanes[0].project, "p");
+    const { stdout: textOut } = await execFileAsync(process.execPath, [bridgePath, "core-v1", "status"], { env });
+    assert.match(textOut, /^CORE_V1/m);
+    assert.match(textOut, /p \| PM=READY pm\/p/);
+    assert.throws(() => JSON.parse(textOut), SyntaxError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("runner blocks external/no-scope projects without launching a Builder", async () => {
@@ -133,4 +167,267 @@ test("REQUEST_CHANGES retries the same task, then promotion precedes NEXT", asyn
   await runner.enqueue("p"); const state = await runner.runOnce();
   assert.equal(builds, 2); assert.equal(qas, 2); assert.equal(state.tasks[0].state, "VERIFIED_DONE"); assert.equal(state.tasks[0].taskId, "P-RETRY");
   await rm(root, { recursive: true, force: true });
+});
+
+test("portfolio state saves are atomic and never leave truncated JSON", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-atomic-state-");
+  const statePath = join(root, "state.json");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  await runner.save({ schema: "agent-relay.portfolio-state.v1", service: "IDLE", tasks: [{ taskId: "A" }] });
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).tasks[0].taskId, "A");
+  assert.deepEqual((await readdir(root)).filter((name) => name.includes(".tmp")), []);
+  await runner.save({ schema: "agent-relay.portfolio-state.v1", service: "IDLE", tasks: [{ taskId: "B" }] });
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).tasks[0].taskId, "B");
+  assert.deepEqual((await readdir(root)).filter((name) => name.includes(".tmp")), []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("stale temp files from an interrupted save never shadow valid state", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-atomic-crash-");
+  const statePath = join(root, "state.json");
+  await writeFile(statePath, JSON.stringify({ schema: "agent-relay.portfolio-state.v1", tasks: [{ taskId: "GOOD" }] }));
+  await writeFile(`${statePath}.${process.pid}.crashed.tmp`, '{"tasks": [{"taskId": "TRUNC');
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  assert.equal((await runner.load()).tasks[0].taskId, "GOOD");
+  await runner.save({ schema: "agent-relay.portfolio-state.v1", tasks: [{ taskId: "NEXT" }] });
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).tasks[0].taskId, "NEXT");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("corrupt portfolio state fails closed with blocked evidence instead of resetting", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-corrupt-state-");
+  const statePath = join(root, "state.json");
+  const corrupt = '{"tasks": [{"taskId": "TRUNC';
+  await writeFile(statePath, corrupt);
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  const loadError = await runner.load().then(() => null, (error) => error);
+  assert.ok(loadError, "load must reject on corrupt state");
+  assert.equal(loadError.code, PORTFOLIO_STATE_CORRUPT);
+  assert.equal(loadError.reason, "INVALID_JSON");
+  assert.ok(loadError.cause instanceof SyntaxError, "INVALID_JSON must carry the JSON parse cause");
+  assert.equal(loadError.statePath, statePath);
+  assert.equal(loadError.blocked.code, PORTFOLIO_STATE_CORRUPT);
+  assert.equal(loadError.blocked.statePath, statePath);
+  assert.equal(loadError.blocked.reason, "INVALID_JSON");
+  assert.ok(isCorruptStateError(loadError));
+  await assert.rejects(() => runner.reconcile(), (error) => isCorruptStateError(error));
+  assert.equal(await readFile(statePath, "utf8"), corrupt, "corrupt state must not be overwritten");
+  await writeFile(statePath, JSON.stringify({ tasks: "not-an-array" }));
+  await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE");
+  for (const badTasks of [[null], ["x"], [42], [[]], [null, { taskId: "T" }]]) {
+    await writeFile(statePath, JSON.stringify({ schema: "agent-relay.portfolio-state.v1", tasks: badTasks }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE", `tasks ${JSON.stringify(badTasks)} must fail closed as INVALID_SHAPE`);
+  }
+  await rm(join(root, "state.json"), { force: true });
+  const fresh = await runner.load();
+  assert.deepEqual(fresh.tasks, []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("malformed state arrays and lifecycle events fail closed instead of reaching runner logic", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-state-shape-");
+  const statePath = join(root, "state.json");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  const base = { schema: "agent-relay.portfolio-state.v1", tasks: [] };
+  for (const badEvents of ["not-an-array", "x", 42, {}, null]) {
+    await writeFile(statePath, JSON.stringify({ ...base, events: badEvents }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE" && error.statePath === statePath, `events ${JSON.stringify(badEvents)} must fail closed as INVALID_SHAPE`);
+  }
+  for (const badEvents of [[null], ["x"], [42], [[]], [{ taskId: "T" }], [{ type: "TASK_DISPATCHED" }], [{ type: "TASK_DISPATCHED", taskId: "" }], [{ type: "NOPE", taskId: "T" }], [{ type: "TASK_DISPATCHED", taskId: 42 }]]) {
+    await writeFile(statePath, JSON.stringify({ ...base, events: badEvents }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE", `events ${JSON.stringify(badEvents)} must fail closed as INVALID_SHAPE`);
+  }
+  for (const key of ["activeBuilders", "activeQa", "founderDecisions", "resolvedFounderGates"]) {
+    await writeFile(statePath, JSON.stringify({ ...base, [key]: "not-an-array" }));
+    await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE" && error.blocked.reason === "INVALID_SHAPE", `${key} must fail closed as INVALID_SHAPE`);
+    await assert.rejects(() => runner.reconcile(), (error) => isCorruptStateError(error) && error.reason === "INVALID_SHAPE", `${key} must block reconcile`);
+    assert.equal(await readFile(statePath, "utf8"), JSON.stringify({ ...base, [key]: "not-an-array" }), "corrupt state must not be overwritten");
+  }
+  await writeFile(statePath, JSON.stringify({ ...base, events: [{ type: "TASK_DISPATCHED", taskId: "T", projectId: "p", attempt: 1 }] }));
+  assert.deepEqual((await runner.load()).events.map((event) => event.type), ["TASK_DISPATCHED"]);
+  await writeFile(statePath, JSON.stringify({ ...base }));
+  const backfilled = await runner.load();
+  assert.deepEqual(backfilled.events, []);
+  assert.deepEqual(backfilled.activeBuilders, []);
+  assert.deepEqual(backfilled.activeQa, []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("non-ENOENT state read errors fail closed as corrupt instead of propagating raw", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-corrupt-read-");
+  const statePath = join(root, "state-dir");
+  await mkdtemp(join(root, "placeholder-"));
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(statePath, { recursive: true });
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath, worktreeRoot: join(root, "worktrees") });
+  await assert.rejects(() => runner.load(), (error) => isCorruptStateError(error) && error.reason === "READ_ERROR" && Boolean(error.cause) && error.blocked.reason === "READ_ERROR");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("runLoop interval timer is defined on the live start path", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-runloop-");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees") });
+  let iterations = 0;
+  runner.runOnce = async () => { iterations += 1; controller.abort(); return {}; };
+  const controller = new AbortController();
+  await runner.runLoop({ intervalMs: 1, signal: controller.signal });
+  assert.equal(iterations, 1, "runLoop must execute runOnce then sleep without ReferenceError");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("result inbox publishes are atomic and never leave truncated JSON", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-atomic-result-");
+  const runner = new PortfolioRunner({ manifest: { projects: [] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), resultRoot: join(root, "result-outbox") });
+  await runner.publishResult({ taskId: "P-ATOMIC", state: "VERIFIED_DONE", result: { status: "IMPLEMENTED" }, qa: { verdict: "ACCEPT" } });
+  const outPath = join(root, "result-outbox", "P-ATOMIC.json");
+  assert.equal(JSON.parse(await readFile(outPath, "utf8")).result.status, "IMPLEMENTED");
+  assert.deepEqual((await readdir(join(root, "result-outbox"))).filter((name) => name.includes(".tmp")), []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("temporary repository-file PM contract validates packets and rejects unknown result states", async () => {
+  assert.equal(PM_FILE_CONTRACT.transport, "repository-file");
+  const root = await mkdtemp("/tmp/agent-relay-pm-file-contract-");
+  const runner = new PortfolioRunner({ manifest: { projects: [{ id: "p", active: true, task: { taskId: "P-FILE", scope: "bounded", files: ["a"], tests: ["test"] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), resultRoot: join(root, "result-outbox") });
+  const intakeFile = join(root, "pm-inbox-P-FILE.txt");
+  await writeFile(intakeFile, `TASK_PACKET: ${JSON.stringify({ schema: "agent-relay.task.v1", taskId: "P-FILE", projectId: "p", scope: "bounded", files: ["a"], tests: ["test"] })}\n`);
+  assert.equal((await readTaskPacketFile(intakeFile)).taskId, "P-FILE");
+  assert.equal((await runner.acceptTaskPacketFile(intakeFile)).state, "QUEUED");
+  const result = { schema: "agent-relay.result.v1", taskId: "P-FILE", status: "IMPLEMENTED", changedFiles: ["a"], tests: ["test"], commitSha: "abc", summary: "ok" };
+  const returned = { schema: "agent-relay.result-return.v1", taskId: "P-FILE", result, qa: null, state: "VERIFIED_DONE" };
+  assert.equal(parseResultReturn(JSON.stringify(returned)).result.status, "IMPLEMENTED");
+  assert.throws(() => parseResultReturn(JSON.stringify({ ...returned, state: "UNKNOWN_RESULT_STATE" })), /invalid RESULT_RETURN/);
+  await runner.publishResult({ taskId: "P-FILE", state: "VERIFIED_DONE", result, qa: { schema: "agent-relay.qa.v1", taskId: "P-FILE", verdict: "ACCEPT", tests: ["test"], findings: [], summary: "ok" } });
+  assert.equal((await runner.readResultReturn("P-FILE")).state, "VERIFIED_DONE");
+  assert.equal((await readResultReturnFile(join(root, "result-outbox", "P-FILE.json"))).taskId, "P-FILE");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("lifecycle events persist dispatch, result, QA verdict, and completion in order", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-lifecycle-events-");
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-LIFE", scope: "bounded", files: [], tests: [] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtime: { async run({ sandbox }) { return { pid: 7, code: 0, startedAt: new Date().toISOString(), text: sandbox === "workspace-write" ? `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-LIFE", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "c".repeat(40), summary: "ok" })}` : `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-LIFE", verdict: "ACCEPT", tests: [], findings: [], summary: "ok" })}` }; } } });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  const types = state.events.map((event) => event.type);
+  assert.deepEqual(types, ["TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_COMPLETED"]);
+  for (const event of state.events) {
+    assert.ok(LIFECYCLE_EVENT_TYPES.includes(event.type));
+    assert.equal(event.taskId, "P-LIFE");
+    assert.equal(event.projectId, "p");
+    assert.ok(event.at);
+  }
+  assert.equal(lastLifecycleEvent(state, "P-LIFE").type, "TASK_COMPLETED");
+  const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+  assert.deepEqual(persisted.events.map((event) => event.type), types);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("lifecycle events capture retry then completion, and failures stay diagnosable", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-lifecycle-retry-");
+  let builds = 0; let qas = 0;
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-RETRY-LIFE", scope: "bounded", files: [], tests: [] } }] }, statePath: join(root, "state.json"), worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtime: { async run({ sandbox }) { if (sandbox === "workspace-write") { builds += 1; return { pid: builds, code: 0, startedAt: new Date().toISOString(), text: `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-RETRY-LIFE", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "d".repeat(40), summary: "ok" })}` }; } qas += 1; return { pid: 10 + qas, code: 0, startedAt: new Date().toISOString(), text: qas === 1 ? `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-RETRY-LIFE", verdict: "REQUEST_CHANGES", tests: [], findings: ["retry"], summary: "retry" })}` : `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-RETRY-LIFE", verdict: "ACCEPT", tests: [], findings: [], summary: "ok" })}` }; } } });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  const types = state.events.map((event) => event.type);
+  assert.deepEqual(types, ["TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_RETRY", "TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_COMPLETED"]);
+  assert.equal(lastLifecycleEvent(state).type, "TASK_COMPLETED");
+
+  const failRoot = await mkdtemp("/tmp/agent-relay-lifecycle-fail-");
+  const failing = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", path: "/safe", task: { taskId: "P-FAIL", scope: "bounded", files: [], tests: [] } }] }, statePath: join(failRoot, "state.json"), worktreeRoot: join(failRoot, "worktrees"), worktrees: { async create() { return { path: failRoot, base: "abc", async cleanup() {} }; } }, runtime: { async run() { throw new Error("builder exploded"); } } });
+  await failing.enqueue("p");
+  const failed = await failing.runOnce();
+  assert.equal(failed.tasks[0].state, "HOLD");
+  assert.ok(failed.events.some((event) => event.type === "TASK_DISPATCHED"));
+  assert.equal(lastLifecycleEvent(failed, "P-FAIL").type, "TASK_FAILED");
+  assert.match(lastLifecycleEvent(failed, "P-FAIL").reason, /builder exploded/);
+  await rm(root, { recursive: true, force: true });
+  await rm(failRoot, { recursive: true, force: true });
+});
+
+test("lifecycle event store stays concise and bounded", () => {
+  const state = { events: [] };
+  for (let i = 0; i < MAX_LIFECYCLE_EVENTS + 10; i += 1) recordLifecycleEvent(state, { type: "TASK_DISPATCHED", taskId: `T-${i}`, projectId: "p", attempt: 1 });
+  assert.equal(state.events.length, MAX_LIFECYCLE_EVENTS);
+  assert.equal(lastLifecycleEvent(state).taskId, `T-${MAX_LIFECYCLE_EVENTS + 9}`);
+  const longError = "x".repeat(1000);
+  const entry = recordLifecycleEvent({ events: [] }, { type: "TASK_FAILED", taskId: "T", projectId: "p", state: "HOLD", reason: longError });
+  assert.ok(entry.reason.length <= 301);
+  assert.throws(() => recordLifecycleEvent({ events: [] }, { type: "NOPE", taskId: "T" }), /invalid lifecycle event type/);
+});
+
+test("QA prompt goes to the qaRuntime adapter and not to the worker adapter", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-qa-runtime-separate-");
+  const statePath = join(root, "state.json");
+  const workerCalls = [];
+  const qaCalls = [];
+  const workerAdapter = {
+    id: "codex",
+    async availability() { return { ok: true }; },
+    assertOwnership() {},
+    async run({ workspace, sandbox, prompt }) {
+      workerCalls.push({ workspace, sandbox, prompt });
+      assert.equal(sandbox, "workspace-write");
+      return { pid: 11, code: 0, startedAt: new Date().toISOString(), text: `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-QA-RT", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "e".repeat(40), summary: "ok" })}` };
+    },
+  };
+  const qaAdapter = {
+    id: "qa-codex",
+    async availability() { return { ok: true }; },
+    async run({ workspace, sandbox, prompt }) {
+      qaCalls.push({ workspace, sandbox, prompt });
+      assert.equal(sandbox, "read-only");
+      return { pid: 22, code: 0, startedAt: new Date().toISOString(), text: `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-QA-RT", verdict: "ACCEPT", tests: [], findings: [], summary: "ok" })}` };
+    },
+  };
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", qaRuntime: "qa-codex", path: "/safe", task: { taskId: "P-QA-RT", scope: "bounded", files: [], tests: [] } }] }, statePath, worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtimeAdapters: { codex: workerAdapter, "qa-codex": qaAdapter } });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  assert.equal(state.tasks[0].state, "VERIFIED_DONE");
+  assert.equal(workerCalls.length, 1);
+  assert.equal(qaCalls.length, 1);
+  assert.match(workerCalls[0].prompt, /TASK_PACKET/);
+  assert.match(qaCalls[0].prompt, /QA_PACKET/);
+  assert.equal(state.tasks[0].qaEvidence.runtime, "qa-codex");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("runner blocks non-independent QA before creating a worktree", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-qa-not-self-");
+  const statePath = join(root, "state.json");
+  let worktreesCreated = 0;
+  let runs = 0;
+  const sharedAdapter = {
+    id: "codex",
+    async availability() { return { ok: true }; },
+    assertOwnership() {},
+    async run() { runs += 1; throw new Error("must not run when QA is not independent"); },
+  };
+  const runner = new PortfolioRunner({
+    manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", qaRuntime: "codex", path: "/safe", task: { taskId: "P-QA-SELF", scope: "bounded", files: [], tests: [] } }] },
+    statePath,
+    worktreeRoot: join(root, "worktrees"),
+    worktrees: { async create() { worktreesCreated += 1; return { path: root, base: "abc", async cleanup() {} }; } },
+    runtimeAdapters: { codex: sharedAdapter },
+  });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  assert.equal(state.tasks[0].state, "BLOCKED_QA_NOT_INDEPENDENT");
+  assert.equal(worktreesCreated, 0);
+  assert.equal(runs, 0);
+  assert.equal(lastLifecycleEvent(state, "P-QA-SELF").type, "TASK_FAILED");
+  assert.equal(lastLifecycleEvent(state, "P-QA-SELF").state, "BLOCKED_QA_NOT_INDEPENDENT");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("core-v1 snapshot reports the runtime that actually runs QA", () => {
+  const snapshot = buildCoreV1Snapshot(
+    { projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", owner: "cursor", runtime: "cursor", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] },
+    { service: "IDLE", updatedAt: "now", events: [], tasks: [{ projectId: "p", taskId: "P-1", state: "QUEUED", attempts: 0 }] },
+  );
+  assert.equal(snapshot.lanes[0].qa.runtime, "cursor");
+  const explicit = buildCoreV1Snapshot(
+    { projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", owner: "codex", runtime: "codex", qaRuntime: "qa-codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] },
+    { service: "IDLE", updatedAt: "now", events: [], tasks: [] },
+  );
+  assert.equal(explicit.lanes[0].qa.runtime, "qa-codex");
 });

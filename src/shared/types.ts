@@ -1,3 +1,5 @@
+import { PROJECT_LABELS } from './projectLabels.js';
+
 /**
  * Shared type definitions for Agent Relay Log V0.
  * Used by the Electron backend (main process) and the React frontend.
@@ -27,6 +29,8 @@ export interface AppSettings {
   projectOrder?: string[];
   /** 사용자가 지정한 에이전트 표시 순서 (에이전트 이름 배열). UI 정렬 전용. */
   agentOrder?: string[];
+  /** Work Tab 표시 순서/개수 (에이전트 이름 배열). 편집 내용은 저장하지 않는다. */
+  workTabOrder?: string[];
 }
 
 /** A selectable project (a folder under DATA_ROOT/Projects). */
@@ -38,6 +42,10 @@ export interface ProjectInfo {
 /** settings:get response — includes the app base dir where settings live. */
 export interface SettingsView extends AppSettings {
   baseDir: string;
+  /** Backend path.join(baseDir, 'settings.json') — SSOT for the settings file path shown in 설정. */
+  settingsFile: string;
+  /** Default first-run location under the user's Documents folder. */
+  defaultDataRoot: string;
   /** App version from package.json (surfaced for dogfooding context). */
   appVersion: string;
   /** Whether the persisted dataRoot currently exists on disk. */
@@ -54,6 +62,36 @@ export interface ProjectViewData {
 export interface RunFolderResult {
   folder: string;
   run: string;
+}
+
+/** Launch-time start view selected via `--view=<name>` (invalid/missing = control-room). */
+export type StartView = 'home' | 'control-room' | 'approvals' | 'plan-studio';
+
+/**
+ * Launch-time start view for Automated Tester support (`--view=<name>`).
+ *
+ * Only 'home' | 'control-room' | 'approvals' | 'plan-studio' are accepted —
+ * anything else (including a missing argument) resolves to 'control-room' and
+ * never raises an error dialog. An explicit '--view=home' still returns 'home'.
+ * The last '--view=' argument wins. Pure — unit-tested.
+ */
+const START_VIEW_PREFIX = '--view=';
+export function parseStartView(argv: readonly string[]): StartView {
+  let found: string | null = null;
+  for (const arg of argv) {
+    if (typeof arg === 'string' && arg.startsWith(START_VIEW_PREFIX)) {
+      found = arg.slice(START_VIEW_PREFIX.length).trim();
+    }
+  }
+  if (found === 'control-room' || found === 'approvals' || found === 'plan-studio' || found === 'home') {
+    return found;
+  }
+  return 'control-room';
+}
+
+/** app:startView response — which view the app should open on launch. */
+export interface StartViewResult {
+  view: StartView;
 }
 
 /**
@@ -93,15 +131,29 @@ export type RelayRequest =
  | { op: 'pdf:read'; dataRoot: string; project: string; id: string }
  | { op: 'settings:setProjectOrder'; order: string[] }
  | { op: 'settings:setAgentOrder'; order: string[] }
+ | { op: 'settings:setWorkTabOrder'; order: string[] }
  | { op: 'update:check' }
- | { op: 'update:download' }
- | { op: 'update:install' };
+  | { op: 'update:download' }
+ | { op: 'update:install' }
+   | { op: 'controlRoom:board' }
+  | { op: 'controlRoom:approvals' }
+  | { op: 'planStudio:get'; project: string }
+  | { op: 'planStudio:save'; project: string; draft: string }
+  | { op: 'planStudio:chat'; project: string; message: string }
+  | { op: 'planStudio:approve'; project: string }
+  | { op: 'gates:list' }
+  | { op: 'gates:answer'; gateId: string; optionIndex: number }
+  | { op: 'controlRoom:laneSet'; project: string; role: string; runtimes: string[] }
+  | { op: 'controlRoom:resume'; project: string }
+  | { op: 'controlRoom:holdChoose'; taskId: string; option: 'retry' | 'narrow' | 'skip' }
+  | { op: 'controlRoom:approvalAdd'; category: string; summary: string }
+  | { op: 'app:startView' };
 
 /** Standard successful response envelope. */
 export type RelayResult<T = unknown> = { ok: true; value: T };
 
 /** Standard failure response envelope (human-friendly message). */
-export type RelayError = { ok: false; error: string };
+export type RelayError = { ok: false; error: string; detail?: string };
 
 export type RelayResponse<T = unknown> = RelayResult<T> | RelayError;
 
@@ -279,6 +331,477 @@ export function nextUpdateStatus(s: UpdateStatus, e: UpdateEvent): UpdateStatus 
   }
 }
 
+// ── Control Room board + approval learning (CR-08) ──────────────────────────
+//
+// board JSON now carries `models: { runtimeId: { runs, quota?, failed? } }`
+// and approval rules carry `usedCount` / `lastUsedAt`.
+// All new fields are optional — missing values render as 0 / '-'.
+
+/** Per-runtime model quota usage carried by the board JSON. */
+export interface ControlRoomModelUsage {
+  runs: number;
+  quota?: number;
+  failed?: number;
+}
+
+/** Board JSON shape (lanes + optional per-runtime model usage). */
+export interface ControlRoomBoardJson {
+  lanes?: unknown[];
+  models?: Record<string, ControlRoomModelUsage>;
+}
+
+export interface ControlRoomTodayItem {
+  project: string;
+  taskId: string;
+  title: string;
+  scope?: string;
+  finishedAt?: string;
+}
+
+const CONTROL_ROOM_TASK_ID_KEYS = ['taskId', 'task_id', 'id', 'key'] as const;
+const CONTROL_ROOM_TASK_TITLE_KEYS = ['title', 'taskTitle', 'task_title', 'name', 'label', 'subject', 'summary'] as const;
+const CONTROL_ROOM_FINISHED_AT_KEYS = ['finishedAt', 'finished_at', 'completedAt', 'completed_at', 'doneAt', 'done_at', 'timestamp'] as const;
+
+function controlRoomString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function controlRoomValue(record: Record<string, unknown>, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = controlRoomString(record[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+export function controlRoomTaskId(task: unknown): string {
+  if (typeof task === 'string') return task.trim();
+  return task && typeof task === 'object'
+    ? controlRoomValue(task as Record<string, unknown>, CONTROL_ROOM_TASK_ID_KEYS)
+    : '';
+}
+
+export function controlRoomTaskTitle(task: unknown): string {
+  if (typeof task === 'string') return task.trim();
+  if (!task || typeof task !== 'object') return '';
+  const record = task as Record<string, unknown>;
+  return controlRoomValue(record, CONTROL_ROOM_TASK_TITLE_KEYS) || controlRoomTaskId(task);
+}
+
+/** Founder-facing title: raw ids/scope text are never presented as task names. */
+export function founderTaskTitle(task: unknown): string {
+  const title = controlRoomTaskTitle(task);
+  return /[\uac00-\ud7a3]/.test(title) ? title : '이름 준비 중인 작업';
+}
+
+function controlRoomTaskScope(task: unknown): string {
+  return task && typeof task === 'object'
+    ? controlRoomValue(task as Record<string, unknown>, ['scope', 'description'])
+    : '';
+}
+
+function controlRoomFinishedAt(task: unknown): string {
+  return task && typeof task === 'object'
+    ? controlRoomValue(task as Record<string, unknown>, CONTROL_ROOM_FINISHED_AT_KEYS)
+    : '';
+}
+
+function controlRoomLocalDate(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const parsed = value instanceof Date ? value : typeof value === 'number' || typeof value === 'string' ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return fallback;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function controlRoomDoneEntries(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+export function controlRoomTodayDone(board: unknown, now: Date = new Date()): ControlRoomTodayItem[] {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return [];
+  const root = board as Record<string, unknown>;
+  const today = controlRoomLocalDate(now, '');
+  const output: ControlRoomTodayItem[] = [];
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  const add = (task: unknown, project: string, dated: boolean): void => {
+    const id = controlRoomTaskId(task);
+    const title = founderTaskTitle(task);
+    if (!id && !title) return;
+    const finishedAt = controlRoomFinishedAt(task);
+    if (dated && (!finishedAt || controlRoomLocalDate(finishedAt, '') !== today)) return;
+    const scope = controlRoomTaskScope(task);
+    output.push({ project, taskId: id, title, ...(scope ? { scope } : {}), ...(finishedAt ? { finishedAt } : {}) });
+  };
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const lane = laneValue as Record<string, unknown>;
+    const project = controlRoomString(lane.project ?? lane.id);
+    const done = controlRoomDoneEntries(lane.done);
+    for (const task of done) add(task, project, true);
+    for (const key of ['todayDone', 'today_done', 'doneToday', 'done_today', 'completedToday', 'completed_today'] as const) {
+      for (const task of controlRoomDoneEntries(lane[key])) add(task, project, false);
+    }
+  }
+  for (const task of controlRoomDoneEntries(root.todayDone ?? root.today_done)) add(task, '', false);
+  return output.sort((a, b) => String(b.finishedAt ?? '').localeCompare(String(a.finishedAt ?? '')));
+}
+
+export function controlRoomTodayCount(board: unknown, now: Date = new Date()): number {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return 0;
+  const root = board as Record<string, unknown>;
+  const items = controlRoomTodayDone(board, now);
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  let hinted = 0;
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const counts = (laneValue as Record<string, unknown>).counts;
+    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue;
+    const record = counts as Record<string, unknown>;
+    // NOTE: VERIFIED_DONE is a cumulative total, never a today hint — do not read it here.
+    const value = record.today ?? record.todayDone ?? record.doneToday ?? record.completedToday ?? record.finishedToday ?? record.done;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) hinted += Math.floor(value);
+  }
+  return Math.max(items.length, hinted);
+}
+
+/**
+ * R2-2 honest fallback — sum of cumulative VERIFIED_DONE totals across lanes.
+ * The real board sends only lanes[].counts (VERIFIED_DONE totals) with no dated
+ * done list, so this total must never be presented as "today". Pure.
+ */
+export function controlRoomVerifiedDoneTotal(board: unknown): number {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return 0;
+  const root = board as Record<string, unknown>;
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  let total = 0;
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const counts = (laneValue as Record<string, unknown>).counts;
+    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue;
+    const record = counts as Record<string, unknown>;
+    const value =
+      record.VERIFIED_DONE ?? record.verified_done ?? record.verifiedDone;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      total += Math.floor(value);
+    }
+  }
+  return total;
+}
+
+const CONTROL_ROOM_TODAY_LIST_KEYS = [
+  'todayDone',
+  'today_done',
+  'doneToday',
+  'done_today',
+  'completedToday',
+  'completed_today',
+] as const;
+
+const CONTROL_ROOM_TODAY_HINT_KEYS = [
+  'today',
+  'todayDone',
+  'doneToday',
+  'completedToday',
+  'finishedToday',
+  'done',
+] as const;
+
+/**
+ * R2-2 — true when the board carries any dated done data:
+ * a non-empty lane.done / lane.todayDone-variant / root.todayDone-variant list,
+ * or an explicit numeric today hint in lanes[].counts (even 0 — an explicit
+ * zero claim is data, not "no record"). A counts-only board with just
+ * VERIFIED_DONE totals returns false. Pure.
+ */
+export function controlRoomHasDoneData(board: unknown): boolean {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return false;
+  const root = board as Record<string, unknown>;
+  const lanes = Array.isArray(root.lanes) ? root.lanes : [];
+  for (const laneValue of lanes) {
+    if (!laneValue || typeof laneValue !== 'object') continue;
+    const lane = laneValue as Record<string, unknown>;
+    if (controlRoomDoneEntries(lane.done).length > 0) return true;
+    for (const key of CONTROL_ROOM_TODAY_LIST_KEYS) {
+      if (controlRoomDoneEntries(lane[key]).length > 0) return true;
+    }
+    const counts = lane.counts;
+    if (counts && typeof counts === 'object' && !Array.isArray(counts)) {
+      const record = counts as Record<string, unknown>;
+      for (const key of CONTROL_ROOM_TODAY_HINT_KEYS) {
+        const value = record[key];
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return true;
+      }
+    }
+  }
+  for (const key of ['todayDone', 'today_done'] as const) {
+    if (controlRoomDoneEntries(root[key]).length > 0) return true;
+  }
+  return false;
+}
+
+function controlRoomRuntimeName(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const record = value as Record<string, unknown>;
+  for (const key of ['runtime', 'name', 'id', 'agent', 'model']) {
+    const name = controlRoomString(record[key]);
+    if (name) return name;
+  }
+  return '';
+}
+
+function controlRoomRoutingLine(routing: unknown): string[] {
+  if (!routing || typeof routing !== 'object' || Array.isArray(routing)) return [];
+  const record = routing as Record<string, unknown>;
+  const coolingItems = Array.isArray(record.cooling)
+    ? record.cooling
+    : record.cooling && typeof record.cooling === 'object'
+      ? Object.entries(record.cooling as Record<string, unknown>).map(([runtime, until]) => ({ runtime, until }))
+      : [];
+  const cooling = coolingItems.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return '';
+    const value = item as Record<string, unknown>;
+    const name = controlRoomRuntimeName(value);
+    const until = controlRoomString(value.until ?? value.coolingUntil ?? value.availableAt ?? value.cooling_until);
+    return name && until ? `${name}(${until}까지)` : '';
+  }).filter(Boolean);
+  const lines = cooling.length > 0 ? [`쉬는 AI: ${cooling.join(' · ')}`] : [];
+  if (record.pool !== undefined && record.pool !== null) lines.push('배정 순서: 구독 AI 먼저, 무료 모델은 예비');
+  return lines;
+}
+
+export function controlRoomWorkingRows(input: unknown, routing?: unknown): string[] {
+  const board = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : null;
+  const lanes = Array.isArray(input) ? input : board?.lanes;
+  if (!Array.isArray(lanes)) return [];
+  const route = routing ?? board?.routing;
+  return lanes.flatMap(laneValue => {
+    if (!laneValue || typeof laneValue !== 'object') return [];
+    const lane = laneValue as Record<string, unknown>;
+    const current = lane.current && typeof lane.current === 'object' ? lane.current as Record<string, unknown> : {};
+    const title = controlRoomTaskTitle(current);
+    if (!title) return [];
+    const projectId = controlRoomString(lane.project ?? lane.id);
+    const project = projectId || '알 수 없는 레인';
+    const stageValue = current.stage;
+    const stage = typeof stageValue === 'number'
+      ? ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'][Math.max(0, Math.min(6, Math.floor(stageValue)))]
+      : controlRoomString(stageValue) || '계획';
+    const stageIndex = typeof stageValue === 'number'
+      ? Math.floor(stageValue)
+      : /^(qa|검수|시험|사람 확인|반영|integrat|gate|human)/i.test(controlRoomString(stageValue)) ? 3 : 0;
+    const chain = stageIndex >= 3 ? lane.qaChain : lane.workerChain;
+    const selected = current[stageIndex >= 3 ? 'qa' : 'worker'] ?? (Array.isArray(chain) ? chain[0] : chain);
+    const worker = controlRoomRuntimeName(selected);
+    const projectLabel = PROJECT_LABELS[projectId]?.name ?? project;
+    return [`${projectLabel} · ${stage} · ${worker || 'AI 확인 중'} · ${title}`];
+  }).concat(controlRoomRoutingLine(route));
+}
+
+/** An approval rule with optional auto-approval learning stats. */
+export interface ApprovalRuleJson {
+  category?: string;
+  summary?: string;
+  /** How often this rule auto-approved. Missing = 0. */
+  usedCount?: number;
+  /** Last auto-approval timestamp (any parseable date string). Missing = '-'. */
+  lastUsedAt?: string;
+  [key: string]: unknown;
+}
+
+/** One normalized per-runtime model usage row (missing fields → 0). */
+export interface NormalizedModelUsage {
+  runtimeId: string;
+  runs: number;
+  quota: number;
+  failed: number;
+}
+
+/** Normalize a raw models map (missing/invalid fields → 0). Pure — unit-tested. */
+export function normalizeModelUsage(models: unknown): NormalizedModelUsage[] {
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return [];
+  return Object.entries(models as Record<string, unknown>).map(([runtimeId, raw]) => {
+    const record = (raw && typeof raw === 'object' ? raw : {}) as Partial<ControlRoomModelUsage>;
+    const num = (v: unknown): number =>
+      typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+    return { runtimeId, runs: num(record.runs), quota: num(record.quota), failed: num(record.failed) };
+  });
+}
+
+/**
+ * True when a quota is actually hit/exhausted (quota set and runs reached it).
+ * A missing/zero quota means "no limit" → never a hit. Pure — unit-tested.
+ */
+export function isModelQuotaHit(row: { runs: number; quota: number }): boolean {
+  return row.quota > 0 && row.runs >= row.quota;
+}
+
+/** Missing/invalid usedCount renders as 0. Pure — unit-tested. */
+export function approvalUsedCount(rule: ApprovalRuleJson): number {
+  return typeof rule.usedCount === 'number' && Number.isFinite(rule.usedCount) && rule.usedCount >= 0
+    ? Math.floor(rule.usedCount)
+    : 0;
+}
+
+/** Missing/invalid lastUsedAt renders as '-'; otherwise YYYY-MM-DD. Pure — unit-tested. */
+export function approvalLastUsed(rule: ApprovalRuleJson): string {
+  if (typeof rule.lastUsedAt !== 'string' || !rule.lastUsedAt.trim()) return '-';
+  const parsed = new Date(rule.lastUsedAt);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** usedCount 0 → '아직 자동 적용된 적 없음', otherwise '자동 적용 N회 · 마지막 YYYY-MM-DD'. Pure — unit-tested. */
+export function approvalStatsLine(rule: ApprovalRuleJson): string {
+  const used = approvalUsedCount(rule);
+  if (used === 0) return '아직 자동 적용된 적 없음';
+  return `자동 적용 ${used}회 · 마지막 ${approvalLastUsed(rule)}`;
+}
+
+/**
+ * Approval category → Korean group heading label. Pure — unit-tested.
+ * Known keys map to fixed labels; anything else is '기타'.
+ */
+export function approvalCategoryLabel(category: string): string {
+  switch (category) {
+    case 'agents': return '에이전트 배치';
+    case 'git': return 'Git·브랜치';
+    case 'install': return '설치';
+    case 'lanes': return '작업 흐름';
+    case 'merge-push': return '병합·올리기';
+    case 'permissions': return '권한';
+    case 'physical-e2e': return '실물 E2E';
+    case 'product-decision': return '제품 결정';
+    case 'scope': return '범위';
+    case 'visual-decision': return '화면 결정';
+    case '기타': return '기타';
+    default: return '기타';
+  }
+}
+
+/**
+ * Marker that flags a rule as superseded — "(바뀜)" in the display text
+ * means a newer rule replaced it. Such rules fold into '지난 결정'.
+ * Pure — unit-tested.
+ */
+export const SUPERSEDED_APPROVAL_MARKER = '(바뀜)';
+
+/** True when the rule's display text carries the '(바뀜)' marker. Pure — unit-tested. */
+export function isSupersededApprovalRule(rule: ApprovalRuleJson): boolean {
+  if (!rule || typeof rule !== 'object') return false;
+  const record = rule as Record<string, unknown>;
+  const candidates = [rule.summary, record.title, record.ask, record.name];
+  return candidates.some(
+    (value) => typeof value === 'string' && value.includes(SUPERSEDED_APPROVAL_MARKER),
+  );
+}
+
+/**
+ * Split rules into active vs superseded (rules carrying '(바뀜)').
+ * Order-preserving — superseded rules render folded under '지난 결정'.
+ * Pure — unit-tested.
+ */
+export function partitionSupersededApprovalRules<T extends ApprovalRuleJson>(
+  rules: readonly T[],
+): { active: T[]; superseded: T[] } {
+  const active: T[] = [];
+  const superseded: T[] = [];
+  for (const rule of rules) {
+    (isSupersededApprovalRule(rule) ? superseded : active).push(rule);
+  }
+  return { active, superseded };
+}
+
+/**
+ * Sort rules within a category by usedCount (desc, missing = 0).
+ * Stable — ties keep their original relative order. Pure — unit-tested.
+ */
+export function sortRulesByUsage<T extends ApprovalRuleJson>(rules: readonly T[]): T[] {
+  return rules
+    .map((rule, index) => ({ rule, index }))
+    .sort((a, b) => approvalUsedCount(b.rule) - approvalUsedCount(a.rule) || a.index - b.index)
+    .map(entry => entry.rule);
+}
+
+/**
+ * Remove duplicate rule entries, keeping the first occurrence.
+ * Dedupes by object identity first, then by JSON content, so an envelope
+ * `{ rules: [A, B] }` listed alongside the same A/B top-level entries only
+ * renders once. Pure — unit-tested.
+ */
+export function dedupeApprovalRules<T extends ApprovalRuleJson>(rules: readonly T[]): T[] {
+  const seenRef = new Set<unknown>();
+  const seenContent = new Set<string>();
+  const out: T[] = [];
+  for (const rule of rules) {
+    if (seenRef.has(rule)) continue;
+    seenRef.add(rule);
+    let key: string | null = null;
+    try {
+      key = JSON.stringify(rule) ?? null;
+    } catch {
+      key = null;
+    }
+    if (key !== null) {
+      if (seenContent.has(key)) continue;
+      seenContent.add(key);
+    }
+    out.push(rule);
+  }
+  return out;
+}
+
+/** Group rules by category (missing/blank → '기타'), each group sorted by usedCount. Pure — unit-tested. */
+export function groupRulesByCategory<T extends ApprovalRuleJson>(
+  rules: readonly T[],
+): { category: string; rules: T[] }[] {
+  const groups = new Map<string, T[]>();
+  for (const rule of rules) {
+    const category =
+      typeof rule.category === 'string' && rule.category.trim() ? rule.category.trim() : '기타';
+    const list = groups.get(category);
+    if (list) list.push(rule);
+    else groups.set(category, [rule]);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([category, list]) => ({ category, rules: sortRulesByUsage(list) }));
+}
+
+// ── Control Room lane attention (decision badges) ─────────────────────────
+// Surface lanes that need the Founder. Pure — unit-tested.
+
+/** Minimal lane shape needed for attention badges (extra fields ignored). */
+export interface LaneAttentionInput {
+  humanGate?: unknown;
+  founderGate?: unknown;
+  blocker?: unknown;
+  holds?: unknown;
+  [key: string]: unknown;
+}
+
+/** 'decision' = Founder/human gate open · 'hold' = blocked/held · null = clear. */
+export type LaneAttention = 'decision' | 'hold' | null;
+
+/**
+ * Pure helper — 'decision' if lane.humanGate or lane.founderGate is truthy,
+ * else 'hold' if lane.blocker is truthy or lane.holds is a non-empty array,
+ * else null.
+ */
+export function laneAttention(lane: LaneAttentionInput | null | undefined): LaneAttention {
+  if (!lane || typeof lane !== 'object') return null;
+  if (lane.humanGate || lane.founderGate) return 'decision';
+  if (lane.blocker) return 'hold';
+  if (Array.isArray(lane.holds) && lane.holds.length > 0) return 'hold';
+  return null;
+}
+
 // ── Drag reorder helpers ────────────────────────────────────────────────────
 
 /** Return a new array with the element at `from` moved to index `to`. */
@@ -303,4 +826,161 @@ export function applyOrderByKeys<T>(items: readonly T[], keyOf: (x: T) => string
   for (const item of items) (rank.has(keyOf(item)) ? known : unknown).push(item);
   known.sort((a, b) => rank.get(keyOf(a))! - rank.get(keyOf(b))!);
   return [...known, ...unknown];
+}
+
+// ── Plan Studio founder view ordering ───────────────────────────────────────
+// Founder view shows tasks in progress or queued first, then HOLD, then
+// finished (finished rows collapse behind a '끝난 작업 N개 보기' toggle).
+// Pure — unit-tested.
+
+/** Minimal task shape needed for founder-view ordering (extra fields ignored). */
+export interface PlanStudioOrderTask {
+  stage?: number | string;
+  blocker?: unknown;
+}
+
+/** Founder-view group rank: 'active' (진행중/대기) → 'hold' → 'done' (끝남). */
+export type PlanStudioTaskGroup = 'active' | 'hold' | 'done';
+
+/** True when a normalized stage value is explicitly negated (UNDONE/NOT_DONE/INCOMPLETE/NOT_COMPLETE). */
+export function isNegatedPlanStudioDoneValue(value: string): boolean {
+  const stripped = value.replace(/[\s_\-]+/g, '');
+  return stripped.includes('UNDONE')
+    || stripped.includes('NOTDONE')
+    || stripped.includes('INCOMPLETE')
+    || stripped.includes('NOTCOMPLETE')
+    || stripped.includes('NONDONE')
+    || stripped.includes('NONCOMPLETE')
+    || stripped.includes('UNCOMPLETE')
+    || stripped.includes('NOTINTEGRATED')
+    || stripped.includes('NOTVERIFIED');
+}
+
+/** True when the stage string/number means finished (반영/DONE/COMPLETE/통합/INTEGRATED/VERIFIED_DONE). */
+export function isPlanStudioTaskDone(task: PlanStudioOrderTask | null | undefined): boolean {
+  if (!task || typeof task !== 'object') return false;
+  const stage = (task as PlanStudioOrderTask).stage;
+  if (typeof stage === 'number') return Number.isFinite(stage) && stage >= 6;
+  const value = String(stage ?? '').toUpperCase();
+  if (!value) return false;
+  if (isNegatedPlanStudioDoneValue(value)) return false;
+  return value.includes('INTEGR')
+    || value.includes('통합')
+    || value.includes('반영')
+    || value.includes('DONE')
+    || value.includes('COMPLETE')
+    || value === 'V1_COMPLETE'
+    || value === 'INTEGRATED'
+    || value === 'VERIFIED_DONE';
+}
+
+/** True when the task is held/blocked (and not finished — done wins). */
+export function isPlanStudioTaskHold(task: PlanStudioOrderTask | null | undefined): boolean {
+  if (!task || typeof task !== 'object') return false;
+  if (isPlanStudioTaskDone(task)) return false;
+  const blocker = (task as PlanStudioOrderTask).blocker;
+  if (typeof blocker === 'string' ? blocker.trim() : Boolean(blocker)) return true;
+  const stage = (task as PlanStudioOrderTask).stage;
+  if (typeof stage === 'string') {
+    const value = stage.toUpperCase();
+    if (value.includes('HOLD') || value.includes('BLOCK') || value.includes('보류')) return true;
+  }
+  return false;
+}
+
+/** Group a task for founder-view ordering. Pure. */
+export function planStudioTaskGroup(task: PlanStudioOrderTask | null | undefined): PlanStudioTaskGroup {
+  if (isPlanStudioTaskDone(task)) return 'done';
+  if (isPlanStudioTaskHold(task)) return 'hold';
+  return 'active';
+}
+
+/**
+ * Sort tasks for the founder view: active (in progress or queued) first,
+ * then HOLD, then finished. Stable — ties keep their original relative order.
+ * Pure — unit-tested.
+ */
+export function sortPlanStudioTasks<T extends PlanStudioOrderTask>(tasks: readonly T[]): T[] {
+  const rank = (task: T): number => {
+    const group = planStudioTaskGroup(task);
+    return group === 'active' ? 0 : group === 'hold' ? 1 : 2;
+  };
+  return tasks
+    .map((task, index) => ({ task, index }))
+    .sort((a, b) => rank(a.task) - rank(b.task) || a.index - b.index)
+    .map(entry => entry.task);
+}
+
+// ── Version per build ───────────────────────────────────────────────────────
+// package.json stayed 0.3.1 across builds v1-v11 so installers could not be
+// told apart. Each build now gets 0.3.<N> where N = the count of commits on
+// agent-relay/integration since the 0.3.1 commit (see scripts/next-version.mjs).
+// The version surfaces in 설정 (settings:get appVersion) and in the window
+// title suffix ('Agent Relay 0.3.N'). Pure — unit-tested.
+
+/** Major.minor line every per-build version is cut from. */
+export const APP_VERSION_MAJOR_MINOR = '0.3';
+
+/** Last fixed version before per-build versioning started. */
+export const APP_BASE_VERSION = '0.3.1';
+
+/** Commit that shipped APP_BASE_VERSION (counting base for N). */
+export const APP_BASE_COMMIT = 'd16c60cfd134e87a75d149acb47a89c81aa32969';
+
+/**
+ * Build number N → '0.3.<N>'. Non-finite/negative input clamps to 0.
+ * Pure — unit-tested.
+ */
+export function versionForBuildCount(count: unknown): string {
+  const n =
+    typeof count === 'number' && Number.isFinite(count)
+      ? Math.max(0, Math.floor(count))
+      : 0;
+  return `${APP_VERSION_MAJOR_MINOR}.${n}`;
+}
+
+/**
+ * Window title suffix helper — 'Agent Relay 0.3.N'.
+ * Blank/non-string input falls back to APP_BASE_VERSION. Pure — unit-tested.
+ */
+export function windowTitleForVersion(version: unknown): string {
+  const v =
+    typeof version === 'string' && version.trim() ? version.trim() : APP_BASE_VERSION;
+  return `Agent Relay ${v}`;
+}
+
+// ── Friendly fs error messages ────────────────────────────────────────────
+// Raw Node fs errors (e.g. "ENOENT: no such file or directory, open 'C:\…'")
+// must never reach the UI — they leak codes/paths and are not Korean.
+// This pure helper maps common errno codes to one plain Korean sentence
+// (no code, no path); anything else passes through unchanged.
+
+const FRIENDLY_ERRNO_MESSAGES: Record<string, string> = {
+  ENOENT: '파일 또는 폴더를 찾을 수 없습니다.',
+  EACCES: '접근 권한이 없어 처리할 수 없습니다.',
+  EPERM: '허용되지 않은 동작이라 처리할 수 없습니다.',
+  EEXIST: '이미 같은 이름의 파일 또는 폴더가 있습니다.',
+  ENOSPC: '저장 공간이 부족하여 저장할 수 없습니다.',
+  EBUSY: '파일이 사용 중이라 지금 처리할 수 없습니다.',
+};
+
+const FRIENDLY_ERRNO_PATTERN = /\b(ENOENT|EACCES|EPERM|EEXIST|ENOSPC|EBUSY)\b/;
+
+/**
+ * Map a Node fs errno failure to one plain Korean sentence.
+ * Reads `err.code` first, then falls back to scanning the message text.
+ * Unmapped messages are returned unchanged. Pure — unit-tested.
+ */
+export function friendlyErrorMessage(err: unknown): string {
+  const fallback =
+    err instanceof Error ? err.message : typeof err === 'string' ? err : String(err);
+  let code = '';
+  if (err && typeof err === 'object' && typeof (err as { code?: unknown }).code === 'string') {
+    code = ((err as { code: string }).code || '').toUpperCase();
+  }
+  if (!code && typeof fallback === 'string') {
+    const hit = FRIENDLY_ERRNO_PATTERN.exec(fallback.toUpperCase());
+    if (hit?.[1]) code = hit[1];
+  }
+  return FRIENDLY_ERRNO_MESSAGES[code] ?? fallback;
 }

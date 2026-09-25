@@ -17,11 +17,25 @@ const PASS = (m) => console.log('  PASS  ' + m);
 const FAIL = (m) => { console.log('  FAIL  ' + m); process.exitCode = 1; };
 
 async function main() {
+  // ── P. Packaging — updater runtime inputs stay packaged ────────────────────
+  console.log('P1) electron-updater는 production dependency로 패키징됨');
+  const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+  if (packageJson.dependencies?.['electron-updater']
+    && !packageJson.devDependencies?.['electron-updater']) {
+    PASS('electron-updater is a production dependency');
+  } else FAIL('electron-updater must be a production dependency');
+
+  console.log('P2) packaged files에 updater가 쓰는 runtime server 포함');
+  const builderConfig = fs.readFileSync(path.join(process.cwd(), 'electron.builder.yml'), 'utf8');
+  if (/^\s*-\s*dist\/server\/\*\*\/\*\s*$/m.test(builderConfig)) {
+    PASS('electron-builder files include dist/server');
+  } else FAIL('electron-builder files must include dist/server/**/*');
+
   fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   relay.ensureDataRoot(TEST_ROOT);
 
   // ── S. Settings — order persistence ────────────────────────────────────────
-  console.log('S1) settings roundtrip — projectOrder/agentOrder 포함');
+  console.log('S1) settings roundtrip — projectOrder/agentOrder/workTabOrder 포함');
   const settingsDir = path.join(TEST_ROOT, '_settings');
   fs.mkdirSync(settingsDir, { recursive: true });
   relay.saveSettings(settingsDir, {
@@ -30,10 +44,12 @@ async function main() {
     lastProject: 'HERMESS',
     projectOrder: ['JuTell', 'HERMESS', 'GUPITI'],
     agentOrder: ['OpenCode', 'Codex', 'Claude Code'],
+    workTabOrder: ['OpenCode', 'Claude Code', 'OpenCode'],
   });
   const s1 = relay.loadSettings(settingsDir);
   if (s1.projectOrder?.join('|') === 'JuTell|HERMESS|GUPITI'
     && s1.agentOrder?.join('|') === 'OpenCode|Codex|Claude Code'
+    && s1.workTabOrder?.join('|') === 'OpenCode|Claude Code|OpenCode'
     && s1.lastProject === 'HERMESS') {
     PASS('projectOrder + agentOrder + lastProject persist');
   } else FAIL(`orders lost: ${JSON.stringify(s1)}`);
@@ -199,6 +215,102 @@ async function main() {
   const tokens = ['# DF-0001', 'Status: OPEN', 'Priority: MEDIUM', '## Project', 'QUICKPROJ', '## 발견 내용'];
   if (tokens.every(t => rawQ.includes(t))) PASS('required md tokens present');
   else FAIL(`md missing tokens: ${tokens.filter(t => !rawQ.includes(t)).join(', ')}`);
+
+  // ── T. Touch reorder — pointer-event fallback (desktop HTML5 DnD 유지) ─────
+  console.log('T1) App.tsx에 pointer fallback 순수 헬퍼가 export됨');
+  const appSrc = fs.readFileSync(path.join(process.cwd(), 'src/frontend/App.tsx'), 'utf8');
+  if (/export function shouldStartPointerReorder/.test(appSrc)
+    && /export function resolvePointerDropIndex/.test(appSrc)) {
+    PASS('shouldStartPointerReorder + resolvePointerDropIndex exported');
+  } else FAIL('App.tsx must export shouldStartPointerReorder + resolvePointerDropIndex');
+
+  console.log('T2) 프로젝트 탭·작업 탭·에이전트 pill 모두 pointer 핸들러 + mouse DnD 유지');
+  const needPointer = ['onPointerDown', 'onPointerMove', 'onPointerUp', 'onPointerCancel'];
+  const missingPointer = needPointer.filter(k => {
+    const hits = appSrc.split(k).length - 1;
+    return hits < 3; // 세 영역(프로젝트/작업/에이전트)에 각각 필요
+  });
+  const needMouse = ['draggable', 'onDragStart', 'onDrop', 'onProjectTabDrop', 'onWorkTabDrop', 'onAgentPillDrop'];
+  const missingMouse = needMouse.filter(k => !appSrc.includes(k));
+  if (missingPointer.length === 0 && missingMouse.length === 0) {
+    PASS('pointer handlers x3 areas + desktop HTML5 DnD preserved');
+  } else FAIL(`pointer missing=${missingPointer.join(',')} mouse missing=${missingMouse.join(',')}`);
+
+  console.log('T3) style.css 터치 fallback — touch-action + 드래그 피드백');
+  const cssSrc = fs.readFileSync(path.join(process.cwd(), 'src/frontend/style.css'), 'utf8');
+  if (/touch-action:\s*none/.test(cssSrc) && /\.reorder-(over|dragging)/.test(cssSrc)) {
+    PASS('touch-action:none + reorder visual present');
+  } else FAIL('style.css must contain touch-action:none and .reorder-over/.reorder-dragging');
+
+  console.log('T4) pointer reorder flow — 터치는 이동, mouse는 미시작, 경계는 무시');
+  function extractFn(src, name) {
+    const m = src.match(new RegExp(`export function ${name}[\\s\\S]*?\\n\\}`));
+    if (!m) return null;
+    const ts = m[0].replace(/^export\s+/, '');
+    // App.tsx는 TS이므로 new Function 평가 전에 타입 주석만 최소 제거한다.
+    const js = ts
+      .replace(/:\s*number\s*\|\s*null/g, '')
+      .replace(/:\s*string/g, '')
+      .replace(/:\s*number/g, '')
+      .replace(/:\s*boolean/g, '');
+    return new Function(`${js}; return ${name};`)();
+  }
+  const shouldStart = extractFn(appSrc, 'shouldStartPointerReorder');
+  const resolveDrop = extractFn(appSrc, 'resolvePointerDropIndex');
+  if (typeof shouldStart === 'function' && typeof resolveDrop === 'function'
+    && shouldStart('touch') === true
+    && shouldStart('pen') === true
+    && shouldStart('mouse') === false
+    && resolveDrop(0, 2, 4) === 2
+    && resolveDrop(1, 1, 4) === null
+    && resolveDrop(null, 2, 4) === null
+    && resolveDrop(0, null, 4) === null
+    && resolveDrop(-1, 2, 4) === null
+    && resolveDrop(0, 9, 4) === null
+    && reorderArray(['a', 'b', 'c', 'd'], 0, resolveDrop(0, 2, 4)).join('') === 'bcad') {
+    PASS('touch/pen starts, mouse keeps HTML5 DnD, drop resolves via reorderArray');
+  } else FAIL('pointer reorder flow broken');
+
+  console.log('T5) pointer capture 없이 좌표 기반 cross-tab drop + dragging 피드백');
+  {
+    const hasSetCapture = /setPointerCapture/.test(appSrc);
+    const hasRelease = /releasePointerCapture/.test(appSrc);
+    const hasFromPoint = /elementFromPoint/.test(appSrc) && /clientX/.test(appSrc) && /clientY/.test(appSrc);
+    const hasGroupAttr = (appSrc.match(/data-reorder-group/g) || []).length >= 3
+      && (appSrc.match(/data-reorder-index/g) || []).length >= 3;
+    const draggingUses = (appSrc.match(/reorder-dragging/g) || []).length;
+    let overHelperOk = false;
+    try {
+      const m = appSrc.match(/export function pointerOverIndexFromPoint[\s\S]*?\n\}/);
+      if (m) {
+        const js = m[0].replace(/^export\s+/, '')
+          .replace(/:\s*number\s*\|\s*null/g, '')
+          .replace(/:\s*string/g, '')
+          .replace(/:\s*number/g, '')
+          .replace(/ as unknown as \{[^}]*\}/g, '')
+          .replace(/ as Element \| null/g, '');
+        const fn = new Function(`${js}; return pointerOverIndexFromPoint;`)();
+        // DOM 없으면 null (closure 폴백 경로)
+        const noDom = fn(10, 10, 'proj-tab', 4) === null;
+        // stub document: 좌표가 가리킨 요소의 group/index로 해석
+        const g = globalThis;
+        const prevDoc = g.document;
+        g.document = {
+          elementFromPoint: () => ({
+            closest: (sel) => (sel === '[data-reorder-group="proj-tab"]'
+              ? { getAttribute: () => '2' }
+              : null),
+          }),
+        };
+        let stubbed = null;
+        try { stubbed = fn(10, 10, 'proj-tab', 4); } finally { g.document = prevDoc; }
+        overHelperOk = noDom && stubbed === 2 && fn(10, 10, 'proj-tab', 4) === null;
+      }
+    } catch { overHelperOk = false; }
+    if (!hasSetCapture && hasRelease && hasFromPoint && hasGroupAttr && draggingUses >= 3 && overHelperOk) {
+      PASS('no capture + elementFromPoint coords + reorder-dragging applied');
+    } else FAIL(`pointer-drop broken: setCapture=${hasSetCapture} release=${hasRelease} fromPoint=${hasFromPoint} group=${hasGroupAttr} draggingUses=${draggingUses} helper=${overHelperOk}`);
+  }
 
   // ── R. Regression — 데이터 구조 불변 ────────────────────────────────────────
   console.log('R1) reorder는 폴더 구조를 건드리지 않음');

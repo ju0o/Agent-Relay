@@ -2,17 +2,86 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { realpath } from "node:fs/promises";
 import { FounderGateManager } from "../portfolio-jit/index.mjs";
 import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 
-export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
+export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_QA_NOT_INDEPENDENT", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
+export const LIFECYCLE_EVENT_TYPES = Object.freeze(["TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_RETRY", "TASK_FAILED", "TASK_COMPLETED"]);
+export const MAX_LIFECYCLE_EVENTS = 500;
+
+function truncateLifecycleText(value, limit = 300) {
+  const text = String(value ?? "");
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+export function recordLifecycleEvent(state, event) {
+  if (!state || typeof state !== "object" || !event || typeof event !== "object") return null;
+  if (!Array.isArray(state.events)) state.events = [];
+  const entry = { at: new Date().toISOString(), ...event };
+  if (typeof entry.type !== "string" || !LIFECYCLE_EVENT_TYPES.includes(entry.type)) throw new Error(`invalid lifecycle event type: ${entry.type}`);
+  if (typeof entry.taskId !== "string" || !entry.taskId) throw new Error("lifecycle event requires taskId");
+  for (const key of ["reason", "error", "verdict", "status", "state"]) {
+    if (typeof entry[key] === "string" && entry[key].length > 300) entry[key] = truncateLifecycleText(entry[key]);
+  }
+  state.events.push(entry);
+  if (state.events.length > MAX_LIFECYCLE_EVENTS) state.events.splice(0, state.events.length - MAX_LIFECYCLE_EVENTS);
+  return entry;
+}
+
+export function lastLifecycleEvent(state, taskId) {
+  const events = Array.isArray(state?.events) ? state.events : [];
+  const scoped = taskId ? events.filter((event) => event.taskId === taskId) : events;
+  return scoped.at(-1) || null;
+}
 
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+
+export function isValidLifecycleEvent(event) {
+  return Boolean(event && typeof event === "object" && !Array.isArray(event)
+    && typeof event.type === "string" && LIFECYCLE_EVENT_TYPES.includes(event.type)
+    && typeof event.taskId === "string" && event.taskId.length > 0);
+}
+
+const OPTIONAL_STATE_ARRAYS = Object.freeze(["activeBuilders", "activeQa", "founderDecisions", "resolvedFounderGates"]);
+
+export const PORTFOLIO_STATE_CORRUPT = "PORTFOLIO_STATE_CORRUPT";
+
+export function isCorruptStateError(error) {
+  return Boolean(error && error.code === PORTFOLIO_STATE_CORRUPT);
+}
+
+export function corruptStateError({ statePath, reason, cause }) {
+  const error = new Error(`portfolio state corrupt: ${statePath}: ${reason}`);
+  error.code = PORTFOLIO_STATE_CORRUPT;
+  error.statePath = statePath;
+  error.reason = reason;
+  error.blocked = { code: PORTFOLIO_STATE_CORRUPT, statePath, reason };
+  if (cause !== undefined) error.cause = cause;
+  return error;
+}
+
+function freshPortfolioState() {
+  return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() };
+}
+
+let atomicCounter = 0;
+
+async function writeFileAtomic(path, contents) {
+  await mkdir(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.${atomicCounter++}.tmp`;
+  await writeFile(temp, contents);
+  try {
+    await rename(temp, path);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
 
 function packetLine(text, prefix) {
   const line = String(text).split(/\r?\n/).reverse().find((item) => item.trim().startsWith(prefix));
@@ -29,19 +98,22 @@ function nextDefinition(project, state) {
 export function buildCoreV1Snapshot(manifest, state) {
   const lanes = manifest.projects.filter((project) => project.coreV1 !== false).map((project) => {
     const tasks = state.tasks.filter((task) => task.projectId === project.id);
-    const task = tasks.at(-1) || null;
+    const task = tasks.find((candidate) => candidate.state !== "VERIFIED_DONE" && candidate.state !== "V1_COMPLETE") || tasks.at(-1) || null;
     const next = nextDefinition(project, state);
+    const lifecycleEvents = (Array.isArray(state.events) ? state.events : []).filter((event) => event.projectId === project.id);
     return {
       project: project.id,
       pm: { channel: project.pmChannel || `pm/${project.id}`, state: project.pmState || project.state || "UNKNOWN" },
       currentTask: task?.taskId || next?.taskId || null,
       worker: { runtime: project.runtime || project.owner || null, state: task?.state || project.state || "IDLE", pid: ["RUNNING", "QA"].includes(task?.state) ? task?.builderEvidence?.pid || null : null },
       result: task?.result || null,
-      qa: { runtime: project.qaRuntime || "codex", verdict: task?.qa?.verdict || null, pid: task?.qaEvidence?.pid || null },
+      qa: { runtime: project.qaRuntime || project.runtime || project.owner || "codex", verdict: task?.qa?.verdict || null, pid: task?.qaEvidence?.pid || null },
       retries: Math.max(0, (task?.attempts || 0) - 1),
       next: task?.state === "VERIFIED_DONE" ? next?.taskId || null : null,
       blocker: task?.error || task?.blocker || project.blockers?.[0] || null,
       founderGate: project.gateId ? { gateId: project.gateId, packet: project.gatePacket || null } : null,
+      lifecycleEventCount: lifecycleEvents.length,
+      latestLifecycleEvent: lifecycleEvents.at(-1) || null,
     };
   });
   return { schema: "agent-relay.core-v1.inbox.v1", program: "CORE_V1", service: state.service || "UNKNOWN", updatedAt: state.updatedAt || null, lanes };
@@ -49,7 +121,7 @@ export function buildCoreV1Snapshot(manifest, state) {
 
 export function formatCoreV1Text(snapshot) {
   const lines = [`CORE_V1 ${snapshot.service} · ${snapshot.updatedAt || "no timestamp"}`];
-  for (const lane of snapshot.lanes) lines.push(`${lane.project} | PM=${lane.pm.state} ${lane.pm.channel} | task=${lane.currentTask || "-"} | worker=${lane.worker.runtime}/${lane.worker.state}${lane.worker.pid ? `#${lane.worker.pid}` : ""} | result=${lane.result?.status || "-"} | QA=${lane.qa.verdict || "-"} | retries=${lane.retries} | next=${lane.next || "-"} | blocker=${lane.blocker || "-"}${lane.founderGate ? ` | FOUNDER_GATE=${lane.founderGate.gateId}` : ""}`);
+  for (const lane of snapshot.lanes) lines.push(`${lane.project} | PM=${lane.pm.state} ${lane.pm.channel} | task=${lane.currentTask || "-"} | worker=${lane.worker.runtime}/${lane.worker.state}${lane.worker.pid ? `#${lane.worker.pid}` : ""} | result=${lane.result?.status || "-"} | QA=${lane.qa.verdict || "-"} | retries=${lane.retries} | next=${lane.next || "-"} | lifecycle=${lane.lifecycleEventCount} latest=${lane.latestLifecycleEvent?.type || "-"} | blocker=${lane.blocker || "-"}${lane.founderGate ? ` | FOUNDER_GATE=${lane.founderGate.gateId}` : ""}`);
   return lines.join("\n");
 }
 
@@ -73,6 +145,39 @@ export function parseQaPacket(text) {
   const packet = packetLine(text, "QA_PACKET:");
   if (!packet || packet.schema !== "agent-relay.qa.v1" || !packet.taskId || !QA_VERDICTS.includes(packet.verdict) || !Array.isArray(packet.tests)) throw new Error("invalid QA_PACKET");
   return packet;
+}
+
+export const PM_FILE_CONTRACT = Object.freeze({
+  status: "TEMPORARY_BOOTSTRAP",
+  transport: "repository-file",
+  bootstrap: "codex-chatgpt-web",
+  intakeDir: "pm-inbox",
+  resultDir: "result-outbox",
+});
+
+export function parseResultReturn(text) {
+  let parsed;
+  try { parsed = JSON.parse(String(text)); } catch { throw new Error("invalid RESULT_RETURN"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || parsed.schema !== "agent-relay.result-return.v1"
+    || typeof parsed.taskId !== "string" || !parsed.taskId
+    || typeof parsed.state !== "string" || !STATES.includes(parsed.state)) throw new Error("invalid RESULT_RETURN");
+  const result = parseResultPacket(`RESULT_PACKET: ${JSON.stringify(parsed.result)}`);
+  if (result.taskId !== parsed.taskId) throw new Error("invalid RESULT_RETURN");
+  let qa = null;
+  if (parsed.qa !== null && parsed.qa !== undefined) {
+    qa = parseQaPacket(`QA_PACKET: ${JSON.stringify(parsed.qa)}`);
+    if (qa.taskId !== parsed.taskId) throw new Error("invalid RESULT_RETURN");
+  }
+  return { ...parsed, result, qa };
+}
+
+export async function readTaskPacketFile(path) {
+  return parseTaskPacket(await readFile(path, "utf8"));
+}
+
+export async function readResultReturnFile(path) {
+  return parseResultReturn(await readFile(path, "utf8"));
 }
 
 function exec(command, args, options = {}) {
@@ -157,8 +262,38 @@ export class PortfolioRunner {
     this.manifest = manifest; this.statePath = statePath; this.worktrees = worktrees; this.runtime = runtime; this.runtimeAdapters = runtimeAdapters || createRuntimeAdapters({ codex: runtime }); this.worktreeRoot = worktreeRoot; this.gateRoot = gateRoot || join(resolve(statePath, ".."), "founder-outbox"); this.intakeRoot = intakeRoot || join(resolve(statePath, ".."), "pm-inbox"); this.resultRoot = resultRoot || join(resolve(statePath, ".."), "result-outbox"); this.gateManager = gateManager || new FounderGateManager({ root: this.gateRoot }); this._saveChain = Promise.resolve(); this._qaBusy = false; this._qaWaiters = [];
   }
 
-  async load() { try { return JSON.parse(await readFile(this.statePath, "utf8")); } catch { return { schema: "agent-relay.portfolio-state.v1", service: "STOPPED", tasks: [], activeBuilders: [], activeQa: [], events: [], updatedAt: new Date().toISOString() }; } }
-  async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.then(async () => { await mkdir(resolve(this.statePath, ".."), { recursive: true }); await writeFile(`${this.statePath}.tmp`, JSON.stringify(snapshot, null, 2)); await rm(this.statePath, { force: true }); await writeFile(this.statePath, JSON.stringify(snapshot, null, 2)); }); return this._saveChain; }
+  async load() {
+    let raw;
+    try {
+      raw = await readFile(this.statePath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return freshPortfolioState();
+      throw corruptStateError({ statePath: this.statePath, reason: "READ_ERROR", cause: error });
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (cause) {
+      throw corruptStateError({ statePath: this.statePath, reason: "INVALID_JSON", cause });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.tasks) || !parsed.tasks.every((task) => task && typeof task === "object" && !Array.isArray(task))) {
+      throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
+    }
+    for (const key of OPTIONAL_STATE_ARRAYS) {
+      if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+        throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
+      }
+    }
+    if (parsed.events === undefined) {
+      parsed.events = [];
+    } else if (!Array.isArray(parsed.events) || !parsed.events.every(isValidLifecycleEvent)) {
+      throw corruptStateError({ statePath: this.statePath, reason: "INVALID_SHAPE" });
+    }
+    if (parsed.activeBuilders === undefined) parsed.activeBuilders = [];
+    if (parsed.activeQa === undefined) parsed.activeQa = [];
+    return parsed;
+  }
+  async save(state) { const snapshot = { ...state, updatedAt: new Date().toISOString() }; this._saveChain = this._saveChain.catch(() => {}).then(async () => writeFileAtomic(this.statePath, JSON.stringify(snapshot, null, 2))); return this._saveChain; }
 
   async reconcileProjects(state) {
     const projects = []; const founderGates = [];
@@ -223,10 +358,17 @@ export class PortfolioRunner {
     state.tasks = state.tasks.filter((item) => item.projectId !== project.id || item.state === "VERIFIED_DONE"); state.tasks.push(task); await this.save(state); return task;
   }
 
+  async acceptTaskPacketFile(filePath) {
+    return this.acceptTaskPacket(await readTaskPacketFile(filePath));
+  }
+
+  async readResultReturn(taskId) {
+    return readResultReturnFile(join(this.resultRoot, `${taskId}.json`));
+  }
+
   async publishResult(task) {
     if (!task.result) return;
-    await mkdir(this.resultRoot, { recursive: true });
-    await writeFile(join(this.resultRoot, `${task.taskId}.json`), JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: task.taskId, result: task.result, qa: task.qa || null, state: task.state }, null, 2));
+    await writeFileAtomic(join(this.resultRoot, `${task.taskId}.json`), JSON.stringify({ schema: "agent-relay.result-return.v1", taskId: task.taskId, result: task.result, qa: task.qa || null, state: task.state }, null, 2));
   }
 
   async _acquireQa() { if (this._qaBusy) await new Promise((resolvePromise) => this._qaWaiters.push(resolvePromise)); this._qaBusy = true; }
@@ -236,28 +378,37 @@ export class PortfolioRunner {
     const project = this.manifest.projects.find((item) => item.id === task.projectId);
     const adapter = project && this.runtimeAdapters[project.runtime || project.owner];
     const availability = adapter ? await adapter.availability() : { ok: false, reason: "runtime adapter not configured" };
-    if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; return; }
-    if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; return; }
-    try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; return; }
+    if (!Array.isArray(state.events)) state.events = [];
+    if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: "task definition not authorized" }); return; }
+    if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: availability.reason || "runtime unavailable" }); return; }
+    try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: error.message }); return; }
+    const builderRuntimeKey = project?.runtime || project?.owner || null;
+    const qaRuntimeName = project?.qaRuntime || null;
+    if (qaRuntimeName && builderRuntimeKey && qaRuntimeName === builderRuntimeKey) { task.state = "BLOCKED_QA_NOT_INDEPENDENT"; task.error = `QA runtime must be independent of builder runtime: ${qaRuntimeName}`; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: task.error }); return; }
+    const qaAdapter = qaRuntimeName ? this.runtimeAdapters[qaRuntimeName] : adapter;
+    if (qaRuntimeName) {
+      const qaAvailability = qaAdapter ? await qaAdapter.availability() : { ok: false, reason: "runtime adapter not configured" };
+      if (!qaAdapter || !qaAvailability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = qaAvailability.reason || "runtime adapter not configured"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: task.error }); return; }
+    }
     const retained = task.builderEvidence?.workspace && existsSync(task.builderEvidence.workspace);
     const builder = retained ? { path: task.builderEvidence.workspace, base: task.builderEvidence.base || (await exec("git", ["-C", task.builderEvidence.workspace, "rev-parse", "HEAD"])).stdout.trim(), projectId: project.id, cleanup: async () => {} } : await this.worktrees.create(project, task.taskId);
-    state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); task.state = "RUNNING"; task.attempts += 1; task.builderEvidence = { ...(task.builderEvidence || {}), workspace: builder.path, base: builder.base, startedAt: new Date().toISOString(), pid: null }; await this.save(state);
+    state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); task.state = "RUNNING"; task.attempts += 1; task.builderEvidence = { ...(task.builderEvidence || {}), workspace: builder.path, base: builder.base, startedAt: new Date().toISOString(), pid: null }; recordLifecycleEvent(state, { type: "TASK_DISPATCHED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts }); await this.save(state);
     let preserveWorktree = retained;
     try {
       for (;;) {
       const builderRun = await adapter.run({ workspace: builder.path, sandbox: "workspace-write", prompt: builderPrompt({ ...task, projectId: project.id }), signal });
       task.builderEvidence = { pid: builderRun.pid, workspace: builder.path, base: builder.base, startedAt: builderRun.startedAt, exitCode: builderRun.code };
-      task.result = parseResultPacket(builderRun.text); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
+      task.result = parseResultPacket(builderRun.text); recordLifecycleEvent(state, { type: "WORKER_RESULT", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, status: task.result.status }); await this.publishResult(task); if (task.result.status !== "IMPLEMENTED") { task.state = "HOLD"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, state: task.state, reason: `result status ${task.result.status}` }); break; } task.state = "QA"; state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state);
       await this._acquireQa();
       let qaRun;
-      try { task.qaAttempts += 1; qaRun = await adapter.run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }); }
+      try { task.qaAttempts += 1; qaRun = await (qaAdapter || adapter).run({ workspace: builder.path, sandbox: "read-only", prompt: qaPrompt(task, builder.base), signal }); }
       finally { this._releaseQa(); }
-      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId);
-      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; task.state = "VERIFIED_DONE"; await this.publishResult(task); break; }
-      if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
-      if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; await this.publishResult(task); break;
+      task.qaEvidence = { pid: qaRun.pid, startedAt: qaRun.startedAt, exitCode: qaRun.code, runtime: qaRuntimeName || (qaAdapter || adapter)?.id || project.runtime || project.owner }; task.qa = parseQaPacket(qaRun.text); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); recordLifecycleEvent(state, { type: "QA_VERDICT", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, qaAttempt: task.qaAttempts, verdict: task.qa.verdict });
+      if (task.qa.verdict === "ACCEPT") { task.promotionRef = await this.worktrees.promote?.(project, task.taskId, task.result.commitSha, builder.path) || `candidate:${task.result.commitSha}`; task.state = "VERIFIED_DONE"; recordLifecycleEvent(state, { type: "TASK_COMPLETED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, state: task.state }); await this.publishResult(task); break; }
+      if (task.qa.verdict === "REQUEST_CHANGES" && task.attempts < 3) { task.state = "REQUEST_CHANGES"; recordLifecycleEvent(state, { type: "TASK_RETRY", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, qaAttempt: task.qaAttempts, verdict: task.qa.verdict }); await this.publishResult(task); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); await this.save(state); task.state = "RUNNING"; task.attempts += 1; recordLifecycleEvent(state, { type: "TASK_DISPATCHED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts }); state.activeBuilders.push({ taskId: task.taskId, pid: null, workspace: builder.path, owner: "agent-relay", managed: true }); await this.save(state); continue; }
+      if (task.qa.verdict === "FOUNDER_GATE") task.state = "FOUNDER_GATE"; else task.state = "HOLD"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts, qaAttempt: task.qaAttempts, state: task.state, reason: `QA verdict ${task.qa.verdict}` }); await this.publishResult(task); break;
       }
-    } catch (error) { if (signal?.aborted) { preserveWorktree = true; task.state = "RUNNING"; task.error = "CHECKPOINTED_DEADLINE"; } else { task.state = "HOLD"; task.error = String(error.message || error); } state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); }
+    } catch (error) { if (signal?.aborted) { preserveWorktree = true; task.state = "RUNNING"; task.error = "CHECKPOINTED_DEADLINE"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: "CHECKPOINTED_DEADLINE" }); } else { task.state = "HOLD"; task.error = String(error.message || error); recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: task.error }); } state.activeBuilders = state.activeBuilders.filter((item) => item.taskId !== task.taskId); state.activeQa = state.activeQa.filter((item) => item.taskId !== task.taskId); }
     if (!preserveWorktree) await builder.cleanup(); await this.save(state);
   }
 

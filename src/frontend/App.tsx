@@ -1,13 +1,16 @@
 /**
- * Agent Relay Log V0 — 메인 UI
+ * Agent Relay — 메인 UI
  *
  * 프로젝트 세션 탭 + 에디터 탭 기반 병렬 편집 + 파일 트리 + 한국어 UI
  */
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { must, hasBridge, dragLocalFile, onUpdateStatus } from './bridge.js';
-import { FieldText } from './components.js';
 import { DogfoodPanel } from './dogfooding.js';
 import { QuickDogfood } from './quickdf.js';
+import { ControlRoom } from './controlRoom.js';
+import { approvalCategoryLabel, approvalUsedCount, dedupeApprovalRules, groupRulesByCategory, partitionSupersededApprovalRules, ApprovalRuleCard, SupersededApprovals, UnusedApprovalRules } from './approvals.js';
+import type { ApprovalRuleJson } from '../shared/types.js';
+import { PlanStudio } from './planStudio.js';
 import { renderMd } from './md.js';
 import {
   DEFAULT_AGENTS,
@@ -18,9 +21,12 @@ import {
   ROOT_PROJECT,
   RunFolderResult,
   SettingsView,
+  StartView,
+  StartViewResult,
   TAG_PRESETS,
   UpdateStatus,
   applyOrderByKeys,
+  normalizeModelUsage,
   reorderArray,
 } from '../shared/types.js';
 
@@ -107,8 +113,22 @@ function makeSession(project = ''): ProjectSession {
   };
 }
 
+function hasUnsavedContent(tab: EditorTab): boolean {
+  return (tab.prompt.length > 0 && !tab.promptSaved) || (tab.result.length > 0 && !tab.resultSaved);
+}
+
+function hasUnsavedTabs(session: ProjectSession): boolean {
+  return session.tabs.some(hasUnsavedContent);
+}
+
 // 초기 세션 — 모듈 로드 시 단 한 번 생성
+const LAST_AGENT_STORAGE_KEY = 'agent-relay:last-agent';
+function lastSelectedAgent(): string | undefined {
+  try { return localStorage.getItem(LAST_AGENT_STORAGE_KEY) || undefined; }
+  catch { return undefined; }
+}
 const _initSess = makeSession();
+if (lastSelectedAgent()) _initSess.tabs[0]!.agent = lastSelectedAgent()!;
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 function todayLocal(): string {
@@ -116,6 +136,29 @@ function todayLocal(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 function copyText(text: string): void { void navigator.clipboard.writeText(text); }
+
+/**
+ * 기록 화면 에이전트 칩 필터 — board/model usage에 존재하는 런타임만 보여준다.
+ * 설정되지 않은 에이전트(Kiro/Devin/CommandCode 등)는 board models와
+ * 현재 파일 기록(history)에 없을 때 칩에서 숨긴다.
+ * board도 history도 비어 있으면(첫 실행) 전체 목록을 그대로 둔다.
+ * 현재 선택된 에이전트는 항상 포함해 선택이 사라지지 않게 한다.
+ * configured와 겹치지 않아도 전체 목록으로 되돌리지 않는다 (빈 목록 + 선택 유지).
+ */
+export function visibleRecordAgents(
+  allAgents: string[],
+  boardModels: unknown,
+  historyAgents: string[],
+  activeAgent?: string,
+): string[] {
+  const configured = new Set<string>();
+  for (const row of normalizeModelUsage(boardModels)) configured.add(row.runtimeId);
+  for (const name of historyAgents) configured.add(name);
+  if (configured.size === 0) return [...allAgents];
+  const visible = allAgents.filter(a => configured.has(a));
+  if (activeAgent && !visible.includes(activeAgent)) visible.push(activeAgent);
+  return visible;
+}
 
 // ── 모달 타입 ─────────────────────────────────────────────────────────────────
 interface ModalState   { title: string; placeholder: string; onOk: (v: string) => void; }
@@ -128,13 +171,134 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { err: stri
   render(): React.ReactNode {
     if (this.state.err) return (
       <div style={{ padding: 40, color: 'var(--danger)', fontFamily: 'monospace', background: 'var(--bg)', minHeight: '100vh' }}>
-        <strong style={{ color: 'var(--fg)' }}>렌더 오류</strong>
-        <pre style={{ whiteSpace: 'pre-wrap', marginTop: 12, color: 'var(--danger)' }}>{this.state.err}</pre>
-        <p style={{ color: 'var(--muted)', fontSize: 12 }}>DevTools → Console에서 자세한 내용을 확인하세요.</p>
+        <p style={{ color: 'var(--fg)' }}>문제가 생겼어요. 앱을 다시 시작해 보세요. 계속되면 이 화면을 캡처해 알려주세요.</p>
+        <button className="btn primary" onClick={() => window.location.reload()}>다시 시작</button>
+        <details style={{ marginTop: 12 }}>
+          <summary>원문 보기</summary>
+          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 12, color: 'var(--danger)' }}>{this.state.err}</pre>
+        </details>
       </div>
     );
     return this.props.children;
   }
+}
+
+// ── 시작 화면 패널 (Automated Tester `--view=` 지원용, App.tsx 내장) ──────────
+// 승인 규칙: 기존 controlRoom:approvals 읽기 전용 조회 결과를 그대로 보여준다.
+function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElement {
+  const [items, setItems] = useState<unknown>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let alive = true;
+    void must<unknown>({ op: 'controlRoom:approvals' }).then(next => {
+      if (alive) setItems(next);
+    }).catch(e => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { alive = false; };
+  }, []);
+  const list = Array.isArray(items) ? items : items == null ? [] : [items];
+  // Approval rules carry optional usedCount/lastUsedAt — normalize to rule
+  // objects, group by category and sort each group by usedCount (desc).
+  const ruleEntries = list.filter(
+    (item): item is ApprovalRuleJson => !!item && typeof item === 'object' && !Array.isArray(item),
+  );
+  const otherEntries = list.filter(
+    item => typeof item === 'string' || Array.isArray(item) || (item !== null && typeof item !== 'object'),
+  );
+  // Also unwrap { rules | items | list } envelope shapes into rule entries.
+  const unwrapped: ApprovalRuleJson[] = [];
+  for (const item of list) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const record = item as Record<string, unknown>;
+      for (const key of ['rules', 'items', 'list']) {
+        const nested = record[key];
+        if (Array.isArray(nested)) {
+          for (const entry of nested) {
+            if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+              unwrapped.push(entry as ApprovalRuleJson);
+            }
+          }
+        }
+      }
+    }
+  }
+  const hasNestedRules = (rule: ApprovalRuleJson): boolean => {
+    const record = rule as Record<string, unknown>;
+    return ['rules', 'items', 'list'].some(key => {
+      const nested = record[key];
+      return Array.isArray(nested) && nested.some(entry => entry && typeof entry === 'object' && !Array.isArray(entry));
+    });
+  };
+  const directRules = ruleEntries.filter(rule => !hasNestedRules(rule));
+  // Envelope { rules: [A, B] } listed alongside the same A/B as top-level
+  // entries must not render twice — dedupe by identity + content first.
+  // '(바뀜)'으로 대체된 규칙은 그룹에서 빼고 접힌 '지난 결정'으로 둔다.
+  const allRules = dedupeApprovalRules([...directRules, ...unwrapped]);
+  const { active: activeRules } = partitionSupersededApprovalRules(allRules);
+  const usedRules = activeRules.filter(rule => approvalUsedCount(rule) > 0);
+  const unusedRules = activeRules.filter(rule => approvalUsedCount(rule) === 0);
+  const groups = groupRulesByCategory(usedRules);
+  return (
+    <main className="control-room">
+      <div className="control-room-head"><div><h1>승인 규칙</h1><p className="muted">Agent Relay가 묻지 않고 알아서 처리하도록 허락한 규칙입니다.</p></div><button className="btn" onClick={onClose}>닫기</button></div>
+      {error && <div className="flash err">{error}</div>}
+      {items === null && !error ? <div className="control-empty">불러오는 중...</div>
+        : list.length === 0 ? <div className="control-empty">표시할 승인 내역이 없습니다.</div>
+        : <>
+          {groups.map(group => (
+            <section className="approval-group" key={group.category} aria-label={`승인 규칙 ${approvalCategoryLabel(group.category)}`}>
+              <h3 className="approval-category">{approvalCategoryLabel(group.category)}</h3>
+              <div className="control-cards">{group.rules.map((rule, i) => <ApprovalRuleCard key={i} rule={rule} />)}</div>
+            </section>
+          ))}
+          <UnusedApprovalRules rules={unusedRules} />
+          <SupersededApprovals rules={allRules} />
+          {otherEntries.length > 0 && <div className="control-cards">{otherEntries.map((item, i) => (
+            <article className="control-card" key={`other-${i}`}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : '설명이 없는 항목이에요'}</p></article>
+          ))}</div>}
+        </>}
+    </main>
+  );
+}
+
+// Plan Studio는 전용 뷰(src/frontend/planStudio.tsx)로 제공한다.
+
+// ── Pointer Reorder fallback (touch) — 순수 헬퍼 (test/v03 검증용 export) ──────
+// HTML5 DnD는 마우스 전용이라 터치에서는 동작하지 않는다.
+// Pointer Events 최소 fallback으로 터치/펜 재정렬을 지원하고,
+// 데스크톱 mouse DnD(draggable + onDragStart/onDrop)는 그대로 유지한다.
+/** 터치/펜 포인터면 pointer fallback을 시작한다 (mouse는 HTML5 DnD 사용). */
+export function shouldStartPointerReorder(pointerType: string): boolean {
+  return pointerType !== 'mouse';
+}
+/** pointer fallback drop 위치를 검증한다. 실제 이동이면 over 인덱스, 아니면 null. */
+export function resolvePointerDropIndex(from: number | null, over: number | null, len: number): number | null {
+  if (from === null || over === null || from === over) return null;
+  if (from < 0 || from >= len || over < 0 || over >= len) return null;
+  return over;
+}
+/**
+ * pointer 좌표(clientX/clientY)에서 elementFromPoint로 드롭 대상 인덱스를 찾는다.
+ * source에 pointer capture를 걸면 move/up이 source에만 retarget되어
+ * sibling 핸들러가 절대 발사되지 않으므로, capture 없이 좌표 기반으로 추적한다.
+ * DOM이 없거나(테스트) 해당 그룹이 아니면 null을 반환하고 호출부는 closure 인덱스로 폴백한다.
+ */
+export function pointerOverIndexFromPoint(
+  clientX: number,
+  clientY: number,
+  group: string,
+  len: number,
+): number | null {
+  try {
+    const doc = (globalThis as unknown as { document?: Document }).document;
+    if (!doc || typeof doc.elementFromPoint !== 'function') return null;
+    const el = doc.elementFromPoint(clientX, clientY) as Element | null;
+    const t = el?.closest?.(`[data-reorder-group="${group}"]`) ?? null;
+    if (!t) return null;
+    const raw = t.getAttribute('data-reorder-index');
+    const idx = raw === null ? NaN : Number(raw);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= len) return null;
+    return idx;
+  } catch { return null; }
 }
 
 // ── 최상위 App ────────────────────────────────────────────────────────────────
@@ -144,9 +308,9 @@ export function App(): React.ReactElement {
 
 // ── 메인 컴포넌트 ─────────────────────────────────────────────────────────────
 function AppInner(): React.ReactElement {
-  // 테마 (light / dark)
+  // 테마 (light / dark) — 저장된 선호가 없으면 다크가 기본
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
-    (localStorage.getItem('theme') as 'dark' | 'light') ?? 'dark'
+    localStorage.getItem('theme') === 'light' ? 'light' : 'dark'
   );
   function toggleTheme(): void {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -161,6 +325,8 @@ function AppInner(): React.ReactElement {
   const [projects, setProjects]   = useState<ProjectInfo[]>([]);
   const [agents, setAgents]       = useState<string[]>([...DEFAULT_AGENTS]);
   const [date, setDate]           = useState(todayLocal());
+  // board/model usage — 설정된 런타임만 에이전트 칩에 보여주기 위한 원본
+  const [boardModels, setBoardModels] = useState<unknown>(null);
   const [msg, setMsg]             = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
   const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [modal, setModal]         = useState<ModalState | null>(null);
@@ -171,9 +337,14 @@ function AppInner(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [dfMode, setDfMode]             = useState(false);
   const [pdMode, setPdMode]             = useState(false);
+  const [controlRoomMode, setControlRoomMode] = useState(false);
+  const [approvalsMode, setApprovalsMode] = useState(false);
+  const [planStudioMode, setPlanStudioMode] = useState(false);
   const [missingRoot, setMissingRoot]   = useState(false);
   // Quick Dogfooding Capture (작은 Popover)
   const [showQuickDf, setShowQuickDf]   = useState(false);
+  // 개발 도구 메뉴 (닫힘 기본 — Founder 항목 우선)
+  const [showDevTools, setShowDevTools] = useState(false);
   // 저장 후 열려있는 Project Dogfooding 목록을 즉시 새로고침하기 위한 신호
   const [pdRefreshSignal, setPdRefreshSignal] = useState(0);
 
@@ -228,6 +399,22 @@ function AppInner(): React.ReactElement {
     [projects, settings?.projectOrder],
   );
 
+  // board/model usage 조회 — 에이전트 칩에 설정된 런타임만 보여주기 위한 원본
+  useEffect(() => {
+    let alive = true;
+    void must<{ models?: unknown }>({ op: 'controlRoom:board' }).then(next => {
+      if (alive) setBoardModels(next?.models ?? null);
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+
+  // 기록 화면 에이전트 칩 — board/model usage + 파일 기록에 있는 런타임만 표시
+  const visibleAgents = useMemo(
+    () => visibleRecordAgents(agents, boardModels, history.map(h => h.agent), activeTab?.agent),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agents, boardModels, history.map(h => h.agent).join('|'), activeTab?.agent],
+  );
+
   // 가장 최근 날짜 자동 펼침 (세션 전환 또는 새 날짜 추가 시)
   useEffect(() => {
     if (tree.length > 0) {
@@ -271,6 +458,12 @@ function AppInner(): React.ReactElement {
   const [tabDragOver, setTabDragOver]   = useState<number | null>(null);
   const agentDragFrom = useRef<number | null>(null);
   const [agentDragOver, setAgentDragOver] = useState<number | null>(null);
+  // Pointer fallback (touch/pen) 활성 상태 — mouse DnD와 공유하는 from ref를 재사용한다.
+  const pointerProjActive = useRef(false);
+  const pointerTabActive = useRef(false);
+  const pointerAgentActive = useRef(false);
+  // pointer 재정렬 직후 뒤따르는 click(탭 전환/에이전트 변경) 1회를 삼킨다.
+  const pointerSuppressClick = useRef(false);
 
   /** 세션 탭 순서를 settings.projectOrder에 저장한다 (UI 순서 전용 — 폴더 불변). */
   function persistProjectOrder(sess: ProjectSession[]): void {
@@ -298,8 +491,14 @@ function AppInner(): React.ReactElement {
     tabDragFrom.current = null;
     setTabDragOver(null);
     if (from === null || from === toIndex || from >= tabs.length) return;
-    // Work Tab 순서는 현재 세션 동안만 유지 (영구 저장은 BACKLOG)
-    updateActiveSession({ tabs: reorderArray(tabs, from, toIndex) });
+    const next = reorderArray(tabs, from, toIndex);
+    updateActiveSession({ tabs: next });
+    persistWorkTabOrder(next);
+  }
+
+  function persistWorkTabOrder(nextTabs: EditorTab[]): void {
+    must<string[]>({ op: 'settings:setWorkTabOrder', order: nextTabs.map(t => t.agent) })
+      .catch(() => undefined);
   }
 
   function onAgentPillDrop(toIndex: number): void {
@@ -345,6 +544,15 @@ function AppInner(): React.ReactElement {
     setSettings(s);
     // 에이전트 순서 — 저장된 agentOrder를 반영해 표시 (신규 항목은 뒤에 추가)
     setAgents(applyOrderByKeys([...DEFAULT_AGENTS, ...(s.customAgents ?? [])], a => a, s.agentOrder ?? []));
+    if (s.workTabOrder?.length) {
+      setSessions(prev => prev.map((session, index) => {
+        if (index !== 0) return session;
+        const tabs = s.workTabOrder!.map((agent, tabIndex) =>
+          tabIndex === 0 ? { ...session.tabs[0]!, agent } : makeTab(agent)
+        );
+        return { ...session, tabs, activeTabId: tabs[0]!.id };
+      }));
+    }
   }
 
   // ── 데이터 로드 ───────────────────────────────────────────────────────────────
@@ -397,11 +605,13 @@ function AppInner(): React.ReactElement {
   async function addTab(agentName?: string): Promise<void> {
     const agent = agentName ?? (activeTab?.agent ?? DEFAULT_AGENTS[0]);
     const tab = makeTab(agent);
+    const nextTabs = [...tabs, tab];
     setSessions(prev => prev.map(s =>
       s.id === activeSessionId
-        ? { ...s, tabs: [...s.tabs, tab], activeTabId: tab.id }
+        ? { ...s, tabs: nextTabs, activeTabId: tab.id }
         : s
     ));
+    persistWorkTabOrder(nextTabs);
     if (project && date) {
       const n = await peekNextRun(project, agent, date);
       if (n !== null) updateTab(tab.id, { run: n });
@@ -415,21 +625,20 @@ function AppInner(): React.ReactElement {
     if (!tab) return;
     const sessId = activeSessionId;
     const doRemove = (): void => {
+      const next = tabs.filter(t => t.id !== id);
+      const restored = next.length === 0 ? [makeTab(tab.agent)] : next;
+      persistWorkTabOrder(restored);
       setSessions(prev => prev.map(s => {
         if (s.id !== sessId) return s;
-        const next = s.tabs.filter(t => t.id !== id);
-        if (next.length === 0) {
-          const fresh = makeTab(tab.agent);
-          return { ...s, tabs: [fresh], activeTabId: fresh.id };
-        }
+        if (next.length === 0) return { ...s, tabs: restored, activeTabId: restored[0]!.id };
         return {
           ...s,
-          tabs: next,
-          activeTabId: s.activeTabId === id ? next[next.length - 1]!.id : s.activeTabId,
+          tabs: restored,
+          activeTabId: s.activeTabId === id ? restored[restored.length - 1]!.id : s.activeTabId,
         };
       }));
     };
-    if (tab.prompt || tab.result) {
+    if (hasUnsavedContent(tab)) {
       setConfirm({ text: `탭 "${tab.agent} #${tab.run || '?'}"을 닫을까요?\n저장되지 않은 내용은 사라집니다.`, confirmBtn: '닫기', onOk: doRemove });
     } else {
       doRemove();
@@ -454,7 +663,7 @@ function AppInner(): React.ReactElement {
       notify('info', `런 #${h.run} (${h.agent}) 불러옴`);
     };
 
-    const hasContent = !!(tab?.prompt || tab?.result);
+    const hasContent = !!tab && hasUnsavedContent(tab);
     const isDifferentRun = tab?.folder !== h.folder;
     if (hasContent && isDifferentRun) {
       setConfirm({
@@ -481,7 +690,9 @@ function AppInner(): React.ReactElement {
 
   // ── 에이전트 변경 (탭 내) ─────────────────────────────────────────────────────
   async function changeTabAgent(tabId: string, agent: string): Promise<void> {
+    try { localStorage.setItem(LAST_AGENT_STORAGE_KEY, agent); } catch { /* 무시 */ }
     updateTab(tabId, { agent, run: '', folder: '', prompt: '', result: '', tags: [], promptSaved: false, resultSaved: false });
+    persistWorkTabOrder(tabs.map(t => t.id === tabId ? { ...t, agent } : t));
     const n = await peekNextRun(project, agent, date);
     if (n !== null) updateTab(tabId, { run: n });
   }
@@ -696,7 +907,7 @@ function AppInner(): React.ReactElement {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const text = ev.target?.result as string;
-        updateTab(tabId, pane === 'prompt' ? { prompt: text } : { result: text });
+        updateTab(tabId, pane === 'prompt' ? { prompt: text, promptSaved: false } : { result: text, resultSaved: false });
         notify('info', `${file.name} 불러옴`);
       };
       reader.readAsText(file, 'utf-8');
@@ -720,6 +931,52 @@ function AppInner(): React.ReactElement {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // ── 저장되지 않은 편집 보호 ───────────────────────────────────────────────────
+  function confirmLeavingSession(action: () => void): void {
+    if (!hasUnsavedTabs(activeSession)) { action(); return; }
+    setConfirm({
+      text: '현재 프로젝트 세션에 저장되지 않은 프롬프트 또는 결과가 있습니다.\n이동하면 내용이 사라질 수 있습니다.',
+      confirmBtn: '이동',
+      onOk: action,
+    });
+  }
+
+  function switchSession(id: string): void {
+    if (id === activeSessionId) return;
+    confirmLeavingSession(() => setActiveSessionId(id));
+  }
+
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent): void {
+      if (!sessions.some(hasUnsavedTabs)) return;
+      e.preventDefault();
+      e.returnValue = '';
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [sessions]);
+
+  // ── 시작 화면 (--view=home|control-room|approvals|plan-studio, 마운트 시 1회) ──
+  // home(기본값)·알 수 없는 값은 오늘과 완전히 동일하게 둔다.
+  const startViewApplied = useRef(false);
+  useEffect(() => {
+    if (startViewApplied.current) return;
+    startViewApplied.current = true;
+    void must<StartViewResult>({ op: 'app:startView' }).then(res => {
+      const view: StartView = res?.view ?? 'home';
+      if (view === 'control-room') {
+        setControlRoomMode(true); setDfMode(false); setPdMode(false);
+        setApprovalsMode(false); setPlanStudioMode(false);
+      } else if (view === 'approvals') {
+        setApprovalsMode(true); setControlRoomMode(false); setDfMode(false); setPdMode(false);
+        setPlanStudioMode(false);
+      } else if (view === 'plan-studio') {
+        setPlanStudioMode(true); setControlRoomMode(false); setDfMode(false); setPdMode(false);
+        setApprovalsMode(false);
+      }
+    }).catch(() => undefined);
   }, []);
 
   // ── 초기화 ────────────────────────────────────────────────────────────────────
@@ -759,13 +1016,22 @@ function AppInner(): React.ReactElement {
     // 이미 같은 프로젝트가 열려있으면 해당 세션으로 전환
     const existing = sessions.find(s => s.project === name);
     if (existing) {
-      setActiveSessionId(existing.id);
+      switchSession(existing.id);
       return;
     }
 
     // 현재 세션에 프로젝트가 없으면 현재 세션을 이 프로젝트로 설정
     const currSess = sessions.find(s => s.id === activeSessionId) ?? sessions[0]!;
     const useExisting = !currSess.project;
+
+    if (hasUnsavedTabs(currSess)) {
+      setConfirm({
+        text: '현재 프로젝트 세션에 저장되지 않은 프롬프트 또는 결과가 있습니다.\n프로젝트를 전환하면 내용이 사라질 수 있습니다.',
+        confirmBtn: '전환',
+        onOk: () => { void openProjectSession(name, root); },
+      });
+      return;
+    }
 
     let newSessId: string;
     if (useExisting) {
@@ -806,25 +1072,38 @@ function AppInner(): React.ReactElement {
 
   // ── 프로젝트 세션 닫기 ────────────────────────────────────────────────────────
   function closeSession(id: string): void {
-    const remaining = sessions.filter(s => s.id !== id);
-    if (!remaining.some(s => s.project === project)) setPdMode(false);
-    if (remaining.length === 0) {
-      const fresh = makeSession();
-      setSessions([fresh]);
-      setActiveSessionId(fresh.id);
-    } else {
-      setSessions(remaining);
-      if (activeSessionId === id) {
-        setActiveSessionId(remaining[remaining.length - 1]!.id);
+    const session = sessions.find(s => s.id === id);
+    if (!session) return;
+    const doClose = (): void => {
+      const remaining = sessions.filter(s => s.id !== id);
+      if (!remaining.some(s => s.project === project)) setPdMode(false);
+      if (remaining.length === 0) {
+        const fresh = makeSession();
+        setSessions([fresh]);
+        setActiveSessionId(fresh.id);
+      } else {
+        setSessions(remaining);
+        if (activeSessionId === id) setActiveSessionId(remaining[remaining.length - 1]!.id);
       }
+    };
+    if (hasUnsavedTabs(session)) {
+      setConfirm({
+        text: `프로젝트 세션 "${session.project || '새 세션'}"에 저장되지 않은 내용이 있습니다.\n세션을 닫으면 내용이 사라집니다.`,
+        confirmBtn: '닫기',
+        onOk: doClose,
+      });
+      return;
     }
+    doClose();
   }
 
   // ── 빈 세션 추가 ─────────────────────────────────────────────────────────────
   function addSession(): void {
-    const fresh = makeSession();
-    setSessions(prev => [...prev, fresh]);
-    setActiveSessionId(fresh.id);
+    confirmLeavingSession(() => {
+      const fresh = makeSession();
+      setSessions(prev => [...prev, fresh]);
+      setActiveSessionId(fresh.id);
+    });
   }
 
   // ── 날짜 변경 ─────────────────────────────────────────────────────────────────
@@ -848,10 +1127,8 @@ function AppInner(): React.ReactElement {
   }
 
   // ── 데이터 루트 변경 ──────────────────────────────────────────────────────────
-  async function changeDataRoot(): Promise<void> {
-    const pick = await must<{ selected: string | null }>({ op: 'folder:pick' });
-    if (!pick.selected) return;
-    const s = await must<SettingsView>({ op: 'settings:setDataRoot', path: pick.selected });
+  async function setDataRoot(nextPath: string): Promise<void> {
+    const s = await must<SettingsView>({ op: 'settings:setDataRoot', path: nextPath });
     await applySettings(s);
     setMissingRoot(false);
     setShowSettings(false);
@@ -872,6 +1149,11 @@ function AppInner(): React.ReactElement {
     } catch { /* 오류 무시 */ }
   }
 
+  async function changeDataRoot(): Promise<void> {
+    const pick = await must<{ selected: string | null }>({ op: 'folder:pick' });
+    if (pick.selected) await setDataRoot(pick.selected);
+  }
+
   function modalOk(): void {
     if (!modal) return;
     const cb = modal.onOk;
@@ -882,7 +1164,7 @@ function AppInner(): React.ReactElement {
   if (loading) return (
     <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
-        <div className="splash-logo">Agent Relay Log · V0</div>
+        <div className="splash-logo">Agent Relay</div>
         <div className="splash-spin" />
         <div className="splash-hint">설정을 불러오는 중...</div>
       </div>
@@ -891,9 +1173,13 @@ function AppInner(): React.ReactElement {
   if (initError) return (
     <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
-        <div className="splash-logo">Agent Relay Log · V0</div>
-        <div className="splash-err">{initError}</div>
-        <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>DevTools (F12) → Console에서 자세한 내용을 확인하세요.</p>
+        <div className="splash-logo">Agent Relay</div>
+        <p className="splash-err">문제가 생겼어요. 앱을 다시 시작해 보세요. 계속되면 이 화면을 캡처해 알려주세요.</p>
+        <button className="btn primary" onClick={() => window.location.reload()}>다시 시작</button>
+        <details style={{ marginTop: 12 }}>
+          <summary>원문 보기</summary>
+          <pre className="splash-err" style={{ whiteSpace: 'pre-wrap' }}>{initError}</pre>
+        </details>
       </div>
     </div>
   );
@@ -902,9 +1188,9 @@ function AppInner(): React.ReactElement {
   if (missingRoot && settings) return (
     <div className="app splash" data-theme={theme}>
       <div className="splash-inner">
-        <div className="splash-logo">Agent Relay Log · V0</div>
+        <div className="splash-logo">Agent Relay</div>
         <div className="splash-err" style={{ whiteSpace: 'pre-line' }}>
-          {'기존 저장공간을 찾을 수 없습니다.\n\n'}
+          {'저장 폴더를 찾을 수 없습니다 (외장 드라이브가 빠졌거나 폴더가 옮겨졌을 수 있어요).\n\n'}
           {settings.dataRoot}
           {'\n\n새 저장공간을 선택하세요.'}
         </div>
@@ -933,56 +1219,90 @@ function AppInner(): React.ReactElement {
       {!dataRoot && settings && (
         <div className="setup">
           <div className="setupcard">
-            <h1>Agent Relay Log · V0</h1>
+            <h1>Agent Relay</h1>
             <p>
-              GPT → 에이전트 작업 결과를 체계적으로 기록하는 툴입니다.<br /><br />
-              기록을 저장할 <code>데이터 폴더</code>를 먼저 선택하세요.<br />
-              예: <code>D:\AgentRelayLogs</code> — 이 선택은 저장되어 다음 실행부터 자동 복원됩니다.
+              Agent Relay는 여러 프로젝트의 기획(PM) → 작업(Worker) → 검수(QA)를 자동으로 이어서 실행합니다.<br />
+              사용자는 결과를 확인하고, 꼭 필요한 결정에만 답하면 됩니다.<br />
+              먼저 결과와 기록을 저장할 폴더를 정해 주세요.
             </p>
-            <button className="btn primary" onClick={() => void changeDataRoot()}>
-              📁 데이터 폴더 선택
-            </button>
+            <div className="modalbtns" style={{ justifyContent: 'center' }}>
+              <button className="btn primary" onClick={() => void setDataRoot(settings.defaultDataRoot)}>
+                기본 폴더 사용 (문서 › Agent Relay)
+              </button>
+              <button className="btn" onClick={() => void changeDataRoot()}>
+                다른 폴더 고르기
+              </button>
+            </div>
+            <div className="muted" style={{ marginTop: 8, fontSize: 12, textAlign: 'center' }}>{settings.defaultDataRoot}</div>
           </div>
         </div>
       )}
 
       {dataRoot && (
         <>
-          {/* 상단바 */}
+          {/* 상단바 — Founder 우선: 관제실 · 승인 규칙 · 계획 → 설정 → 개발 도구 */}
           <header className="topbar">
-            <div className="brand">Agent Relay Log · <span style={{ color: 'var(--muted)' }}>V0</span></div>
-            <div className="topbar-shortcuts">
-              <span title="모두 저장"><kbd>Ctrl+S</kbd> 저장</span>
-              <span title="현재 탭 새 런"><kbd>Ctrl+N</kbd> 새 런</span>
-              <span title="병렬 탭 추가"><kbd>Ctrl+T</kbd> 새 탭</span>
+            <div className="brand">Agent Relay</div>
+            <button
+              className={`mini df-toggle${controlRoomMode ? ' on' : ''}`}
+              title="관제실 — 프로젝트별 진행 상황 보기"
+              onClick={() => { setControlRoomMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
+            >관제실</button>
+            <button
+              className={`mini df-toggle${approvalsMode ? ' on' : ''}`}
+              title="승인 규칙 — Agent Relay가 알아서 처리하도록 허락한 규칙"
+              onClick={() => { setApprovalsMode(m => !m); setDfMode(false); setPdMode(false); setControlRoomMode(false); setPlanStudioMode(false); }}
+            >승인 규칙</button>
+            <button
+              className={`mini df-toggle${planStudioMode ? ' on' : ''}`}
+              title="계획 — 목표와 작업 순서 보고 PM에게 요청"
+              onClick={() => { setPlanStudioMode(m => !m); setDfMode(false); setPdMode(false); setApprovalsMode(false); setControlRoomMode(false); }}
+            >계획</button>
+            <button
+              className="mini"
+              title="설정 — 저장 폴더"
+              onClick={() => setShowSettings(true)}
+            >설정</button>
+            <div className="devtools-wrap">
+              <button
+                className="mini devtools-toggle"
+                title="개발자용 도구 모음"
+                aria-expanded={showDevTools}
+                onClick={() => setShowDevTools(v => !v)}
+              >개발 도구 ▾</button>
+              {showDevTools && (
+                <div className="devtools-menu">
+                  <div className="topbar-shortcuts">
+                    <span title="모두 저장"><kbd>Ctrl+S</kbd> 저장</span>
+                    <span title="현재 탭 새 런"><kbd>Ctrl+N</kbd> 새 런</span>
+                    <span title="병렬 탭 추가"><kbd>Ctrl+T</kbd> 새 탭</span>
+                  </div>
+                  <button
+                    className={`mini df-toggle${dfMode ? ' on' : ''}`}
+                    title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
+                    onClick={() => { setDfMode(m => !m); setPdMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
+                  >App Dogfooding</button>
+                  <button
+                    className={`mini df-toggle${pdMode ? ' on' : ''}`}
+                    disabled={!project}
+                    title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
+                    onClick={() => { setPdMode(m => !m); setDfMode(false); setControlRoomMode(false); setApprovalsMode(false); setPlanStudioMode(false); }}
+                  >Project Dogfooding</button>
+                  <button
+                    className="mini qdf-toggle"
+                    disabled={!project}
+                    title={project ? '불편한 순간 한 줄 기록 — 현재 프로젝트에 즉시 저장' : '프로젝트를 먼저 선택하세요'}
+                    onClick={() => setShowQuickDf(true)}
+                  >＋ 피드백</button>
+                </div>
+              )}
             </div>
             <button
               className="mini theme-toggle"
               title={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
+              aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
               onClick={toggleTheme}
             >{theme === 'dark' ? '☀️' : '🌙'}</button>
-            <button
-              className={`mini df-toggle${dfMode ? ' on' : ''}`}
-              title="Agent Relay 앱 자체 개선 기록 (App Dogfooding)"
-              onClick={() => { setDfMode(m => !m); setPdMode(false); }}
-            >🐾 App Dogfooding</button>
-            <button
-              className={`mini df-toggle${pdMode ? ' on' : ''}`}
-              disabled={!project}
-              title={project ? `"${projectLabel(project)}" 프로젝트 사용성 기록 (Project Dogfooding)` : '프로젝트를 먼저 선택하세요'}
-              onClick={() => { setPdMode(m => !m); setDfMode(false); }}
-            >📋 Project Dogfooding</button>
-            <button
-              className="mini qdf-toggle"
-              disabled={!project}
-              title={project ? '불편한 순간 한 줄 기록 — 현재 프로젝트에 즉시 저장' : '프로젝트를 먼저 선택하세요'}
-              onClick={() => setShowQuickDf(true)}
-            >＋ 피드백</button>
-            <button
-              className="mini"
-              title="설정 — 저장공간(Storage)"
-              onClick={() => setShowSettings(true)}
-            >⚙ 설정</button>
           </header>
 
           {msg && (
@@ -992,7 +1312,13 @@ function AppInner(): React.ReactElement {
             </div>
           )}
 
-          {dfMode ? (
+          {controlRoomMode ? (
+            <ControlRoom onClose={() => setControlRoomMode(false)} />
+          ) : approvalsMode ? (
+            <ApprovalsPanel onClose={() => setApprovalsMode(false)} />
+          ) : planStudioMode ? (
+            <PlanStudio onClose={() => setPlanStudioMode(false)} />
+          ) : dfMode ? (
             /* ── App Dogfooding 패널 — Agent Relay 앱 자체 개선 기록 ── */
             <DogfoodPanel
               key="df-app"
@@ -1016,6 +1342,10 @@ function AppInner(): React.ReactElement {
             />
           ) : (
             <>
+          {/* ── 기록 화면 쉬운 우리말 안내 ── */}
+          <div className="record-head">
+            <h2>작업 기록 — AI에게 준 지시와 받은 결과를 날짜별로 모아 둬요</h2>
+          </div>
           {/* ── 프로젝트 세션 탭 바 (Drag Reorder — 순서는 settings에 저장) ── */}
           <div className="proj-tab-bar">
             {sessions.map((sess, i) => {
@@ -1029,8 +1359,13 @@ function AppInner(): React.ReactElement {
               return (
                 <button
                   key={sess.id}
-                  className={`proj-tab${isActive ? ' active' : ''}${projDragOver === i ? ' reorder-over' : ''}`}
-                  onClick={() => setActiveSessionId(sess.id)}
+                  data-reorder-group="proj-tab"
+                  data-reorder-index={i}
+                  className={`proj-tab${isActive ? ' active' : ''}${projDragOver === i ? ' reorder-over' : ''}${pointerProjActive.current && projDragOver === i ? ' reorder-dragging' : ''}`}
+                  onClick={() => {
+                    if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
+                    switchSession(sess.id);
+                  }}
                   title={sess.project || '왼쪽 사이드바에서 프로젝트를 선택하세요'}
                   draggable
                   onDragStart={e => {
@@ -1042,6 +1377,33 @@ function AppInner(): React.ReactElement {
                   onDragLeave={() => setProjDragOver(prev => prev === i ? null : prev)}
                   onDrop={e => { e.preventDefault(); e.stopPropagation(); onProjectTabDrop(i); }}
                   onDragEnd={() => { projDragFrom.current = null; setProjDragOver(null); }}
+                  onPointerDown={e => {
+                    if (!shouldStartPointerReorder(e.pointerType)) return;
+                    projDragFrom.current = i;
+                    pointerProjActive.current = true;
+                    setProjDragOver(i);
+                    // 터치 implicit capture를 풀어야 sibling의 move/up이 발사된다.
+                    try { if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 무시 */ }
+                  }}
+                  onPointerMove={e => {
+                    if (!pointerProjActive.current || projDragFrom.current === null) return;
+                    const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'proj-tab', sessions.length);
+                    setProjDragOver(at ?? i);
+                  }}
+                  onPointerUp={e => {
+                    if (!pointerProjActive.current) return;
+                    pointerProjActive.current = false;
+                    const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'proj-tab', sessions.length) ?? i;
+                    const to = resolvePointerDropIndex(projDragFrom.current, over, sessions.length);
+                    if (to !== null) { pointerSuppressClick.current = true; onProjectTabDrop(to); }
+                    else { projDragFrom.current = null; setProjDragOver(null); }
+                  }}
+                  onPointerCancel={() => {
+                    if (!pointerProjActive.current) return;
+                    pointerProjActive.current = false;
+                    projDragFrom.current = null;
+                    setProjDragOver(null);
+                  }}
                 >
                   <span className="proj-tab-icon">
                     {!sess.project ? '🔲' : sess.project === ROOT_PROJECT ? '📂' : '📁'}
@@ -1064,12 +1426,16 @@ function AppInner(): React.ReactElement {
               className="proj-tab-add"
               onClick={addSession}
               title="새 프로젝트 탭 추가"
+              aria-label="새 프로젝트 탭 추가"
             >+</button>
           </div>
 
           {/* 글로벌 필드 (날짜 + 저장위치) */}
           <section className="fields">
-            <FieldText label="날짜 (YYYY-MM-DD)" value={date} onChange={v => void editDate(v)} />
+            <div className="field">
+              <label className="flabel" htmlFor="record-date">날짜</label>
+              <input id="record-date" type="date" value={date} onChange={e => void editDate(e.target.value)} />
+            </div>
             <div className="field breadcrumb-field">
               <span className="flabel">저장 위치</span>
               <span className="fvalue breadcrumb mono">
@@ -1126,13 +1492,18 @@ function AppInner(): React.ReactElement {
 
             {/* ── 편집 영역 ── */}
             <div className="editor-area">
-              {/* 탭 바 (Drag Reorder — 세션 동안 유지) */}
+              {/* 탭 바 (Drag Reorder — 순서는 settings에 저장, 내용은 저장하지 않음) */}
               <div className="tab-bar">
                 {tabs.map((tab, i) => (
                   <button
                     key={tab.id}
-                    className={`tab-btn${tab.id === activeTabId ? ' active' : ''}${tabDragOver === i ? ' reorder-over' : ''}`}
-                    onClick={() => updateActiveSession({ activeTabId: tab.id })}
+                    data-reorder-group="work-tab"
+                    data-reorder-index={i}
+                    className={`tab-btn${tab.id === activeTabId ? ' active' : ''}${tabDragOver === i ? ' reorder-over' : ''}${pointerTabActive.current && tabDragOver === i ? ' reorder-dragging' : ''}`}
+                    onClick={() => {
+                      if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
+                      updateActiveSession({ activeTabId: tab.id });
+                    }}
                     title={tab.folder || `${tab.agent} — 아직 저장 안 됨`}
                     draggable
                     onDragStart={e => {
@@ -1144,12 +1515,39 @@ function AppInner(): React.ReactElement {
                     onDragLeave={() => setTabDragOver(prev => prev === i ? null : prev)}
                     onDrop={e => { e.preventDefault(); e.stopPropagation(); onWorkTabDrop(i); }}
                     onDragEnd={() => { tabDragFrom.current = null; setTabDragOver(null); }}
+                    onPointerDown={e => {
+                      if (!shouldStartPointerReorder(e.pointerType)) return;
+                      tabDragFrom.current = i;
+                      pointerTabActive.current = true;
+                      setTabDragOver(i);
+                      // 터치 implicit capture를 풀어야 sibling의 move/up이 발사된다.
+                      try { if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 무시 */ }
+                    }}
+                    onPointerMove={e => {
+                      if (!pointerTabActive.current || tabDragFrom.current === null) return;
+                      const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'work-tab', tabs.length);
+                      setTabDragOver(at ?? i);
+                    }}
+                    onPointerUp={e => {
+                      if (!pointerTabActive.current) return;
+                      pointerTabActive.current = false;
+                      const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'work-tab', tabs.length) ?? i;
+                      const to = resolvePointerDropIndex(tabDragFrom.current, over, tabs.length);
+                      if (to !== null) { pointerSuppressClick.current = true; onWorkTabDrop(to); }
+                      else { tabDragFrom.current = null; setTabDragOver(null); }
+                    }}
+                    onPointerCancel={() => {
+                      if (!pointerTabActive.current) return;
+                      pointerTabActive.current = false;
+                      tabDragFrom.current = null;
+                      setTabDragOver(null);
+                    }}
                   >
                     <span className="tab-label">
                       {tab.agent}
                       {tab.run && <span className="tab-runnum"> #{tab.run}</span>}
                     </span>
-                    {(tab.prompt || tab.result) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
+                    {hasUnsavedContent(tab) && <span className="tab-dot" title="저장되지 않은 내용 있음">●</span>}
                     <button
                       className="tab-close"
                       onClick={e => { e.stopPropagation(); removeTab(tab.id); }}
@@ -1161,6 +1559,7 @@ function AppInner(): React.ReactElement {
                   className="tab-btn add"
                   onClick={() => void addTab()}
                   title="새 병렬 탭 추가 (Ctrl+T)"
+                  aria-label="새 탭 추가"
                 >+ 새 탭</button>
               </div>
 
@@ -1172,10 +1571,12 @@ function AppInner(): React.ReactElement {
                       <span className="flabel">에이전트 {activeTab.run && <span style={{ color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>— 런 #{activeTab.run}</span>}</span>
                       <div className="agent-pills-row">
                         <div className="agent-pills">
-                          {agents.map((a, i) => (
+                          {visibleAgents.map((a, i) => (
                             <button
                               key={a}
-                              className={`agent-pill${activeTab.agent === a ? ' active' : ''}${agentDragOver === i ? ' reorder-over' : ''}`}
+                              data-reorder-group="agent-pill"
+                              data-reorder-index={i}
+                              className={`agent-pill${activeTab.agent === a ? ' active' : ''}${agentDragOver === i ? ' reorder-over' : ''}${pointerAgentActive.current && agentDragOver === i ? ' reorder-dragging' : ''}`}
                               title={`${a} — 드래그로 순서 변경 (설정에 저장됨)`}
                               draggable
                               onDragStart={e => {
@@ -1185,15 +1586,85 @@ function AppInner(): React.ReactElement {
                               }}
                               onDragOver={e => { if (agentDragFrom.current !== null) { e.preventDefault(); setAgentDragOver(i); } }}
                               onDragLeave={() => setAgentDragOver(prev => prev === i ? null : prev)}
-                              onDrop={e => { e.preventDefault(); e.stopPropagation(); onAgentPillDrop(i); }}
+                              onDrop={e => {
+                                e.preventDefault(); e.stopPropagation();
+                                const fromVisible = agentDragFrom.current;
+                                if (fromVisible === null) return;
+                                const fromName = visibleAgents[fromVisible];
+                                const toName = visibleAgents[i];
+                                if (!fromName || !toName || fromName === toName) {
+                                  agentDragFrom.current = null;
+                                  setAgentDragOver(null);
+                                  return;
+                                }
+                                const fromFull = agents.indexOf(fromName);
+                                const toFull = agents.indexOf(toName);
+                                if (fromFull === -1 || toFull === -1) {
+                                  agentDragFrom.current = null;
+                                  setAgentDragOver(null);
+                                  return;
+                                }
+                                agentDragFrom.current = fromFull;
+                                onAgentPillDrop(toFull);
+                              }}
                               onDragEnd={() => { agentDragFrom.current = null; setAgentDragOver(null); }}
-                              onClick={() => void changeTabAgent(activeTab.id, a)}
+                              onPointerDown={e => {
+                                if (!shouldStartPointerReorder(e.pointerType)) return;
+                                agentDragFrom.current = i;
+                                pointerAgentActive.current = true;
+                                setAgentDragOver(i);
+                                // 터치 implicit capture를 풀어야 sibling의 move/up이 발사된다.
+                                try { if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 무시 */ }
+                              }}
+                              onPointerMove={e => {
+                                if (!pointerAgentActive.current || agentDragFrom.current === null) return;
+                                const at = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', visibleAgents.length);
+                                setAgentDragOver(at ?? i);
+                              }}
+                              onPointerUp={e => {
+                                if (!pointerAgentActive.current) return;
+                                pointerAgentActive.current = false;
+                                const over = pointerOverIndexFromPoint(e.clientX, e.clientY, 'agent-pill', visibleAgents.length) ?? i;
+                                const toVisible = resolvePointerDropIndex(agentDragFrom.current, over, visibleAgents.length);
+                                if (toVisible !== null) {
+                                  pointerSuppressClick.current = true;
+                                  const fromVisible = agentDragFrom.current;
+                                  const fromName = fromVisible !== null ? visibleAgents[fromVisible] : undefined;
+                                  const toName = visibleAgents[toVisible];
+                                  if (!fromName || !toName) {
+                                    agentDragFrom.current = null;
+                                    setAgentDragOver(null);
+                                    return;
+                                  }
+                                  const fromFull = agents.indexOf(fromName);
+                                  const toFull = agents.indexOf(toName);
+                                  if (fromFull === -1 || toFull === -1) {
+                                    agentDragFrom.current = null;
+                                    setAgentDragOver(null);
+                                    return;
+                                  }
+                                  agentDragFrom.current = fromFull;
+                                  onAgentPillDrop(toFull);
+                                }
+                                else { agentDragFrom.current = null; setAgentDragOver(null); }
+                              }}
+                              onPointerCancel={() => {
+                                if (!pointerAgentActive.current) return;
+                                pointerAgentActive.current = false;
+                                agentDragFrom.current = null;
+                                setAgentDragOver(null);
+                              }}
+                              onClick={() => {
+                                if (pointerSuppressClick.current) { pointerSuppressClick.current = false; return; }
+                                void changeTabAgent(activeTab.id, a);
+                              }}
                             >{a}</button>
                           ))}
                         </div>
                         <button
                           className="agent-pill-add"
                           title="에이전트 추가"
+                          aria-label="에이전트 추가"
                           onClick={() => setModal({
                             title: '새 에이전트',
                             placeholder: '에이전트 이름',
@@ -1267,8 +1738,8 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.prompt) }} />
                       : <textarea
                           value={activeTab.prompt}
-                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value })}
-                          placeholder={'# GPT에게 받은 다음 프롬프트를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
+                          onChange={e => updateTab(activeTab.id, { prompt: e.target.value, promptSaved: false })}
+                          placeholder={'여기에 AI에게 준 지시를 붙여 넣으세요'}
                           spellCheck={false}
                         />
                     }
@@ -1290,6 +1761,12 @@ function AppInner(): React.ReactElement {
                             draggable={false}
                             title="이 버튼을 누른 채 ChatGPT 입력창으로 끌어다 놓으세요 (result.md 첨부)"
                             onMouseDown={e => { e.preventDefault(); dragResultToGpt(activeTab); }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                void revealResult(activeTab);
+                              }
+                            }}
                           >📤 GPT로 드래그</button>
                         )}
                         {activeTab.resultSaved && activeTab.folder && (
@@ -1312,8 +1789,8 @@ function AppInner(): React.ReactElement {
                       ? <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMd(activeTab.result) }} />
                       : <textarea
                           value={activeTab.result}
-                          onChange={e => updateTab(activeTab.id, { result: e.target.value })}
-                          placeholder={'# 에이전트 실행 결과 보고서를 여기에 붙여넣기\n# .md 파일을 드래그 앤 드롭할 수도 있습니다.'}
+                          onChange={e => updateTab(activeTab.id, { result: e.target.value, resultSaved: false })}
+                          placeholder={'여기에 AI에게 받은 결과를 붙여 넣으세요'}
                           spellCheck={false}
                         />
                     }
@@ -1334,18 +1811,22 @@ function AppInner(): React.ReactElement {
           context={dfContext()}
           notify={notify}
           onClose={() => setShowQuickDf(false)}
-          onSaved={() => setPdRefreshSignal(n => n + 1)}
+          onSaved={() => {
+            setDfMode(false);
+            setPdMode(true);
+            setPdRefreshSignal(n => n + 1);
+          }}
         />
       )}
 
-      {/* 설정 모달 — Storage / About(업데이트) */}
+      {/* 설정 모달 — 저장 폴더 / 앱 정보(업데이트) */}
       {showSettings && settings && (
         <div className="modal" onClick={() => setShowSettings(false)}>
           <div className="modcard settings-card" onClick={e => e.stopPropagation()}>
             <h3>설정</h3>
 
             <div className="settings-section">
-              <span className="flabel">Storage — Current Data Root</span>
+              <span className="flabel">저장 폴더</span>
               <div className="field" style={{ marginTop: 4 }}>
                 <span className={`fvalue mono${settings.dataRoot ? '' : ' muted'}`} title={settings.dataRoot}>
                   {settings.dataRoot || '(저장공간이 선택되지 않았습니다)'}
@@ -1361,12 +1842,12 @@ function AppInner(): React.ReactElement {
                 >폴더 열기</button>
               </div>
               <p className="muted" style={{ fontSize: 11, margin: '4px 0 0' }}>
-                설정 파일: {settings.baseDir}\settings.json
+                설정 파일: {settings.settingsFile}
               </p>
             </div>
 
             <div className="settings-section">
-              <span className="flabel">About — Agent Relay v{updateStatus?.version ?? settings.appVersion}</span>
+              <span className="flabel">앱 정보 — Agent Relay v{updateStatus?.version ?? settings.appVersion}</span>
               <UpdateSection
                 status={updateStatus ?? { phase: 'idle', version: settings.appVersion }}
                 notify={notify}
@@ -1470,7 +1951,7 @@ function FileTree({
     <div className="filetree">
       {/* ── 프로젝트 사이드바 (다크) ── */}
       <div className="proj-sidebar">
-        <span className="proj-sidebar-label">Projects</span>
+        <span className="proj-sidebar-label">프로젝트</span>
         {projects.length === 0 && (
           <div style={{ fontSize: 11, color: 'var(--sb-muted)', padding: '4px 8px' }}>
             폴더를 선택하면<br />프로젝트가 표시됩니다
@@ -1505,7 +1986,7 @@ function FileTree({
             </div>
           );
         })}
-        <button className="proj-add" onClick={onAddProject}>+ 새 프로젝트</button>
+        <button className="proj-add" onClick={onAddProject} aria-label="새 프로젝트 추가">+ 새 프로젝트</button>
       </div>
 
       {/* 헤더 */}
@@ -1654,7 +2135,7 @@ function FileTree({
   );
 }
 
-// ── 업데이트 섹션 (설정 → About) ───────────────────────────────────────────────
+// ── 업데이트 섹션 (설정 → 앱 정보) ───────────────────────────────────────────────
 // 정책: 확인/다운로드/설치 모두 사용자 클릭 기반. 자동 종료·자동 설치 없음.
 function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind: 'ok' | 'err' | 'info', text: string) => void; onOpen?: () => void }): React.ReactElement {
   async function run(op: 'update:check' | 'update:download' | 'update:install', okMsg?: string): Promise<void> {
@@ -1669,7 +2150,7 @@ function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind
   const line = ((): React.ReactNode => {
     switch (status.phase) {
       case 'idle':
-        return <span className="muted">GitHub Releases에서 최신 버전을 확인할 수 있습니다.</span>;
+        return <span className="muted">새 버전이 있는지 확인할 수 있어요.</span>;
       case 'checking':
         return <span className="muted">확인 중...</span>;
       case 'none':
@@ -1686,14 +2167,17 @@ function UpdateSection({ status, notify }: { status: UpdateStatus; notify: (kind
         return <span className="update-ready">업데이트가 준비되었습니다.</span>;
       case 'error':
         return (
-          <span className="update-err" title={status.errorMessage}>
-            업데이트 확인 실패
-            <span className="muted" style={{ display: 'block', fontSize: 11 }}>
-              {(status.errorMessage ?? '').slice(0, 160)}
+          <>
+            <span className="update-err">업데이트를 확인하지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.</span>
+            <details>
+              <summary>{'원문 보기'}</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>{status.errorMessage}</pre>
               {status.errorMessage && status.errorMessage.match(/40[134]|ENOTFOUND|ETIMEDOUT/) &&
-                ' — Private 저장소는 공개 전환 전까지 앱 내 업데이트 확인이 제한될 수 있습니다.'}
-            </span>
-          </span>
+                <span className="muted" style={{ display: 'block', fontSize: 11 }}>
+                  Private 저장소는 공개 전환 전까지 앱 내 업데이트 확인이 제한될 수 있습니다.
+                </span>}
+            </details>
+          </>
         );
       default:
         return null;

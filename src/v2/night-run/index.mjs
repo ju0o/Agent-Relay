@@ -14,6 +14,24 @@ export const DEFAULT_DEADLINE = "03:00";
 export const DEFAULT_SEND_TO_MAINPC = "/home/skkse12/.agents/skills/send-to-mainpc/scripts/send-to-mainpc.sh";
 const TERMINAL = new Set(["COMPLETE", "V1_COMPLETE", "HOLD", "FOUNDER_GATE", "BLOCKED_SCOPE"]);
 const COMPLETE_REASONS = new Set(["WBS_EXHAUSTED", "DEADLINE_COMPLETE", "DEADLINE_FORCED_CHECKPOINT"]);
+const MAX_LIFECYCLE_EVENTS = 500;
+
+export const NIGHT_CHECKPOINT_MISSING = "NIGHT_CHECKPOINT_MISSING";
+export const NIGHT_CHECKPOINT_CORRUPT = "NIGHT_CHECKPOINT_CORRUPT";
+
+export function isCorruptCheckpointError(error) {
+  return Boolean(error && error.code === NIGHT_CHECKPOINT_CORRUPT);
+}
+
+export function corruptCheckpointError({ checkpointPath, reason, cause }) {
+  const error = new Error(`night checkpoint corrupt: ${checkpointPath}: ${reason}`);
+  error.code = NIGHT_CHECKPOINT_CORRUPT;
+  error.checkpointPath = checkpointPath;
+  error.reason = reason;
+  error.blocked = { code: NIGHT_CHECKPOINT_CORRUPT, checkpointPath, reason };
+  if (cause !== undefined) error.cause = cause;
+  return error;
+}
 
 export function deadlineAt(now, value = DEFAULT_DEADLINE, timezone = DEFAULT_TIMEZONE) {
   if (timezone !== DEFAULT_TIMEZONE || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error(`invalid deadline/timezone: ${value}/${timezone}`);
@@ -37,8 +55,9 @@ export function evaluateExhaustion(manifest, state) {
 }
 
 export function readCompletion(value) {
+  if (value == null) return { ok: false, reason: NIGHT_CHECKPOINT_MISSING };
   const required = ["runId", "startedAt", "deadline", "freezeAt", "checkpointAt", "endedAt", "endReason", "shutdownState"];
-  if (!value || value.schema !== "agent-relay.last-night-run.v1" || required.some((field) => !value[field]) || !Array.isArray(value.lanes) || !COMPLETE_REASONS.has(value.endReason)) return { ok: false, reason: "UNKNOWN_NIGHT_RUN" };
+  if (!value || value.schema !== "agent-relay.last-night-run.v1" || required.some((field) => !value[field]) || !Array.isArray(value.lanes) || !COMPLETE_REASONS.has(value.endReason)) return { ok: false, reason: NIGHT_CHECKPOINT_CORRUPT };
   return { ok: true, reason: value.endReason, resumeRequired: Boolean(value.resumeRequired) };
 }
 
@@ -72,7 +91,23 @@ export function seoulDate(value = new Date()) {
 export function buildNightReport(record) {
   const lanes = (record.lanes || []).map((lane) => `- ${lane.id || lane.project}: state=${lane.state || "UNKNOWN"}, blocker=${lane.blockers?.[0] || lane.blocker || "-"}`).join("\n") || "- none";
   const unfinished = (record.unfinishedTasks || []).map((task) => `- ${task.project}/${task.taskId}: worker=${task.workerState || "-"}, QA=${task.qaState || "-"}, worktree=${task.worktree || "-"}, resume=${task.resumeRequired ? "yes" : "no"}`).join("\n") || "- none";
-  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${record.taskId || "-"}`, `- promotion: ${record.promotionRef || record.commitSha || "-"}`, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
+  const changedFiles = Array.isArray(record.changedFiles) ? record.changedFiles : [];
+  const resultTests = Array.isArray(record.resultTests) ? record.resultTests : [];
+  const qaTests = Array.isArray(record.qaTests) ? record.qaTests : [];
+  const qaFindings = Array.isArray(record.qaFindings) ? record.qaFindings : [];
+  const completedTasks = Array.isArray(record.completedTasks) ? record.completedTasks : [];
+  const lastCompleted = completedTasks.at(-1) || null;
+  const completedRef = lastCompleted ? `${lastCompleted.project || "-"}/${lastCompleted.taskId || "-"}` : (record.taskId || "-");
+  const completedStatus = lastCompleted?.resultStatus ?? record.resultStatus ?? "-";
+  const completedPromotion = lastCompleted?.promotionRef ?? record.promotionRef ?? record.commitSha ?? "-";
+  const completedCommit = lastCompleted?.commitSha ?? record.commitSha ?? "-";
+  const completedFiles = Array.isArray(lastCompleted?.changedFiles) ? lastCompleted.changedFiles : changedFiles;
+  const completedResultTests = lastCompleted && Array.isArray(lastCompleted.tests) ? lastCompleted.tests : resultTests;
+  const completedSummary = lastCompleted?.summary ?? record.resultSummary ?? "-";
+  const completedEvidence = completedTasks.map((task) => `- ${task.project || "-"}/${task.taskId || "-"}: result=${task.resultStatus || "-"}, commit=${task.commitSha || "-"}, files=${(task.changedFiles || []).join(", ") || "-"}, tests=${[...(task.tests || []), ...(task.qaTests || [])].join(", ") || "-"}, QA=${task.qaState || "-"}, summary=${task.summary || "-"}`).join("\n") || "- none";
+  const latest = record.latestLifecycleEvent;
+  const latestLifecycle = latest ? `${latest.type || "-"} task=${latest.taskId || "-"} project=${latest.projectId || "-"}${latest.state ? ` state=${latest.state}` : ""}${latest.reason ? ` reason=${latest.reason}` : ""}` : "-";
+  return [`# Night Report ${seoulDate(new Date(record.startedAt))}`, "", `- runId: ${record.runId}`, `- start: ${record.startedAt}`, `- end: ${record.endedAt || "-"}`, `- endReason: ${record.endReason}`, `- deadline: ${record.deadline}`, `- shutdownState: ${record.shutdownState}`, "", "## Lifecycle evidence", `- lifecycleEventCount: ${Math.min(Math.max(0, Number(record.lifecycleEventCount) || 0), MAX_LIFECYCLE_EVENTS)}`, `- latestLifecycleEvent: ${latestLifecycle}`, "", "## Completed projects / lanes", lanes, "", "## Completed WBS / task", `- ${completedRef}`, `- resultStatus: ${completedStatus || "-"}`, `- promotion: ${completedPromotion || "-"}`, `- commitSha: ${completedCommit || "-"}`, `- changedFiles: ${completedFiles.join(", ") || "-"}`, `- resultTests: ${completedResultTests.join(", ") || "-"}`, `- resultSummary: ${completedSummary || "-"}`, "", "## Completed tasks evidence", completedEvidence, "", "## Retry / QA", `- QA: ${record.qaState || "-"}`, `- attempts: ${record.attempts || 0}`, `- qaTests: ${qaTests.join(", ") || "-"}`, `- qaFindings: ${qaFindings.join(", ") || "-"}`, `- qaSummary: ${record.qaSummary || "-"}`, "", "## Unfinished tasks", unfinished, "", "## Founder Gate", `- ${record.founderGate || "none"}`, "", "## Blockers / next WBS", `- blocker: ${record.blocker || "-"}`, `- next: ${record.next || "-"}`, `- checkpoint: ${record.checkpointPath || "-"}`, "", "## Shutdown", `- reportPathAsus: ${record.reportPathAsus || "-"}`, `- reportTransferState: ${record.reportTransferState || "-"}`, `- reportPathMainPC: ${record.reportPathMainPC || "-"}`, `- mainPcShutdownRequested: ${record.mainPcShutdownRequested ? "yes" : "no"}`, `- asusShutdownRequested: ${record.asusShutdownRequested ? "yes" : "no"}`, ""].join("\n");
 }
 
 export async function sendReportToMainPc({ reportPath, target = mainPcTarget(), scriptPath = process.env.AGENT_RELAY_SEND_TO_MAINPC || DEFAULT_SEND_TO_MAINPC, execFileImpl = execFile }) {
@@ -90,7 +125,7 @@ export async function requestMainPcShutdown({ target = mainPcTarget(), execFileI
 }
 
 export async function finalizeNightRun({ record: initial, checkpointPath, persist, send = sendReportToMainPc, requestShutdown = requestMainPcShutdown, poweroff = runPoweroff, reportPath, dryRun = false, deferPoweroff = false }) {
-  let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [] };
+  let record = { ...initial, checkpointPath, shutdownState: "REPORTING", reportPathAsus: reportPath || `${dirname(checkpointPath)}/NIGHT_REPORT_${seoulDate(new Date(initial.startedAt))}.md`, reportPathMainPC: null, reportTransferState: "PENDING", mainPcShutdownRequested: false, mainPcShutdownAt: null, asusShutdownRequested: false, unfinishedTasks: initial.unfinishedTasks || [], completedTasks: initial.completedTasks || [], changedFiles: initial.changedFiles || [], resultTests: initial.resultTests || [], resultStatus: initial.resultStatus || null, resultSummary: initial.resultSummary || null, commitSha: initial.commitSha || null, promotionRef: initial.promotionRef || null, qaTests: initial.qaTests || [], qaFindings: initial.qaFindings || [], qaSummary: initial.qaSummary || null };
   await mkdir(dirname(record.reportPathAsus), { recursive: true });
   await writeFile(record.reportPathAsus, buildNightReport(record));
   try { const transfer = dryRun ? { state: "DRY_RUN", path: `MainPC/Desktop/${record.reportPathAsus.split("/").pop()}`, remoteSha: createHash("sha256").update(await readFile(record.reportPathAsus)).digest("hex") } : await send({ reportPath: record.reportPathAsus }); record = { ...record, reportTransferState: transfer.state, reportPathMainPC: transfer.path || null, reportTransferSha256: transfer.remoteSha || null }; }
@@ -111,6 +146,9 @@ function currentTask(state) {
 
 function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = null, endReason, shutdownState = "NOT_REQUESTED", state, resumeRequired }) {
   const task = currentTask(state);
+  const completedTasks = (state.tasks || []).filter((item) => item.state === "VERIFIED_DONE").map((item) => ({ project: item.projectId || null, taskId: item.taskId || null, resultStatus: item.result?.status || null, changedFiles: Array.isArray(item.result?.changedFiles) ? [...item.result.changedFiles] : [], tests: Array.isArray(item.result?.tests) ? [...item.result.tests] : [], commitSha: item.result?.commitSha || null, promotionRef: item.promotionRef || null, qaState: item.qa?.verdict || null, qaTests: Array.isArray(item.qa?.tests) ? [...item.qa.tests] : [], summary: item.result?.summary || null }));
+  const completed = completedTasks.at(-1) || null;
+  const lifecycleEvents = Array.isArray(state.events) ? state.events.slice(-MAX_LIFECYCLE_EVENTS) : [];
   return {
     schema: "agent-relay.last-night-run.v1", runId, startedAt, deadline, freezeAt, checkpointAt, endedAt, endReason, shutdownState,
     project: task?.projectId || null, taskId: task?.taskId || null,
@@ -118,7 +156,17 @@ function record({ runId, startedAt, deadline, freezeAt, checkpointAt, endedAt = 
     runtime: state.projects?.find((project) => project.id === task?.projectId)?.runtime || null,
     workerState: task?.state || null, qaState: task?.qa?.verdict || null,
     attempts: task?.attempts || 0, worktree: task?.builderEvidence?.workspace || null,
-    commitSha: task?.result?.commitSha || null, promotionRef: task?.promotionRef || null,
+    commitSha: completed?.commitSha || null, promotionRef: completed?.promotionRef || null,
+    resultStatus: completed?.resultStatus || null,
+    changedFiles: completed ? [...completed.changedFiles] : [],
+    resultTests: completed ? [...completed.tests] : [],
+    resultSummary: completed?.summary || null,
+    qaTests: Array.isArray(task?.qa?.tests) ? [...task.qa.tests] : [],
+    qaFindings: Array.isArray(task?.qa?.findings) ? [...task.qa.findings] : [],
+    qaSummary: task?.qa?.summary || null,
+    completedTasks,
+    lifecycleEventCount: lifecycleEvents.length,
+    latestLifecycleEvent: lifecycleEvents.at(-1) || null,
     blocker: task?.error || task?.blocker || null, resumeRequired,
     lanes: state.projects || [], updatedAt: new Date().toISOString(),
   };
@@ -137,7 +185,20 @@ export class NightRunSupervisor {
     return value;
   }
 
-  async status() { try { return JSON.parse(await readFile(this.checkpointPath, "utf8")); } catch { return null; } }
+  async status() {
+    let raw;
+    try {
+      raw = await readFile(this.checkpointPath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw corruptCheckpointError({ checkpointPath: this.checkpointPath, reason: "READ_ERROR", cause: error });
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (cause) {
+      throw corruptCheckpointError({ checkpointPath: this.checkpointPath, reason: "INVALID_JSON", cause });
+    }
+  }
 
   async once({ deadline = DEFAULT_DEADLINE } = {}) {
     const started = this.clock();

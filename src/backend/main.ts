@@ -1,15 +1,16 @@
 /**
- * Agent Relay Log V0 — Electron main process.
+ * Agent Relay — Electron main process.
  *
  * No database, no API, no cloud. This process only:
  *   - creates the branded window (React UI from dist/client)
- *   - answers single 'relay' IPC operations that read/write Markdown under
+ *   - answers single 'relay' IPC operations that read/write result records under
  *     the user-chosen DATA_ROOT.
  */
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
+import { ControlRoomError, runControlRoom, runControlRoomApprovalAdd, runControlRoomHoldChoose, runControlRoomLaneSet, runControlRoomResume, runGateAnswer, runGatesList, runPlanStudioApprove, runPlanStudioChat, runPlanStudioGet, runPlanStudioSave } from './controlRoom.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
@@ -24,13 +25,19 @@ import {
   RelayResponse,
   RunFolderResult,
   SettingsView,
+  StartView,
   UpdateEvent,
   UpdateStatus,
+  friendlyErrorMessage,
   nextUpdateStatus,
+  parseStartView,
+  windowTitleForVersion,
 } from '../shared/types.js';
 
 /** Mutable runtime state. */
 let baseDir = '';
+
+let startView: StartView = parseStartView(process.argv);
 function currentSettings(): AppSettings {
   return relay.loadSettings(baseDir);
 }
@@ -95,6 +102,8 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       const view: SettingsView = {
         ...s,
         baseDir,
+        settingsFile: relay.settingsPath(baseDir),
+        defaultDataRoot: path.join(app.getPath('documents'), 'Agent Relay'),
         appVersion: app.getVersion(),
         dataRootExists: relay.dataRootExists(s.dataRoot),
       };
@@ -122,6 +131,14 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       s.agentOrder = req.order.map((x) => String(x));
       saveSettings(s);
       return s.agentOrder;
+    }
+
+    case 'settings:setWorkTabOrder': {
+      if (!Array.isArray(req.order)) throw new Error('order 배열이 필요합니다.');
+      const s = currentSettings();
+      s.workTabOrder = req.order.map((x) => String(x));
+      saveSettings(s);
+      return s.workTabOrder;
     }
 
     case 'settings:setDataRoot': {
@@ -196,7 +213,7 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       const agentBase = path.basename(path.dirname(req.folder));
       const { canceled, filePath } = await dialog.showSaveDialog({
         defaultPath: `${agentBase}-run-${runBase}.md`,
-        filters: [{ name: 'Markdown', extensions: ['md'] }],
+        filters: [{ name: '문서', extensions: ['md'] }],
       });
       if (canceled || !filePath) return { saved: false };
       fs.writeFileSync(filePath, content, 'utf8');
@@ -323,6 +340,45 @@ async function handleRequest(req: RelayRequest): Promise<unknown> {
       installUpdate();
       return true;
 
+    case 'controlRoom:board':
+      return runControlRoom('board');
+
+    case 'controlRoom:approvals':
+      return runControlRoom('approvals');
+
+    case 'planStudio:get':
+      return runPlanStudioGet(req.project);
+
+    case 'planStudio:save':
+      return runPlanStudioSave(req.project, req.draft);
+
+    case 'planStudio:chat':
+      return runPlanStudioChat(req.project, req.message);
+
+    case 'planStudio:approve':
+      return runPlanStudioApprove(req.project);
+
+    case 'gates:list':
+      return runGatesList();
+
+    case 'gates:answer':
+      return runGateAnswer(req.gateId, req.optionIndex);
+
+    case 'controlRoom:laneSet':
+      return runControlRoomLaneSet(req.project, req.role, req.runtimes);
+
+    case 'controlRoom:resume':
+      return runControlRoomResume(req.project);
+
+    case 'controlRoom:holdChoose':
+      return runControlRoomHoldChoose(req.taskId, req.option);
+
+    case 'controlRoom:approvalAdd':
+      return runControlRoomApprovalAdd(req.category, req.summary);
+
+    case 'app:startView':
+      return { view: startView };
+
     default:
       throw new Error('알 수 없는 요청입니다.');
   }
@@ -366,8 +422,9 @@ function registerIpc(): void {
       const value = await handleRequest(req);
       return { ok: true, value };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: message };
+      const message = friendlyErrorMessage(err);
+      const detail = err instanceof ControlRoomError ? err.detail : undefined;
+      return detail ? { ok: false, error: message, detail } : { ok: false, error: message };
     }
   });
 
@@ -403,13 +460,24 @@ function dragIcon(): Electron.NativeImage {
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * Vite HMR URL for development. Set by `node scripts/dev.mjs`
+ * (ELECTRON_DEV_URL=http://localhost:5173). Packaged builds never use it:
+ * app.isPackaged implies loadFile(dist/client/index.html) below.
+ */
+function devServerUrl(): string {
+  if (app.isPackaged) return '';
+  const raw = (process.env.ELECTRON_DEV_URL || '').trim();
+  return /^https?:\/\/.+/.test(raw) ? raw : '';
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 940,
     minHeight: 640,
-    title: 'Agent Relay Log',
+    title: 'Agent Relay',
     backgroundColor: '#17181c',
     autoHideMenuBar: true,
     webPreferences: {
@@ -418,33 +486,69 @@ function createWindow(): void {
     },
   });
 
-  // ── F12 / Ctrl+Shift+I → DevTools (even in production builds) ──
-  mainWindow.webContents.on('before-input-event', (_e, input) => {
-    if (
-      input.type === 'keyDown' &&
-      ((input.key === 'F12') ||
-        (input.control && input.shift && input.key === 'I'))
-    ) {
-      mainWindow?.webContents.openDevTools();
-    }
-  });
+  // Per-build version suffix so installers can be told apart ('Agent Relay 0.3.N').
+  // The constructor keeps the plain brand title (pinned by first-run-copy test);
+  // the visible title carries the package.json version via app.getVersion().
+  mainWindow.setTitle(windowTitleForVersion(app.getVersion()));
 
-  // DevTools는 F12 또는 Ctrl+Shift+I로 열 수 있습니다 (위에 등록됨)
+  // ── F12 / Ctrl+Shift+I → DevTools (development only) ──
+  if (!app.isPackaged) {
+    mainWindow.webContents.on('before-input-event', (_e, input) => {
+      if (
+        input.type === 'keyDown' &&
+        ((input.key === 'F12') ||
+          (input.control && input.shift && input.key === 'I'))
+      ) {
+        mainWindow?.webContents.openDevTools();
+      }
+    });
+  }
 
   // ── Detect page-load failure and show a diagnostic dialog ──
   const clientPath = path.join(__dirname, '..', '..', 'client', 'index.html');
+  const devUrl = devServerUrl();
+  let fellBackToFile = false;
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
+    // Offline/dev-server-down fallback: the launcher always runs an initial
+    // tsc build, and `vite build` output may exist — prefer a running app
+    // over an error box when the HMR URL is unreachable.
+    if (devUrl && !fellBackToFile && fs.existsSync(clientPath)) {
+      fellBackToFile = true;
+      void mainWindow?.loadFile(clientPath);
+      return;
+    }
     dialog.showErrorBox(
-      'Agent Relay Log — 페이지 로드 실패',
-      `오류 코드: ${code}\n설명: ${desc}\n\n시도한 경로:\n${clientPath}\n\n경로가 존재하는지 확인하세요.`,
+      'Agent Relay — 페이지 로드 실패',
+      `오류 코드: ${code}\n설명: ${desc}\n\n시도한 경로:\n${devUrl || clientPath}\n\n경로가 존재하는지 확인하세요.`,
     );
   });
 
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(mainWindow!, {
+      type: 'warning',
+      buttons: ['취소', '닫기'],
+      defaultId: 0,
+      cancelId: 0,
+      title: '저장되지 않은 내용',
+      message: '저장되지 않은 프롬프트 또는 결과가 있습니다.',
+      detail: '앱을 닫으면 저장되지 않은 내용이 사라집니다.',
+    });
+    if (choice === 1) event.preventDefault();
+  });
+
   // ── Load UI ──
+  // Dev (scripts/dev.mjs): load the Vite HMR server for instant feedback.
+  // Everything else (npm start, packaged app, offline fallback): load the
+  // static build output exactly as before.
+  if (devUrl) {
+    void mainWindow.loadURL(devUrl);
+    return;
+  }
+
   if (!fs.existsSync(clientPath)) {
     dialog.showErrorBox(
-      'Agent Relay Log — index.html 없음',
+      'Agent Relay — index.html 없음',
       `다음 경로에 index.html이 없습니다:\n${clientPath}\n\n앱을 다시 빌드하거나 재설치하세요.`,
     );
     return;
@@ -455,6 +559,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   app.setAppUserModelId('com.agentrelaylog.v0');
+  startView = parseStartView(process.argv);
   baseDir = resolveBaseDir();
   fs.mkdirSync(baseDir, { recursive: true });
   migrateLegacySettings();
