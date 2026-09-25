@@ -354,3 +354,39 @@ test("lifecycle event store stays concise and bounded", () => {
   assert.ok(entry.reason.length <= 301);
   assert.throws(() => recordLifecycleEvent({ events: [] }, { type: "NOPE", taskId: "T" }), /invalid lifecycle event type/);
 });
+
+test("QA prompt goes to the qaRuntime adapter and not to the worker adapter", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-qa-runtime-separate-");
+  const statePath = join(root, "state.json");
+  const workerCalls = [];
+  const qaCalls = [];
+  const workerAdapter = {
+    id: "codex",
+    async availability() { return { ok: true }; },
+    assertOwnership() {},
+    async run({ workspace, sandbox, prompt }) {
+      workerCalls.push({ workspace, sandbox, prompt });
+      assert.equal(sandbox, "workspace-write");
+      return { pid: 11, code: 0, startedAt: new Date().toISOString(), text: `RESULT_PACKET: ${JSON.stringify({ schema: "agent-relay.result.v1", taskId: "P-QA-RT", status: "IMPLEMENTED", changedFiles: [], tests: [], commitSha: "e".repeat(40), summary: "ok" })}` };
+    },
+  };
+  const qaAdapter = {
+    id: "qa-codex",
+    async availability() { return { ok: true }; },
+    async run({ workspace, sandbox, prompt }) {
+      qaCalls.push({ workspace, sandbox, prompt });
+      assert.equal(sandbox, "read-only");
+      return { pid: 22, code: 0, startedAt: new Date().toISOString(), text: `QA_PACKET: ${JSON.stringify({ schema: "agent-relay.qa.v1", taskId: "P-QA-RT", verdict: "ACCEPT", tests: [], findings: [], summary: "ok" })}` };
+    },
+  };
+  const runner = new PortfolioRunner({ manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", qaRuntime: "qa-codex", path: "/safe", task: { taskId: "P-QA-RT", scope: "bounded", files: [], tests: [] } }] }, statePath, worktreeRoot: join(root, "worktrees"), worktrees: { async create() { return { path: root, base: "abc", async cleanup() {} }; } }, runtimeAdapters: { codex: workerAdapter, "qa-codex": qaAdapter } });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  assert.equal(state.tasks[0].state, "VERIFIED_DONE");
+  assert.equal(workerCalls.length, 1);
+  assert.equal(qaCalls.length, 1);
+  assert.match(workerCalls[0].prompt, /TASK_PACKET/);
+  assert.match(qaCalls[0].prompt, /QA_PACKET/);
+  assert.equal(state.tasks[0].qaEvidence.runtime, "qa-codex");
+  await rm(root, { recursive: true, force: true });
+});
