@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { buildAllPmTools } from '../dist/server/mcp/pm-tools.js';
 
 const base = { dataRoot: '/tmp/agent-relay-goal-loop-mcp-test', project: 'test' };
-assert.equal(buildAllPmTools(base).some((tool) => tool.name === 'relay_pm_start_goal_loop'), false);
+const baseTool = buildAllPmTools(base).find((candidate) => candidate.name === 'relay_pm_start_goal_loop');
+assert.ok(baseTool);
+await assert.rejects(
+  () => baseTool.handler({ ownerConfirmed: true, goalTitle: 'x', goalStatement: 'y' }),
+  (error) => error?.mcpCode === 'INVALID_ARGUMENT',
+);
 
 const tools = buildAllPmTools({
   ...base,

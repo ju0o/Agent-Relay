@@ -884,9 +884,8 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
       },
     },
   ];
-  if (ctx.goalLoop) {
-    tools.unshift({
-      name: 'relay_pm_start_goal_loop',
+  tools.unshift({
+    name: 'relay_pm_start_goal_loop',
       description:
         'Founder-confirmed automatic PM loop: creates or resolves a Goal, dispatches bounded Worker tasks, ' +
         'captures results, sends them to the configured ChatGPT reviewer, retries the same Task on CHANGES, ' +
@@ -896,18 +895,25 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
           goalId: { type: 'string' },
           goalTitle: { type: 'string' },
           goalStatement: { type: 'string' },
+          workerId: { type: 'string' },
+          workspaceRoot: { type: 'string' },
           ownerConfirmed: { type: 'boolean' },
         },
         ['ownerConfirmed'],
       ),
       handler: async (args) => {
-        rejectUnknownFields(args, ['goalId', 'goalTitle', 'goalStatement', 'ownerConfirmed']);
+        rejectUnknownFields(args, ['goalId', 'goalTitle', 'goalStatement', 'workerId', 'workspaceRoot', 'ownerConfirmed']);
         if (args.ownerConfirmed !== true) {
           throw new McpError('FORBIDDEN', '자동 Goal Loop은 Founder 확인(ownerConfirmed=true)이 필요합니다.');
         }
         const goalId = optionalString(args, 'goalId');
         const goalTitle = optionalString(args, 'goalTitle');
         const goalStatement = optionalString(args, 'goalStatement');
+        const workerId = optionalString(args, 'workerId') ?? ctx.goalLoop?.workerId;
+        const workspaceRoot = optionalString(args, 'workspaceRoot') ?? ctx.goalLoop?.workspaceRoot;
+        if (!workerId || !workspaceRoot) {
+          throw new McpError('INVALID_ARGUMENT', 'workerId+workspaceRoot 또는 서버의 Goal Loop 설정이 필요합니다.');
+        }
         if (!goalId && (!goalTitle || !goalStatement)) {
           throw new McpError('INVALID_ARGUMENT', 'goalId 또는 goalTitle+goalStatement이 필요합니다.');
         }
@@ -918,17 +924,16 @@ export function buildPmWriteTools(ctx: PmServerContext): McpTool[] {
             ...(goalId ? { goalId } : {}),
             ...(goalTitle ? { goalTitle } : {}),
             ...(goalStatement ? { goalStatement } : {}),
-            workerId: ctx.goalLoop!.workerId,
-            workspaceRoot: ctx.goalLoop!.workspaceRoot,
-            transport: ctx.goalLoop!.transport ?? 'internal',
-            ...(ctx.goalLoop!.actlAgent ? { actlAgent: ctx.goalLoop!.actlAgent } : {}),
+            workerId,
+            workspaceRoot,
+            transport: ctx.goalLoop?.transport ?? 'internal',
+            ...(ctx.goalLoop?.actlAgent ? { actlAgent: ctx.goalLoop.actlAgent } : {}),
           });
         } catch (err) {
           throw mapCoreError(err);
         }
       },
     });
-  }
   return tools;
 }
 
