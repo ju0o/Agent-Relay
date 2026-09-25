@@ -110,6 +110,14 @@ function defaultBaseUrl(): string {
 function loadLauncherAuthToken(): string | undefined {
   const direct = (process.env.CODEX_WEB_GPT_AUTH_TOKEN || '').trim();
   if (direct) return direct;
+  const authPath = process.env.CODEX_AUTH_FILE || path.join(os.homedir(), '.codex', 'auth.json');
+  try {
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as { tokens?: { access_token?: unknown } };
+    const accessToken = auth.tokens?.access_token;
+    if (typeof accessToken === 'string' && accessToken.trim()) return accessToken.trim();
+  } catch {
+    // Fall through to the launcher control token for explicitly configured deployments.
+  }
   const configPath = process.env.CODEX_WEB_GPT_CONFIG
     || path.join(process.env.CODEX_CHATGPT_WEB_HOME || path.join(os.homedir(), '.codex-chatgpt-web'), 'config.json');
   try {
@@ -249,12 +257,14 @@ export async function reviewRunWithChatGpt(
   const model = opts.model ?? 'auto';
   const authToken = loadLauncherAuthToken();
   const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
+  const modelsUrl = new URL(`${baseUrl}/models`);
+  modelsUrl.searchParams.set('client_version', process.env.CODEX_WEB_GPT_CLIENT_VERSION || '5.0.8');
 
   // Layer 1: transport / listener reachable?
   let modelsText: string;
   let modelsStatus: number;
   try {
-    const r = await httpJson(`${baseUrl}/models`, { method: 'GET', timeoutMs: Math.min(timeoutMs, 8000), ...(headers ? { headers } : {}) });
+    const r = await httpJson(modelsUrl.toString(), { method: 'GET', timeoutMs: Math.min(timeoutMs, 8000), ...(headers ? { headers } : {}) });
     modelsStatus = r.status;
     modelsText = r.text;
   } catch (e) {
