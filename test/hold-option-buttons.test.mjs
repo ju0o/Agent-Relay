@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   HOLD_OPTION_LABELS,
+  holdCardMessage,
   holdStepLabel,
   isSelfReviewOption,
   normalizeHoldEntry,
@@ -74,4 +75,12 @@ test("hold button styles emphasize the recommendation", async () => {
   assert.match(css, /\.hold-option\.recommended/);
   assert.match(css, /\.hold-confirm/);
   assert.match(css, /\.hold-options/);
+});
+
+test("hold card headline does not include the raw English QA reason", () => {
+  const reason = "QA FAILED: missing evidence file";
+  const message = holdCardMessage("", reason);
+  assert.match(message ?? "", /보류/);
+  assert.doesNotMatch(message ?? "", /QA FAILED|missing evidence|[A-Za-z]{4,}/);
+  assert.equal(holdCardMessage("", "  "), null);
 });

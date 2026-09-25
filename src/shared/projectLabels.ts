@@ -37,9 +37,8 @@ export function holdCardMessage(blocker: unknown, reason: unknown): string | nul
   if (text.includes('FOUNDER')) return 'Founder 확인이 필요해 작업을 보류했습니다.';
   if (text.includes('SCOPE')) return '승인된 작업 범위가 없어 작업을 보류했습니다.';
   if (text.includes('NOT_CONNECTED')) return 'PM 연결이 없어 다음 작업을 대기 중입니다.';
-  return cleanReason && !isEmptyReasons(cleanReason)
-    ? `작업이 보류되었습니다: ${cleanReason}`
-    : '작업이 보류되었습니다.';
+  // 원문 reason은 헤드라인에 넣지 않는다 — 원문 보기 details에서만 보여준다.
+  return '작업이 보류되었습니다. 자세한 내용은 원문 보기에서 확인할 수 있어요.';
 }
 
 // ── 보류 explain (holds/<id>.json → night board step/explain/choice) ──────
