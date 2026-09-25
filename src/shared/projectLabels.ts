@@ -14,6 +14,22 @@ export const PROJECT_LABELS: Record<string, ProjectLabel> = {
   'juceipt-planning': { name: 'JuCeipt 기획', goal: 'JuCeipt 기획안 정리와 실행 준비' },
 };
 
+const AI_DISPLAY_NAMES: Record<string, string> = {
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  cline: 'Cline',
+  grok: 'Grok',
+  cursor: 'Cursor',
+  claude: 'Claude',
+  'claude-team': 'Claude 팀',
+  'claude-pro': 'Claude Pro',
+};
+
+/** runtime id → 제품 이름. 모르는 id는 그대로 돌려준다. */
+export function aiDisplayName(runtimeId: string): string {
+  return Object.prototype.hasOwnProperty.call(AI_DISPLAY_NAMES, runtimeId) ? AI_DISPLAY_NAMES[runtimeId] : runtimeId;
+}
+
 /** Joined hold reasons that count as "no hold" (empty, dash placeholder, or only separators). */
 function isEmptyReasons(text: string): boolean {
   const stripped = text.trim().replace(/[,\s·・|—–-]+/g, '');

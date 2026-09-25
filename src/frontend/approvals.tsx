@@ -6,6 +6,7 @@ import {
   isSupersededApprovalRule,
   normalizeModelUsage,
 } from '../shared/types.js';
+import { aiDisplayName } from '../shared/projectLabels.js';
 
 // ── CR-08 model quota board + approval learning ─────────────────────────────
 // board JSON carries `models: { runtimeId: { runs, quota?, failed? } }`.
@@ -84,7 +85,7 @@ export function ModelUsagePanel({ models }: { models: unknown }): React.ReactEle
             key={row.runtimeId}
             className={`model-usage-row${isModelQuotaHit(row) ? ' quota-hit' : ''}`}
           >
-            <span className="model-usage-id">{row.runtimeId}</span>
+            <span className="model-usage-id">{aiDisplayName(row.runtimeId)}</span>
             <span className="model-usage-nums">
               실행 {row.runs} · 한도 초과 {row.quota} · 실패 {row.failed}
             </span>
