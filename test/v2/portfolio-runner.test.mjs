@@ -390,3 +390,44 @@ test("QA prompt goes to the qaRuntime adapter and not to the worker adapter", as
   assert.equal(state.tasks[0].qaEvidence.runtime, "qa-codex");
   await rm(root, { recursive: true, force: true });
 });
+
+test("runner blocks non-independent QA before creating a worktree", async () => {
+  const root = await mkdtemp("/tmp/agent-relay-qa-not-self-");
+  const statePath = join(root, "state.json");
+  let worktreesCreated = 0;
+  let runs = 0;
+  const sharedAdapter = {
+    id: "codex",
+    async availability() { return { ok: true }; },
+    assertOwnership() {},
+    async run() { runs += 1; throw new Error("must not run when QA is not independent"); },
+  };
+  const runner = new PortfolioRunner({
+    manifest: { maxBuilders: 1, projects: [{ id: "p", owner: "codex", runtime: "codex", qaRuntime: "codex", path: "/safe", task: { taskId: "P-QA-SELF", scope: "bounded", files: [], tests: [] } }] },
+    statePath,
+    worktreeRoot: join(root, "worktrees"),
+    worktrees: { async create() { worktreesCreated += 1; return { path: root, base: "abc", async cleanup() {} }; } },
+    runtimeAdapters: { codex: sharedAdapter },
+  });
+  await runner.enqueue("p");
+  const state = await runner.runOnce();
+  assert.equal(state.tasks[0].state, "BLOCKED_QA_NOT_INDEPENDENT");
+  assert.equal(worktreesCreated, 0);
+  assert.equal(runs, 0);
+  assert.equal(lastLifecycleEvent(state, "P-QA-SELF").type, "TASK_FAILED");
+  assert.equal(lastLifecycleEvent(state, "P-QA-SELF").state, "BLOCKED_QA_NOT_INDEPENDENT");
+  await rm(root, { recursive: true, force: true });
+});
+
+test("core-v1 snapshot reports the runtime that actually runs QA", () => {
+  const snapshot = buildCoreV1Snapshot(
+    { projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", owner: "cursor", runtime: "cursor", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] },
+    { service: "IDLE", updatedAt: "now", events: [], tasks: [{ projectId: "p", taskId: "P-1", state: "QUEUED", attempts: 0 }] },
+  );
+  assert.equal(snapshot.lanes[0].qa.runtime, "cursor");
+  const explicit = buildCoreV1Snapshot(
+    { projects: [{ id: "p", coreV1: true, pmChannel: "pm/p", pmState: "READY", owner: "codex", runtime: "codex", qaRuntime: "qa-codex", task: { taskId: "P-1", scope: "bounded", files: [], tests: [] } }] },
+    { service: "IDLE", updatedAt: "now", events: [], tasks: [] },
+  );
+  assert.equal(explicit.lanes[0].qa.runtime, "qa-codex");
+});

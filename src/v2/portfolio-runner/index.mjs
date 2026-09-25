@@ -9,7 +9,7 @@ import { realpath } from "node:fs/promises";
 import { FounderGateManager } from "../portfolio-jit/index.mjs";
 import { createRuntimeAdapters } from "../runtime-adapters/index.mjs";
 
-export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
+export const STATES = Object.freeze(["QUEUED", "RUNNING", "QA", "REQUEST_CHANGES", "VERIFIED_DONE", "V1_COMPLETE", "HOLD", "BLOCKED_SCOPE", "BLOCKED_WORKTREE", "BLOCKED_TARGET", "BLOCKED_SSOT_CONFLICT", "BLOCKED_RUNTIME_ADAPTER", "BLOCKED_QA_NOT_INDEPENDENT", "BLOCKED_SECRET", "BLOCKED_PAYMENT", "BLOCKED_EXTERNAL", "FOUNDER_GATE", "INTEGRATION_TARGET"]);
 export const QA_VERDICTS = Object.freeze(["ACCEPT", "REQUEST_CHANGES", "FOUNDER_GATE"]);
 export const LIFECYCLE_EVENT_TYPES = Object.freeze(["TASK_DISPATCHED", "WORKER_RESULT", "QA_VERDICT", "TASK_RETRY", "TASK_FAILED", "TASK_COMPLETED"]);
 export const MAX_LIFECYCLE_EVENTS = 500;
@@ -107,7 +107,7 @@ export function buildCoreV1Snapshot(manifest, state) {
       currentTask: task?.taskId || next?.taskId || null,
       worker: { runtime: project.runtime || project.owner || null, state: task?.state || project.state || "IDLE", pid: ["RUNNING", "QA"].includes(task?.state) ? task?.builderEvidence?.pid || null : null },
       result: task?.result || null,
-      qa: { runtime: project.qaRuntime || "codex", verdict: task?.qa?.verdict || null, pid: task?.qaEvidence?.pid || null },
+      qa: { runtime: project.qaRuntime || project.runtime || project.owner || "codex", verdict: task?.qa?.verdict || null, pid: task?.qaEvidence?.pid || null },
       retries: Math.max(0, (task?.attempts || 0) - 1),
       next: task?.state === "VERIFIED_DONE" ? next?.taskId || null : null,
       blocker: task?.error || task?.blocker || project.blockers?.[0] || null,
@@ -382,7 +382,9 @@ export class PortfolioRunner {
     if (!definitions(project).some((definition) => definition.taskId === task.taskId)) { task.state = project?.state || "BLOCKED_SCOPE"; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: "task definition not authorized" }); return; }
     if (!adapter || !availability.ok) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = availability.reason; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: availability.reason || "runtime unavailable" }); return; }
     try { adapter.assertOwnership(project); } catch (error) { task.state = "BLOCKED_RUNTIME_ADAPTER"; task.error = error.message; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: error.message }); return; }
+    const builderRuntimeKey = project?.runtime || project?.owner || null;
     const qaRuntimeName = project?.qaRuntime || null;
+    if (qaRuntimeName && builderRuntimeKey && qaRuntimeName === builderRuntimeKey) { task.state = "BLOCKED_QA_NOT_INDEPENDENT"; task.error = `QA runtime must be independent of builder runtime: ${qaRuntimeName}`; recordLifecycleEvent(state, { type: "TASK_FAILED", taskId: task.taskId, projectId: task.projectId, attempt: task.attempts || 0, state: task.state, reason: task.error }); return; }
     const qaAdapter = qaRuntimeName ? this.runtimeAdapters[qaRuntimeName] : adapter;
     if (qaRuntimeName) {
       const qaAvailability = qaAdapter ? await qaAdapter.availability() : { ok: false, reason: "runtime adapter not configured" };
