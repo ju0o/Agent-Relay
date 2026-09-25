@@ -569,7 +569,7 @@ function LaneView({ lane, onRefresh }: {
           <pre className="mono">{rawText(lane)}</pre>
         </details>
       </header>
-      <div className="control-flow" aria-label="lane lifecycle">
+      <div className="control-flow" aria-label="진행 단계">
         {FLOW.map((name, index) => {
           const state = working && holdCurrent ? flowState(`BLOCK ${stageValue}`, index) : working ? flowState(stageValue, index) : 'pending';
           return <div className={`control-step ${state}`} key={name}><span className="control-step-dot">{state === 'done' ? '✓' : state === 'blocked' ? '!' : state === 'active' ? '●' : '○'}</span><span>{name}</span></div>;

@@ -485,7 +485,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
           <p className="muted">선택: <strong>{presentation.name}</strong></p>
         </section>
 
-        <section className="plan-center" aria-label="goal and task chain">
+        <section className="plan-center" aria-label="목표와 작업 순서">
           <article className="control-card" aria-label="goal card">
             <h3>목표</h3>
             {loading
@@ -499,7 +499,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
               </>}
           </article>
 
-          <article className="control-card" aria-label="task chain">
+          <article className="control-card" aria-label="작업 순서">
             <h3>작업 순서 ({tasks.length}개)</h3>
             {tasks.length === 0
               ? <p className="muted">아직 작업이 없어요.</p>
@@ -516,7 +516,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
                         <span className="plan-task-title">{founderTaskTitle(task)}</span>
                         <span className="muted">{done ? doneLabel(task) : `${FLOW[current]} · ${current + 1}/7`}</span>
                       </button>
-                      <div className="control-flow plan-steps" aria-label={`${task.title} progress`}>
+                      <div className="control-flow plan-steps" aria-label={`${task.title} 진행 단계`}>
                         {FLOW.map((name, index) => {
                           const state = done ? 'done' : task.blocker && index === current ? 'blocked' : index < current ? 'done' : index === current ? 'active' : 'pending';
                           return (
@@ -634,7 +634,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
           </article>
         </section>
 
-        <aside className="plan-side" aria-label="chat detail gate">
+        <aside className="plan-side" aria-label="PM 요청과 작업 상세">
           <article className="control-card" aria-label="pm chat">
             <h3>PM에게 요청</h3>
             <form onSubmit={e => void sendChat(e)} className="plan-chat-form">
@@ -668,7 +668,7 @@ export function PlanStudio({ onClose, initialProject }: { onClose: () => void; i
               </>}
           </article>
 
-          <article className="control-card human" aria-label="human gate">
+          <article className="control-card human" aria-label="사람 확인">
             <h3>사람 확인</h3>
             {visibleGates.length === 0
               ? <p className="muted">지금 답할 것이 없어요.</p>
