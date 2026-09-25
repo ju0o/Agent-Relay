@@ -22,6 +22,9 @@
 
 import * as http from 'node:http';
 import * as https from 'node:https';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 export const CHATGPT_VERDICTS = ['PASS', 'CHANGES', 'BLOCKED', 'OWNER_REQUIRED', 'REVIEW_BLOCKED'] as const;
 export type ChatGptVerdict = (typeof CHATGPT_VERDICTS)[number];
@@ -101,6 +104,20 @@ function defaultBaseUrl(): string {
   const env = (process.env.CODEX_WEB_GPT_RESPONSES_URL || '').trim();
   if (env) return env.replace(/\/$/, '');
   return 'http://127.0.0.1:17841/v1';
+}
+
+/** Read the local launcher credential without ever returning or logging it as evidence. */
+function loadLauncherAuthToken(): string | undefined {
+  const direct = (process.env.CODEX_WEB_GPT_AUTH_TOKEN || '').trim();
+  if (direct) return direct;
+  const configPath = process.env.CODEX_WEB_GPT_CONFIG
+    || path.join(process.env.CODEX_CHATGPT_WEB_HOME || path.join(os.homedir(), '.codex-chatgpt-web'), 'config.json');
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { controlToken?: unknown };
+    return typeof config.controlToken === 'string' && config.controlToken.trim() ? config.controlToken.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function httpJson(
@@ -230,12 +247,14 @@ export async function reviewRunWithChatGpt(
   const baseUrl = (opts.baseUrl ?? defaultBaseUrl()).replace(/\/$/, '');
   const timeoutMs = opts.timeoutMs ?? 15000;
   const model = opts.model ?? 'auto';
+  const authToken = loadLauncherAuthToken();
+  const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
 
   // Layer 1: transport / listener reachable?
   let modelsText: string;
   let modelsStatus: number;
   try {
-    const r = await httpJson(`${baseUrl}/models`, { method: 'GET', timeoutMs: Math.min(timeoutMs, 8000) });
+    const r = await httpJson(`${baseUrl}/models`, { method: 'GET', timeoutMs: Math.min(timeoutMs, 8000), ...(headers ? { headers } : {}) });
     modelsStatus = r.status;
     modelsText = r.text;
   } catch (e) {
@@ -267,7 +286,7 @@ export async function reviewRunWithChatGpt(
   let lastDetail = '';
   for (const b of bodies) {
     try {
-      const r = await httpJson(`${baseUrl}${b.path}`, { method: 'POST', timeoutMs, body: b.body });
+      const r = await httpJson(`${baseUrl}${b.path}`, { method: 'POST', timeoutMs, body: b.body, ...(headers ? { headers } : {}) });
       if (r.status === 404) {
         lastDetail = `POST ${b.path} -> 404`;
         continue;
