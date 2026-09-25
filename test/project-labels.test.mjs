@@ -14,12 +14,12 @@ test("shared project labels use the exact product names", async () => {
     juplan: "JuPlan",
     juceipt: "JuCeipt",
     jucontroler: "JuControler",
-    "jucontroler-app": "통합 관제 화면 (jucontroler-app)",
-    "juceipt-planning": "JuCeipt 기획 (juceipt-planning)",
+    "jucontroler-app": "통합 관제 화면",
+    "juceipt-planning": "JuCeipt 기획",
   })) {
     const key = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const value = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    assert.match(source, new RegExp(`[\\"']?${key}[\\"']?:[\\s\\S]*?name: ['"]${value}`));
+    assert.match(source, new RegExp(`[\\"']?${key}[\\"']?:[\\s\\S]*?name: ['"]${value}['"]`));
   }
   for (const oldName of ["에이전트 릴레이", "주플랜", "주싯", "주컨트롤러"]) assert.doesNotMatch(source, new RegExp(oldName));
 });
