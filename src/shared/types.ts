@@ -153,7 +153,7 @@ export type RelayRequest =
 export type RelayResult<T = unknown> = { ok: true; value: T };
 
 /** Standard failure response envelope (human-friendly message). */
-export type RelayError = { ok: false; error: string };
+export type RelayError = { ok: false; error: string; detail?: string };
 
 export type RelayResponse<T = unknown> = RelayResult<T> | RelayError;
 

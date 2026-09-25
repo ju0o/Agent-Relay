@@ -30,7 +30,7 @@ export async function relay<T>(req: RelayRequest): Promise<RelayResponse<T>> {
 /** Send a request and return value, or throw when the backend reported an error. */
 export async function must<T>(req: RelayRequest): Promise<T> {
   const res = await relay<T>(req);
-  if (!res.ok) throw new Error(res.error);
+  if (!res.ok) throw Object.assign(new Error(res.error), { detail: res.detail });
   return res.value;
 }
 

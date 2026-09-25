@@ -30,5 +30,5 @@ test("planStudio get keeps connection and remote failure messages distinct", asy
     error.code = 1;
     throw error;
   }).catch(error => error);
-  assert.equal(remote.message, "작업 PC가 요청을 처리하지 못했어요.");
+  assert.equal(remote.code, "REMOTE_FAILED");
 });

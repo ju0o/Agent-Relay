@@ -692,6 +692,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
   const [board, setBoard] = useState<ControlRoomBoard | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [errorDetail, setErrorDetail] = useState('');
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -707,8 +708,10 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
           ?? (next as Record<string, unknown>)?.done,
       });
       setError('');
+      setErrorDetail('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setErrorDetail((e as { detail?: string })?.detail ?? '');
     }
   }, []);
 
@@ -734,7 +737,7 @@ export function ControlRoom({ onClose }: { onClose: () => void }): React.ReactEl
       <WhoLine board={board} />
       <ModelUsagePanel models={board?.models} />
       {board === null && !error ? <div className="control-empty">작업 PC에서 불러오는 중…</div>
-      : error && lanes.length === 0 ? <div className="control-empty">{error}</div>
+      : error && lanes.length === 0 ? <div className="control-empty">{error}{errorDetail && <details><summary>원문 보기</summary><pre className="mono">{errorDetail}</pre></details>}</div>
       : !sortedLanes.length ? null : <>
         <div className="control-tabs" role="tablist" aria-label="프로젝트 목록">{sortedLanes.map((lane, index) => { const presentation = projectPresentation(lane); const key = laneSelectKey(lane, index); const isActive = key === activeKey; const attn = laneAttention(lane); return <button className={`control-tab${isActive ? ' active' : ''}`} key={lane.id ?? lane.project ?? index} onClick={() => setSelectedId(key)} role="tab" aria-selected={isActive} aria-label={`${presentation.name}: ${presentation.goal}`}><span>{presentation.name}</span>{attn === 'decision' && <span className="attn-badge decision">결정 필요</span>}{attn === 'hold' && <span className="attn-badge hold">보류</span>}<small style={{ display: 'block', marginTop: 4 }}>{presentation.goal}</small></button>; })}</div>
         {activeLane && <LaneView lane={activeLane} onRefresh={load} />}

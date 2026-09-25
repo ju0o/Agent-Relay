@@ -22,7 +22,7 @@ export type ControlRoomOperation =
   | 'controlRoom:approvalAdd';
 export type PlanStudioAction = 'get' | 'save' | 'chat' | 'approve';
 export type GateAction = 'list' | 'answer';
-export type ControlRoomErrorCode = 'EXEC_FAILED' | 'INVALID_JSON' | 'INVALID_INPUT';
+export type ControlRoomErrorCode = 'EXEC_FAILED' | 'REMOTE_FAILED' | 'INVALID_JSON' | 'INVALID_INPUT';
 export type ControlRoomExecOptions = ExecFileOptions & { input?: string | Uint8Array };
 export type ControlRoomExec = (
   file: string,
@@ -131,6 +131,7 @@ export class ControlRoomError extends Error {
     readonly operation: ControlRoomOperation,
     message: string,
     readonly cause?: unknown,
+    readonly detail?: string,
   ) {
     super(message);
     this.name = 'ControlRoomError';
@@ -201,6 +202,19 @@ function assertApprovalSummary(operation: ControlRoomOperation, summary: unknown
   }
 }
 
+const OFFLINE_MESSAGE = '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.';
+const REMOTE_FAILED_MESSAGE = '작업 PC는 켜져 있는데 화면 자료를 만들다 오류가 났어요. 잠시 후 자동으로 다시 불러와요. 계속되면 원문 보기로 알려 주세요.';
+
+// ssh는 붙었는데 원격 명령이 실패한 경우(255 아닌 숫자 종료 코드, 또는 stderr에 Traceback)만 REMOTE_FAILED.
+function execFailure(operation: ControlRoomOperation, cause: unknown): ControlRoomError {
+  const record = cause && typeof cause === 'object' ? (cause as { code?: unknown; stderr?: unknown }) : {};
+  const stderr = typeof record.stderr === 'string' ? record.stderr : Buffer.isBuffer(record.stderr) ? record.stderr.toString('utf8') : '';
+  if ((typeof record.code === 'number' && record.code !== 255) || stderr.includes('Traceback')) {
+    return new ControlRoomError('REMOTE_FAILED', operation, REMOTE_FAILED_MESSAGE, cause, stderr.slice(-400));
+  }
+  return new ControlRoomError('EXEC_FAILED', operation, OFFLINE_MESSAGE, cause);
+}
+
 async function runSshJson(
   operation: ControlRoomOperation,
   args: string[],
@@ -211,11 +225,7 @@ async function runSshJson(
   try {
     ({ stdout } = await execFileImpl('ssh', args, { shell: false, timeout: EXEC_TIMEOUT, ...options }));
   } catch (cause) {
-    const exitCode = cause && typeof cause === 'object' && 'code' in cause ? cause.code : undefined;
-    const message = exitCode === 255 || typeof exitCode !== 'number'
-      ? '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.'
-      : '작업 PC가 요청을 처리하지 못했어요.';
-    throw new ControlRoomError('EXEC_FAILED', operation, message, cause);
+    throw execFailure(operation, cause);
   }
 
   try {
@@ -236,7 +246,7 @@ export async function runControlRoom(
   try {
     ({ stdout } = await execFileImpl('ssh', args, { shell: false, timeout: EXEC_TIMEOUT }));
   } catch (cause) {
-    throw new ControlRoomError('EXEC_FAILED', operation, '작업 PC(ASUS)에 연결할 수 없습니다. 꺼져 있거나 네트워크가 끊겼을 수 있어요. 켜지면 자동으로 다시 불러옵니다.', cause);
+    throw execFailure(operation, cause);
   }
 
   try {

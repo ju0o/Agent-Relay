@@ -10,7 +10,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electro
 import * as fs from 'fs';
 import * as path from 'path';
 import * as relay from './fs.js';
-import { runControlRoom, runControlRoomApprovalAdd, runControlRoomHoldChoose, runControlRoomLaneSet, runControlRoomResume, runGateAnswer, runGatesList, runPlanStudioApprove, runPlanStudioChat, runPlanStudioGet, runPlanStudioSave } from './controlRoom.js';
+import { ControlRoomError, runControlRoom, runControlRoomApprovalAdd, runControlRoomHoldChoose, runControlRoomLaneSet, runControlRoomResume, runGateAnswer, runGatesList, runPlanStudioApprove, runPlanStudioChat, runPlanStudioGet, runPlanStudioSave } from './controlRoom.js';
 import { migrateSettings } from './migrate.js';
 import { checkForUpdates, downloadUpdate, initUpdater, installUpdate, updaterSupported } from './updater.js';
 import {
@@ -423,7 +423,8 @@ function registerIpc(): void {
       return { ok: true, value };
     } catch (err) {
       const message = friendlyErrorMessage(err);
-      return { ok: false, error: message };
+      const detail = err instanceof ControlRoomError ? err.detail : undefined;
+      return detail ? { ok: false, error: message, detail } : { ok: false, error: message };
     }
   });
 
