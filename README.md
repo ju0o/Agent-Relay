@@ -3,6 +3,12 @@
 > AI 여러 개가 **계획(PM) → 만들기(Worker) → 검사(QA)** 를 스스로 이어 가는 셋톱박스.
 > 사람은 결과를 보고, 꼭 필요한 결정에만 답하면 됩니다.
 
+## 30초 소개 영상
+
+[![30초 소개 영상](docs/media/agentrelay-30s.jpg)](docs/media/agentrelay-30s.mp4)
+
+전체 소개 (60초): https://youtu.be/tB1cCLzTvIs
+
 코딩을 모르지만 Claude·Codex 같은 AI 도우미를 여러 개 쓰는 분을 위한 프로그램입니다.
 "지금 뭐가 돌아가고, 내가 할 일이 있나?"를 한 화면에서 알려 주는 Windows 데스크톱 앱(Electron)이
 있고, 그 뒤에서 작업을 이어 주는 실행기(CLI)가 있습니다. DB도 클라우드도 없이 파일과 Git으로만 동작합니다.
