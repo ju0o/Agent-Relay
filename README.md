@@ -1,259 +1,79 @@
 # Agent Relay
 
-> 여러 프로젝트의 기획(PM) → 작업(Worker) → 검수(QA)를 자동으로 이어서 실행하는 로컬 도구.
-> 사용자는 결과를 확인하고, 꼭 필요한 결정에만 답하면 된다.
-> DB 없음 · 클라우드 없음 · 파일시스템이 곧 데이터베이스.
+> AI 여러 개가 **계획(PM) → 만들기(Worker) → 검사(QA)** 를 스스로 이어 가는 셋톱박스.
+> 사람은 결과를 보고, 꼭 필요한 결정에만 답하면 됩니다.
 
-Windows용 Electron 앱. 상단 **관제실 · 승인 규칙 · 계획** 화면에서 여러 프로젝트의
-진행 상황과 허락한 규칙, 목표·작업 체인을 한눈에 보고, 각 작업의 프롬프트와 결과를
-날짜/에이전트/런(run) 단위로 Markdown 파일로 자동 정리해준다.
+코딩을 모르지만 Claude·Codex 같은 AI 도우미를 여러 개 쓰는 분을 위한 프로그램입니다.
+"지금 뭐가 돌아가고, 내가 할 일이 있나?"를 한 화면에서 알려 주는 Windows 데스크톱 앱(Electron)이
+있고, 그 뒤에서 작업을 이어 주는 실행기(CLI)가 있습니다. DB도 클라우드도 없이 파일과 Git으로만 동작합니다.
 
-## 설치 (권장 방식)
+## 지금 되는 것
 
-1. [Releases](https://github.com/ju0o/Agent-Relay/releases) 페이지에서 최신 `AgentRelay-Setup-x.y.z.exe` 다운로드
-2. 실행하면 자동으로 설치된다 — 설치 경로 선택 등 별도 과정 없음
-   (프로그램 본체: `%LOCALAPPDATA%\Programs\Agent Relay\`)
-3. 설치 직후 앱이 바로 실행되며, 이후에는 아래에서 실행
-   - 바탕화면 **Agent Relay** 바로가기
-   - 시작 메뉴 **Agent Relay**
-   - Windows 설정 > 설치된 앱 > **Agent Relay** (제거는 여기서)
-4. 최초 1회만 데이터 폴더(DATA_ROOT) 선택 — 이후 앱이 자동 복원
-5. 새 버전은 앱 안에서 업데이트 (⚙ 설정 → About → [업데이트 확인])
+- **관제실** — 프로젝트별로 지금 누가 무슨 작업을 하는지, 내가 할 일이 있는지 한 문장으로 보여 줘요.
+- **멈춘 작업을 쉬운 말로** — 멈춘 이유를 한 문장으로 풀어 주고, 선택지 3개(다시 시도 · 다음 작업으로 진행 · 내가 직접 볼게요)를
+  카드로 보여 줘요. 추천이 맨 앞에 있고, 대기 시간이 정해진 경우
+  "안 고르면 14:40에 추천대로 진행해요"처럼 시각을 알려 줘요. 원문은 `원문 보기` 뒤에 접혀 있어요.
+- **승인 규칙** — "이런 건 묻지 말고 진행해도 돼요"라고 허락한 규칙을 종류별로 모아 보여 주고,
+  얼마나 자주 쓰였는지도 알려 줘요.
+- **계획 화면** — 프로젝트의 목표와 작업 순서, PM과의 대화, 승인을 한곳에서 봐요.
+- **검사는 다른 AI가** — 실행기는 만든 AI와 같은 AI가 검사하도록 두지 않아요(같으면 멈추고 알려 줘요).
+  QA는 코드를 고치지 못하는 읽기 전용으로 돌아가요.
+- **밤 자동 작업 (Night Run)** — 정해 둔 마감 시각(운영 기준 05:00)까지 작업을 이어 가다 멈추고,
+  결과 보고서를 남겨요. 끝나지 않은 작업은 다음 실행에서 이어서 해요.
+- **기록 정리** — AI에게 준 프롬프트와 결과를 날짜·AI·회차별 Markdown 파일로 저장해요.
 
-프로그램 본체와 사용자 데이터는 완전히 분리되어 있다. 제거/업데이트해도
-DATA_ROOT의 기록과 설정은 절대 삭제되지 않는다.
+## 빠른 시작
 
-Portable 버전(`AgentRelay-Portable-x.y.z.exe`)은 설치 없이 바로 실행하는 보조 배포판이다.
-설정 파일을 exe 옆에 두므로 USB 휴대에 적합하다.
+Windows 앱으로 쓰기:
 
-> ⚠️ Code signing 인증서가 없으므로 최초 설치 시 Windows SmartScreen 경고가 표시될 수 있다.
-> "추가 정보 → 실행"으로 진행하면 된다.
+1. [Releases](https://github.com/ju0o/Agent-Relay/releases)에서 `AgentRelay-Setup-x.y.z.exe`를 받아 실행해요.
+   (코드 서명이 없어 처음에 Windows 경고가 뜰 수 있어요 — "추가 정보 → 실행")
+2. 처음 열면 기록을 저장할 폴더를 한 번만 고르세요. `[기본 폴더 사용]` 한 번이면 끝이에요.
+3. 위쪽 **관제실 → 승인 규칙 → 계획** 순서로 둘러보세요.
 
-## 처음 실행하면 (First-run)
-
-처음 실행하면 "데이터 폴더를 먼저 선택하세요" 화면이 뜬다. 결과와 기록을 저장할
-폴더가 무엇인지 한 문장으로 설명하고, 바로 쓸 수 있는 기본값을 제시한다.
-
-- 먼저 결과와 기록을 저장할 폴더를 정해 주세요.
-- **[기본 폴더 사용 (문서 › Agent Relay)]** — 클릭 한 번으로 시작
-  (경로: `내 문서/Agent Relay`, `settings.defaultDataRoot`로 화면에 표시)
-- **[다른 폴더 고르기]** — 외장 드라이브/동기화 폴더 등 원하는 위치 선택
-
-최초 1회만 선택하면 이후 앱이 자동 복원한다. 경로가 사라지면(외장 드라이브 제거 등)
-"저장 폴더를 찾을 수 없습니다" 화면이 뜨고 새 위치만 다시 선택하면 된다.
-
-## 관제실 · 승인 규칙 · 계획
-
-상단바 순서는 **관제실 → 승인 규칙 → 계획** → 설정 → 개발 도구다.
-기본 시작 화면은 관제실이며, 실행 시 `--view=`로 바꿀 수 있다
-(`home|control-room|approvals|plan-studio`, 잘못된 값은 관제실로 폴백).
-
-### 관제실
-
-여러 프로젝트의 lane 상태·담당 AI·목표를 한 화면에서 본다. HOLD 카드는 한국어로
-한 줄 요약되고, 원본 QA finding은 `원문 보기` 뒤에 접혀 있다. lane 체인 편집·재개,
-게이트 답변(규칙으로 저장 가능)은 관제실에서 바로 처리한다.
-
-### 승인 규칙
-
-Agent Relay가 묻지 않고 알아서 처리하도록 허락한 규칙 목록이다. 카테고리별로
-묶어 보여주고, 사용 횟수·마지막 사용 시각 통계를 함께 표시한다.
-
-### 계획 (Plan Studio)
-
-프로젝트의 목표(Goal)와 작업 체인, PM 채팅, 승인, 게이트를 보여주는 화면이다.
-프로젝트 이름은 한국어로, 목표는 한 줄 요약으로 보이며 전문은 `원문 보기`로 확인한다.
-
-## 현재 기능
-
-- **Windows 설치형(NSIS)** — 시작 메뉴/바탕화면 등록, 프로그램 추가/제거 지원
-- **앱 내부 업데이트** — GitHub Release 기반, 사용자 클릭으로 다운로드/설치
-- **영구 저장 설정** — DATA_ROOT·마지막 프로젝트·탭/에이전트 순서 저장,
-  포터블 시절 settings.json은 최초 실행 시 조용히 이관(비파괴 복사)
-- **Drag Reorder** — 프로젝트 탭·작업 탭·에이전트 목록을 드래그로 재배치
-  (프로젝트/에이전트 순서는 영구 저장, 실제 폴더는 불변)
-- **Quick Dogfooding 📝** — `[＋ 피드백]` 한 줄 입력 즉시 기록
-  (기본값 Type=UX · Priority=MEDIUM · Status=OPEN, Context 자동 첨부)
-- **프로젝트 세션 탭** — 여러 프로젝트를 동시에 열고 전환
-- **런(run) 관리** — `Project/Date/Agent/NN` 런 폴더 자동 생성·번호 관리(빈 번호 재사용 없음)
-  - 폴더는 **실제 저장 시점에만** 생성된다 (앱을 열기만 해서 폴더가 만들어지지 않음)
-- **병렬 편집 탭** (`Ctrl+T`) — 여러 에이전트의 런을 동시에 작업
-- **Prompt/Result 저장** — 덮어쓰기 금지가 기본, 확인 후 허용
-- **태그** — 성공/진행중/검토/실패/참고 프리셋, 런별 저장
-- **마크다운 미리보기** — 외부 의존성 없는 자체 렌더러
-- **파일 트리** — 최신순 히스토리, 검색 필터, 런 상태 점, 드래그로 다른 날짜/에이전트로 이동
-- **Result → ChatGPT 전달**
-  - 📤 `GPT로 드래그` 칩을 누른 채 ChatGPT 입력창에 놓으면 result.md가 파일 첨부처럼 전달됨 (OS 네이티브 drag-out)
-  - `위치 열기` — 탐색기에서 result.md가 **선택된 상태**로 열림 (fallback)
-  - `.md 내보내기` — prompt+result를 합쳐 단일 파일 저장
-
-단축키: `Ctrl+S` 모두 저장 · `Ctrl+N` 새 런 · `Ctrl+T` 새 탭 · `F12` DevTools
-
-## 업데이트
-
-앱은 GitHub Releases를 업데이트 피드로 사용한다(electron-updater · GitHub provider).
-
-- 실행 후 조용히 1회 확인 — 새 버전이 있으면 작은 알림만 뜬다 (**자동 설치 없음**)
-- ⚙ 설정 → About → [업데이트 확인] → 최신이면 "현재 최신 버전입니다"
-- 새 버전이 있으면 [다운로드 및 업데이트] → 진행률 → [재시작하여 설치]
-- 업데이트해도 DATA_ROOT의 기록·설정은 절대 삭제되지 않는다
-
-참고: 저장소가 **private**인 동안은 GitHub Release를 인증 없이 읽을 수 없어
-앱 내부 업데이트 확인이 실패한다(토큰은 앱에 넣지 않는다). 공개 전환 후 바로 동작한다.
-접근 권한이 있는 환경에서는 환경변수 `AGENT_RELAY_GH_TOKEN`으로 확인할 수 있다
-(머신별 opt-in일 뿐, 바이너리에 포함되지 않는다).
-
-## 데이터 저장 구조
-
-파일시스템 자체가 SSOT다. 모든 기록은 사용자가 지정한 DATA_ROOT 아래에 쌓인다.
-
-```text
-DATA_ROOT/                          ← 최초 1회 선택 (settings.json에 저장)
-├─ {project}/                       ← 프로젝트 폴더
-│  ├─ YYYY-MM-DD/
-│  │  └─ {agent}/                   ← 예: "Claude Code", "OpenCode"
-│  │     ├─ 01/
-│  │     │  ├─ prompt.md            ← GPT가 에이전트에게 준 프롬프트
-│  │     │  ├─ result.md            ← 에이전트의 결과 보고
-│  │     │  └─ meta.json            ← {"tags": [...]}
-│  │     └─ 02/
-│  └─ _dogfooding/                  ← 이 프로젝트의 사용성 피드백 (Work Log와 분리)
-│     ├─ DF-0001.md
-│     └─ DF-0002.md
-└─ .agent-relay/                    ← 앱 내부 데이터 (프로젝트 목록에 나타나지 않음)
-   └─ dogfooding/
-      └─ DF-NNNN.md                 ← Agent Relay 앱 자체 피드백
-```
-
-- 특수 프로젝트 `'.'`: 프로젝트 하위 폴더 없이 `DATA_ROOT/{date}/{agent}/{NN}` 구조
-- prompt.md = 작업 지시 기록, result.md = 결과 보고. **GPT 재전달 UX 대상은 result.md만**
-
-## DATA_ROOT
-
-- 모든 Agent Relay 기록이 저장되는 최상위 폴더. 외장 드라이브/동기화 폴더 어디든 가능.
-- 최초 1회 선택 후 저장되며 매 실행 자동 복원된다. 다시 묻지 않는다.
-- 경로가 사라지면(외장 드라이브 제거 등) "저장공간을 찾을 수 없습니다" 화면이 뜨고 새 위치만 다시 선택하면 된다.
-- 변경은 ⚙ 설정 → Storage 에서만 ([변경] / [폴더 열기]).
-- 설정 파일 위치:
-  - 설치형/Portable 공통: `%APPDATA%\agent-relay-log\settings.json` (Electron userData)
-  - Portable은 exe 옆에 `settings.json`이 있으면 우선 사용 (USB 휴대용)
-  - ~v0.2.x 포터블 폴백 위치(`%APPDATA%\agent-relay-log\AgentRelayLog`)의 설정은
-    최초 실행 시 자동 **복사** 이관된다(원본 유지, 비파괴).
-
-## Dogfooding 🐾
-
-두 종류가 있으며 **데이터가 절대 섞이지 않는다**.
-
-### Quick Capture (빠른 기록) — v0.3 신규
-
-- 프로젝트 선택 중 상단 `[＋ 피드백]` 클릭 → 작은 Popover에서 한 줄 입력 → Enter 또는 [저장]
-- 기본값 Type=UX / Priority=MEDIUM / Status=OPEN으로 즉시 저장 — 매번 폼을 채우지 않는다
-- [상세 옵션]을 펼치면 Type/Priority/기대한 동작 수정 가능
-- Project/Date/Agent/Run Context는 현재 화면 상태에서 자동 첨부
-- 저장 위치: 현재 프로젝트 `{project}/_dogfooding/DF-NNNN.md`
-- 10초 안에 기록 끝. 관리(모아보기/상태 변경)는 아래 Project Dogfooding 화면에서
-
-### App Dogfooding (앱 자체 개선)
-
-Agent Relay 프로그램 자체를 쓰면서 발견한 Bug/UX/Improvement 기록.
-
-- 상단 `🐾 App Dogfooding` 버튼
-- 저장: `DATA_ROOT/.agent-relay/dogfooding/DF-NNNN.md`
-- Type: Bug / UX·불편 / Improvement / Good / Other
-
-### Project Dogfooding (프로젝트 사용성 관리)
-
-Quick Capture로 찍힌 기록을 포함해 프로젝트별 피드백을 모아보고 상태를 관리한다.
-
-- 프로젝트 선택 후 상단 `📋 Project Dogfooding` 버튼 (프로젝트 미선택 시 비활성)
-- 저장: `DATA_ROOT/{project}/_dogfooding/DF-NNNN.md` — **프로젝트마다 독립적인 ID 체계**
-- Type: Bug / UX·Friction / Improvement / Idea / Good / Other
-- Status 클릭 순환 변경: `OPEN → FIXED → HOLD`, 필터 ALL/OPEN/FIXED/HOLD, 상태별 개수 표시
-- 행의 ▸ 클릭으로 전체 내용 보기, `[복사]`(md 전문) / `[파일 열기]`(탐색기 reveal)
-- markdown 하나만 읽어도 어느 프로젝트의, 어떤 상황에서 발견한, 어떤 심각도의, 지금 어떤 상태인지
-  기록이 모두 이해되도록 작성된다 — 나중에 GPT에 그대로 전달해 우선순위 정리를 맡길 수 있다
-
-공통: markdown 파일이 SSOT (index.json 없음), 현재 작업 Context 자동 첨부.
-
-## Release 자동화 (GitHub Actions)
-
-태그를 push하면 Windows 빌드 → 테스트 → Release 업로드가 자동 실행된다.
-
-```bash
-git tag v0.3.1
-git push origin v0.3.1
-# → AgentRelay-Setup-0.3.1.exe / AgentRelay-Portable-0.3.1.exe
-#   latest.yml / blockmap이 GitHub Release에 게시됨
-```
-
-## 처음 쓰는 법
-
-처음 클론한 뒤 오프라인 E2E 흐름을 그대로 재현한다. 한 줄 실행이 전체 검증이다.
-
-```bash
-bash scripts/e2e.sh
-```
-
-위 스크립트(`scripts/e2e.sh`)가 순서대로 실행하는 명령은 아래와 정확히 같다.
-
-```bash
-npm run build:server
-npm run build:client
-npm run test:v2:runner
-npm run typecheck
-```
-
-각 단계는 오프라인·임시 디렉터리 격리 상태로 실행된다.
-`scripts/e2e.sh`가 하는 일은 다음과 같다.
-
-- `E2E_TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-e2e-XXXXXX")"`로
-  임시 디렉터리를 만들고, `mkdir -p "$E2E_TMP/data"`로 격리된 데이터 폴더를 둔다.
-- 각 단계마다 `npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data"`
-  환경으로 실행한다. 실제 `DATA_ROOT`의 기록에는 손대지 않는다.
-- 단계별 로그는 `$E2E_TMP/<단계>.log`(예: `build_server.log`)에만 쓰고,
-  stdout에는 마지막 한 줄의 JSON(`{"ok":bool,"steps":[{name,ok}],"ms":num}`)만 출력한다.
-  진행 상황은 stderr로만 나온다.
-- 종료 시 `trap 'rm -rf "$E2E_TMP"' EXIT`로 임시 디렉터리 전체를 지운다.
-
-수동으로 같은 흐름을 재현하려면 임시 폴더를 직접 만들고 같은 env를 붙이면 된다.
-
-```bash
-E2E_TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-e2e-XXXXXX")"
-mkdir -p "$E2E_TMP/data"
-npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run build:server
-npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run build:client
-npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run test:v2:runner
-npm_config_offline=true AGENT_RELAY_DATA_ROOT="$E2E_TMP/data" npm run typecheck
-rm -rf "$E2E_TMP"
-```
-
-## 개발 (Development)
-
-일반 사용자는 위 "설치" 섹션만 필요하다. 소스에서 직접 빌드할 때만 사용한다.
+소스에서 직접 실행하기 (Node.js 필요):
 
 ```bash
 npm install
-
-# client(vite) + server(tsc) 빌드 후 electron 실행
-npm run dev
-
-# 타입 체크
-npm run typecheck
-
-# 테스트 (fs 레이어 + vnext 회귀 + v0.3 기능)
-npm test
-
-# Windows 패키징 (NSIS Setup + Portable → dist/)
-npm run build:win
-# 또는 로그 래퍼: node scripts/build-win.mjs  (→ dist/buildwin.log)
-# 산출물: dist/AgentRelay-Setup-x.y.z.exe (설치형) / dist/AgentRelay-Portable-x.y.z.exe (무설치)
+npm run dev                         # 빌드 후 데스크톱 앱 실행
+node bridge/agent-relay.mjs core-v1 status         # 프로젝트별 진행 상황 보기
+node bridge/agent-relay.mjs core-v1 start          # 작업 이어 가기 시작
+node bridge/agent-relay.mjs night-run up --deadline 05:00   # 밤 자동 작업
+npm test                            # 테스트
 ```
 
-## Privacy / Local-first
+CLI 전체 목록, E2E, 릴리스 방법은 [docs/DEVELOPER.md](docs/DEVELOPER.md),
+밤 작업 준비(전원 끄기 권한 등)는 [docs/CORE_V1_AUTO_NIGHT_RUN.md](docs/CORE_V1_AUTO_NIGHT_RUN.md)를 보세요.
 
-- 계정 없음. telemetry 없음.
-- 모든 데이터는 사용자가 지정한 로컬 폴더에 Markdown/JSON으로만 저장된다.
-- ChatGPT 전달도 OS 파일 드래그일 뿐 — 앱이 대신 전송하거나 DOM을 조작하지 않는다.
-- 네트워크 통신은 업데이트 확인 시 GitHub Releases 조회(읽기)뿐이다. 기록 데이터는 전송되지 않는다.
+## 다른 프로그램과의 관계
 
+```text
+actl (리모컨)
+   └─▶ Agent Relay (셋톱박스: PM → Worker → QA)
+          └─▶ JuControler (허브: JuPlan · JuCeipt · Tester)
+```
 
+- 이 저장소에 들어 있는 것은 **Agent Relay** 하나예요. 나머지는 각자 따로 있는 프로그램이에요.
+- 실행기는 `config/portfolio.json`에 적힌 프로젝트(Agent Relay · actl · JuPlan · JuCeipt)를 순서대로 돌려요.
+
+## 아직 안 되는 것
+
+- **AI 자동 배정의 엔진은 이 저장소에 없어요.** 앱은 "구독 AI 먼저, 무료 모델은 보조(예비)"라는
+  배정 순서와 쉬는 AI를 보여 주고, 만드는 AI·검사하는 AI를 고르게 해 줘요. 실제 배정과
+  "안 고르면 추천대로 진행"은 작업 PC의 밤 작업 도구가 맡아요. 그 PC에 연결(SSH)돼 있어야 관제실이 채워지고,
+  꺼져 있으면 "연결 안 됨"으로 알려 줘요.
+- **프로젝트·역할별 Skill과 승인한 기억 전달**은 이 저장소 코드에는 아직 없어요.
+- 자동 진행까지 기다리는 시간은 작업마다 달라요. 고정 30분이 아니에요.
+- macOS·Linux용 앱은 없어요(Windows 설치형과 Portable만). 코드 서명도 아직 없어요.
+- 앱 아이콘은 기본 Electron 아이콘이에요.
+- actl의 마지막 Windows 확인 등 일부 프로젝트는 사람이 직접 확인해야 끝나요.
+
+더 자세한 내용: [기록 저장·피드백 상세](docs/RECORDS_AND_DOGFOODING.md) · [남은 개선 목록](BACKLOG.md)
+
+## English summary
+
+Agent Relay is a local "set-top box" that chains several AI assistants through Plan (PM) → Build (Worker) → Check (QA), for non-developers.
+It ships a Windows desktop app (control room · approval rules · plan view) plus a Node CLI runner (`bridge/agent-relay.mjs`).
+QA must be a different AI from the builder, stuck tasks become one plain sentence with three options, and Night Run works until a deadline.
+Everything is files and Git — no database, no cloud, no telemetry; the only network call is the update check.
+AI auto-assignment and skill/memory delivery are not in this repo yet; see "아직 안 되는 것".

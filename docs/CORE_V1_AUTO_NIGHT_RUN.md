@@ -8,10 +8,10 @@ in `src/v2/night-run/index.mjs`); operational runs use `05:00`.
 
 ## ASUS one-time setup
 
-Run this once on ASUS as the configured user (`skkse12`):
+Run this once on ASUS as the configured user (`<user>`):
 
 ```sh
-printf '%s\n' 'skkse12 ALL=(root) NOPASSWD: /usr/sbin/poweroff' | sudo visudo -f /etc/sudoers.d/agent-relay-night-run
+printf '%s\n' '<user> ALL=(root) NOPASSWD: /usr/sbin/poweroff' | sudo visudo -f /etc/sudoers.d/agent-relay-night-run
 sudo -n /usr/sbin/poweroff --help >/dev/null
 ```
 
