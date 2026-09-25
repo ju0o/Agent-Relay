@@ -91,6 +91,7 @@ const VALID_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
 const ALLOWED_TOOL_BASH_CMDS = new Set([
   'node',
   'npm',
+  'pnpm',
   'npx',
   'git status',
   'git diff',
@@ -216,7 +217,7 @@ function parseRelayArgs(argv) {
         throw new ArgError(
           `Invalid --allowedTool pattern: '${pattern}'. ` +
           'Allowed: Bash(<cmd>:*) with <cmd> in ' +
-          '{node, npm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}, ' +
+          '{node, npm, pnpm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}, ' +
           'or exactly one of Read, Glob, Grep, Edit, Write.',
         );
       }

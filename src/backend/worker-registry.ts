@@ -44,6 +44,7 @@ export type ClaudePermissionMode = 'default' | 'acceptEdits';
 export const ALLOWED_TOOL_BASH_CMDS: ReadonlySet<string> = new Set([
   'node',
   'npm',
+  'pnpm',
   'npx',
   'git status',
   'git diff',
@@ -90,7 +91,7 @@ export interface ClaudeDriverOptions {
   /**
    * Round 35 — optional strict Builder verification allowlist. Each entry must
    * satisfy `isAllowedToolPattern`: `Bash(<cmd>:*)` for a verify-only command
-   * (node/npm/npx/git status/git diff/git log/ls/cat/head/tail/wc/grep/rg/find/test)
+   * (node/npm/pnpm/npx/git status/git diff/git log/ls/cat/head/tail/wc/grep/rg/find/test)
    * or exactly one of Read/Glob/Grep/Edit/Write. QA workers must never set this.
    */
   allowedTools?: string[];
@@ -451,7 +452,7 @@ export function validateWorkerRegistryRecord(
               'INVALID_ARGUMENT',
               'Invalid driverOptions.claude.allowedTools pattern: ' +
               `'${pattern}'. Allowed: Bash(<cmd>:*) with <cmd> in ` +
-              '{node, npm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}, ' +
+              '{node, npm, pnpm, npx, git status, git diff, git log, ls, cat, head, tail, wc, grep, rg, find, test}, ' +
               'or exactly one of Read, Glob, Grep, Edit, Write.',
             );
           }
