@@ -36,4 +36,8 @@ describe('a11y guard — keyboard focus visibility', () => {
   it('controlRoom tabs expose aria-selected', () => {
     assert.ok(controlRoom.includes('aria-selected'), 'missing "aria-selected" in controlRoom.tsx');
   });
+
+  it('controlRoom has no English "runtime 순서" screen-reader label', () => {
+    assert.ok(!controlRoom.includes('runtime 순서'), 'found "runtime 순서" label in controlRoom.tsx');
+  });
 });

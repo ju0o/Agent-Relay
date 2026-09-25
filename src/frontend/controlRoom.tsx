@@ -304,7 +304,7 @@ function ChainEditor({ project, role, initial, workerChain, onRefresh }: {
     <form className="chain-editor" onSubmit={e => void submit(e)} aria-label={`${role === 'worker' ? '만드는 AI 순서 저장' : '검수하는 AI 순서 저장'}`}>
       <h4>{role === 'worker' ? '만드는 AI 바꾸기' : '검수하는 AI 바꾸기'}</h4>
       <p className="muted">순서대로 선택 — 첫 번째가 우선, 나머지는 예비 (최대 4개)</p>
-      <div className="chain-picks" role="group" aria-label={`${role} runtime 순서 선택`}>
+      <div className="chain-picks" role="group" aria-label={`${role === 'worker' ? '만드는 AI 순서 선택' : '검수하는 AI 순서 선택'}`}>
         {RUNTIMES.map(runtime => {
           const order = picked.indexOf(runtime);
           return (
