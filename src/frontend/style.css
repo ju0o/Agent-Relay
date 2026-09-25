@@ -107,6 +107,7 @@
 /* 라이트 모드 활성 탭 — 진한 글씨(#1d1d1f on #ffffff 대비 16.83:1)로 4.5:1 충족 */
 .app[data-theme="light"] .tab-btn.active { background: #ffffff; color: var(--tab-active-fg); border-color: rgba(0,0,0,0.1); }
 .app[data-theme="light"] .control-tab.active { color: var(--tab-active-fg); }
+/* 의도된 덮어쓰기: 활성 탭 글씨는 마지막에 리터럴 #1d1d1f로 확정 (토큰 #111111 대신, 둘 다 대비 4.5:1 이상) */
 .app[data-theme="light"] .tab-btn.active { color: #1d1d1f; }
 .app[data-theme="light"] .control-tab.active { color: #1d1d1f; }
 .app[data-theme="light"] .agent-pill.active { background: #ffffff; color: #1d1d1f; }
@@ -686,6 +687,11 @@ h1 { font-size: 22px; }
   background: rgba(255,255,255,0.40);
   box-shadow: 0 0 4px rgba(255,255,255,0.30);
 }
+
+/* 기록 화면 머리글 — 다른 화면(.control-room)과 같은 좌우 여백 */
+.record-head { padding: 12px 24px 0; }
+.record-head h2 { margin: 0; font-size: 16px; }
+@media (max-width: 700px) { .record-head { padding: 12px 16px 0; } }
 
 /* ── 프로젝트 세션 탭 바 ────────────────────────────────── */
 .proj-tab-bar {

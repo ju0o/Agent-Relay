@@ -20,3 +20,24 @@ test('chain editor offers opencode-free labelled 무료 모델(예비)', async (
   assert.match(src, /'opencode-free'/);
   assert.match(src, /무료 모델\(예비\)/);
 });
+
+test('담당 AI 줄도 opencode-free 대신 무료 모델(예비)로 보여준다', async () => {
+  const src = await read('src/frontend/controlRoom.tsx');
+  assert.match(src, /const workerText = chainText\(worker\)/);
+  assert.match(src, /const qaText = chainText\(qa\)/);
+  assert.doesNotMatch(src, /const (worker|qa)Text = detail\(/);
+});
+
+test('기록 header has side padding matching other screens', async () => {
+  const css = await read('src/frontend/style.css');
+  assert.match(css, /\.record-head\s*\{[^}]*padding:\s*12px 24px 0/);
+});
+
+test('light active tab color ends as #1d1d1f (last matching rule wins)', async () => {
+  const css = await read('src/frontend/style.css');
+  for (const sel of ['tab-btn', 'control-tab']) {
+    const re = new RegExp(`\\.app\\[data-theme="light"\\] \\.${sel}\\.active\\s*\\{[^}]*?\\bcolor:\\s*([^;}\\s]+)`, 'g');
+    const colors = [...css.matchAll(re)].map(m => m[1]);
+    assert.equal(colors.at(-1), '#1d1d1f', `${sel}.active final color`);
+  }
+});

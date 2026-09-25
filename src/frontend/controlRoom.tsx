@@ -612,8 +612,12 @@ function LaneView({ lane, onRefresh }: {
   const presentation = projectPresentation(lane);
   const qaFinding = qaFindingOf(lane);
   const paused = isPaused(lane);
-  const workerText = detail(worker);
-  const qaText = detail(qa);
+  const chainText = (value: unknown): string => {
+    const ids = chainToList(value);
+    return ids.length ? ids.map(runtimeLabel).join(' → ') : detail(value);
+  };
+  const workerText = chainText(worker);
+  const qaText = chainText(qa);
   const showWorker = workerText !== '' && workerText !== '—';
   const showQa = qaText !== '' && qaText !== '—';
   const holdTitle = (hold: { taskId?: string; reason?: string }): string => {
