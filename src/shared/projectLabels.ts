@@ -12,6 +12,7 @@ export const PROJECT_LABELS: Record<string, ProjectLabel> = {
   jucontroler: { name: 'JuControler', goal: '프로젝트 통합 제어와 운영 가시성' },
   'jucontroler-app': { name: '통합 관제 화면', goal: '여러 프로젝트 진행 상황을 한눈에 확인' },
   'juceipt-planning': { name: 'JuCeipt 기획', goal: 'JuCeipt 기획안 정리와 실행 준비' },
+  jutell: { name: 'JuTell', goal: '짧고 쉬운 작업 보고서' },
 };
 
 const AI_DISPLAY_NAMES: Record<string, string> = {

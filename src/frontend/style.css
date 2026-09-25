@@ -107,6 +107,8 @@
 /* 라이트 모드 활성 탭 — 진한 글씨(#1d1d1f on #ffffff 대비 16.83:1)로 4.5:1 충족 */
 .app[data-theme="light"] .tab-btn.active { background: #ffffff; color: var(--tab-active-fg); border-color: rgba(0,0,0,0.1); }
 .app[data-theme="light"] .control-tab.active { color: var(--tab-active-fg); }
+.app[data-theme="light"] .tab-btn.active { color: #1d1d1f; }
+.app[data-theme="light"] .control-tab.active { color: #1d1d1f; }
 .app[data-theme="light"] .agent-pill.active { background: #ffffff; color: #1d1d1f; }
 /* 미니 버튼 */
 .app[data-theme="light"] .mini { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.09); }
@@ -425,7 +427,7 @@ h1 { font-size: 22px; }
 
 /* 탭 헤더 */
 .tab-header {
-  padding: 6px 10px;
+  padding: 6px 24px;
   background: var(--bg2); border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }

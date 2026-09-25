@@ -48,10 +48,11 @@ type ActionStatus = { state: 'pending' | 'done' | 'error'; text: string } | null
 
 const FLOW = ['계획', '확인', '작업', '검수', '시험', '사람 확인', '반영'];
 
-/** 8 runtime ids offered by the night orchestrator (first = preferred, rest = 예비). */
+/** 9 runtime ids offered by the night orchestrator (first = preferred, rest = 예비). */
 const RUNTIMES: readonly string[] = [
   'codex',
   'opencode',
+  'opencode-free',
   'cline',
   'grok',
   'cursor',
@@ -264,6 +265,9 @@ function statusText(status: ActionStatus): string {
   return `${prefix}${status.text}`;
 }
 
+/** opencode-free는 화면에서 '무료 모델(예비)'로 보여준다. */
+const runtimeLabel = (runtime: string): string => (runtime === 'opencode-free' ? '무료 모델(예비)' : runtime);
+
 function ChainEditor({ project, role, initial, workerChain, onRefresh }: {
   project: string;
   role: 'worker' | 'qa';
@@ -292,7 +296,7 @@ function ChainEditor({ project, role, initial, workerChain, onRefresh }: {
     setStatus({ state: 'pending', text: '저장 중…' });
     try {
       await must({ op: 'controlRoom:laneSet', project, role, runtimes: picked });
-      setStatus({ state: 'done', text: `저장됨 (${role}: ${picked.join(' → ')})` });
+      setStatus({ state: 'done', text: `저장됨 (${role === 'worker' ? '만드는 AI' : '검수하는 AI'}: ${picked.map(runtimeLabel).join(' → ')})` });
       await onRefresh();
     } catch (err) {
       setStatus({ state: 'error', text: err instanceof Error ? err.message : String(err) });
@@ -317,12 +321,12 @@ function ChainEditor({ project, role, initial, workerChain, onRefresh }: {
               onClick={() => toggle(runtime)}
             >
               {order >= 0 && <span className="chain-order">{order + 1}</span>}
-              {runtime}
+              {runtimeLabel(runtime)}
             </button>
           );
         })}
       </div>
-      <p className="chain-current">현재 순서: <strong>{picked.length ? picked.join(' → ') : '—'}</strong></p>
+      <p className="chain-current">현재 순서: <strong>{picked.length ? picked.map(runtimeLabel).join(' → ') : '—'}</strong></p>
       {selfReview && <p className="muted">만든 AI가 스스로 검수할 수 없어요. 다른 AI를 첫 번째로 골라 주세요.</p>}
       <button className="btn" type="submit" disabled={busy || picked.length < 1 || selfReview}>
         {busy ? '저장 중…' : 'AI 순서 저장'}
