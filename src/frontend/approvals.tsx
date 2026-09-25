@@ -37,11 +37,13 @@ const APPROVAL_PLAIN_WORDS: readonly [string, string][] = [
   ['E2E', '실제 사용 시험'],
 ];
 
+const APPROVAL_NO_TEXT_LABEL = '설명이 없는 규칙이에요';
+
 /** Display-only wording; the original approval text remains available below it. */
 export function approvalReadableLabel(rule: ApprovalRuleJson): string {
   const record = rule as Record<string, unknown>;
   const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
-  const text = typeof raw === 'string' && raw.trim() ? raw : JSON.stringify(rule);
+  const text = typeof raw === 'string' && raw.trim() ? raw : APPROVAL_NO_TEXT_LABEL;
   return APPROVAL_PLAIN_WORDS.reduce((label, [developerWord, plainWord]) => label.replaceAll(developerWord, plainWord), text);
 }
 
@@ -103,7 +105,7 @@ export function SupersededApprovals({ rules }: { rules: readonly ApprovalRuleJso
   const label = (rule: ApprovalRuleJson): string => {
     const record = rule as Record<string, unknown>;
     const raw = rule.summary ?? record.title ?? record.ask ?? record.name;
-    return typeof raw === 'string' && raw.trim() ? raw : JSON.stringify(rule);
+    return typeof raw === 'string' && raw.trim() ? raw : APPROVAL_NO_TEXT_LABEL;
   };
   return (
     <details className="approval-superseded" aria-label="지난 결정">

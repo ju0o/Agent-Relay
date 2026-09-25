@@ -253,7 +253,7 @@ function ApprovalsPanel({ onClose }: { onClose: () => void }): React.ReactElemen
           <UnusedApprovalRules rules={unusedRules} />
           <SupersededApprovals rules={allRules} />
           {otherEntries.length > 0 && <div className="control-cards">{otherEntries.map((item, i) => (
-            <article className="control-card" key={`other-${i}`}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</p></article>
+            <article className="control-card" key={`other-${i}`}><p className="control-card-value" style={{ whiteSpace: 'pre-wrap' }}>{typeof item === 'string' ? item : '설명이 없는 항목이에요'}</p></article>
           ))}</div>}
         </>}
     </main>
